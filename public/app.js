@@ -1522,7 +1522,13 @@ function renderAccountView() {
       <button id="btn-account-logs" title="View this account's recent activity log"
         class="mb-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5">
         <i class="fa-solid fa-clock-rotate-left"></i><span>Logs</span></button>
-      <div class="flex justify-end">
+      <div class="flex justify-end gap-2">
+        <button id="btn-tradeups" title="Find profitable trade-up contracts from this account's skins"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-sm font-bold transition inline-flex items-center gap-2">
+          <i class="fa-solid fa-arrow-trend-up"></i><span>Trade-Ups</span></button>
+        <button id="btn-caskets" title="Manage this account's storage units (caskets)"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 text-sm font-bold transition inline-flex items-center gap-2">
+          <i class="fa-solid fa-box-archive"></i><span>Storage</span></button>
         <button id="btn-trade-offers" title="Manage this account's sent &amp; received trade offers"
           class="px-3 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition inline-flex items-center gap-2">
           <i class="fa-solid fa-right-left"></i><span>Trade Offers</span></button>
@@ -1534,6 +1540,10 @@ function renderAccountView() {
   if (logsBtn) logsBtn.addEventListener('click', () => openAccountLogs(username));
   const offersBtn = $('btn-trade-offers');
   if (offersBtn) offersBtn.addEventListener('click', () => openTradeOffers());
+  const tuBtn = $('btn-tradeups');
+  if (tuBtn) tuBtn.addEventListener('click', () => openTradeUpModal(username));
+  const ckBtn = $('btn-caskets');
+  if (ckBtn) ckBtn.addEventListener('click', () => openCasketModal(username));
 
   el.btnLoad.classList.remove('hidden');
   el.btnLoad.disabled = false; // reset any leftover loading state from a previous refresh
@@ -5008,6 +5018,306 @@ async function ensureLicensed() {
   } catch { /* unreachable / non-JSON → treat as unlicensed */ }
   window.location.replace('/'); // → activation screen (license.html)
   return false;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Feature 1 — Automated Max-Profit Trade-Ups (single-account modal)
+//  Feature 2 — Storage Unit (Casket) management (single-account modal)
+//  Built dynamically (self-contained); GC execution is gated server-side, so the
+//  UI clearly shows when it is disabled and never pretends an item was moved.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Generic modal shell (matches the ban/move overlays). Returns the overlay element. */
+function ensureFeatureOverlay(id, title, icon, widthClass) {
+  let ov = document.getElementById(id);
+  if (ov) return ov;
+  ov = document.createElement('div');
+  ov.id = id;
+  ov.className = 'hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4';
+  ov.innerHTML = `<div class="w-full ${widthClass || 'max-w-4xl'} max-h-[88vh] bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col overflow-hidden fade-in">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
+      <h3 class="text-lg font-bold text-white"><i class="fa-solid ${icon} text-brand mr-2"></i>${title}<span data-scope class="text-slate-500 font-mono text-sm font-normal ml-2"></span></h3>
+      <button data-close aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <div data-status class="px-6 py-2 border-b border-slate-800 shrink-0 text-2xs"></div>
+    <div data-toolbar class="px-6 py-3 border-b border-slate-800 shrink-0 flex items-center gap-2 flex-wrap"></div>
+    <div data-body class="overflow-y-auto grow"></div>
+    <div data-foot class="px-6 py-2 border-t border-slate-800 shrink-0 text-2xs text-slate-500"></div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.classList.add('hidden');
+  ov.querySelector('[data-close]').addEventListener('click', close);
+  ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+  return ov;
+}
+
+function gcStatusHtml(st) {
+  if (!st) return '';
+  if (st.live) return `<span class="text-emerald-400"><i class="fa-solid fa-circle-check mr-1"></i>GC execution enabled</span>`;
+  return `<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation mr-1"></i>${escapeHtml(st.reason || 'GC execution disabled')}</span>`;
+}
+
+// ── Trade-Ups ────────────────────────────────────────────────────────────────
+const tuState = { username: null, candidates: [], selected: new Set(), execTimer: null };
+
+async function openTradeUpModal(username) {
+  const ov = ensureFeatureOverlay('tradeup-overlay', 'Trade-Ups', 'fa-arrow-trend-up', 'max-w-5xl');
+  tuState.username = username; tuState.candidates = []; tuState.selected = new Set();
+  ov.querySelector('[data-scope]').textContent = `· ${username}`;
+  ov.querySelector('[data-body]').innerHTML = `<p class="px-6 py-10 text-center text-slate-500 text-sm">Click <b class="text-amber-300">Get Trade-Ups</b> to scan this account for profitable contracts.</p>`;
+  ov.querySelector('[data-foot]').textContent = '';
+  renderTuToolbar();
+  ov.classList.remove('hidden');
+  try { ov.querySelector('[data-status]').innerHTML = gcStatusHtml(await api('/api/tradeup/status')); } catch { /* ignore */ }
+  onModalOpen(ov);
+}
+
+function renderTuToolbar() {
+  const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
+  const tb = ov.querySelector('[data-toolbar]');
+  const have = tuState.candidates.length;
+  tb.innerHTML =
+    `<button data-tu-scan class="px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-bold transition"><i class="fa-solid fa-magnifying-glass-dollar mr-1.5"></i>Get Trade-Ups</button>` +
+    (have ? `<button data-tu-none class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Deselect all</button>
+      <button data-tu-all class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Select all</button>
+      <span class="ml-auto"></span>
+      <button data-tu-start class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-sm font-bold transition"><i class="fa-solid fa-bolt mr-1.5"></i>Start (${tuState.selected.size})</button>` : '');
+  tb.querySelector('[data-tu-scan]')?.addEventListener('click', tuScan);
+  tb.querySelector('[data-tu-none]')?.addEventListener('click', () => { tuState.selected.clear(); renderTuList(); renderTuToolbar(); });
+  tb.querySelector('[data-tu-all]')?.addEventListener('click', () => { tuState.candidates.forEach(c => tuState.selected.add(c.id)); renderTuList(); renderTuToolbar(); });
+  tb.querySelector('[data-tu-start]')?.addEventListener('click', tuStart);
+}
+
+async function tuScan() {
+  const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
+  const body = ov.querySelector('[data-body]');
+  body.innerHTML = `<p class="px-6 py-10 text-center text-slate-400 text-sm"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Refreshing inventory & computing trade-ups…</p>`;
+  try {
+    const res = await api('/api/tradeup/candidates', { method: 'POST', body: JSON.stringify({ username: tuState.username }) });
+    tuState.candidates = res.candidates || [];
+    tuState.selected = new Set(tuState.candidates.map(c => c.id)); // all auto-selected
+    ov.querySelector('[data-foot]').innerHTML = [
+      `${tuState.candidates.length} profitable contract(s) · ${res.eligibleInputs} eligible input(s)`,
+      ...(res.warnings || []).map(escapeHtml),
+    ].join(' · ');
+    renderTuList(); renderTuToolbar();
+  } catch (err) {
+    body.innerHTML = `<p class="px-6 py-10 text-center text-rose-400 text-sm">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderTuList() {
+  const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
+  const body = ov.querySelector('[data-body]');
+  if (!tuState.candidates.length) {
+    body.innerHTML = `<p class="px-6 py-10 text-center text-slate-500 text-sm">No positive-profit trade-ups found from this account's skins.</p>`;
+    return;
+  }
+  body.innerHTML = tuState.candidates.map((c) => {
+    const sel = tuState.selected.has(c.id);
+    const inputsByName = {};
+    for (const i of c.inputs) inputsByName[i.baseName] = (inputsByName[i.baseName] || 0) + 1;
+    const inputsTxt = Object.entries(inputsByName).map(([n, q]) => `${q}× ${escapeHtml(n)}`).join(', ');
+    const outsTxt = c.outcomes.map(o =>
+      `<span class="inline-block mr-2"><span class="text-slate-300">${escapeHtml(o.name)}</span> <span class="text-slate-500">(${escapeHtml(o.wear)})</span> <span class="text-sky-400">${(o.probability * 100).toFixed(1)}%</span> <span class="font-mono ${o.priceCents == null ? 'text-slate-600' : 'text-slate-400'}">${o.priceCents == null ? '—' : fmtCents(o.priceCents)}</span></span>`).join('');
+    const profitCls = c.profitCents > 0 ? 'text-emerald-400' : 'text-rose-400';
+    const executable = c.inputs.every(i => i.assetId);
+    return `<label class="flex gap-3 px-6 py-3 border-b border-slate-800/60 hover:bg-slate-800/30 cursor-pointer">
+      <input type="checkbox" data-tu-id="${escapeAttr(c.id)}" ${sel ? 'checked' : ''} class="mt-1 accent-amber-500 shrink-0">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-sm font-bold text-white">${escapeHtml(c.rarityLabel)} → ${escapeHtml(c.outputRarityLabel)}</span>
+          <span class="text-2xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">${escapeHtml(c.collectionLabel)}</span>
+          <span class="text-2xs text-slate-500">avg float ${c.avgFloat.toFixed(3)}</span>
+          ${c.fullyPriced ? '' : '<span class="text-2xs text-amber-500" title="Some prices still loading">~est</span>'}
+          ${executable ? '' : '<span class="text-2xs text-rose-400" title="Missing asset ids — cannot execute">no asset ids</span>'}
+        </div>
+        <p class="text-2xs text-slate-500 mt-0.5 truncate" title="${escapeAttr(inputsTxt)}">Inputs: ${inputsTxt}</p>
+        <p class="text-2xs mt-1 leading-relaxed">${outsTxt}</p>
+        <div class="text-2xs mt-1 font-mono">Cost <span class="text-slate-300">${fmtCents(c.costCents)}</span> · EV <span class="text-slate-300">${fmtCents(c.evCents)}</span> · Profit <span class="${profitCls} font-bold">${c.profitCents > 0 ? '+' : ''}${fmtCents(c.profitCents)}</span></div>
+      </div></label>`;
+  }).join('');
+  body.querySelectorAll('[data-tu-id]').forEach((cb) => cb.addEventListener('change', () => {
+    const id = cb.dataset.tuId;
+    if (cb.checked) tuState.selected.add(id); else tuState.selected.delete(id);
+    renderTuToolbar();
+  }));
+}
+
+async function tuStart() {
+  const chosen = tuState.candidates.filter(c => tuState.selected.has(c.id) && c.inputs.every(i => i.assetId));
+  if (!chosen.length) { toast('Select at least one executable contract (with asset ids)', 'warn'); return; }
+  const contracts = chosen.map(c => ({ inputAssetIds: c.inputs.map(i => i.assetId) }));
+  const ok = await ssimConfirm({
+    title: 'Execute trade-ups?',
+    body: `Execute <b class="text-slate-100">${chosen.length}</b> trade-up(s) on <b class="text-slate-100">${escapeHtml(tuState.username)}</b>?<br><span class="text-amber-400 font-semibold">Each destroys 10 real items. Irreversible.</span>`,
+    confirmLabel: 'Execute', confirmIcon: 'fa-bolt', tone: 'danger',
+  });
+  if (!ok) return;
+  try {
+    await api('/api/tradeup/execute', { method: 'POST', body: JSON.stringify({ username: tuState.username, contracts }) });
+    tuPollExec();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function tuPollExec() {
+  const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
+  const foot = ov.querySelector('[data-foot]');
+  clearTimeout(tuState.execTimer);
+  const tick = async () => {
+    try {
+      const j = await api('/api/tradeup/execute-status');
+      const line = j.enabled
+        ? `Executing ${j.done}/${j.total} · crafted ${j.crafted} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}`
+        : `Execution disabled (${escapeHtml(j.statusReason)}) — nothing was crafted.`;
+      foot.innerHTML = `<span class="${j.enabled ? 'text-slate-300' : 'text-amber-400'}">${line}</span>` +
+        (j.running ? ` <button data-tu-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
+      foot.querySelector('[data-tu-cancel]')?.addEventListener('click', () => api('/api/tradeup/execute-cancel', { method: 'POST' }).catch(() => {}));
+      if (j.running) { tuState.execTimer = setTimeout(tick, 1200); }
+      else {
+        const failMsg = (j.results || []).filter(r => r.error)[0]?.error;
+        if (!j.enabled && failMsg) toast(failMsg, 'warn'); else if (j.crafted) toast(`Trade-ups: ${j.crafted} submitted`, 'success');
+      }
+    } catch { /* stop polling on error */ }
+  };
+  tick();
+}
+
+// ── Storage Units (caskets) ──────────────────────────────────────────────────
+const ckState = { username: null, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', moveTimer: null };
+
+async function openCasketModal(username) {
+  const ov = ensureFeatureOverlay('casket-overlay', 'Storage Units', 'fa-box-archive', 'max-w-5xl');
+  Object.assign(ckState, { username, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '' });
+  ov.querySelector('[data-scope]').textContent = `· ${username}`;
+  ov.querySelector('[data-toolbar]').innerHTML = `<span class="text-sm text-slate-400">Storage unit:</span><select data-ck-unit class="px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200"><option value="">— loading… —</option></select>`;
+  ov.querySelector('[data-body]').innerHTML = `<p class="px-6 py-10 text-center text-slate-500 text-sm"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Connecting to the game coordinator…</p>`;
+  ov.classList.remove('hidden');
+  onModalOpen(ov);
+  let st;
+  try { st = await api('/api/casket/status'); ov.querySelector('[data-status]').innerHTML = gcStatusHtml(st); } catch { st = null; }
+  // Load units (needs the GC library; degrades clearly if unavailable).
+  try {
+    const r = await api(`/api/casket/${encodeURIComponent(username)}/list`);
+    ckState.caskets = r.caskets || [];
+  } catch (err) {
+    ckState.caskets = [];
+    ov.querySelector('[data-body]').innerHTML = `<div class="px-6 py-10 text-center text-amber-400 text-sm"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${escapeHtml(err.message)}<p class="text-slate-500 text-2xs mt-2">Storage-unit access needs the GC layer (install globaloffensive + set SSIM_GC_VERIFIED=1). The inventory panel below still works.</p></div>`;
+  }
+  renderCasketUnitSelect();
+  if (ckState.caskets.length) { ckState.casketId = ckState.caskets[0].id; await loadCasketContents(); }
+  renderCasketPanels();
+}
+
+function renderCasketUnitSelect() {
+  const ov = document.getElementById('casket-overlay'); if (!ov) return;
+  const sel = ov.querySelector('[data-ck-unit]');
+  sel.innerHTML = ckState.caskets.length
+    ? ckState.caskets.map(c => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)} (${c.count}/1000)</option>`).join('')
+    : `<option value="">— no storage units —</option>`;
+  if (ckState.casketId) sel.value = ckState.casketId;
+  sel.onchange = async () => { ckState.casketId = sel.value; ckState.unitSel = new Set(); await loadCasketContents(); renderCasketPanels(); };
+}
+
+async function loadCasketContents() {
+  if (!ckState.casketId) { ckState.contents = []; return; }
+  try {
+    const r = await api(`/api/casket/${encodeURIComponent(ckState.username)}/contents?casketId=${encodeURIComponent(ckState.casketId)}`);
+    ckState.contents = r.items || [];
+  } catch { ckState.contents = []; }
+}
+
+/** Inventory items eligible to deposit (in-inventory, not on the market). One row per stack. */
+function casketInvRows() {
+  const inv = invFor(ckState.username);
+  const items = (inv && inv.items) ? inv.items.filter(i => i.category !== 'listed' && Array.isArray(i.assetIds) && i.assetIds.length) : [];
+  const q = ckState.search.trim().toLowerCase();
+  return q ? items.filter(i => (i.marketHashName || '').toLowerCase().includes(q)) : items;
+}
+
+function renderCasketPanels() {
+  const ov = document.getElementById('casket-overlay'); if (!ov) return;
+  const invRows = casketInvRows();
+  const invCount = invRows.reduce((n, i) => n + i.assetIds.length, 0);
+  const unit = ckState.caskets.find(c => c.id === ckState.casketId);
+  const panel = (side, title, count, inner) => `<div class="flex flex-col min-h-0">
+      <div class="px-4 py-2 flex items-center gap-2 border-b border-slate-800">
+        <span class="text-sm font-bold text-slate-200">${title}</span><span class="text-2xs text-slate-500">${count}</span>
+        <button data-ck-sel="${side}" class="ml-auto text-2xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">Select all</button>
+      </div>
+      <div class="overflow-y-auto grow">${inner}</div></div>`;
+  const invInner = invRows.length ? invRows.map(i => {
+    const sel = ckState.invSel.has(i.marketHashName);
+    return `<label class="flex items-center gap-2 px-4 py-1.5 hover:bg-slate-800/30 cursor-pointer text-xs">
+      <input type="checkbox" data-ck-inv="${escapeAttr(i.marketHashName)}" ${sel ? 'checked' : ''} class="accent-sky-500">
+      <span class="truncate flex-1 text-slate-300">${escapeHtml(i.name || i.marketHashName)}</span>
+      <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></label>`;
+  }).join('') : `<p class="px-4 py-8 text-center text-slate-600 text-xs">No depositable items in cache — refresh the account.</p>`;
+  const unitInner = ckState.contents.length ? ckState.contents.map(it => {
+    const id = String(it.id); const sel = ckState.unitSel.has(id);
+    return `<label class="flex items-center gap-2 px-4 py-1.5 hover:bg-slate-800/30 cursor-pointer text-xs">
+      <input type="checkbox" data-ck-unit-item="${escapeAttr(id)}" ${sel ? 'checked' : ''} class="accent-sky-500">
+      <span class="truncate flex-1 text-slate-300">${escapeHtml(it.custom_name || ('Item ' + id))}</span>
+      <span class="text-slate-600 font-mono">${it.def_index != null ? 'def ' + it.def_index : ''}</span></label>`;
+  }).join('') : `<p class="px-4 py-8 text-center text-slate-600 text-xs">${ckState.casketId ? 'Empty / not loaded (GC required).' : 'No storage unit selected.'}</p>`;
+
+  ov.querySelector('[data-body]').innerHTML =
+    `<div class="px-6 py-2 flex items-center gap-2 border-b border-slate-800">
+       <input data-ck-search value="${escapeAttr(ckState.search)}" placeholder="Filter inventory…" class="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-xs text-slate-200 w-48">
+       <span class="ml-auto"></span>
+       <button data-ck-deposit class="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold">Deposit <i class="fa-solid fa-arrow-right ml-1"></i></button>
+       <button data-ck-withdraw class="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold"><i class="fa-solid fa-arrow-left mr-1"></i> Withdraw</button>
+     </div>
+     <div class="grid grid-cols-2 gap-px bg-slate-800" style="height:48vh">${panel('inv', 'Inventory', invCount + ' item(s)', invInner)}${panel('unit', unit ? `${escapeHtml(unit.name)} (${unit.count}/1000)` : 'Storage unit', ckState.unitSel.size + ' selected', unitInner)}</div>`;
+
+  const body = ov.querySelector('[data-body]');
+  body.querySelector('[data-ck-search]')?.addEventListener('input', (e) => { ckState.search = e.target.value; renderCasketPanels(); body.querySelector('[data-ck-search]')?.focus(); });
+  body.querySelectorAll('[data-ck-inv]').forEach(cb => cb.addEventListener('change', () => { cb.checked ? ckState.invSel.add(cb.dataset.ckInv) : ckState.invSel.delete(cb.dataset.ckInv); }));
+  body.querySelectorAll('[data-ck-unit-item]').forEach(cb => cb.addEventListener('change', () => { cb.checked ? ckState.unitSel.add(cb.dataset.ckUnitItem) : ckState.unitSel.delete(cb.dataset.ckUnitItem); }));
+  body.querySelector('[data-ck-sel="inv"]')?.addEventListener('click', () => { casketInvRows().forEach(i => ckState.invSel.add(i.marketHashName)); renderCasketPanels(); });
+  body.querySelector('[data-ck-sel="unit"]')?.addEventListener('click', () => { ckState.contents.forEach(i => ckState.unitSel.add(String(i.id))); renderCasketPanels(); });
+  body.querySelector('[data-ck-deposit]')?.addEventListener('click', () => casketMove('deposit'));
+  body.querySelector('[data-ck-withdraw]')?.addEventListener('click', () => casketMove('withdraw'));
+}
+
+async function casketMove(direction) {
+  if (!ckState.casketId) { toast('Select a storage unit first', 'warn'); return; }
+  let itemIds;
+  if (direction === 'deposit') {
+    const rows = casketInvRows().filter(i => ckState.invSel.has(i.marketHashName));
+    itemIds = rows.flatMap(i => i.assetIds);
+  } else {
+    itemIds = [...ckState.unitSel];
+  }
+  if (!itemIds.length) { toast(`Select item(s) to ${direction}`, 'warn'); return; }
+  const ok = await ssimConfirm({
+    title: `${direction === 'deposit' ? 'Deposit' : 'Withdraw'} ${itemIds.length} item(s)?`,
+    body: `${direction === 'deposit' ? 'Move into' : 'Take from'} the storage unit on <b class="text-slate-100">${escapeHtml(ckState.username)}</b>?`,
+    confirmLabel: direction === 'deposit' ? 'Deposit' : 'Withdraw', confirmIcon: 'fa-box-archive', tone: 'brand',
+  });
+  if (!ok) return;
+  try {
+    await api('/api/casket/move', { method: 'POST', body: JSON.stringify({ username: ckState.username, casketId: ckState.casketId, itemIds, direction }) });
+    casketPollMove();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function casketPollMove() {
+  const ov = document.getElementById('casket-overlay'); if (!ov) return;
+  const foot = ov.querySelector('[data-foot]');
+  clearTimeout(ckState.moveTimer);
+  const tick = async () => {
+    try {
+      const j = await api('/api/casket/move-status');
+      const line = j.error ? `<span class="text-amber-400">${escapeHtml(j.error)}</span>`
+        : `<span class="text-slate-300">${j.direction}: ${j.done}/${j.total} · moved ${j.moved} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}</span>`;
+      foot.innerHTML = line + (j.running ? ` <button data-ck-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
+      foot.querySelector('[data-ck-cancel]')?.addEventListener('click', () => api('/api/casket/move-cancel', { method: 'POST' }).catch(() => {}));
+      if (j.running) { ckState.moveTimer = setTimeout(tick, 1000); }
+      else if (!j.error && j.moved) { toast(`Storage: ${j.moved} item(s) ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}`, 'success'); await loadCasketContents(); renderCasketPanels(); }
+    } catch { /* stop on error */ }
+  };
+  tick();
 }
 
 async function init() {
