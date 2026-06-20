@@ -105,6 +105,12 @@ limit), **0 stall events**, **the backend survived** (it used to be killed at th
 `crash-log.txt` / `report.*.json` was written. **The crash is reproduced (as the unbounded condition),
 fixed, and proven gone under sustained real-load.**
 
+**Shell auto-restart — live-proven.** With the rebuilt `SSIM.exe` running (shell PID 13960 → sidecar
+PID 1596), the sidecar was force-killed (`taskkill /F` — the exact uncatchable external `TerminateProcess`
+that used to wipe the app). Result: **the shell SURVIVED and auto-respawned a fresh sidecar (1596 →
+14212)**. Old behaviour was `exit(0)` (app gone); new behaviour is automatic recovery — so a kill from
+*any* source (OS, AV, a future bug, the close watchdog) can no longer wipe the running app.
+
 ---
 
 ## 3.0 KEYSTONE: the shipped binary predated the fix
