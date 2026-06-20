@@ -5014,7 +5014,12 @@ async function ensureLicensed() {
   try {
     const res = await fetch('/api/system/status', { cache: 'no-store' });
     const data = await res.json().catch(() => null);
-    if (res.ok && data && data.licensed === true) return true;
+    if (res.ok && data && data.licensed === true) {
+      // Footer version reflects the ACTUAL backend version (from pkg.version), so it can never go
+      // stale like a hardcoded literal — and self-corrects after an auto-update swaps the backend.
+      if (data.version) { const f = document.getElementById('footer-status'); if (f) f.textContent = 'v' + data.version; }
+      return true;
+    }
   } catch { /* unreachable / non-JSON → treat as unlicensed */ }
   window.location.replace('/'); // → activation screen (license.html)
   return false;
