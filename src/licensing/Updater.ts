@@ -2,7 +2,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import fsExtra from 'fs-extra';
 import axios from 'axios';
 import { logger } from '../utils/logger';
@@ -179,8 +179,37 @@ export async function runUpdate(currentVersion: string): Promise<{ updated: bool
     fsExtra.removeSync(file);
     return { updated: false, reason: 'verification failed' };
   }
+  // ANTI-BRICK GATE: prove the downloaded backend actually BOOTS + loads its deps (incl.
+  // globaloffensive + the steam stack) BEFORE we throw away the working one. The new exe is
+  // already authentic (sha256 + Ed25519), so running its own self-test is safe; it exits without
+  // a license check / port bind / Steam. A new exe that fails to boot is REJECTED here, so a bad
+  // publish can never replace a working install with one that won't start.
+  if (!selfTestNewExe(file)) {
+    fsExtra.removeSync(file);
+    return { updated: false, reason: 'new exe failed its self-test – kept the current version' };
+  }
   swapAndRelaunch(file); // does not return (process exits)
   return { updated: true, reason: 'swapping' };
+}
+
+/** Runs the freshly-downloaded exe with SSIM_SELFTEST=1 and returns true only if it prints
+ *  SSIM_SELFTEST_OK (boots + all bundled deps load). Throws on a non-zero exit → caught → false. */
+function selfTestNewExe(file: string): boolean {
+  try {
+    const out = execFileSync(file, [], {
+      env: { ...process.env, SSIM_SELFTEST: '1' },
+      timeout: 60_000, encoding: 'utf8', windowsHide: true,
+    });
+    if (/SSIM_SELFTEST_OK/.test(out)) {
+      logger.info('update self-test passed – new backend boots + loads its deps');
+      return true;
+    }
+    logger.error(`update self-test did not pass – not swapping: ${out.trim().slice(0, 300)}`);
+    return false;
+  } catch (err) {
+    logger.error(`update self-test failed (non-zero exit / crash) – not swapping: ${(err as Error).message}`);
+    return false;
+  }
 }
 
 export const Updater = { check, runUpdate };
