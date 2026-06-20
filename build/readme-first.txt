@@ -1,6 +1,6 @@
 ==============================================================
   SSIM - Santer Steam Inventory Manager
-  READ ME FIRST   -   Version 1.1.5
+  READ ME FIRST   -   Version 1.2.0
 ==============================================================
 
 Thank you for choosing SSIM. This guide explains how to start
@@ -25,30 +25,31 @@ except a single license check. Your account passwords and
 --------------------------------------------------------------
  1. QUICK START
 --------------------------------------------------------------
-1) Keep this whole folder together. ssim.exe creates a "data"
-   folder next to it - do not move the .exe out on its own.
+1) Keep this whole folder together. SSIM.exe and ssim-backend.exe
+   must stay side by side; SSIM.exe creates "data", "Vault" and
+   "mafiles" folders next to them on first launch.
 
-2) Double-click  ssim.exe .
-   A small console window opens (this IS the server - just leave
-   it open) and your default browser opens the dashboard.
-   The console prints the exact address - usually
-   http://localhost:3000 (if 3000 is busy SSIM takes the next
-   free port and shows it there).
+2) Double-click  SSIM.exe .
+   The SSIM window opens directly - no console, no separate
+   browser tab. (ssim-backend.exe is started automatically in the
+   background; you never run it yourself.)
 
 3) First start = activation. Paste your license key when asked
-   and click Activate. The key is tied to THIS computer.
+   and click Activate, then set a Master Password for your vault.
+   The license key is tied to THIS computer.
 
 4) Add your bots (section 2) and click "Refresh" to pull their
    inventories.
 
-To stop SSIM: close the console window.
+To stop SSIM: close the SSIM window - that quits everything,
+including the background service.
 
 
 --------------------------------------------------------------
  2. ADDING YOUR ACCOUNTS (.maFiles)
 --------------------------------------------------------------
 - Drop your .maFile files into the "mafiles" folder that sits
-  next to ssim.exe.
+  next to SSIM.exe.
 - Optional: add an "accounts.txt" in the same folder with one
   "username:password" per line for bulk import.
 - In the dashboard click "Import bots", pick the ones you want,
@@ -178,6 +179,32 @@ MASS BUY (whole folder)
 
 
 --------------------------------------------------------------
+ 7b. TRADE-UPS & STORAGE UNITS  (new in 1.2.0)
+--------------------------------------------------------------
+Open a single account (account view) to find two new buttons:
+
+TRADE-UPS
+  Click "Trade-Ups" -> "Get Trade-Ups" and SSIM scans this bot's
+  skins for every profitable trade-up contract (10 inputs -> 1
+  output), showing the inputs, each possible output with its
+  probability, the cost, expected value and profit. It uses the
+  REAL in-game float of each item for an accurate result. Pick
+  the contracts you want and run them.
+  WARNING: running a trade-up DESTROYS the 10 input items - it is
+  irreversible. Test one cheap contract first. To disable trade-up
+  execution entirely, set SSIM_GC_VERIFIED=0 before launching.
+
+STORAGE UNITS
+  Click "Storage" to manage a bot's storage units (caskets):
+  pick a unit, then deposit items from the inventory into it or
+  withdraw them back, with a live progress bar. Moves are
+  reversible (you can always withdraw what you deposited).
+
+Both features briefly connect this bot to the CS2 game
+coordinator only while you use them, then disconnect.
+
+
+--------------------------------------------------------------
  8. ACTIVE ORDERS
 --------------------------------------------------------------
 Switch to the "Active Orders" tab to see your pending Market
@@ -199,27 +226,27 @@ handy for checking what a specific account has been doing.
 SSIM keeps itself up to date: on start it checks for a newer
 signed version and installs it automatically before launching.
 Just keep using it - no manual download needed. The whole
-dashboard now ships INSIDE ssim.exe, so an update can never
-leave the interface out of sync with the program again.
+dashboard ships INSIDE ssim-backend.exe, so an update can never
+leave the interface out of sync with the program again. (Updates
+replace the background service and SSIM relaunches itself.)
 
 
 --------------------------------------------------------------
  11. TROUBLESHOOTING
 --------------------------------------------------------------
-- Port already in use: SSIM automatically picks the next free
-  port (3001, 3002, ...) and opens the right URL - it won't
-  crash. A second SSIM instance is blocked ("SSIM is already
-  running!").
-- Browser didn't open: open the address printed in the console
-  window (usually http://localhost:3000).
+- The window doesn't open: install the Microsoft Edge WebView2
+  Runtime (it ships with up-to-date Windows 10/11). Get it from
+  https://developer.microsoft.com/microsoft-edge/webview2/
+- A second SSIM instance is blocked ("SSIM is already running!") -
+  the first window keeps running; just use that one.
 - An account won't log in: check its password / .maFile and that
   its proxy works (Test proxy). Steam rate-limits rapid logins,
   so wait a moment and try again - SSIM keeps the others running.
 - Activation says the device ID (HWID) is invalid after moving to
   a new PC: the license is tied to one machine. Contact support
   to free the seat.
-- Always keep the console window open while using SSIM; closing
-  it stops the server.
+- Closing the SSIM window quits SSIM completely (including the
+  background service) - that is the normal way to stop it.
 
 
 --------------------------------------------------------------

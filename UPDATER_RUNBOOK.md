@@ -30,7 +30,7 @@ exe** → swaps + relaunches. Anything else → it keeps running the current ver
 
 ## Publish an update — step by step
 
-1. **Bump the version** in `package.json` (e.g. `1.1.5` → `1.1.6`). This becomes the new exe's reported
+1. **Bump the version** in `package.json` (e.g. `1.2.0` → `1.2.1`). This becomes the new exe's reported
    version **and** must equal `latest` (the signature binds them).
 2. **Build the backend:** `npm run build:tauri` (loads secrets from `secrets.local.bat`). Output:
    `release-tauri/SSIM/ssim-backend.exe`. The build's own in-package self-test must print
