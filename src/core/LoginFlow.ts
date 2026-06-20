@@ -1,0 +1,73 @@
+import SteamTotp from 'steam-totp';
+import type { AccountConfig, MaFile } from '../types/account';
+import { logger } from '../utils/logger';
+import { AccountVault } from './AccountVault';
+import { loadMaFileFromDisk } from './maFiles';
+
+// ─── maFile loading ────────────────────────────────────────────────────────────
+
+/**
+ * Returns the account's maFile. In VAULT MODE the vault is the source of truth (the
+ * mafiles/ folder is no longer read for a vaulted account — requirement #4); a not-yet
+ * imported account falls back to disk so a freshly-dropped bot can still be used until
+ * the next merge. In plaintext mode it reads from disk as before.
+ */
+export function loadMaFile(account: AccountConfig): MaFile {
+  if (AccountVault.isEnabled()) {
+    const v = AccountVault.getAccount(account.username);
+    if (v?.maFile?.shared_secret) {
+      if (!v.maFile.identity_secret) {
+        logger.warn(`[${account.username}] vault maFile missing identity_secret (trade confirmations won't work)`);
+      }
+      return v.maFile;
+    }
+  }
+  const maFile = loadMaFileFromDisk(account.maFilePath);
+  if (!maFile.identity_secret) {
+    logger.warn(`[${account.username}] maFile missing identity_secret (trade confirmations won't work)`);
+  }
+  return maFile;
+}
+
+// ─── TOTP generation ───────────────────────────────────────────────────────────
+
+/**
+ * Generates a fresh TOTP code from the given shared_secret.
+ * TOTP codes rotate every 30 s; call this immediately before use.
+ */
+export function generateTotpCode(sharedSecret: string): string {
+  return SteamTotp.generateAuthCode(sharedSecret);
+}
+
+/**
+ * Returns milliseconds until the current TOTP code expires.
+ * Useful for scheduling retries after a "wrong code" error.
+ */
+export function msUntilNextTotp(): number {
+  const epoch = Math.floor(Date.now() / 1000);
+  return (30 - (epoch % 30)) * 1000;
+}
+
+// ─── logOn payload builder ─────────────────────────────────────────────────────
+
+export interface LogOnOptions {
+  accountName:      string;
+  password:         string;
+  twoFactorCode:    string;
+  rememberPassword: boolean;
+  [key: string]:    unknown; // satisfies steam-user's index-signature requirement
+}
+
+export function buildLogOnOptions(account: AccountConfig, maFile: MaFile): LogOnOptions {
+  // VAULT MODE: the password is in the vault (accounts.json's is blanked). A BLANK vault
+  // password (`||`, not `??`) must never mask a recoverable plaintext one — fall back to the
+  // on-disk record. Plaintext mode: use the on-disk account record.
+  const vaultPw = AccountVault.isEnabled() ? AccountVault.getAccount(account.username)?.password : undefined;
+  const password = vaultPw || account.password;
+  return {
+    accountName:      account.username,
+    password,
+    twoFactorCode:    generateTotpCode(maFile.shared_secret),
+    rememberPassword: false,
+  };
+}

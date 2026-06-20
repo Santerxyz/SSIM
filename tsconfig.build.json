@@ -1,0 +1,11 @@
+{
+  "//": "Production build config (#25). Extends the dev tsconfig but EMITS NO source/",
+  "//2": "declaration maps, so dist/ carries no readable pre-obfuscation source of the",
+  "//3": "licensing/HWID surface on the build host. Used by `build:protected`/`release`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "sourceMap": false,
+    "declaration": false,
+    "declarationMap": false
+  }
+}

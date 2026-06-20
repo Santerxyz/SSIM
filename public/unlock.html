@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en" style="background:#0a0a0f;color-scheme:dark">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSIM — Unlock Vault</title>
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root { --bg:#0a0a0f; --card:#15151f; --line:#262633; --fg:#e8e8f0; --dim:#9a9ab0; --accent:#c084fc; --accent2:#a855f7; --err:#f87171; }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #1a1330 0%, var(--bg) 60%);
+    color: var(--fg); display:flex; align-items:center; justify-content:center; min-height:100vh;
+  }
+  .card {
+    width: 380px; max-width: calc(100vw - 32px); background: var(--card);
+    border: 1px solid var(--line); border-radius: 16px; padding: 28px 26px 24px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom: 18px; }
+  .diamond { width:14px; height:14px; transform:rotate(45deg); background:linear-gradient(135deg,var(--accent),var(--accent2)); border-radius:3px; }
+  .brand b { font-size: 18px; letter-spacing:.3px; }
+  .brand span { color: var(--dim); font-size: 12px; }
+  h1 { font-size: 16px; margin: 4px 0 4px; font-weight: 600; }
+  p.sub { color: var(--dim); font-size: 12.5px; line-height:1.5; margin: 0 0 18px; }
+  label { display:block; font-size: 12px; color: var(--dim); margin: 12px 0 6px; }
+  input {
+    width:100%; padding: 11px 12px; background:#0e0e16; border:1px solid var(--line);
+    border-radius: 10px; color: var(--fg); font-size: 14px; outline:none;
+  }
+  input:focus { border-color: var(--accent2); box-shadow: 0 0 0 3px rgba(168,85,247,.15); }
+  button {
+    width:100%; margin-top: 18px; padding: 11px; border:0; border-radius: 10px; cursor:pointer;
+    background: linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; font-size: 14px; font-weight: 600;
+  }
+  button:disabled { opacity:.6; cursor:default; }
+  .msg { margin-top: 14px; font-size: 12.5px; min-height: 18px; }
+  .msg.err { color: var(--err); }
+  .msg.ok  { color: var(--accent); }
+  .warn { margin-top:14px; font-size:11.5px; color:#caa45a; line-height:1.5; }
+</style>
+</head>
+<body>
+  <form class="card" id="form" autocomplete="off">
+    <div class="brand"><span class="diamond"></span><b>SSIM</b><span>· Secure Vault</span></div>
+    <h1 id="title">Unlock your vault</h1>
+    <p class="sub" id="sub">Enter your Master Password to start SSIM.</p>
+
+    <label for="pw" id="lblpw">Master Password</label>
+    <input id="pw" type="password" autofocus autocomplete="off" spellcheck="false">
+
+    <div id="confirmWrap" style="display:none">
+      <label for="confirm">Confirm Master Password</label>
+      <input id="confirm" type="password" autocomplete="off" spellcheck="false">
+    </div>
+
+    <button id="btn" type="submit">Unlock</button>
+    <div class="msg" id="msg"></div>
+    <div class="warn" id="warn" style="display:none">
+      First run: this sets your Master Password. Encryption is required and there is
+      <b>no recovery</b> — keep it safe.
+    </div>
+  </form>
+
+<script>
+  var firstRun = false;
+  var el = function (id) { return document.getElementById(id); };
+
+  // App-window heartbeat: while this window is open, tell the backend so it stays up.
+  // When the window closes the pings stop and SSIM winds down (see appAlive.ts).
+  function ping() { try { fetch('/api/app/ping').catch(function () {}); } catch (e) {} }
+  ping();
+  setInterval(ping, 4000);
+
+  fetch('/api/vault/state').then(function (r) { return r.json(); }).then(function (d) {
+    firstRun = !d.exists;
+    if (firstRun) {
+      el('title').textContent = 'Set your Master Password';
+      el('sub').textContent = 'Create a Master Password to encrypt this vault.';
+      el('confirmWrap').style.display = 'block';
+      el('btn').textContent = 'Create vault';
+      el('warn').style.display = 'block';
+    }
+  }).catch(function () {});
+
+  el('form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var password = el('pw').value;
+    var confirm = firstRun ? el('confirm').value : undefined;
+    var msg = el('msg');
+    msg.className = 'msg';
+    if (!password) { msg.className = 'msg err'; msg.textContent = 'A Master Password is required.'; return; }
+    if (firstRun && password !== confirm) { msg.className = 'msg err'; msg.textContent = 'The passwords do not match.'; return; }
+
+    el('btn').disabled = true;
+    msg.textContent = 'Working…';
+    fetch('/api/vault/unlock', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password, confirm: confirm }),
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok) {
+        msg.className = 'msg ok';
+        msg.textContent = (d.created ? 'Vault created' : 'Unlocked') + ' — starting SSIM…';
+        setTimeout(function () { location.reload(); }, 2300);
+      } else {
+        el('btn').disabled = false;
+        msg.className = 'msg err';
+        msg.textContent = (d && d.error) || 'Unlock failed.';
+        el('pw').value = ''; el('pw').focus();
+      }
+    }).catch(function () {
+      el('btn').disabled = false;
+      msg.className = 'msg err';
+      msg.textContent = 'Could not reach SSIM. Please try again.';
+    });
+  });
+</script>
+</body>
+</html>

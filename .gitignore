@@ -1,0 +1,48 @@
+# ============================================================================
+#  SSIM .gitignore — defense-in-depth.
+#  Sensitive dirs are excluded WHOLESALE (not file-by-file) so that any NEW
+#  secret/user-data file dropped into them stays out of history automatically.
+#  NEVER relax these: vault.enc, accounts.json, refresh tokens, mafiles, and
+#  license seats are real credentials for a live 250+ account fleet.
+# ============================================================================
+
+# --- Dependencies & compiled output ---------------------------------------
+node_modules/
+dist/
+dist-tauri/
+
+# --- SENSITIVE: user data & secrets (NEVER commit, whole directories) ------
+Vault/
+data/
+mafiles/
+secrets.local.bat
+*.maFile
+*.mafile
+read-vault.js
+
+# --- Licensing: local seat key + signed token (machine-bound) --------------
+*.key
+*.token
+license.token.json
+license.meta.json
+
+# --- Packaged binaries & release artifacts (huge / not source) -------------
+*.exe
+release/
+release-tauri/
+loader.js
+*.jsc
+
+# --- Rust / Tauri build output (generated, large) --------------------------
+src-tauri/target/
+src-tauri/gen/
+
+# --- Logs & atomic-write artifacts (may contain credentials) ---------------
+logs/
+*.log
+*.bak
+*.tmp
+*.tmp.*
+
+# --- Stray OS/tooling folders ----------------------------------------------
+Microsoft/
