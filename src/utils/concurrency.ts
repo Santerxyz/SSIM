@@ -27,3 +27,23 @@ export function scaleConcurrency(
   if (n <= 0) return min;
   return Math.min(max, Math.max(min, Math.ceil(n / per)));
 }
+
+/**
+ * Clamps an EXPLICIT concurrency override into the safe band [1, max]. The dynamic
+ * scaler (scaleConcurrency) already returns ≤ MAX_CONCURRENCY, but a caller-supplied
+ * override (ultimately reachable from the loopback API body, e.g. /api/market/sell's
+ * `concurrency`) bypasses it — an out-of-band value like 1000 would otherwise spawn one
+ * worker per bot and blow past the intentional 25 ceiling that protects proxy/socket
+ * stability. This is the single enforcement point so the ceiling holds for EVERY caller.
+ * A non-finite/≤0 value falls back to `fallback` (the scaled default). No-op for any value
+ * already within [1, max], so the normal path is unchanged.
+ */
+export function clampConcurrency(
+  value: number | undefined,
+  fallback: number,
+  max: number = MAX_CONCURRENCY,
+): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return Math.min(max, Math.max(1, Math.floor(fallback)));
+  return Math.min(max, Math.floor(n));
+}

@@ -3,7 +3,7 @@ import type { BuyBilling } from './AccountTrader';
 import type { InventoryService } from '../core/InventoryService';
 import type { GameId, AccountInventory } from '../types/inventory';
 import { currencyInfo } from '../pricing/currencies';
-import { scaleConcurrency } from '../utils/concurrency';
+import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
 
 // Give Steam a moment to FILL an instant (matched) buy order before re-checking
@@ -305,8 +305,9 @@ export class BuyService {
 
   private async runMassBuy(p: MassBuyParams): Promise<void> {
     const game: GameId = p.appId === 440 ? 'tf2' : 'cs2';
-    // Dynamic scaling across DISTINCT accounts (5→25). An explicit p.concurrency still wins.
-    const concurrency = p.concurrency ?? scaleConcurrency(p.usernames.length);
+    // Dynamic scaling across DISTINCT accounts (5→25). An explicit p.concurrency is honoured
+    // but CLAMPED to the 25 ceiling so no caller can exceed the intentional proxy/socket cap.
+    const concurrency = clampConcurrency(p.concurrency, scaleConcurrency(p.usernames.length));
 
     // ── PHASE 1 (CRITICAL SAFETY): refresh EVERY account's balance live BEFORE any
     //    plan or spend. The budget math must run on real-time funds, never a stale

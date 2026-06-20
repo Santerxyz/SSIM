@@ -1,7 +1,7 @@
 import type { TradeService } from './TradeService';
 import type { MarketOrders } from './AccountTrader';
 import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, type SellStrategy } from '../pricing/MarketPricing';
-import { scaleConcurrency } from '../utils/concurrency';
+import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
@@ -200,8 +200,10 @@ export class MarketService {
     strategy: SellStrategy,
     opts?: { concurrency?: number; itemDelayMs?: number; customCents?: number },
   ): Promise<void> {
-    // Dynamic scaling: 1 worker / 5 bots, floor 5, ceiling 25 (explicit opts win).
-    const concurrency = opts?.concurrency ?? scaleConcurrency(groups.length);
+    // Dynamic scaling: 1 worker / 5 bots, floor 5, ceiling 25. An explicit override (e.g. the
+    // /api/market/sell body) is honoured but CLAMPED to the 25 ceiling — proxy/socket stability
+    // is non-negotiable, so a client value can never raise it above the intentional cap.
+    const concurrency = clampConcurrency(opts?.concurrency, scaleConcurrency(groups.length));
     const itemDelay   = opts?.itemDelayMs ?? DEFAULT_ITEM_DELAY;
     const customNet   = strategy === 'custom' ? Math.max(1, Math.round(opts?.customCents ?? 0)) : null;
     const netCache = new Map<string, number | null>(); // marketHashName → seller net cents

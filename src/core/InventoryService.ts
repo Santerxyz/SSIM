@@ -8,7 +8,7 @@ import { SessionState, type ManagedSession } from '../types/session';
 import type { AccountInventory, CS2Item, GameId } from '../types/inventory';
 import { logger } from '../utils/logger';
 import { dataDir } from '../utils/paths';
-import { scaleConcurrency } from '../utils/concurrency';
+import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 
 // Refresh concurrency scales DYNAMICALLY with the batch size (scaleConcurrency:
 // 1 worker / 5 accounts, floor 5, ceiling 25) so 500 accounts run ~25-wide instead of a
@@ -340,8 +340,9 @@ export class InventoryService {
   startRefresh(usernames: string[], game: GameId = 'cs2', concurrency?: number): RefreshJob {
     if (this.job.running) throw new Error('A refresh is already running');
     this.refreshCancel = false; // fresh run — clear any prior cancel request
-    // Concurrency scales with the batch (5→25); an explicit caller value always wins.
-    const conc = concurrency ?? scaleConcurrency(usernames.length);
+    // Concurrency scales with the batch (5→25); an explicit caller value is honoured but
+    // CLAMPED to the 25 ceiling (proxy/socket + per-IP-rate stability is non-negotiable).
+    const conc = clampConcurrency(concurrency, scaleConcurrency(usernames.length));
     this.job = {
       running: true, cancelling: false, cancelled: false, game, total: usernames.length, done: 0, failed: [],
       startedAt: new Date().toISOString(),

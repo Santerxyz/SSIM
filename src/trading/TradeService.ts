@@ -391,8 +391,8 @@ export class TradeService {
     opts?: { concurrency?: number; delayMs?: number; message?: string },
   ): Promise<void> {
     // HARDCODED concurrency: trades NEVER use the dynamic scaler (Error 15 guard). The cap is
-    // exactly 3 no matter how many bots are queued; an explicit opts.concurrency may only LOWER
-    // it (e.g. a more cautious caller), never raise it above the hard ceiling.
+    // exactly TRADE_MAX_CONCURRENCY (1 — fully serial) no matter how many bots are queued; an
+    // explicit opts.concurrency may only LOWER it, never raise it above the hard ceiling.
     const concurrency = Math.min(TRADE_MAX_CONCURRENCY, Math.max(1, opts?.concurrency ?? TRADE_MAX_CONCURRENCY));
     // Global pacing floor: every dispatched offer is at least this far apart in time, jittered up
     // to TRADE_MAX_DELAY_MS so the receiving Steam account isn't hit by a burst. An explicit
