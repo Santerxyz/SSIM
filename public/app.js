@@ -5317,7 +5317,13 @@ function casketPollMove() {
       foot.innerHTML = line + (j.running ? ` <button data-ck-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
       foot.querySelector('[data-ck-cancel]')?.addEventListener('click', () => api('/api/casket/move-cancel', { method: 'POST' }).catch(() => {}));
       if (j.running) { ckState.moveTimer = setTimeout(tick, 1000); }
-      else if (!j.error && j.moved) { toast(`Storage: ${j.moved} item(s) ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}`, 'success'); await loadCasketContents(); renderCasketPanels(); }
+      else if (!j.error && (j.moved || j.unconfirmed)) {
+        // Reload the unit's contents on ANY sent move (confirmed OR unconfirmed) so the panel
+        // reflects reality — an "unconfirmed" item may well have moved (the SO just didn't echo).
+        if (j.moved) toast(`Storage: ${j.moved} ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}${j.unconfirmed ? ' (' + j.unconfirmed + ' unconfirmed — verify in-game)' : ''}`, j.unconfirmed ? 'warn' : 'success');
+        else toast(`Storage: ${j.unconfirmed} sent but unconfirmed — verify in-game`, 'warn');
+        await loadCasketContents(); renderCasketPanels();
+      }
     } catch { /* stop on error */ }
   };
   tick();

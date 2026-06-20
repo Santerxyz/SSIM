@@ -129,12 +129,22 @@ export class Cs2SchemaService {
   rarityLabel(rarityId: string): string { return RARITY_LABEL[rarityId] ?? rarityId; }
   lookup(baseName: string): SkinDef | undefined { return this.byBaseName.get(baseName.toLowerCase()); }
 
-  /** OutputProvider.outputsFor — next-rarity skins in `collection` above `inputRarityId`. */
+  /** OutputProvider.outputsFor — next-rarity skins in `collection` above `inputRarityId`, DEDUPED
+   *  by market name. Steam treats same-named variants (e.g. a Gamma Doppler's phases) as ONE
+   *  tradeable item, so the trade-up output pool must count each name once — otherwise that
+   *  outcome's probability is doubled and the EV skews. (Found in the 2021 Train Collection.) */
   outputsFor(collection: string, inputRarityId: string): Array<{ name: string; minFloat: number; maxFloat: number }> {
     const next = RARITY_LADDER[inputRarityId];
     if (!next) return [];
     const skins = this.byCollectionRarity.get(collection)?.get(next) ?? [];
-    return skins.map((s) => ({ name: s.name, minFloat: s.minFloat, maxFloat: s.maxFloat }));
+    const seen = new Set<string>();
+    const out: Array<{ name: string; minFloat: number; maxFloat: number }> = [];
+    for (const s of skins) {
+      if (seen.has(s.name)) continue;
+      seen.add(s.name);
+      out.push({ name: s.name, minFloat: s.minFloat, maxFloat: s.maxFloat });
+    }
+    return out;
   }
 
   /** A skin is a valid trade-up INPUT iff it's a weapon tier with a next tier AND its collection
