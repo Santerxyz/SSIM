@@ -407,3 +407,38 @@ Verification: `tsc --noEmit` → exit 0; `tsc` emit → dist rebuilt and grep-ve
   ("Cancelling…" → "ended"). Files: `src/trading/TradeService.ts`, `src/trading/BuyService.ts`,
   `src/trading/MarketService.ts`, `src/core/InventoryService.ts`, `src/api/server.ts`,
   `public/index.html`, `public/app.js`.
+
+---
+
+## A‑to‑Z hardening pass (2026‑06‑20) — full re‑audit ✅ (tsc green · 42‑assertion harness green · real Vault/ untouched)
+
+Full line‑by‑line re‑audit of the whole codebase (money paths, vault, security surface, reliability,
+parsing, scale, frontend). The system was found **already mature and correct** — the prior remediation
+work holds up. One concrete hardening fix shipped; everything else is either ✔ sound or a documented
+low‑severity open point. See `HARDENING_REPORT.md` for the full per‑module findings + open points.
+
+- **Concurrency ceiling now enforced against API overrides (money/scale safety)** — `MarketService`
+  mass‑sell honoured an explicit `opts.concurrency` verbatim, and that value is reachable from the
+  loopback API body (`POST /api/market/sell { concurrency }`). A client value like `1000` would spawn
+  one worker per bot, blowing past the **intentional 25 ceiling** (#4) that protects proxy/socket
+  stability. New `clampConcurrency(value, fallback, max=25)` in `src/utils/concurrency.ts` is the
+  single enforcement point; `MarketService.runMassSell`, `BuyService.runMassBuy` and
+  `InventoryService.startRefresh` now route through it (the latter two were not API‑reachable — fixed
+  for defense‑in‑depth). **Blast radius:** none on the normal path — `scaleConcurrency` already returns
+  ≤ 25, so clamping a scaled value is a no‑op; only an out‑of‑band explicit override changes.
+  `TradeService` (hard ceiling 1) untouched; its stale "exactly 3" comment corrected to 1.
+  **Verification:** `tsc` exit 0; `node --check public/app.js` OK; isolated harness (throwaway
+  `SSIM_HOME` + password, real `Vault/` confirmed untouched) — 42/42 assertions incl. scaler band
+  intact, `clamp(1000)→25`, `clamp(10)→10`, `clamp(undefined/0/−5/NaN)→fallback`. Files:
+  `src/utils/concurrency.ts`, `src/trading/MarketService.ts`, `src/trading/BuyService.ts`,
+  `src/core/InventoryService.ts`, `src/trading/TradeService.ts`.
+
+- **Safety net** — repo brought under git (was untracked) with a hardened `.gitignore` excluding
+  `data/`, `Vault/`, `mafiles/`, `secrets.local.bat`, `*.maFile`, `*.exe`, `release*/`,
+  `src-tauri/target|gen`, logs (verified: no secrets/user‑data tracked). Baseline `44ffaf4`, fix
+  `a42af43`.
+
+- **Open points (deferred, see report §4):** O‑1 add the loopback Host‑guard to the activation/unlock
+  boot portals (low; boot‑critical → owner to verify live); O‑2 boot‑token to authenticate local
+  processes (known, #26); O‑3 clamp scrypt `N` from an imported vault header (very low); O‑4 validate
+  `prices.json` entry shape (very low, display‑only).
