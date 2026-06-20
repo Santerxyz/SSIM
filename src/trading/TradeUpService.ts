@@ -21,9 +21,16 @@ export interface TradeUpExecJob {
   crafted:      number;
   failed:       number;
   current?:     number;
-  results:      Array<{ index: number; submitted: boolean; error?: string }>;
+  results:      Array<{ index: number; submitted: boolean; confirmed?: boolean; error?: string }>;
   startedAt?:   string;
   finishedAt?:  string;
+}
+
+/** One selected contract for execution: the 10 input asset ids + the input rarity (→ craft recipe). */
+export interface TuExecContract {
+  inputAssetIds: string[];
+  rarityId:      string;
+  stattrak:      boolean;
 }
 /** A contract uses at most 10 of any single skin, so never expand a stack beyond this. */
 const MAX_PER_STACK = 10;
@@ -44,6 +51,8 @@ export interface TradeUpResult {
   username:   string;
   candidates: TradeUpCandidate[];
   warnings:   string[];
+  /** True when EV used the REAL per-item GC floats (vs. wear-based estimates). */
+  realFloats: boolean;
   /** Diagnostics for the UI footer. */
   eligibleInputs: number;
   schemaSkins:    number;
@@ -88,18 +97,19 @@ export class TradeUpService {
    * time. When GC execution is gated off, the job completes immediately as a SAFE NO-OP (enabled:false,
    * nothing crafted). Cancel stops AFTER the current contract — a submitted craft is never interrupted.
    */
-  startExecute(username: string, contracts: Array<{ inputAssetIds: string[] }>): TradeUpExecJob {
+  startExecute(username: string, contracts: TuExecContract[]): TradeUpExecJob {
     if (this.execJob.running) throw new Error('a trade-up execution is already running');
     if (!Array.isArray(contracts) || contracts.length === 0) throw new Error('no contracts selected');
     for (const c of contracts) {
-      if (!Array.isArray(c.inputAssetIds) || c.inputAssetIds.length !== 10 || !c.inputAssetIds.every((id) => typeof id === 'string' && id)) {
+      if (!c || !Array.isArray(c.inputAssetIds) || c.inputAssetIds.length !== 10 || !c.inputAssetIds.every((id) => typeof id === 'string' && id)) {
         throw new Error('each contract must carry exactly 10 input asset ids');
       }
+      if (typeof c.rarityId !== 'string' || !c.rarityId) throw new Error('each contract must carry its input rarityId (for the craft recipe)');
     }
     const st = this.gc.status();
     this.execCancel = false;
     this.execJob = {
-      running: true, cancelling: false, cancelled: false, enabled: st.live, statusReason: st.reason,
+      running: true, cancelling: false, cancelled: false, enabled: st.craftEnabled, statusReason: st.reason,
       total: contracts.length, done: 0, crafted: 0, failed: 0, results: [], startedAt: new Date().toISOString(),
     };
     void this.runExecute(username, contracts);
@@ -111,14 +121,18 @@ export class TradeUpService {
     return this.executeStatus();
   }
 
-  private async runExecute(username: string, contracts: Array<{ inputAssetIds: string[] }>): Promise<void> {
+  private async runExecute(username: string, contracts: TuExecContract[]): Promise<void> {
     for (let i = 0; i < contracts.length; i++) {
       if (this.execCancel) break;
       this.execJob.current = i;
       try {
-        const r = await this.gc.craftTradeUp(username, contracts[i].inputAssetIds);
+        const r = await this.gc.craftTradeUp(username, {
+          inputAssetIds: contracts[i].inputAssetIds,
+          inputRarityId: contracts[i].rarityId,
+          stattrak: !!contracts[i].stattrak,
+        });
         this.execJob.crafted++;
-        this.execJob.results.push({ index: i, submitted: r.submitted });
+        this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
       } catch (e) {
         this.execJob.failed++;
         this.execJob.results.push({ index: i, submitted: false, error: (e as Error).message });
@@ -145,7 +159,27 @@ export class TradeUpService {
     const inputs = this.buildEligibleInputs(inv.items ?? []);
     if (inputs.length < 10) {
       warnings.push('Not enough trade-up-eligible skins (need at least 10 of one rarity + StatTrak status).');
-      return { username, candidates: [], warnings, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount() };
+      return { username, candidates: [], warnings, realFloats: false, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount() };
+    }
+
+    // ACCURACY: replace the wear-midpoint float ESTIMATE with the REAL per-item GC float when the
+    // library is present. This is a user-initiated trade-up action, so a one-shot GC connect here is
+    // in-scope (never the background path); it disconnects immediately. Falls back to the estimate
+    // (clearly labelled) if the GC is unavailable / the read fails.
+    let realFloats = false;
+    if (this.gc.available()) {
+      try {
+        const floats = await this.gc.readInventoryFloats(username);
+        let applied = 0;
+        for (const inp of inputs) {
+          if (inp.assetId && floats.has(inp.assetId)) { inp.float = floats.get(inp.assetId)!; applied++; }
+        }
+        realFloats = applied > 0 && applied === inputs.filter((i) => i.assetId).length;
+        logger.info(`[tradeup] ${username}: applied ${applied}/${inputs.length} real GC float(s)`);
+        if (applied > 0 && !realFloats) warnings.push('Some items had no GC float — those use a wear-based estimate.');
+      } catch (e) {
+        warnings.push(`Could not read real floats from the GC (${(e as Error).message}) — using wear-based estimates.`);
+      }
     }
 
     // Warm the price cache for every eligible collection's OUTPUT skins (all wears) + the inputs,
@@ -201,10 +235,12 @@ export class TradeUpService {
     if (top.some((c) => !c.fullyPriced)) {
       warnings.push('Some prices are still loading — EV/profit shown are estimates; click again in a moment for accurate figures.');
     }
-    warnings.push('Input floats are estimated from each item’s wear (exact floats need the in-game inspect); EV is an estimate until execution reads the real floats.');
+    warnings.push(realFloats
+      ? 'Input floats are the REAL per-item GC floats — output wears + EV are accurate (subject to live market prices).'
+      : 'Input floats are ESTIMATED from each item’s wear (GC float read unavailable) — EV is an approximation.');
 
-    logger.info(`[tradeup] ${username}: ${top.length} profitable candidate(s) from ${inputs.length} eligible input(s)`);
-    return { username, candidates: top, warnings, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount() };
+    logger.info(`[tradeup] ${username}: ${top.length} profitable candidate(s) from ${inputs.length} eligible input(s)${realFloats ? ' (real floats)' : ' (estimated floats)'}`);
+    return { username, candidates: top, warnings, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount(), realFloats };
   }
 
   /** Expands inventory stacks into individual trade-up-eligible input items (≤10 per stack). */

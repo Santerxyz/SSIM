@@ -5051,10 +5051,12 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
   return ov;
 }
 
-function gcStatusHtml(st) {
+function gcStatusHtml(st, kind) {
   if (!st) return '';
-  if (st.live) return `<span class="text-emerald-400"><i class="fa-solid fa-circle-check mr-1"></i>GC execution enabled</span>`;
-  return `<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation mr-1"></i>${escapeHtml(st.reason || 'GC execution disabled')}</span>`;
+  const ok = kind === 'craft' ? !!st.craftEnabled : !!st.casketsEnabled;
+  const cls = ok ? 'text-emerald-400' : 'text-amber-400';
+  const icon = ok ? 'fa-circle-check' : 'fa-triangle-exclamation';
+  return `<span class="${cls}"><i class="fa-solid ${icon} mr-1"></i>${escapeHtml(st.reason || '')}</span>`;
 }
 
 // ── Trade-Ups ────────────────────────────────────────────────────────────────
@@ -5068,7 +5070,7 @@ async function openTradeUpModal(username) {
   ov.querySelector('[data-foot]').textContent = '';
   renderTuToolbar();
   ov.classList.remove('hidden');
-  try { ov.querySelector('[data-status]').innerHTML = gcStatusHtml(await api('/api/tradeup/status')); } catch { /* ignore */ }
+  try { ov.querySelector('[data-status]').innerHTML = gcStatusHtml(await api('/api/tradeup/status'), 'craft'); } catch { /* ignore */ }
   onModalOpen(ov);
 }
 
@@ -5147,7 +5149,7 @@ function renderTuList() {
 async function tuStart() {
   const chosen = tuState.candidates.filter(c => tuState.selected.has(c.id) && c.inputs.every(i => i.assetId));
   if (!chosen.length) { toast('Select at least one executable contract (with asset ids)', 'warn'); return; }
-  const contracts = chosen.map(c => ({ inputAssetIds: c.inputs.map(i => i.assetId) }));
+  const contracts = chosen.map(c => ({ inputAssetIds: c.inputs.map(i => i.assetId), rarityId: c.rarityId, stattrak: !!c.stattrak }));
   const ok = await ssimConfirm({
     title: 'Execute trade-ups?',
     body: `Execute <b class="text-slate-100">${chosen.length}</b> trade-up(s) on <b class="text-slate-100">${escapeHtml(tuState.username)}</b>?<br><span class="text-amber-400 font-semibold">Each destroys 10 real items. Irreversible.</span>`,
@@ -5167,8 +5169,9 @@ function tuPollExec() {
   const tick = async () => {
     try {
       const j = await api('/api/tradeup/execute-status');
+      const confirmed = (j.results || []).filter(r => r.confirmed).length;
       const line = j.enabled
-        ? `Executing ${j.done}/${j.total} · crafted ${j.crafted} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}`
+        ? `Executing ${j.done}/${j.total} · submitted ${j.crafted} (${confirmed} confirmed) · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}`
         : `Execution disabled (${escapeHtml(j.statusReason)}) — nothing was crafted.`;
       foot.innerHTML = `<span class="${j.enabled ? 'text-slate-300' : 'text-amber-400'}">${line}</span>` +
         (j.running ? ` <button data-tu-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
@@ -5176,7 +5179,7 @@ function tuPollExec() {
       if (j.running) { tuState.execTimer = setTimeout(tick, 1200); }
       else {
         const failMsg = (j.results || []).filter(r => r.error)[0]?.error;
-        if (!j.enabled && failMsg) toast(failMsg, 'warn'); else if (j.crafted) toast(`Trade-ups: ${j.crafted} submitted`, 'success');
+        if (!j.enabled && failMsg) toast(failMsg, 'warn'); else if (j.crafted) toast(`Trade-ups: ${j.crafted} submitted, ${confirmed} confirmed`, 'success');
       }
     } catch { /* stop polling on error */ }
   };
@@ -5195,7 +5198,7 @@ async function openCasketModal(username) {
   ov.classList.remove('hidden');
   onModalOpen(ov);
   let st;
-  try { st = await api('/api/casket/status'); ov.querySelector('[data-status]').innerHTML = gcStatusHtml(st); } catch { st = null; }
+  try { st = await api('/api/casket/status'); ov.querySelector('[data-status]').innerHTML = gcStatusHtml(st, 'caskets'); } catch { st = null; }
   // Load units (needs the GC library; degrades clearly if unavailable).
   try {
     const r = await api(`/api/casket/${encodeURIComponent(username)}/list`);
@@ -5310,7 +5313,7 @@ function casketPollMove() {
     try {
       const j = await api('/api/casket/move-status');
       const line = j.error ? `<span class="text-amber-400">${escapeHtml(j.error)}</span>`
-        : `<span class="text-slate-300">${j.direction}: ${j.done}/${j.total} · moved ${j.moved} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}</span>`;
+        : `<span class="text-slate-300">${j.direction}: ${j.done}/${j.total} · moved ${j.moved}${j.unconfirmed ? ' · unconfirmed ' + j.unconfirmed : ''} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}</span>`;
       foot.innerHTML = line + (j.running ? ` <button data-ck-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
       foot.querySelector('[data-ck-cancel]')?.addEventListener('click', () => api('/api/casket/move-cancel', { method: 'POST' }).catch(() => {}));
       if (j.running) { ckState.moveTimer = setTimeout(tick, 1000); }

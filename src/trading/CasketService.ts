@@ -18,6 +18,9 @@ export interface CasketMoveJob {
   total:       number;
   done:        number;
   moved:       number;
+  /** Sent to the GC but the SO cache didn't confirm the move within the window — NOT retried
+   *  (reversible; the item may well have moved — verify in-game). */
+  unconfirmed: number;
   failed:      number;
   current?:    string;
   failures:    Array<{ itemId: string; error: string }>;
@@ -28,7 +31,7 @@ export interface CasketMoveJob {
 }
 
 export class CasketService {
-  private job: CasketMoveJob = { running: false, direction: 'deposit', username: '', casketId: '', total: 0, done: 0, moved: 0, failed: 0, failures: [] };
+  private job: CasketMoveJob = { running: false, direction: 'deposit', username: '', casketId: '', total: 0, done: 0, moved: 0, unconfirmed: 0, failed: 0, failures: [] };
   private cancel = false;
 
   constructor(private readonly gc: GcActionLayer) {}
@@ -57,7 +60,7 @@ export class CasketService {
     this.cancel = false;
     this.job = {
       running: true, cancelling: false, cancelled: false, direction, username, casketId,
-      total: itemIds.length, done: 0, moved: 0, failed: 0, failures: [], startedAt: new Date().toISOString(),
+      total: itemIds.length, done: 0, moved: 0, unconfirmed: 0, failed: 0, failures: [], startedAt: new Date().toISOString(),
     };
     void this.runMove(username, casketId, [...itemIds], direction);
     return this.moveStatus();
@@ -76,6 +79,7 @@ export class CasketService {
         () => this.cancel,
       );
       this.job.moved = res.moved.length;
+      this.job.unconfirmed = res.unconfirmed.length;
       this.job.failed = res.failed.length;
       this.job.failures = res.failed;
     } catch (e) {

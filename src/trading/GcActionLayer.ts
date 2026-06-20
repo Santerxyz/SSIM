@@ -3,37 +3,56 @@ import { SessionState } from '../types/session';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  GcActionLayer — the ONE shared, low-concurrency, jittered Game-Coordinator
-//  action layer for the two GC features (trade-up contracts + storage caskets).
+//  GcActionLayer — the ONE shared, surgical Game-Coordinator action layer for the
+//  two opt-in GC features (storage units + trade-up contracts).
 //
-//  Per account: connect to the CS2 GC → act → verify → disconnect. A per-account
-//  in-flight guard prevents two concurrent GC operations on the same bot, and every
-//  connect is jittered so a fleet never storms the GC in lockstep.
+//  WHY GC WAS REMOVED (and why this is safe): the old `GcInventoryManager` ran GC on
+//  the HOT BACKGROUND inventory path with a cached handle, an uncancelable linger
+//  timer, a permanent 'debug' listener, no re-entrancy guard, and races where a
+//  linger-stop could `gamesPlayed([])` out from under a live fetch (audit #9/#10/#31).
+//  This layer is the opposite: GC is touched ONLY on explicit user action (trade-up /
+//  storage), one operation per account at a time (concurrency 1), with a hard connect
+//  timeout, guaranteed `gamesPlayed([])` teardown in `finally` (no persistent GC
+//  session), and explicit teardown of the GC handle when the session is destroyed.
 //
-//  SAFETY GATE (critical — this layer can DESTROY/MOVE real items):
-//   • `globaloffensive` is an OPTIONAL dependency, loaded via a LAZY require so the
-//     build + every non-GC code path work whether or not it is installed.
-//   • Item-MUTATING operations (deposit/withdraw/trade-up) execute ONLY when the
-//     mechanism is VERIFIED: the env flag SSIM_GC_VERIFIED=1 AND the library present.
-//     Without that they return a clear, non-destructive "not enabled" result and touch
-//     nothing. The owner runs the first live execution after installing the dep + the flag.
-//   • Trade-up CRAFT is not exposed by the published `globaloffensive` API; this layer
-//     probes for a craft method and REFUSES (never guesses a raw GC message) if absent.
-//     See FEATURES_REPORT.md for the exact mechanism still required.
+//  LISTENER SAFETY: `new GlobalOffensive(client)` attaches FIVE permanent listeners to
+//  the steam-user client and never removes them, so creating a fresh instance per op
+//  would leak listeners on the long-lived client (the #31 failure). We therefore keep
+//  EXACTLY ONE GlobalOffensive per session client, reuse it, and drop our reference when
+//  the session is destroyed (SessionManager then removeAllListeners + discards the client).
 //
-//  This is SEPARATE from the retired GC *inventory* read path — it is not revived here.
+//  GATING: storage (deposit/withdraw) is REVERSIBLE → enabled whenever the library is
+//  present (a real GC connection is the operative gate). Trade-up CRAFT is IRREVERSIBLE
+//  (destroys 10 items) → stays behind the explicit SSIM_GC_VERIFIED flag.
 // ════════════════════════════════════════════════════════════════════════════
 
 const CS2_APPID = 730;
-const CONNECT_TIMEOUT_MS = 30_000;
-const OP_TIMEOUT_MS = 30_000;
-const JITTER_MIN_MS = 800;
-const JITTER_MAX_MS = 2_200;
-/** Storage-unit hard cap (Steam limit). */
+const CONNECT_TIMEOUT_MS = 35_000; // GC hello has exponential backoff; allow a couple of rounds
+const MOVE_VERIFY_TIMEOUT_MS = 15_000;
+const CRAFT_CONFIRM_TIMEOUT_MS = 20_000;
+const JITTER_MIN_MS = 600;
+const JITTER_MAX_MS = 2_000;
+/** Storage-unit hard cap (Steam). */
 export const CASKET_CAPACITY = 1000;
+/** CS2 storage-unit def_index. */
+const CASKET_DEF_INDEX = 1201;
 
-// ── Lazy, absence-tolerant load of the optional `globaloffensive` dependency ──
-let GcCtor: unknown;
+// ── Trade-up recipe table (from globaloffensive README → items_game.txt) ───────
+//   0 Consumer→Industrial · 1 Industrial→Mil-Spec · 2 Mil-Spec→Restricted ·
+//   3 Restricted→Classified · 4 Classified→Covert · +10 for the StatTrak variants.
+const RECIPE_BY_RARITY: Record<string, number> = {
+  rarity_common_weapon: 0, rarity_uncommon_weapon: 1, rarity_rare_weapon: 2,
+  rarity_mythical_weapon: 3, rarity_legendary_weapon: 4,
+};
+/** The CS2 trade-up craft recipe id for an input rarity tier + StatTrak status, or undefined. */
+export function tradeUpRecipe(inputRarityId: string, stattrak: boolean): number | undefined {
+  const base = RECIPE_BY_RARITY[inputRarityId];
+  if (base === undefined) return undefined;
+  return stattrak ? base + 10 : base;
+}
+
+// ── Lazy require (still absence-tolerant, though now installed) ────────────────
+let GcCtor: (new (client: unknown) => GcLike) | undefined;
 let gcLoadAttempted = false;
 function loadGc(): (new (client: unknown) => GcLike) | undefined {
   if (!gcLoadAttempted) {
@@ -43,32 +62,31 @@ function loadGc(): (new (client: unknown) => GcLike) | undefined {
       GcCtor = require('globaloffensive');
     } catch {
       GcCtor = undefined;
-      logger.info('[gc] globaloffensive not installed — GC features (trade-ups, caskets) are unavailable until it is added');
+      logger.info('[gc] globaloffensive not installed — GC features unavailable');
     }
   }
-  return GcCtor as (new (client: unknown) => GcLike) | undefined;
+  return GcCtor;
 }
 
-/** The subset of the globaloffensive API this layer uses (documented integration surface). */
+/** The real globaloffensive surface this layer uses (verified against v3.3.0). */
 interface GcLike {
-  haveGCSession?: boolean;
+  haveGCSession: boolean;
   inventory?: GcItem[];
   on(ev: string, cb: (...a: unknown[]) => void): void;
   once(ev: string, cb: (...a: unknown[]) => void): void;
   removeListener(ev: string, cb: (...a: unknown[]) => void): void;
-  removeAllListeners?(ev?: string): void;
-  getCasketContents?(casketId: string, cb: (err: Error | null, items: GcItem[]) => void): void;
-  addToCasket?(casketId: string, itemId: string, cb: (err: Error | null) => void): void;
-  removeFromCasket?(casketId: string, itemId: string, cb: (err: Error | null) => void): void;
-  /** NOT in the published API — probed for; absent → trade-up execution refused. */
-  craft?(items: string[], recipe: number, cb: (err: Error | null) => void): void;
+  getCasketContents(casketId: string, cb: (err: Error | null, items?: GcItem[]) => void): void;
+  addToCasket(casketId: string, itemId: string): void;       // fire-and-forget (no callback)
+  removeFromCasket(casketId: string, itemId: string): void;  // fire-and-forget (no callback)
+  craft(items: string[], recipe: number): void;              // → 'craftingComplete' event
 }
 
 export interface GcItem {
   id: string;
   def_index?: number;
   paint_index?: number;
-  paint_wear?: number;          // the real float (0..1) — only the GC exposes this
+  paint_wear?: number;          // the real float (0..1) — GC-only
+  paint_seed?: number;
   casket_id?: string;
   casket_contained_item_count?: number;
   custom_name?: string;
@@ -76,121 +94,159 @@ export interface GcItem {
 }
 
 export interface GcStatus {
-  available: boolean;   // library installed
-  verified: boolean;    // SSIM_GC_VERIFIED=1
-  live: boolean;        // both → mutating ops permitted
-  reason: string;
+  available:       boolean;   // library installed
+  casketsEnabled:  boolean;   // storage works (reversible → only needs the library + a live connect)
+  craftEnabled:    boolean;   // trade-up craft permitted (needs SSIM_GC_VERIFIED — irreversible)
+  reason:          string;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export class GcActionLayer {
-  /** Per-account GC op in-flight guard (keyed lowercase username). */
+  /** EXACTLY ONE GlobalOffensive per live session client (reused; dropped on session destroy). */
+  private readonly handles = new Map<string, { go: GcLike; client: unknown }>();
+  /** Per-account GC-op in-flight guard (concurrency 1 per account). */
   private readonly inFlight = new Set<string>();
 
-  constructor(private readonly sessions: SessionManager) {}
+  constructor(private readonly sessions: SessionManager) {
+    // #31 fix — explicit teardown: when a session dies (logout / re-login), drop its GC handle.
+    // SessionManager.destroySession removeAllListeners() the client, so the handle's 5 permanent
+    // listeners go with it; we just release our reference.
+    this.sessions.on('sessionDestroyed', (username: string) => this.handles.delete(username.toLowerCase()));
+  }
 
   available(): boolean { return !!loadGc(); }
-  verified(): boolean { return process.env.SSIM_GC_VERIFIED === '1'; }
-  live(): boolean { return this.available() && this.verified(); }
+  private craftVerified(): boolean { return process.env.SSIM_GC_VERIFIED === '1'; }
 
   status(): GcStatus {
     const available = this.available();
-    const verified = this.verified();
-    const live = available && verified;
-    const reason = live ? 'GC execution enabled'
-      : !available ? 'globaloffensive is not installed (npm i globaloffensive)'
-      : 'GC execution is disabled — set SSIM_GC_VERIFIED=1 to enable (owner-verified)';
-    return { available, verified, live, reason };
+    const craftEnabled = available && this.craftVerified();
+    return {
+      available,
+      casketsEnabled: available,
+      craftEnabled,
+      reason: !available
+        ? 'globaloffensive is not installed (npm i globaloffensive)'
+        : craftEnabled
+          ? 'GC ready — storage + trade-up craft enabled'
+          : 'GC ready — storage enabled; trade-up craft disabled (set SSIM_GC_VERIFIED=1 after a verified test)',
+    };
+  }
+
+  // ── Lifecycle ───────────────────────────────────────────────────────────────
+
+  /** Get-or-create the single GlobalOffensive handle for this account's CURRENT client. */
+  private getHandle(username: string): GcLike {
+    const Ctor = loadGc();
+    if (!Ctor) throw new Error('globaloffensive is not installed — GC features unavailable');
+    const key = username.toLowerCase();
+    const session = this.sessions.getSession(username);
+    if (!session || session.state !== SessionState.LOGGED_IN) {
+      throw new Error(`${username} is not logged in — refresh/login the account first`);
+    }
+    const existing = this.handles.get(key);
+    if (existing && existing.client === (session.client as unknown)) return existing.go;
+    // New session/client (or first use) → fresh handle. A stale handle (old client) is dropped;
+    // its client was/will be removeAllListeners'd by SessionManager.
+    const go = new Ctor(session.client as unknown);
+    // PERSISTENT safety listeners (one set per handle): an 'error'/'disconnectedFromGC' with NO
+    // listener would crash the process from inside the library's timer callbacks.
+    go.on('error', (err: unknown) => logger.warn(`[gc] ${username} error: ${(err as Error)?.message ?? err}`));
+    go.on('disconnectedFromGC', (s: unknown) => logger.info(`[gc] ${username} disconnected from GC (status ${String(s)})`));
+    this.handles.set(key, { go, client: session.client as unknown });
+    return go;
   }
 
   /**
-   * Connects to the CS2 GC, runs `fn(gc)`, then disconnects — under the per-account in-flight
-   * guard with a jittered start. `mutating:true` requires live() (the verified gate) and otherwise
-   * throws BEFORE connecting, so a preview/list path can run read-only while item moves stay gated.
+   * Runs `fn(go)` with a live GC session for `username`: per-account guard → jittered start →
+   * connect (gamesPlayed[730] + await connectedToGC, hard timeout) → fn → GUARANTEED disconnect
+   * (gamesPlayed[]) in finally. No persistent GC session; one op per account at a time.
    */
-  async withSession<T>(username: string, mutating: boolean, fn: (gc: GcLike) => Promise<T>): Promise<T> {
-    const Ctor = loadGc();
-    if (!Ctor) throw new Error('globaloffensive is not installed — GC features unavailable (see FEATURES_REPORT.md)');
-    if (mutating && !this.verified()) {
-      throw new Error('GC execution is disabled (set SSIM_GC_VERIFIED=1 after verifying the mechanism on a test account)');
-    }
+  private async withSession<T>(username: string, fn: (go: GcLike) => Promise<T>): Promise<T> {
     const key = username.toLowerCase();
     if (this.inFlight.has(key)) throw new Error(`a GC operation is already running for ${username}`);
     this.inFlight.add(key);
+    let client: unknown;
     try {
-      const session = this.sessions.getSession(username);
-      if (!session || session.state !== SessionState.LOGGED_IN) {
-        throw new Error(`${username} is not logged in — refresh/login the account first`);
-      }
+      const go = this.getHandle(username);
+      client = (this.sessions.getSession(username)!.client as unknown);
       await sleep(JITTER_MIN_MS + Math.floor(Math.random() * (JITTER_MAX_MS - JITTER_MIN_MS))); // anti-lockstep
-      const gc = await this.connect(session.client as unknown, Ctor);
+      await this.connect(go, client);
       try {
-        return await withTimeout(fn(gc), OP_TIMEOUT_MS, `GC operation for ${username}`);
+        return await withTimeout(fn(go), 60_000, `GC op for ${username}`);
       } finally {
-        this.disconnect(session.client as unknown, gc);
+        this.disconnect(client); // drop the GC session (keep the bounded handle for reuse)
       }
     } finally {
       this.inFlight.delete(key);
     }
   }
 
-  /** Establishes a GC session (gamesPlayed([730]) → wait for connectedToGC). */
-  private connect(client: unknown, Ctor: new (c: unknown) => GcLike): Promise<GcLike> {
-    return new Promise<GcLike>((resolve, reject) => {
+  private connect(go: GcLike, client: unknown): Promise<void> {
+    if (go.haveGCSession) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
       let settled = false;
-      const gc = new Ctor(client);
-      const done = (err: Error | null, val?: GcLike): void => {
+      const done = (err?: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        try { gc.removeListener('connectedToGC', onConn); } catch { /* noop */ }
-        err ? reject(err) : resolve(val!);
+        try { go.removeListener('connectedToGC', onConn); go.removeListener('error', onErr); } catch { /* noop */ }
+        err ? reject(err) : resolve();
       };
-      const timer = setTimeout(() => done(new Error('GC connect timeout (account may not own CS2 / GC busy)')), CONNECT_TIMEOUT_MS);
-      const onConn = (): void => done(null, gc);
-      if (gc.haveGCSession) { done(null, gc); return; }
-      gc.once('connectedToGC', onConn);
+      const onConn = (): void => done();
+      const onErr = (e: unknown): void => done(e instanceof Error ? e : new Error('GC error during connect'));
+      const timer = setTimeout(() => done(new Error('GC connect timeout (account may not own CS2, or the GC is busy)')), CONNECT_TIMEOUT_MS);
+      go.once('connectedToGC', onConn);
+      go.once('error', onErr);
       try { (client as { gamesPlayed(apps: number[]): void }).gamesPlayed([CS2_APPID]); }
       catch (e) { done(e as Error); }
     });
   }
 
-  /** Leaves the GC cleanly (gamesPlayed([])) and drops listeners. Best-effort, never throws. */
-  private disconnect(client: unknown, gc: GcLike): void {
-    try { gc.removeAllListeners?.(); } catch { /* noop */ }
+  /** Drops the GC session (gamesPlayed([])) — best-effort, never throws. Keeps the handle. */
+  private disconnect(client: unknown): void {
     try { (client as { gamesPlayed(apps: number[]): void }).gamesPlayed([]); } catch { /* noop */ }
   }
 
-  // ── Storage units (caskets) ─────────────────────────────────────────────────
+  // ── Reads (no item mutation; need only a live connect) ──────────────────────
 
-  /** Lists the account's storage units (read-only — connects but moves nothing). */
-  async listCaskets(username: string): Promise<Array<{ id: string; name: string; count: number }>> {
-    return this.withSession(username, false, async (gc) => {
-      const inv = Array.isArray(gc.inventory) ? gc.inventory : [];
-      return inv
-        .filter((i) => typeof i.casket_contained_item_count === 'number')
-        .map((i) => ({
-          id: String(i.id),
-          name: typeof i.custom_name === 'string' && i.custom_name ? i.custom_name : `Storage Unit ${i.id}`,
-          count: Number(i.casket_contained_item_count) || 0,
-        }));
+  /** Maps each owned asset id → its REAL float (paint_wear) from the live GC inventory. */
+  async readInventoryFloats(username: string): Promise<Map<string, number>> {
+    return this.withSession(username, async (go) => {
+      const out = new Map<string, number>();
+      for (const it of go.inventory ?? []) {
+        if (typeof it.paint_wear === 'number' && it.id != null) out.set(String(it.id), it.paint_wear);
+      }
+      return out;
     });
   }
 
-  /** Reads the contents of one storage unit (read-only). */
+  /** Lists the account's storage units (def_index 1201). Read-only. */
+  async listCaskets(username: string): Promise<Array<{ id: string; name: string; count: number }>> {
+    return this.withSession(username, async (go) => (go.inventory ?? [])
+      .filter((i) => i.def_index === CASKET_DEF_INDEX)
+      .map((i) => ({
+        id: String(i.id),
+        name: typeof i.custom_name === 'string' && i.custom_name ? i.custom_name : `Storage Unit ${i.id}`,
+        count: Number(i.casket_contained_item_count) || 0,
+      })));
+  }
+
+  /** Reads one storage unit's contents (read-only). */
   async getCasketContents(username: string, casketId: string): Promise<GcItem[]> {
-    return this.withSession(username, false, (gc) => new Promise<GcItem[]>((resolve, reject) => {
-      if (typeof gc.getCasketContents !== 'function') return reject(new Error('getCasketContents not available in this globaloffensive build'));
-      gc.getCasketContents(casketId, (err, items) => err ? reject(err) : resolve(Array.isArray(items) ? items : []));
+    return this.withSession(username, (go) => new Promise<GcItem[]>((resolve, reject) => {
+      go.getCasketContents(casketId, (err, items) => err ? reject(err) : resolve(Array.isArray(items) ? items : []));
     }));
   }
 
+  // ── Storage moves (deposit/withdraw) — REAL send + verify ───────────────────
+
   /**
-   * Moves items INTO (deposit) or OUT OF (withdraw) a storage unit. GATED: requires live().
-   * Money/item-safety: per-account in-flight guard (withSession), each item moved + verified one
-   * at a time, never throws AFTER a successful move (records the partial result instead), respects
-   * the 1000-item cap on deposit. Returns a per-item outcome list; the caller never blind-retries.
+   * Deposits/withdraws items one at a time with verify-after. addToCasket/removeFromCasket are
+   * fire-and-forget; we confirm by observing the SO cache (`gc.inventory`) reflect the new
+   * `casket_id`. Money/item-safety: per-account guard (withSession), 1000-cap on deposit, cancel
+   * stops between items, and once an item's move is SENT we NEVER throw/retry it (a confirmed move
+   * is `moved`; a sent-but-unconfirmed move is `unconfirmed` — reversible, never blind-retried).
    */
   async moveCasketItems(
     username: string,
@@ -199,71 +255,106 @@ export class GcActionLayer {
     direction: 'deposit' | 'withdraw',
     onProgress?: (p: { done: number; total: number; current: string; moved: number; failed: number }) => void,
     shouldCancel?: () => boolean,
-  ): Promise<{ moved: string[]; failed: Array<{ itemId: string; error: string }> }> {
-    return this.withSession(username, true, async (gc) => {
-      const fn = direction === 'deposit' ? gc.addToCasket : gc.removeFromCasket;
-      if (typeof fn !== 'function') throw new Error(`${direction} not available in this globaloffensive build`);
-      // Deposit cap: never exceed the storage unit's 1000-item ceiling.
+  ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }> }> {
+    return this.withSession(username, async (go) => {
       if (direction === 'deposit') {
-        const current = Array.isArray(gc.inventory)
-          ? gc.inventory.find((i) => String(i.id) === String(casketId))?.casket_contained_item_count ?? 0
-          : 0;
-        if (Number(current) + itemIds.length > CASKET_CAPACITY) {
-          throw new Error(`deposit would exceed the ${CASKET_CAPACITY}-item storage cap (unit holds ${current})`);
+        const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
+        const current = Number(unit?.casket_contained_item_count) || 0;
+        if (current + itemIds.length > CASKET_CAPACITY) {
+          throw new Error(`deposit would exceed the ${CASKET_CAPACITY}-item cap (unit holds ${current})`);
         }
       }
       const moved: string[] = [];
+      const unconfirmed: string[] = [];
       const failed: Array<{ itemId: string; error: string }> = [];
       for (let i = 0; i < itemIds.length; i++) {
-        if (shouldCancel?.()) break; // cancel stops BEFORE the next item — never mid-move
-        const itemId = itemIds[i];
+        if (shouldCancel?.()) break;
+        const itemId = String(itemIds[i]);
         try {
-          await withTimeout(new Promise<void>((resolve, reject) =>
-            fn.call(gc, casketId, itemId, (err: Error | null) => err ? reject(err) : resolve())),
-            OP_TIMEOUT_MS, `${direction} ${itemId}`);
-          moved.push(itemId); // success — NEVER throw past here for this item
+          // SEND (fire-and-forget). After this point we never throw for this item.
+          if (direction === 'deposit') go.addToCasket(casketId, itemId);
+          else go.removeFromCasket(casketId, itemId);
         } catch (e) {
-          failed.push({ itemId, error: (e as Error).message });
-          logger.warn(`[gc] ${username} ${direction} ${itemId} failed: ${(e as Error).message}`);
+          failed.push({ itemId, error: (e as Error).message }); // threw BEFORE submit → safe, not moved
+          onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, failed: failed.length });
+          continue;
         }
+        const ok = await this.verifyMove(go, casketId, itemId, direction);
+        (ok ? moved : unconfirmed).push(itemId);
         onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, failed: failed.length });
-        await sleep(300 + Math.floor(Math.random() * 400)); // gentle pacing between GC writes
+        await sleep(350 + Math.floor(Math.random() * 400)); // gentle pacing between GC writes
       }
-      logger.info(`[gc] ${username} ${direction}: ${moved.length}/${itemIds.length} moved`);
-      return { moved, failed };
+      logger.info(`[gc] ${username} ${direction}: ${moved.length} moved, ${unconfirmed.length} unconfirmed, ${failed.length} failed`);
+      return { moved, unconfirmed, failed };
     });
   }
 
-  // ── Trade-up contracts (execution) ──────────────────────────────────────────
+  /** Polls the SO cache until the item reflects the expected casket state (or times out). */
+  private async verifyMove(go: GcLike, casketId: string, itemId: string, direction: 'deposit' | 'withdraw'): Promise<boolean> {
+    const want = (it: GcItem | undefined): boolean => direction === 'deposit'
+      ? !!it && String(it.casket_id) === String(casketId)
+      : !!it && !it.casket_id;
+    const deadline = nowMs() + MOVE_VERIFY_TIMEOUT_MS;
+    while (nowMs() < deadline) {
+      if (want((go.inventory ?? []).find((x) => String(x.id) === String(itemId)))) return true;
+      await sleep(300);
+    }
+    return false; // sent but unconfirmed within the window — never retried (reversible)
+  }
+
+  // ── Trade-up craft — REAL, gated (irreversible) ─────────────────────────────
 
   /**
-   * Executes ONE trade-up contract (destroys the 10 inputs → 1 output). HIGH RISK + GATED.
-   * The published globaloffensive API does NOT expose a craft/trade-up call, so this layer PROBES
-   * for `gc.craft` and REFUSES (throws, touches nothing) when it is absent — it never guesses a raw
-   * GC message that could destroy items incorrectly. When a craft method IS present and the verified
-   * gate is on, it submits exactly once and never re-submits. See FEATURES_REPORT.md for the exact
-   * GC message still required to implement this fully.
+   * Executes ONE trade-up contract via the GC craft message. GATED behind SSIM_GC_VERIFIED.
+   * Re-verifies the 10 inputs are present in the live GC inventory immediately before sending,
+   * picks the documented recipe for the (rarity, StatTrak), submits exactly once, and confirms
+   * via the `craftingComplete` event (which returns the produced item id). NEVER re-sends.
    */
-  async craftTradeUp(username: string, inputAssetIds: string[]): Promise<{ submitted: boolean; outputItemId?: string }> {
-    if (inputAssetIds.length !== 10) throw new Error('a trade-up needs exactly 10 input asset ids');
-    return this.withSession(username, true, async (gc) => {
-      if (typeof gc.craft !== 'function') {
-        throw new Error('trade-up execution mechanism is not available in the installed globaloffensive (craft not exposed) — see FEATURES_REPORT.md; calculation + preview are fully available');
+  async craftTradeUp(username: string, p: { inputAssetIds: string[]; inputRarityId: string; stattrak: boolean }):
+    Promise<{ submitted: boolean; confirmed: boolean; outputItemId?: string }> {
+    if (p.inputAssetIds.length !== 10) throw new Error('a trade-up needs exactly 10 input asset ids');
+    if (!this.craftVerified()) {
+      throw new Error('trade-up craft is disabled — set SSIM_GC_VERIFIED=1 after verifying on a test account (irreversible: destroys 10 items)');
+    }
+    const recipe = tradeUpRecipe(p.inputRarityId, p.stattrak);
+    if (recipe === undefined) throw new Error(`no trade-up recipe for rarity ${p.inputRarityId} (Covert is terminal; knives/gloves are ineligible)`);
+
+    return this.withSession(username, (go) => new Promise((resolve, reject) => {
+      // Re-verify the 10 inputs are present RIGHT NOW (state may have changed since the preview).
+      const have = new Set((go.inventory ?? []).map((i) => String(i.id)));
+      const missing = p.inputAssetIds.filter((id) => !have.has(String(id)));
+      if (missing.length) { reject(new Error(`inputs no longer present: ${missing.join(', ')} — refresh & recompute`)); return; }
+
+      let settled = false;
+      const finish = (val: { submitted: boolean; confirmed: boolean; outputItemId?: string }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { go.removeListener('craftingComplete', onDone); } catch { /* noop */ }
+        resolve(val);
+      };
+      const onDone = (_recipe: unknown, idList: unknown): void => {
+        const ids = Array.isArray(idList) ? idList.map(String) : [];
+        finish({ submitted: true, confirmed: true, outputItemId: ids[0] });
+      };
+      // After the send we NEVER reject — a thrown post-submit error would invite a duplicate craft
+      // (destroying another 10 items). An unconfirmed result means "submitted; verify in-game".
+      const timer = setTimeout(() => finish({ submitted: true, confirmed: false }), CRAFT_CONFIRM_TIMEOUT_MS);
+      go.once('craftingComplete', onDone);
+      try {
+        go.craft(p.inputAssetIds.map(String), recipe);
+        logger.info(`[gc] ${username} trade-up submitted (recipe ${recipe}, 10 inputs)`);
+      } catch (e) {
+        // Threw BEFORE the message went out → safe to surface as a real failure (nothing crafted).
+        settled = true; clearTimeout(timer);
+        try { go.removeListener('craftingComplete', onDone); } catch { /* noop */ }
+        reject(e as Error);
       }
-      // Re-verify the 10 inputs are present in the live GC inventory IMMEDIATELY before crafting.
-      const inv = Array.isArray(gc.inventory) ? gc.inventory : [];
-      const have = new Set(inv.map((i) => String(i.id)));
-      const missing = inputAssetIds.filter((id) => !have.has(String(id)));
-      if (missing.length) throw new Error(`inputs no longer present: ${missing.join(', ')} — refresh and recompute`);
-      // Submit exactly once. After this point we NEVER throw (a thrown post-submit error would invite
-      // a duplicate craft that destroys another 10 items).
-      await new Promise<void>((resolve, reject) =>
-        gc.craft!(inputAssetIds, 0, (err: Error | null) => err ? reject(err) : resolve()));
-      logger.info(`[gc] ${username} trade-up submitted (10 inputs)`);
-      return { submitted: true };
-    });
+    }));
   }
 }
+
+function nowMs(): number { return Date.now(); }
 
 /** Rejects if `p` does not settle within `ms`. */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
