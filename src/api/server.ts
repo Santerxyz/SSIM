@@ -15,6 +15,10 @@ import { TradeService, type AccountOffers, type OfferAction, type OfferActionTar
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
 import { BanService } from '../trading/BanService';
+import { TradeUpService } from '../trading/TradeUpService';
+import { CasketService } from '../trading/CasketService';
+import { GcActionLayer } from '../trading/GcActionLayer';
+import { cs2Schema } from '../core/Cs2SchemaService';
 import type { SellStrategy } from '../pricing/MarketPricing';
 import { AgentFactory, normalizeProxy } from '../network/AgentFactory';
 import { PricingService } from '../pricing/PricingService';
@@ -50,6 +54,9 @@ export interface ApiDeps {
   pricing:   PricingService;
   exchange:  ExchangeRateService;
   history:   ValueHistoryService;
+  gc:        GcActionLayer;
+  tradeup:   TradeUpService;
+  casket:    CasketService;
 }
 
 /** Creates the core services and wires their lifecycle events into the logger. */
@@ -63,6 +70,10 @@ export function createDeps(): ApiDeps {
   const bans      = new BanService(accounts, sessions, trades);
   const pricing   = new PricingService();
   const exchange  = new ExchangeRateService();
+  // Shared GC action layer (trade-up + casket execution; gated behind SSIM_GC_VERIFIED).
+  const gc        = new GcActionLayer(sessions);
+  const tradeup   = new TradeUpService(inventory, pricing, cs2Schema, gc);
+  const casket    = new CasketService(gc);
   // GC-preferred reader so the worth curve counts GC records (incl. listed items), not just web.
   const history   = new ValueHistoryService(
     accounts,
@@ -83,7 +94,7 @@ export function createDeps(): ApiDeps {
   // needing a SteamID. getSteamID64() is an exact string (the maFile's numeric value is lossy).
   sessions.on('loggedIn',     (u, steamId) => { if (steamId) accounts.rememberSteamId(u, steamId); });
 
-  return { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history };
+  return { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, gc, tradeup, casket };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -91,7 +102,7 @@ export function createDeps(): ApiDeps {
 // ════════════════════════════════════════════════════════════════════════════
 
 export function createApp(deps: ApiDeps): Express {
-  const { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history } = deps;
+  const { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, tradeup, casket } = deps;
   const app = express();
 
   const VALID_STRATEGIES: SellStrategy[] = ['lowest', 'undercut', 'custom'];
@@ -235,7 +246,7 @@ export function createApp(deps: ApiDeps): Express {
   // `i` flag: Express routing is case-insensitive by default, so POST /api/market/BUY
   // reaches the buy handler; the guard must match it too (the (\/|$) anchor still keeps
   // /api/market/buy-price and /api/market/search OUT).
-  const MONEY_OP = /^\/api\/(trade\/(send|mass-send|offer-action|offers-batch)|market\/(buy|sell|cancel-listing|cancel-buy-order|folder-buy))(\/|$)/i;
+  const MONEY_OP = /^\/api\/(trade\/(send|mass-send|offer-action|offers-batch)|market\/(buy|sell|cancel-listing|cancel-buy-order|folder-buy)|tradeup\/execute|casket\/move)(\/|$)/i;
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'POST' && ProcessHealth.moneyOpsBlocked() && MONEY_OP.test(req.path)) {
       return res.status(503).json({
@@ -1396,6 +1407,82 @@ export function createApp(deps: ApiDeps): Express {
       `community=${result.totals.community} economy=${result.totals.economy} error=${result.totals.error}`);
     res.json(result);
   }));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  Feature 1 – Automated Max-Profit Trade-Ups (single account only)
+  //  Calculation + preview are always available; EXECUTION is gated behind the GC
+  //  layer's verified flag (SSIM_GC_VERIFIED) and only ever destroys items the owner
+  //  explicitly selected + started. See FEATURES_REPORT.md.
+  // ════════════════════════════════════════════════════════════════════════
+
+  // GC + schema readiness, for the modal to show whether execution is enabled.
+  app.get('/api/tradeup/status', (_req: Request, res: Response) => {
+    res.json({ ...tradeup.gcStatus(), schemaLoaded: cs2Schema.isLoaded(), schemaSkins: cs2Schema.skinCount() });
+  });
+
+  // POST /api/tradeup/candidates { username } — live-refresh + compute every positive-profit trade-up.
+  app.post('/api/tradeup/candidates', asyncHandler(async (req, res) => {
+    const username = typeof req.body?.username === 'string' ? req.body.username : '';
+    if (!accounts.get(username)) return res.status(400).json({ error: 'valid username is required' });
+    const minProfitCents = Number.isFinite(req.body?.minProfitCents) ? Number(req.body.minProfitCents) : 0;
+    try {
+      res.json(await tradeup.getCandidates(username, { minProfitCents }));
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  }));
+
+  // POST /api/tradeup/execute { username, contracts:[{ inputAssetIds:string[10] }] } — HIGH RISK + GATED.
+  app.post('/api/tradeup/execute', (req: Request, res: Response) => {
+    const username = typeof req.body?.username === 'string' ? req.body.username : '';
+    if (!accounts.get(username)) return res.status(400).json({ error: 'valid username is required' });
+    const contracts = Array.isArray(req.body?.contracts) ? req.body.contracts : [];
+    try {
+      res.json(tradeup.startExecute(username, contracts));
+    } catch (err) {
+      res.status(409).json({ error: (err as Error).message });
+    }
+  });
+  app.get('/api/tradeup/execute-status', (_req: Request, res: Response) => res.json(tradeup.executeStatus()));
+  app.post('/api/tradeup/execute-cancel', (_req: Request, res: Response) => res.json(tradeup.cancelExecute()));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  Feature 2 – Storage Unit (Casket) Management (single account only)
+  //  List/read are read-only (need only the GC library); MOVES are gated like trade-ups.
+  // ════════════════════════════════════════════════════════════════════════
+
+  app.get('/api/casket/status', (_req: Request, res: Response) => res.json(casket.status()));
+
+  app.get('/api/casket/:username/list', asyncHandler(async (req, res) => {
+    if (!accounts.get(req.params.username)) return res.status(404).json({ error: 'account not found' });
+    try { res.json({ caskets: await casket.listCaskets(req.params.username) }); }
+    catch (err) { res.status(502).json({ error: (err as Error).message }); }
+  }));
+
+  app.get('/api/casket/:username/contents', asyncHandler(async (req, res) => {
+    if (!accounts.get(req.params.username)) return res.status(404).json({ error: 'account not found' });
+    const casketId = String(req.query.casketId ?? '').trim();
+    if (!casketId) return res.status(400).json({ error: 'casketId is required' });
+    try { res.json({ items: await casket.contents(req.params.username, casketId) }); }
+    catch (err) { res.status(502).json({ error: (err as Error).message }); }
+  }));
+
+  // POST /api/casket/move { username, casketId, itemIds:string[], direction:'deposit'|'withdraw' } — GATED.
+  app.post('/api/casket/move', (req: Request, res: Response) => {
+    const { username, casketId, itemIds, direction } = req.body ?? {};
+    if (typeof username !== 'string' || !accounts.get(username)) return res.status(400).json({ error: 'valid username is required' });
+    if (direction !== 'deposit' && direction !== 'withdraw') return res.status(400).json({ error: "direction must be 'deposit' or 'withdraw'" });
+    if (!Array.isArray(itemIds) || itemIds.length === 0 || !itemIds.every((i: unknown) => typeof i === 'string' && i)) {
+      return res.status(400).json({ error: 'itemIds must be a non-empty string array' });
+    }
+    try {
+      res.json(casket.startMove(username, String(casketId ?? '').trim(), itemIds, direction));
+    } catch (err) {
+      res.status(409).json({ error: (err as Error).message });
+    }
+  });
+  app.get('/api/casket/move-status', (_req: Request, res: Response) => res.json(casket.moveStatus()));
+  app.post('/api/casket/move-cancel', (_req: Request, res: Response) => res.json(casket.cancelMove()));
 
   // ════════════════════════════════════════════════════════════════════════
   //  Feature 4 (v2.0) – Bulk import of maFiles + CSV

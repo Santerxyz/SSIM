@@ -1,10 +1,30 @@
 import type { InventoryService } from '../core/InventoryService';
 import type { PricingService } from '../pricing/PricingService';
+import type { GcActionLayer } from './GcActionLayer';
 import { Cs2SchemaService, parseSkinName, type SkinDef } from '../core/Cs2SchemaService';
 import { computeContract, wearMidpoint, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
 import { logger } from '../utils/logger';
 
 const CS2_APPID = 730;
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Live status of the (one-at-a-time) trade-up execution job, polled by the UI. */
+export interface TradeUpExecJob {
+  running:      boolean;
+  cancelling?:  boolean;
+  cancelled?:   boolean;
+  /** False when GC execution is gated off — NOTHING was crafted (safe no-op). */
+  enabled:      boolean;
+  statusReason: string;
+  total:        number;
+  done:         number;
+  crafted:      number;
+  failed:       number;
+  current?:     number;
+  results:      Array<{ index: number; submitted: boolean; error?: string }>;
+  startedAt?:   string;
+  finishedAt?:  string;
+}
 /** A contract uses at most 10 of any single skin, so never expand a stack beyond this. */
 const MAX_PER_STACK = 10;
 /** UI safety cap on surfaced candidates (sorted by profit, best first). */
@@ -42,14 +62,77 @@ export interface TradeUpResult {
  * items — execution lives behind the gated GC action layer (see GcActionLayer / FEATURES_REPORT).
  */
 export class TradeUpService {
+  /** Single live execution job (the trade-up money/item path is deliberately serialized). */
+  private execJob: TradeUpExecJob = { running: false, enabled: false, statusReason: '', total: 0, done: 0, crafted: 0, failed: 0, results: [] };
+  private execCancel = false;
+
   constructor(
     private readonly inventory: InventoryService,
     private readonly pricing:   PricingService,
     private readonly schema:    Cs2SchemaService,
+    private readonly gc:        GcActionLayer,
   ) {}
 
   private priceFn(): PriceFn {
     return (mhn: string) => this.pricing.priceCents(mhn, CS2_APPID) ?? null;
+  }
+
+  // ── Execution (HIGH RISK, GATED — see GcActionLayer) ────────────────────────
+
+  gcStatus(): ReturnType<GcActionLayer['status']> { return this.gc.status(); }
+
+  executeStatus(): TradeUpExecJob { return { ...this.execJob, results: this.execJob.results.map((r) => ({ ...r })) }; }
+
+  /**
+   * Starts executing the SELECTED contracts (each its 10 input asset ids) on `username`, one at a
+   * time. When GC execution is gated off, the job completes immediately as a SAFE NO-OP (enabled:false,
+   * nothing crafted). Cancel stops AFTER the current contract — a submitted craft is never interrupted.
+   */
+  startExecute(username: string, contracts: Array<{ inputAssetIds: string[] }>): TradeUpExecJob {
+    if (this.execJob.running) throw new Error('a trade-up execution is already running');
+    if (!Array.isArray(contracts) || contracts.length === 0) throw new Error('no contracts selected');
+    for (const c of contracts) {
+      if (!Array.isArray(c.inputAssetIds) || c.inputAssetIds.length !== 10 || !c.inputAssetIds.every((id) => typeof id === 'string' && id)) {
+        throw new Error('each contract must carry exactly 10 input asset ids');
+      }
+    }
+    const st = this.gc.status();
+    this.execCancel = false;
+    this.execJob = {
+      running: true, cancelling: false, cancelled: false, enabled: st.live, statusReason: st.reason,
+      total: contracts.length, done: 0, crafted: 0, failed: 0, results: [], startedAt: new Date().toISOString(),
+    };
+    void this.runExecute(username, contracts);
+    return this.executeStatus();
+  }
+
+  cancelExecute(): TradeUpExecJob {
+    if (this.execJob.running) { this.execCancel = true; this.execJob.cancelling = true; logger.info('[tradeup] execution cancel requested'); }
+    return this.executeStatus();
+  }
+
+  private async runExecute(username: string, contracts: Array<{ inputAssetIds: string[] }>): Promise<void> {
+    for (let i = 0; i < contracts.length; i++) {
+      if (this.execCancel) break;
+      this.execJob.current = i;
+      try {
+        const r = await this.gc.craftTradeUp(username, contracts[i].inputAssetIds);
+        this.execJob.crafted++;
+        this.execJob.results.push({ index: i, submitted: r.submitted });
+      } catch (e) {
+        this.execJob.failed++;
+        this.execJob.results.push({ index: i, submitted: false, error: (e as Error).message });
+      } finally {
+        this.execJob.done++;
+      }
+      if (i < contracts.length - 1 && !this.execCancel) await sleep(1_500);
+    }
+    this.execJob.running = false;
+    this.execJob.cancelling = false;
+    this.execJob.cancelled = this.execCancel;
+    this.execJob.current = undefined;
+    this.execJob.finishedAt = new Date().toISOString();
+    this.execCancel = false;
   }
 
   /** Live-refresh the account, then compute every positive-profit trade-up from its skins. */
