@@ -19,6 +19,40 @@ const WEB_SESSION_TIMEOUT_MS = 30_000;  // web cookies can lag behind loggedOn (
 const INTER_LOGIN_DELAY_MS   = 3_500;   // delay between sequential account logins
 const WEB_SESSION_REFRESH_S  = 20 * 60; // refresh web cookies every 20 min
 
+// ─── Global login concurrency cap (anti-storm) ────────────────────────────────
+// THE hard ceiling on how many NEW logins may be handshaking at once, across EVERY
+// caller and both games. Without it, any path that fans a login-triggering request
+// out over the whole fleet (a bulk refresh, a UI action looping all accounts, a
+// retry storm) opens hundreds of simultaneous proxy/CM sockets at once → resource
+// exhaustion → silent process death. The mass-op orchestrators (refresh/buy/sell)
+// have their OWN 25-wide pools, but nothing capped the login PATH itself; this does,
+// so no caller can ever exceed it regardless of how many fire at once. Excess logins
+// queue (FIFO) and start as slots free. Per-account dedup (loginsInFlight) still
+// collapses duplicate logins for the SAME account and never consumes a slot.
+// Tunable via SSIM_MAX_CONCURRENT_LOGINS for ops; defaults to the documented 25 ceiling.
+const MAX_CONCURRENT_LOGINS = (() => {
+  const raw = Number(process.env.SSIM_MAX_CONCURRENT_LOGINS);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 25;
+})();
+
+// ─── Hard resident-session ceiling (structural anti-storm backstop) ────────────
+// MAX_CONCURRENT_LOGINS bounds how many logins HANDSHAKE at once; it does NOT bound how many
+// sessions stay RESIDENT afterwards. Every live session is a CM socket + a fresh per-account proxy
+// agent (keepAlive sockets) + a polling TradeOfferManager, so an unbounded resident population is
+// the documented resource storm that gets the process externally killed. The per-call-site releases
+// (refresh / offers / mass-send / mass-sell / mass-buy / single-buy) keep each path bounded, but a
+// missed release in ANY current or future caller would defeat them. This ceiling is the one place
+// that makes the whole class structurally impossible: once this many sessions are resident, a NEW
+// account's login is REFUSED (fast, retryable) rather than queued — so no caller can ever drive the
+// live-session count past a safe socket budget. A re-login of an ALREADY-resident account is exempt
+// (it replaces, never grows). Generous default (150 » every 25-wide pool, « socket exhaustion);
+// tune via SSIM_MAX_LIVE_SESSIONS, set 0 to disable.
+const MAX_LIVE_SESSIONS = (() => {
+  const raw = Number(process.env.SSIM_MAX_LIVE_SESSIONS);
+  if (raw === 0) return 0;                                   // explicit opt-out
+  return Number.isFinite(raw) && raw >= 25 ? Math.floor(raw) : 150;
+})();
+
 // ─── Retry strategy (Problem 1: transient NoConnection / proxy failures) ──────
 // Steam logins over slow or rotating residential proxies frequently fail with
 // TRANSIENT errors – most commonly EResult 3 (NoConnection), proxy CONNECT
@@ -70,6 +104,25 @@ export class SessionManager extends EventEmitter {
   // mid-handshake session. Cleared in finally when the login settles.
   private readonly loginsInFlight = new Map<string, Promise<ManagedSession>>();
 
+  // ── Global login concurrency semaphore (see MAX_CONCURRENT_LOGINS) ──────────
+  // `loginSlots` = free slots; when 0, callers park in `loginWaiters` (FIFO) and are
+  // handed a slot the instant one frees. This is the ONLY gate on simultaneous logins.
+  private loginSlots = MAX_CONCURRENT_LOGINS;
+  private readonly loginWaiters: Array<() => void> = [];
+
+  /** Acquire one login slot, awaiting (FIFO) if all are in use. */
+  private acquireLoginSlot(): Promise<void> {
+    if (this.loginSlots > 0) { this.loginSlots--; return Promise.resolve(); }
+    return new Promise<void>((resolve) => this.loginWaiters.push(resolve));
+  }
+
+  /** Release one login slot — handed directly to the next waiter, else returned to the pool. */
+  private releaseLoginSlot(): void {
+    const next = this.loginWaiters.shift();
+    if (next) next();              // hand the slot straight to the next waiter (count unchanged)
+    else this.loginSlots++;        // no waiter → return it to the free pool
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /**
@@ -92,8 +145,31 @@ export class SessionManager extends EventEmitter {
     // lives HERE in SessionManager so it covers EVERY caller and both games.
     const key = account.username.toLowerCase();
     const inFlight = this.loginsInFlight.get(key);
-    if (inFlight) return inFlight;
-    const p = this.doLoginAccount(account, key).finally(() => this.loginsInFlight.delete(key));
+    if (inFlight) return inFlight;   // dedup: share the running login, no slot consumed
+    // ── Hard resident-session ceiling ────────────────────────────────────────
+    // Refuse a NEW account's login (fast, before consuming a slot) once the live-session
+    // population is at the cap, so no caller can ever drive resident sockets past a safe budget.
+    // A re-login of an account that already holds a session is exempt (it replaces, never grows).
+    // Classified 'connection' so it bubbles as a transient, retryable per-account failure (the bulk
+    // orchestrators already record it and carry on) and NEVER deletes a refresh token.
+    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.sessions.size >= MAX_LIVE_SESSIONS) {
+      return Promise.reject(Object.assign(
+        new Error(`live-session ceiling ${MAX_LIVE_SESSIONS} reached – ${account.username} skipped (a bulk op may not be releasing sessions); retry shortly`),
+        { loginErrorKind: 'connection' as LoginErrorKind },
+      ));
+    }
+    // Wrap the real login in the global concurrency slot. A queued caller holds NO
+    // resources while it waits — it only begins handshaking once a slot frees. The
+    // slot is released the moment the login settles (success OR failure), and the
+    // dedup entry is cleared in the same breath so the next caller can start fresh.
+    const p = (async (): Promise<ManagedSession> => {
+      await this.acquireLoginSlot();
+      try {
+        return await this.doLoginAccount(account, key);
+      } finally {
+        this.releaseLoginSlot();
+      }
+    })().finally(() => this.loginsInFlight.delete(key));
     this.loginsInFlight.set(key, p);
     return p;
   }
@@ -455,6 +531,18 @@ export class SessionManager extends EventEmitter {
 
   getAllSessions(): ManagedSession[] {
     return [...this.sessions.values()];
+  }
+
+  /**
+   * True when the account currently has a live (logged-in) or mid-login session.
+   * Bulk operations check this BEFORE they touch an account so they release ONLY the
+   * sessions they themselves create — never one the user already had live (e.g. one
+   * mid-trade) or that another op logged in concurrently. LOGGING_IN counts as live so
+   * an in-flight login the user just kicked off isn't treated as "ours" to tear down.
+   */
+  isLive(username: string): boolean {
+    const s = this.sessions.get(username.toLowerCase());
+    return !!s && (s.state === SessionState.LOGGED_IN || s.state === SessionState.LOGGING_IN);
   }
 
   getStatus(): Array<{

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  SSIM — Santer Steam Inventory Manager · Frontend (Vanilla JS) · v1.2.0
+//  SSIM — Santer Steam Inventory Manager · Frontend (Vanilla JS) · v1.2.1
 // ════════════════════════════════════════════════════════════════════════════
 
 const API = '';

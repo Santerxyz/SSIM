@@ -208,6 +208,8 @@ export class MarketService {
     const customNet   = strategy === 'custom' ? Math.max(1, Math.round(opts?.customCents ?? 0)) : null;
     const netCache = new Map<string, number | null>(); // marketHashName → seller net cents
     const queue = [...groups];
+    // Snapshot which bots were ALREADY live so we release ONLY the sessions this sell creates.
+    const wasLiveBefore = this.trades.snapshotLive(groups.map((g) => g.username));
 
     // Fixed custom price → no lookups; otherwise getSellInfo's internal 3-method
     // cascade (via the bot proxy + cookies) resolves the price. Cached per name.
@@ -238,6 +240,8 @@ export class MarketService {
 
     const workers = Math.max(1, Math.min(concurrency, groups.length || 1));
     await Promise.all(Array.from({ length: workers }, () => worker()));
+    // Release the sessions this sell created so a mass-sell doesn't leave the whole folder resident.
+    await this.trades.releaseCreatedSessions(groups.map((g) => g.username), wasLiveBefore);
 
     this.job.running = false;
     this.job.cancelling = false;

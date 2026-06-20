@@ -274,6 +274,9 @@ export class BanService {
       if (keys.length >= needed) break;
       const willLogin = !this.sessions.isReady(username);
       if (willLogin && logins >= ENV_KEY_LOGIN_CAP) continue;
+      // Snapshot live-ness so we release ONLY a session WE create just to mint a key. A key needs
+      // the account live only for the one getWebApiKey/createWebApiKey call below.
+      const wasLiveBefore = this.sessions.isLive(username);
       try {
         const trader = await this.trades.getTrader(username); // logs in if needed
         if (willLogin) logins++;
@@ -283,6 +286,12 @@ export class BanService {
         if (key) keys.push(key);
       } catch (err) {
         logger.warn(`[bans] env ${envId}: ${username} could not provide a key (${(err as Error).message})`);
+      } finally {
+        // Release the session this key-mint created, so a multi-environment ban check can't leave
+        // a session resident per environment (the resident-session storm). Best-effort.
+        if (!wasLiveBefore && this.sessions.isLive(username)) {
+          await this.sessions.logoutAccount(username).catch(() => undefined);
+        }
       }
     }
     logger.info(`[bans] env ${envId}: acquired ${keys.length}/${needed} key(s) (${logins} login(s))`);
@@ -412,6 +421,8 @@ export class BanService {
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const { account, info } = queue.shift()!;
+        // The SteamID is read synchronously right after login, so this login is ours to release.
+        const wasLiveBefore = this.sessions.isLive(account.username);
         try {
           await this.trades.getTrader(account.username); // logs in if needed (+ persists a refresh token)
           const sid = this.sessions.getSession(account.username)?.steamId;
@@ -420,6 +431,12 @@ export class BanService {
         } catch (err) {
           info.error = `Login failed: ${(err as Error).message}`;
           logger.warn(`[bans] ${account.username}: SteamID login-resolve failed (${(err as Error).message})`);
+        } finally {
+          // Release the session this resolve created so a big CSV-import ban check doesn't leave
+          // dozens of sessions resident (the resident-session storm). Best-effort.
+          if (!wasLiveBefore && this.sessions.isLive(account.username)) {
+            await this.sessions.logoutAccount(account.username).catch(() => undefined);
+          }
         }
       }
     };

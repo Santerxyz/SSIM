@@ -145,7 +145,10 @@ export class BuyService {
     private readonly inventory: InventoryService,
   ) {}
 
-  async buy(p: BuyParams): Promise<BuyResult> {
+  async buy(p: BuyParams, opts?: { releaseSession?: boolean }): Promise<BuyResult> {
+    // A DIRECT buy (POST /api/market/buy) releases the session it creates so it never leaves the
+    // account resident; a mass-buy passes releaseSession:false because its batch releases all at once.
+    const release = opts?.releaseSession !== false;
     const game: GameId = p.appId === 440 ? 'tf2' : 'cs2';
     const qty = Math.max(1, Math.floor(p.quantity));
     const perItem = Math.round(p.pricePerItemMinor);
@@ -154,6 +157,8 @@ export class BuyService {
     if (this.inFlight.has(guardKey)) {
       throw new Error('A buy for this item on this account is already running');
     }
+    // Snapshot live-ness BEFORE we touch the account so we only release a session WE create.
+    const wasLiveBefore = this.trades.snapshotLive([p.username]);
     this.inFlight.add(guardKey);
     try {
       // SESSION PRE-FLIGHT: guarantee a live web session with a valid sessionid cookie BEFORE
@@ -255,6 +260,8 @@ export class BuyService {
       };
     } finally {
       this.inFlight.delete(guardKey);
+      // Release the session this direct buy created (mass-buy opts out — its batch releases once).
+      if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
     }
   }
 
@@ -308,6 +315,10 @@ export class BuyService {
     // Dynamic scaling across DISTINCT accounts (5→25). An explicit p.concurrency is honoured
     // but CLAMPED to the 25 ceiling so no caller can exceed the intentional proxy/socket cap.
     const concurrency = clampConcurrency(p.concurrency, scaleConcurrency(p.usernames.length));
+    // Snapshot which accounts were ALREADY live so we release ONLY the sessions this mass-buy
+    // creates (phase 1 logs every account in to read its live balance) — so a folder-wide buy
+    // doesn't leave the whole folder resident afterwards.
+    const wasLiveBefore = this.trades.snapshotLive(p.usernames);
 
     // ── PHASE 1 (CRITICAL SAFETY): refresh EVERY account's balance live BEFORE any
     //    plan or spend. The budget math must run on real-time funds, never a stale
@@ -359,6 +370,10 @@ export class BuyService {
       };
       await Promise.all(Array.from({ length: Math.min(concurrency, p.usernames.length) }, () => worker()));
     }
+
+    // Release the sessions this mass-buy created (orders + verification are done) so the folder
+    // returns to its pre-op session baseline instead of staying resident.
+    await this.trades.releaseCreatedSessions(p.usernames, wasLiveBefore);
 
     this.massJob.running = false;
     this.massJob.cancelling = false;
@@ -415,7 +430,7 @@ export class BuyService {
       const r = await this.buy({
         username, marketHashName: p.marketHashName, appId: p.appId,
         pricePerItemMinor: perItem, quantity: qty, billing: p.billing, retryAfterConfirm: true,
-      });
+      }, { releaseSession: false }); // the mass-buy batch releases all created sessions at the end
       if (r.placed) this.massJob.placed++;
       this.massJob.filled += r.filled;
       const spentMinor = (r.walletBefore != null && r.walletAfter != null)

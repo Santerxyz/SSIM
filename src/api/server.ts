@@ -230,13 +230,44 @@ export function createApp(deps: ApiDeps): Express {
     });
     res.write('retry: 3000\n\n'); // EventSource auto-reconnects 3s after a drop
     for (const line of recentLogLines()) res.write(`data: ${JSON.stringify(line)}\n\n`);
-    const onLine = (line: LiveLogLine): void => {
-      try { res.write(`data: ${JSON.stringify(line)}\n\n`); } catch { /* client gone */ }
+
+    // Coalesced delivery (anti-flood): a fleet-wide refresh emits hundreds of lines/sec.
+    // Pushing each straight to the socket fires one EventSource 'message' per line in the
+    // window's WebView — a burst big enough to choke it. Instead we BUFFER incoming lines
+    // and flush on a short timer, and cap how many we forward per flush: a storm beyond the
+    // cap is dropped and summarised with one synthetic line, so the live view stays bounded
+    // no matter the backend rate. The full log is always intact in the ring buffer + file.
+    const FLUSH_MS = 120;
+    const MAX_PER_FLUSH = 60;             // ≤ 60 lines / 120ms ≈ 500/s ceiling to the window
+    let buf: LiveLogLine[] = [];
+    let dead = false;
+    const flush = (): void => {
+      if (dead || buf.length === 0) return;
+      const batch = buf;
+      buf = [];
+      const overflow = batch.length - MAX_PER_FLUSH;
+      const out = overflow > 0 ? batch.slice(0, MAX_PER_FLUSH) : batch;
+      try {
+        for (const line of out) res.write(`data: ${JSON.stringify(line)}\n\n`);
+        if (overflow > 0) {
+          const note: LiveLogLine = { t: out[out.length - 1]?.t ?? '', level: 'warn',
+            msg: `… ${overflow} more log line(s) suppressed in the live view (high-volume burst — full log is in error.log)` };
+          res.write(`data: ${JSON.stringify(note)}\n\n`);
+        }
+      } catch { dead = true; /* client gone — stop writing */ }
     };
+    const onLine = (line: LiveLogLine): void => { buf.push(line); };
     liveLogBus.on('line', onLine);
+    const flushTimer = setInterval(flush, FLUSH_MS);
+    flushTimer.unref?.();
     const keepAlive = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* noop */ } }, 25_000);
     keepAlive.unref?.();
-    req.on('close', () => { liveLogBus.removeListener('line', onLine); clearInterval(keepAlive); });
+    req.on('close', () => {
+      dead = true;
+      liveLogBus.removeListener('line', onLine);
+      clearInterval(flushTimer);
+      clearInterval(keepAlive);
+    });
   });
 
   // 4) Money-operation circuit breaker (#16): once the process quarantines money ops

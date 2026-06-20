@@ -50,6 +50,19 @@ function isTransientRefreshError(err: unknown): boolean {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
 
+// ── Bulk-refresh session release (anti-accumulation) ──────────────────────────
+// A full-fleet refresh logs every account in to read its inventory. If those sessions
+// are LEFT live, a 500+ account refresh ends with 500+ resident Steam clients + proxy
+// socket pools + polling trade-managers all at once — the resource load that silently
+// kills the process. With release ON (default), the bulk refresh logs out each account
+// IT logged in, right after caching that account's inventory, so live sessions stay
+// bounded to ~the worker count during the pass and return to the pre-refresh baseline
+// after. Accounts that were ALREADY live before the refresh (e.g. one the user is
+// trading with) are snapshotted and never touched. The inventory is cached before
+// logout, so nothing is lost; any later action re-logs the account in on demand.
+// Set SSIM_REFRESH_RELEASE_SESSIONS=0 to keep the old "stay logged in" behaviour.
+const REFRESH_RELEASE_SESSIONS = process.env.SSIM_REFRESH_RELEASE_SESSIONS !== '0';
+
 export interface RefreshJob {
   running:     boolean;
   /** Operator pressed "End Task" — the run is winding down (remaining accounts skipped). */
@@ -393,10 +406,16 @@ export class InventoryService {
       );
     }
 
+    let released = 0; // sessions this refresh created and then logged back out
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         if (this.refreshCancel) break; // "End Task": stop pulling new accounts; in-flight fetch finishes
         const username = queue.shift()!;
+        // Snapshot live-ness BEFORE we touch the account: if it is NOT live now, then a
+        // login that happens during this refresh is OURS to release afterwards. An account
+        // the user already has live (or logs in concurrently before we reach it) reads as
+        // live here and is left untouched — we never tear down someone else's session.
+        const wasLiveBefore = this.sessions.isLive(username);
         try {
           await this.refreshMaybeThrottled(username, game);
         } catch (err) {
@@ -404,6 +423,18 @@ export class InventoryService {
           logger.warn(`[${username}] ${game} refresh failed: ${(err as Error).message}`);
         } finally {
           this.job.done++;
+          // Release the session WE created so a full-fleet refresh doesn't end with the
+          // whole fleet held live at once (the resource storm). The inventory is already
+          // cached by this point, so logging out loses nothing; any later action re-logs
+          // the account in on demand. Runs on success AND failure (a failed fetch can still
+          // leave a freshly logged-in client behind). Best-effort — never fail the refresh.
+          if (REFRESH_RELEASE_SESSIONS && !wasLiveBefore) {
+            try {
+              if (this.sessions.isLive(username)) { await this.sessions.logoutAccount(username); released++; }
+            } catch (err) {
+              logger.warn(`[${username}] post-refresh session release failed: ${(err as Error).message}`);
+            }
+          }
         }
       }
     };
@@ -430,11 +461,12 @@ export class InventoryService {
       logger.warn(`refresh-complete hook failed: ${(err as Error).message}`);
     }
     const verb = wasCancelled ? 'cancelled' : 'complete';
+    const relNote = REFRESH_RELEASE_SESSIONS ? ` · released ${released} refresh session(s)` : '';
     if (this.job.failed.length) {
       const detail = this.job.failed.map(f => `${f.username} (${f.error})`).join('; ');
-      logger.warn(`Refresh-all ${verb}: ${this.job.done}/${this.job.total} – FAILED ${this.job.failed.length}: ${detail}`);
+      logger.warn(`Refresh-all ${verb}: ${this.job.done}/${this.job.total} – FAILED ${this.job.failed.length}${relNote}: ${detail}`);
     } else {
-      logger.info(`Refresh-all ${verb}: ${this.job.done}/${this.job.total} – all OK`);
+      logger.info(`Refresh-all ${verb}: ${this.job.done}/${this.job.total} – all OK${relNote}`);
     }
   }
 

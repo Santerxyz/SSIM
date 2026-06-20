@@ -58,6 +58,16 @@ const TRADE_MAX_DELAY_MS    = 2_000; // max gap (jittered) — lets the receiver
 // (same proxy IP) when the cookie is missing OR older than this.
 const WEB_SESSION_MAX_AGE_MS = 25 * 60 * 1000;
 
+// ─── Bulk-read session release (anti-accumulation) ────────────────────────────
+// Loading the global Trade-Offers view logs EVERY account in (getTrader). If those
+// sessions are left live, opening offers across a big environment ends with the whole
+// fleet resident (Steam client + proxy sockets + a polling TradeOfferManager each) —
+// the same resident-session storm that the bulk REFRESH path already releases against.
+// So a read fan-out logs out each account IT logged in, right after reading it; an
+// account that was ALREADY live (a trade in progress, or one the user logged in) is
+// snapshotted and never torn down. Kill switch: SSIM_RELEASE_READ_SESSIONS=0.
+const RELEASE_READ_SESSIONS = process.env.SSIM_RELEASE_READ_SESSIONS !== '0';
+
 /** True when the session has a live, non-empty `sessionid` cookie that isn't stale. */
 function hasLiveSessionId(session: ManagedSession): boolean {
   const ws = session.webSession;
@@ -244,6 +254,9 @@ export class TradeService {
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const username = queue.shift()!;
+        // Snapshot live-ness BEFORE we touch the account so we only release sessions WE create —
+        // never one the user already had live (e.g. mid-trade) or logged in concurrently.
+        const wasLiveBefore = this.sessions.isLive(username);
         try {
           const trader = await this.getTrader(username);
           const offers = await trader.getTradeOffers({ historyLimit: opts?.historyLimit });
@@ -251,6 +264,12 @@ export class TradeService {
         } catch (err) {
           logger.warn(`[offers] ${username}: ${(err as Error).message}`);
           results.push({ username, sent: [], received: [], error: (err as Error).message });
+        } finally {
+          // Release the session this read created (inventory/offers already in hand), so loading
+          // offers across a big environment never leaves the whole fleet resident. Best-effort.
+          if (RELEASE_READ_SESSIONS && !wasLiveBefore && this.sessions.isLive(username)) {
+            await this.sessions.logoutAccount(username).catch(() => undefined);
+          }
         }
       }
     };
@@ -301,6 +320,43 @@ export class TradeService {
     const workers = Math.max(1, Math.min(concurrency, targets.length || 1));
     await Promise.all(Array.from({ length: workers }, () => worker()));
     return results;
+  }
+
+  // ── Bulk-op session release helpers (anti-accumulation) ───────────────────
+  // Shared by every fleet-wide login fan-out (offers read + mass send/sell/buy) so none of
+  // them can leave the whole fleet resident — the resident-session storm that, unbounded, lets
+  // the process be externally killed. Mirrors InventoryService.runRefresh's release.
+
+  /** True when the account currently has a live (or logging-in) session. Lets a bulk op decide
+   *  which sessions are ITS OWN to release vs. one the user already had live. */
+  isLive(username: string): boolean { return this.sessions.isLive(username); }
+
+  /** Snapshot of which of `usernames` are ALREADY live — captured BEFORE a bulk op so it only
+   *  ever releases sessions it itself creates (never one the user had live, e.g. mid-trade). */
+  snapshotLive(usernames: string[]): Set<string> {
+    const set = new Set<string>();
+    for (const u of usernames) if (this.sessions.isLive(u)) set.add(u.toLowerCase());
+    return set;
+  }
+
+  /**
+   * Releases the sessions a bulk op CREATED: logs out each listed account that was NOT already
+   * live before the op (per `wasLiveBefore`) and is live now, so a fleet-wide send/sell/buy/offers
+   * pass returns to the pre-op session baseline instead of leaving the fleet resident. Sequential
+   * + best-effort (a logout never throws here); honours SSIM_RELEASE_READ_SESSIONS=0. Returns count.
+   */
+  async releaseCreatedSessions(usernames: string[], wasLiveBefore: Set<string>): Promise<number> {
+    if (!RELEASE_READ_SESSIONS) return 0;
+    let released = 0;
+    for (const u of [...new Set(usernames.map((x) => x.toLowerCase()))]) {
+      if (wasLiveBefore.has(u)) continue;
+      if (this.sessions.isLive(u)) {
+        await this.sessions.logoutAccount(u).catch(() => undefined);
+        released++;
+      }
+    }
+    if (released) logger.info(`[bulk] released ${released} session(s) created by the op (fleet returned to baseline)`);
+    return released;
   }
 
   // ── Feature 2: trade URL ─────────────────────────────────────────────────
@@ -400,6 +456,8 @@ export class TradeService {
     const minGap = Math.max(TRADE_MIN_DELAY_MS, opts?.delayMs ?? 0);
     const maxGap = Math.max(TRADE_MAX_DELAY_MS, minGap);
     const queue  = [...groups];
+    // Snapshot which senders were ALREADY live so we release ONLY the sessions this send creates.
+    const wasLiveBefore = this.snapshotLive(groups.map((g) => g.username));
 
     // Global dispatch throttle (shared across ALL workers): reserve time slots `gap` apart so the
     // gap is between ANY two offers, not just two sends by the same worker. At the default ceiling
@@ -443,6 +501,8 @@ export class TradeService {
 
     const workers = Math.max(1, Math.min(concurrency, groups.length || 1));
     await Promise.all(Array.from({ length: workers }, () => worker()));
+    // Release the sessions this send created so a mass-send doesn't leave the whole folder resident.
+    await this.releaseCreatedSessions(groups.map((g) => g.username), wasLiveBefore);
 
     this.massJob.running = false;
     this.massJob.cancelling = false;

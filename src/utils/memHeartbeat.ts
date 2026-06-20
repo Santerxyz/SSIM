@@ -32,6 +32,11 @@ const INTERVAL_MS = Math.max(2_000, Number(process.env.SSIM_HEARTBEAT_MS) || 15_
 const MAX_BYTES   = 8 * 1024 * 1024; // roll the file once it passes ~8 MB (a sample is ~120 B)
 
 let timer: NodeJS.Timeout | undefined;
+/** Wall-clock ms of the previous sample — used to detect an EVENT-LOOP STALL (a gap far larger
+ *  than INTERVAL_MS means the loop was blocked, e.g. by sync IO or stdout-pipe backpressure, so the
+ *  timer couldn't fire on time). A stall freezes BOTH this heartbeat and ssim.log at once, which
+ *  otherwise reads identically to an external kill; recording the gap makes it diagnosable. */
+let lastSampleAt = 0;
 /** Optional supplier of live fleet counts (sessions/traders), merged into each sample. */
 let statsProvider: (() => Record<string, number>) | undefined;
 
@@ -61,6 +66,11 @@ function sample(): void {
   try {
     const m = process.memoryUsage();
     const { handles, requests } = handleCounts();
+    const nowMs = Date.now();
+    // A gap ≫ the sampling interval means the event loop was BLOCKED between ticks (sync IO /
+    // stdout backpressure). Flag it so a stall that froze logging is visible after the fact.
+    const stalledMs = lastSampleAt && (nowMs - lastSampleAt) > INTERVAL_MS * 2 ? (nowMs - lastSampleAt) : 0;
+    lastSampleAt = nowMs;
     const rec: Record<string, number | string> = {
       t:         new Date().toISOString(),
       upMin:     Math.round(process.uptime() / 6) / 10, // minutes, 1 decimal
@@ -76,6 +86,7 @@ function sample(): void {
     if (statsProvider) {
       try { Object.assign(rec, statsProvider()); } catch { /* stats are best-effort */ }
     }
+    if (stalledMs) rec.stallMs = stalledMs; // event-loop stall breadcrumb (only when one occurred)
     rollIfLarge();
     fs.appendFileSync(HEARTBEAT_FILE, JSON.stringify(rec) + '\n');
   } catch { /* a heartbeat must never throw */ }
@@ -98,4 +109,5 @@ export function stopMemHeartbeat(): void {
   if (timer) clearInterval(timer);
   timer = undefined;
   statsProvider = undefined;
+  lastSampleAt = 0; // so a later restart doesn't mis-read the gap as a stall
 }
