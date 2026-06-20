@@ -7,6 +7,28 @@ passed** (details below). The only thing left is the owner's irreducible live‑
 
 ---
 
+## ⚑ FINAL RELEASE DECISION (owner, 2026‑06‑20)
+
+The owner cannot run the live tests and chose to **ship now** with:
+- **Artifact:** the **Tauri windowed app** (`release-tauri/SSIM/`, rebuilt this pass with the GC code).
+- **Trade‑up CRAFT: ENABLED in the shipped build** (not gated). Explicit, informed owner decision — it
+  means **the first real contract on the fleet is the live test** for the GC craft mechanism, which has
+  never executed once.
+
+Because that path is **irreversible** (10 items/contract) and **unverified live**, the build ships with
+two safety nets that do NOT reduce the feature:
+- **KILL SWITCH — `SSIM_GC_VERIFIED=0`:** relaunch with this to **instantly disable** all trade‑up
+  execution in production, no rebuild. (`=1` forces on; unset = on in the shipped exe, off in dev. The
+  shell launches the sidecar with this unset, so it is ON by default.)
+- **Loud Start warning** urging ONE cheap contract first.
+
+**Standing recommendation:** still sacrifice **one** cheap 10‑skin contract on a single account and confirm
+the output arrives + matches the recipe tier before running trade‑ups fleet‑wide. If wrong, hit the kill
+switch and report — do not keep crafting. Storage (reversible) + the calculator (read‑only) carry no such
+risk and need no test.
+
+---
+
 ## 1) Per‑feature status
 
 | Feature | Status | Basis |
@@ -93,15 +115,16 @@ Do these **in order, on JUNK accounts**, before touching the real fleet.
   (reversible); do not retry blindly.
 - *Rollback:* storage is reversible — withdraw anything mis‑deposited. No `SSIM_GC_VERIFIED` needed.
 
-**Step 3 — First trade‑up (IRREVERSIBLE — destroys 10 items; gated).**
-- *Do:* on a throwaway account holding **10 cheap same‑tier, same‑StatTrak skins from one collection**,
-  set `SSIM_GC_VERIFIED=1` and relaunch. Open **Trade‑Ups** → **Get Trade‑Ups** (footer should say "REAL
-  per‑item GC floats") → select ONE contract → **Start** → confirm.
+**Step 3 — First trade‑up (IRREVERSIBLE — destroys 10 items). Craft ships ENABLED (owner decision).**
+- *Do:* craft is ON by default in this release — no flag needed. On a throwaway account holding **10 cheap
+  same‑tier, same‑StatTrak skins from one collection**, open **Trade‑Ups** → **Get Trade‑Ups** (footer
+  should say "REAL per‑item GC floats") → select **ONE** contract → **Start** → read the red/amber warning
+  → confirm.
 - *Good:* footer shows `submitted 1 (1 confirmed)`; the 10 inputs are consumed and the output skin arrives;
   the output's rarity is one tier above the inputs (recipe matched). Re‑clicking never double‑crafts.
-- *Rollback:* there is none for a crafted contract — that is why it's gated and run on a throwaway first.
-  If the output is wrong/missing, **leave `SSIM_GC_VERIFIED` unset** on the real fleet and report what
-  happened before any further craft.
+- *Rollback / KILL SWITCH:* there is no undo for a crafted contract. If the output is wrong/missing, relaunch
+  with **`SSIM_GC_VERIFIED=0`** to disable all trade‑up execution instantly (storage stays working), and
+  report what happened before any further craft. **Do this canary on ONE account before any fleet use.**
 
 **Step 4 — Only then scale up.** Once Steps 2–3 succeed on junk accounts, use the features on the real
 fleet — still respecting the 25‑worker ceiling, per‑account pacing, and the money‑op circuit breaker
