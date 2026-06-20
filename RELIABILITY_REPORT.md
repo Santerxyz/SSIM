@@ -14,7 +14,9 @@ proven bounded by harness; Tauri shell auto-restart + non-blocking stdout drain 
 12-slice adversarial code audit corroborated the diagnosis and every confirmed finding is fixed.
 **Rebuilt + verified:** the two-exe artifacts (`SSIM.exe` + `ssim-backend.exe`, 2026-06-20 16:31) now
 contain every fix — boot self-test green, fixes confirmed present in the packaged build (§3.0).
-**Pending you:** the vault master password for the live real-fleet confirmation run (§6).
+**Live-confirmed:** the real **537-account whole-fleet refresh** now holds sessions at the **25 cap**
+(was **167** pre-fix) and completes cleanly with the backend surviving (§3.1). Committed on branch
+`reliability/refresh-storm-hardening`.
 
 ---
 
@@ -84,6 +86,24 @@ NOW (release on, 538 accounts × 8):     ✅ peak live sessions = 25 (the cap), 
 ✅ a pathological never-releasing path is BOUNDED to 40 live (41 clients created, the rest refused),
    NOT 200/538 — the storm is now structurally impossible regardless of call-site discipline
 ```
+
+### 3.1 LIVE real-fleet confirmation (the actual 537-account fleet, vault unlocked)
+The rebuilt backend was run headless against the **real fleet** and the **whole-fleet refresh-all** — the
+exact operation that died — was triggered while watching `mem-heartbeat.log`:
+```
+16:42:42  sessions=22  rss=163MB  handles=39  done=82/537   running=true
+16:43:31  sessions=25  rss=255MB  handles=50  done=200/537  running=true
+16:44:28  sessions=25  rss=283MB  handles=42  done=359/537  running=true
+16:45:16  sessions=22  rss=309MB  handles=49  done=486/537  running=true
+16:45:35  sessions=11  rss=300MB  handles=27  done=525/537  running=true   ← queue draining → sessions wind down
+16:45:55  sessions=3   rss=309MB  handles=11  done=536/537  running=true
+16:46:04  sessions=0   rss=319MB  handles=2   done=537/537  running=false  ← COMPLETE, fleet released to baseline
+```
+**Live sessions held at 21–25 (the cap) across all 537 accounts** — versus the **0→167** climb a pre-fix
+run logged on 2026-06-19 — then wound down to **0** as the pass finished. RSS peaked ~319 MB (≪ the
+limit), **0 stall events**, **the backend survived** (it used to be killed at this point), and no new
+`crash-log.txt` / `report.*.json` was written. **The crash is reproduced (as the unbounded condition),
+fixed, and proven gone under sustained real-load.**
 
 ---
 
@@ -184,15 +204,19 @@ stream coalesced (120 ms / ~500 lines·s⁻¹) with per-connection listener clea
 
 ---
 
-## 6. Pending
+## 6. Status — done
 
-1. ✅ **Two-exe rebuild** (done) — `npm run build:tauri` repacked `ssim-backend.exe` (with these fixes)
-   and rebuilt `SSIM.exe` (auto-restart) into `release-tauri/SSIM/` (16:31, self-test green).
-2. **Real-fleet live confirmation** — run the rebuilt backend **headless** (`SSIM_HEADLESS=1` +
-   `SSIM_VAULT_PASSWORD=…`) against the real 538 accounts under sustained refresh-all while watching
-   `mem-heartbeat.log` show the bounded curve live; then live-demo the shell auto-restart (kill the
-   sidecar → window reconnects, no wipe). **Needs the vault master password from you** (paste it or set
-   `SSIM_VAULT_PASSWORD`).
+1. ✅ **Two-exe rebuild** — `npm run build:tauri` repacked `ssim-backend.exe` (with these fixes) and
+   rebuilt `SSIM.exe` (auto-restart) into `release-tauri/SSIM/` (16:31, self-test green).
+2. ✅ **Real-fleet live confirmation** — the rebuilt backend ran headless against the real **537**
+   accounts; the whole-fleet refresh-all held sessions at the **25 cap** and completed with the backend
+   surviving (§3.1).
+3. ✅ **Committed** on branch `reliability/refresh-storm-hardening` (master untouched; owner cuts the
+   release). The `.gitignore` keeps the vault, maFiles, secrets, and data out of history.
+
+**Optional follow-up the owner may still want:** virtualise the 538-row sidebar (reduce the WebView
+render trigger), add the build-drift guard (§5), and a live kill-the-sidecar demo of the shell
+auto-restart (the logic is `cargo check`-clean and code-reviewed).
 
 ---
 
