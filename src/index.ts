@@ -362,23 +362,51 @@ process.on('exit', () => { try { releaseInstanceLock(); } catch { /* best-effort
 // is present + non-empty, then exit WITHOUT booting (no license check, no port
 // bind, no browser). Inert in every normal run (guarded by the env var).
 if (process.env.SSIM_SELFTEST === '1') {
-  let ok = false;
-  let detail = '';
+  const fails: string[] = [];
+  let frontend = '';
+
+  // 1) Bundled frontend present + readable (same pkg-VFS read path express.static uses).
   try {
-    const indexHtml = publicDir('index.html');
-    // readFileSync exercises the SAME pkg-VFS read path express.static relies on
-    // (not just stat), so a pass here means the dashboard will actually serve.
-    const bytes = fs.readFileSync(indexHtml).length;
-    ok = bytes > 0;
-    detail = `public/index.html=${bytes}B`;
-  } catch (e) {
-    detail = (e as Error).message;
-  }
-  // The GUI-subsystem build has no console, so guard the write — the exit CODE (0 ok / 2 fail)
-  // is the reliable signal the build + verification check.
+    const bytes = fs.readFileSync(publicDir('index.html')).length;
+    if (bytes > 0) frontend = `public/index.html=${bytes}B`; else fails.push('public/index.html=0B');
+  } catch (e) { fails.push(`public/index.html:${(e as Error).message}`); }
+
+  // 2) Runtime-critical heavy deps must actually require() IN-PACKAGE. These are LITERAL requires
+  //    so pkg traces + bundles them from the entry too (belt-and-braces). globaloffensive is the
+  //    headline risk — it is only LAZILY required at runtime (GcActionLayer), so a passing boot
+  //    self-test would NOT otherwise prove the GC stack bundled. A throw here = a missing module
+  //    or asset → the build fails LOUDLY (build/pack.js requires SSIM_SELFTEST_OK), never a silent
+  //    false success. eslint-disable for the deliberate require() probes.
+  /* eslint-disable @typescript-eslint/no-var-requires, global-require */
+  const probe = (name: string, fn: () => unknown): void => {
+    try { if (!fn()) fails.push(`${name}=empty`); } catch (e) { fails.push(`${name}:${(e as Error).message}`); }
+  };
+  probe('globaloffensive',           () => require('globaloffensive'));
+  probe('steam-user',                () => require('steam-user'));
+  probe('steamcommunity',            () => require('steamcommunity'));
+  probe('steam-tradeoffer-manager',  () => require('steam-tradeoffer-manager'));
+  probe('@doctormckay/stdlib',       () => require('@doctormckay/stdlib'));
+  probe('protobufjs',                () => require('protobufjs'));
+  probe('bytebuffer',                () => require('bytebuffer'));
+  probe('long',                      () => require('long'));
+  probe('steamid',                   () => require('steamid'));
+  probe('steam-totp',                () => require('steam-totp'));
+
+  // 3) globaloffensive must expose its REAL API (craft + caskets) — this only resolves if its
+  //    precompiled protobufs (protobufs/generated/*.js → protobufjs) also bundled + loaded.
+  probe('globaloffensive.api', () => {
+    const GO = require('globaloffensive');
+    return ['craft', 'addToCasket', 'removeFromCasket', 'getCasketContents']
+      .every((m) => typeof GO.prototype[m] === 'function');
+  });
+  /* eslint-enable @typescript-eslint/no-var-requires, global-require */
+
+  const ok = fails.length === 0;
+  // The GUI-subsystem build has no console, so guard the write — the exit CODE (0 ok / 2 fail) is
+  // the reliable signal build/pack.js checks. Report which deps passed + any that FAILED.
   try {
     // eslint-disable-next-line no-console
-    console.log(`SSIM_SELFTEST_${ok ? 'OK' : 'FAIL'} v${pkg.version} ${detail}`);
+    console.log(`SSIM_SELFTEST_${ok ? 'OK' : 'FAIL'} v${pkg.version} ${frontend} deps=${ok ? 'all-loaded(GC+steam stack)' : 'FAILED[' + fails.join(' | ') + ']'}`);
   } catch { /* no console in GUI-subsystem mode */ }
   process.exit(ok ? 0 : 2);
 }
