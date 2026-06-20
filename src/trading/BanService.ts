@@ -33,8 +33,17 @@ import { logger, redactSecrets } from '../utils/logger';
 
 /** Max accounts per GetPlayerBans request (Steam caps `steamids` at 100). */
 const BANS_BATCH = 100;
-/** How many accounts we'll try (each possibly a fresh login) before giving up on a key. */
-const MAX_KEY_ATTEMPTS = 8;
+/**
+ * F3c — hard cap on accounts checked per AUTO-acquired Web API key. After this many, the
+ * checker rotates to ANOTHER key sourced from the SAME environment; a key is NEVER reused
+ * across environments. Deliberately below Steam's 100/request limit so load is spread across
+ * several bots' keys instead of hammering one. (An explicit STEAM_WEB_API_KEY override is the
+ * operator's own single key and is exempt — see checkBans.)
+ */
+const BANS_PER_KEY = 20;
+/** Safety cap on how many env accounts we'll LOG IN (per environment) purely to MINT keys —
+ *  already-logged-in accounts are free and don't count. Prevents a mass login for a huge env. */
+const ENV_KEY_LOGIN_CAP = 25;
 /** Parallel logins when resolving SteamIDs that aren't available offline (CSV imports). */
 const LOGIN_RESOLVE_CONCURRENCY = 4;
 /**
@@ -176,51 +185,143 @@ export class BanService {
 
     const targets = [...bySteamId.keys()];
     if (targets.length > 0) {
-      let apiKey: string;
-      try {
-        apiKey = await this.ensureApiKey(accs.map(a => a.username));
-      } catch (err) {
-        const msg = `Ban lookup unavailable: ${(err as Error).message}`;
-        for (const info of infos) if (!info.error) info.error = msg;
-        logger.warn(`[bans] ${redactSecrets(msg)}`);
+      // ── F3c: PER-ENVIRONMENT key scoping ──────────────────────────────────────
+      // An explicit STEAM_WEB_API_KEY is the operator's own single key → it wins globally
+      // (documented escape hatch; bypasses per-env scoping by their choice). Otherwise every
+      // environment is checked ONLY with key(s) sourced from accounts WITHIN that env, capped
+      // at BANS_PER_KEY accounts/key and rotated across same-env keys — never cross-env.
+      const overrideKey = (process.env.STEAM_WEB_API_KEY ?? '').trim();
+      if (overrideKey) {
+        this.apiKeyFrom = 'env';
+        for (let i = 0; i < targets.length; i += BANS_BATCH) {
+          await this.fetchChunk(overrideKey, targets.slice(i, i + BANS_BATCH), bySteamId);
+        }
         return this.finalize(infos);
       }
-
-      for (let i = 0; i < targets.length; i += BANS_BATCH) {
-        const batch = targets.slice(i, i + BANS_BATCH);
-        try {
-          const players = await this.fetchBans(apiKey, batch);
-          const returned = new Set<string>();
-          for (const p of players) {
-            const sid = String(p.SteamId ?? '');
-            const info = bySteamId.get(sid);
-            if (!info) continue;
-            returned.add(sid);
-            info.vacCount        = Number(p.NumberOfVACBans) || 0;
-            info.vacBanned       = !!p.VACBanned || info.vacCount > 0;
-            info.gameCount       = Number(p.NumberOfGameBans) || 0;
-            info.gameBanned      = info.gameCount > 0;
-            info.communityBanned = !!p.CommunityBanned;
-            info.economyBan      = String(p.EconomyBan ?? 'none').toLowerCase();
-            info.daysSinceLastBan = Number(p.DaysSinceLastBan) || 0;
-          }
-          for (const sid of batch) {
-            if (returned.has(sid)) continue;
-            const info = bySteamId.get(sid);
-            if (info && !info.error) info.error = 'Steam returned no ban record';
-          }
-        } catch (err) {
-          const msg = `Ban lookup failed: ${(err as Error).message}`;
-          for (const sid of batch) {
-            const info = bySteamId.get(sid);
-            if (info && !info.error) info.error = msg;
-          }
-          logger.warn(`[bans] ${redactSecrets(msg)}`);
-        }
-      }
+      await this.checkPerEnvironment(accs, bySteamId);
     }
 
     return this.finalize(infos);
+  }
+
+  /**
+   * F3c orchestration: group the resolved (has-SteamID) accounts by environment, acquire up to
+   * the needed number of keys from accounts WITHIN each environment, then plan + execute the
+   * 20-per-key chunks with strict per-env isolation. Accounts an env can't cover (more accounts
+   * than 20 × the keys it could provide) are surfaced with a clear, actionable error.
+   */
+  private async checkPerEnvironment(accs: AccountConfig[], bySteamId: Map<string, AccountBanInfo>): Promise<void> {
+    // envId → all usernames in it (potential key sources); and the resolved (steamId,env) targets.
+    const envUsernames = new Map<string, string[]>();
+    for (const acc of accs) {
+      const list = envUsernames.get(acc.environmentId) ?? [];
+      list.push(acc.username);
+      envUsernames.set(acc.environmentId, list);
+    }
+    const targetsByEnv = new Map<string, string[]>(); // envId → steamids
+    const flatTargets: Array<{ steamId: string; envId: string }> = [];
+    for (const [sid, info] of bySteamId) {
+      const envId = this.accounts.get(info.username)?.environmentId ?? '__none__';
+      const list = targetsByEnv.get(envId) ?? [];
+      list.push(sid);
+      targetsByEnv.set(envId, list);
+      flatTargets.push({ steamId: sid, envId });
+    }
+
+    // Acquire keys per env (sized to what that env needs), sourced ONLY from that env's accounts.
+    const keysByEnv = new Map<string, string[]>();
+    this.apiKeyFrom = 'per-env';
+    for (const [envId, sids] of targetsByEnv) {
+      const needed = Math.ceil(sids.length / BANS_PER_KEY);
+      keysByEnv.set(envId, await this.acquireEnvKeys(envId, envUsernames.get(envId) ?? [], needed));
+    }
+
+    // Pure plan: which key index of which env covers which steamids, and what's uncovered.
+    const keyCounts = new Map([...keysByEnv].map(([env, keys]) => [env, keys.length]));
+    const { assignments, uncovered } = planPerEnvBanChecks(flatTargets, keyCounts);
+
+    // Execute each assignment with ITS env's k-th key (strict per-env isolation by construction).
+    for (const a of assignments) {
+      const key = keysByEnv.get(a.envId)?.[a.keyIndex];
+      if (!key) continue; // defensive — planner never emits an assignment beyond keyCounts
+      await this.fetchChunk(key, a.steamIds, bySteamId);
+    }
+    // Surface uncovered accounts (env had more accounts than its keys could cover, or none).
+    for (const u of uncovered) {
+      const info = bySteamId.get(u.steamId);
+      if (!info || info.error) continue;
+      const provided = keysByEnv.get(u.envId)?.length ?? 0;
+      info.error = provided === 0
+        ? 'No Steam Web API key available in this environment (no account here could provide one)'
+        : `Environment has more accounts than its API keys can cover (${provided} key(s) × ${BANS_PER_KEY}); add/enable more key-capable accounts here`;
+    }
+  }
+
+  /**
+   * Acquires up to `needed` Web API keys from accounts WITHIN one environment (never another).
+   * Already-logged-in env accounts are tried first (free); minting from a not‑yet‑logged‑in
+   * account counts against ENV_KEY_LOGIN_CAP so a huge env never triggers a mass login. Each
+   * account sources at most ONE key. Returns the keys it could get (may be fewer than needed).
+   */
+  private async acquireEnvKeys(envId: string, candidates: string[], needed: number): Promise<string[]> {
+    if (needed <= 0 || candidates.length === 0) return [];
+    const ready = candidates.filter((u) => this.sessions.isReady(u));
+    const rest  = candidates.filter((u) => !this.sessions.isReady(u));
+    const ordered = [...new Set([...ready, ...rest])];
+    const keys: string[] = [];
+    let logins = 0;
+    for (const username of ordered) {
+      if (keys.length >= needed) break;
+      const willLogin = !this.sessions.isReady(username);
+      if (willLogin && logins >= ENV_KEY_LOGIN_CAP) continue;
+      try {
+        const trader = await this.trades.getTrader(username); // logs in if needed
+        if (willLogin) logins++;
+        const community = trader.community as unknown as CommunityWithKey;
+        let key = await this.getExistingKey(community);
+        if (!key) key = await this.createKey(community, this.identitySecretOf(username));
+        if (key) keys.push(key);
+      } catch (err) {
+        logger.warn(`[bans] env ${envId}: ${username} could not provide a key (${(err as Error).message})`);
+      }
+    }
+    logger.info(`[bans] env ${envId}: acquired ${keys.length}/${needed} key(s) (${logins} login(s))`);
+    return keys;
+  }
+
+  /** Fetches one chunk of SteamIDs with `apiKey` and folds the results into `bySteamId`.
+   *  Per-account failures stay scoped to this chunk and never abort the others. */
+  private async fetchChunk(apiKey: string, batch: string[], bySteamId: Map<string, AccountBanInfo>): Promise<void> {
+    if (batch.length === 0) return;
+    try {
+      const players = await this.fetchBans(apiKey, batch);
+      const returned = new Set<string>();
+      for (const p of players) {
+        const sid = String(p.SteamId ?? '');
+        const info = bySteamId.get(sid);
+        if (!info) continue;
+        returned.add(sid);
+        info.vacCount        = Number(p.NumberOfVACBans) || 0;
+        info.vacBanned       = !!p.VACBanned || info.vacCount > 0;
+        info.gameCount       = Number(p.NumberOfGameBans) || 0;
+        info.gameBanned      = info.gameCount > 0;
+        info.communityBanned = !!p.CommunityBanned;
+        info.economyBan      = String(p.EconomyBan ?? 'none').toLowerCase();
+        info.daysSinceLastBan = Number(p.DaysSinceLastBan) || 0;
+      }
+      for (const sid of batch) {
+        if (returned.has(sid)) continue;
+        const info = bySteamId.get(sid);
+        if (info && !info.error) info.error = 'Steam returned no ban record';
+      }
+    } catch (err) {
+      const msg = `Ban lookup failed: ${(err as Error).message}`;
+      for (const sid of batch) {
+        const info = bySteamId.get(sid);
+        if (info && !info.error) info.error = msg;
+      }
+      logger.warn(`[bans] ${redactSecrets(msg)}`);
+    }
   }
 
   // ── Categorisation ───────────────────────────────────────────────────────────
@@ -326,54 +427,7 @@ export class BanService {
     await Promise.all(Array.from({ length: n }, () => worker()));
   }
 
-  // ── Steam Web API key acquisition ────────────────────────────────────────────
-
-  /**
-   * Returns a usable Steam Web API key: the STEAM_WEB_API_KEY env override, the
-   * cached key, or one fetched/created from the first account that can provide it.
-   * Tries already-logged-in accounts first to avoid unnecessary logins.
-   */
-  private async ensureApiKey(usernames: string[]): Promise<string> {
-    const envKey = (process.env.STEAM_WEB_API_KEY ?? '').trim();
-    if (envKey) { this.apiKeyFrom = 'env'; return envKey; }
-    if (this.apiKey) return this.apiKey;
-
-    // Candidate order: scoped accounts that are already logged in → other scoped
-    // accounts (may need a login) → ANY other already-logged-in managed bot. The key
-    // is just an API credential; the data returned is still only about the scoped
-    // SteamIDs, so reusing another ready bot's key keeps a single clean-account check
-    // working even when that one account can't mint a key.
-    const scopedSet = new Set(usernames.map(u => u.toLowerCase()));
-    const ready = usernames.filter(u => this.sessions.isReady(u));
-    const rest  = usernames.filter(u => !this.sessions.isReady(u));
-    const extra = this.sessions.getAllSessions()
-      .map(s => s.account.username)
-      .filter(u => !scopedSet.has(u.toLowerCase()) && this.sessions.isReady(u));
-    const ordered = [...new Set([...ready, ...rest, ...extra])];
-
-    let attempts = 0;
-    let lastErr: Error | undefined;
-    for (const username of ordered) {
-      if (attempts >= MAX_KEY_ATTEMPTS) break;
-      attempts++;
-      try {
-        const trader = await this.trades.getTrader(username);
-        const community = trader.community as unknown as CommunityWithKey;
-        let key = await this.getExistingKey(community);
-        if (!key) key = await this.createKey(community, this.identitySecretOf(username));
-        if (key) {
-          this.apiKey = key;
-          this.apiKeyFrom = username;
-          logger.info(`[bans] obtained Steam Web API key via ${username}`);
-          return key;
-        }
-      } catch (err) {
-        lastErr = err as Error;
-        logger.warn(`[bans] ${username}: could not provide an API key (${(err as Error).message})`);
-      }
-    }
-    throw new Error(lastErr ? lastErr.message : 'no account could provide a Steam Web API key');
-  }
+  // ── Steam Web API key acquisition (per-environment; see acquireEnvKeys above) ──
 
   /** This account's identity_secret (for auto-confirming key creation), or undefined. */
   private identitySecretOf(username: string): string | undefined {
@@ -422,4 +476,43 @@ export class BanService {
     }
     return r.data.players as SteamBanRecord[];
   }
+}
+
+/**
+ * PURE planner for F3c per-environment ban-key scoping (unit-tested in isolation, no live deps).
+ * Given the resolved targets (each tagged with its environment) and how many keys each
+ * environment has, produce the chunk assignments — every assignment's SteamIDs all belong to a
+ * single environment (strict cross-env isolation by construction), each chunk ≤ `perKey`, and
+ * key indices rotate 0..k-1 within the env — plus the targets that cannot be covered (an env
+ * with more accounts than keys × perKey, or with 0 keys). The orchestrator (`checkPerEnvironment`)
+ * feeds this the per-env key counts it actually acquired and executes the plan.
+ */
+export function planPerEnvBanChecks(
+  targets: Array<{ steamId: string; envId: string }>,
+  keysByEnv: Map<string, number>,
+  perKey: number = BANS_PER_KEY,
+): {
+  assignments: Array<{ envId: string; keyIndex: number; steamIds: string[] }>;
+  uncovered: Array<{ steamId: string; envId: string }>;
+} {
+  const cap = Math.max(1, Math.floor(perKey)); // never 0/negative → would loop or never cover
+  const byEnv = new Map<string, string[]>();
+  for (const t of targets) {
+    const list = byEnv.get(t.envId) ?? [];
+    list.push(t.steamId);
+    byEnv.set(t.envId, list);
+  }
+  const assignments: Array<{ envId: string; keyIndex: number; steamIds: string[] }> = [];
+  const uncovered: Array<{ steamId: string; envId: string }> = [];
+  for (const [envId, sids] of byEnv) {
+    const keys = Math.max(0, Math.floor(keysByEnv.get(envId) ?? 0));
+    const capacity = keys * cap;
+    for (let k = 0; k < keys; k++) {
+      const chunk = sids.slice(k * cap, Math.min((k + 1) * cap, capacity));
+      if (chunk.length === 0) break;
+      assignments.push({ envId, keyIndex: k, steamIds: chunk });
+    }
+    for (const sid of sids.slice(capacity)) uncovered.push({ steamId: sid, envId });
+  }
+  return { assignments, uncovered };
 }
