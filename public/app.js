@@ -1206,20 +1206,41 @@ const historyCache = new Map(); // seriesId → { ts, points }
 /** Fetches (cached) history for a series + the ACTIVE game, and renders the chart. The
  *  cache key + request carry the game so the CS2 and TF2 curves never collide. */
 async function loadHistory(seriesId) {
-  if (!seriesId) { renderHistoryChart([]); return; }
   const game = state.game;
-  const cacheKey = `${game}:${seriesId}`;
+  // F3b: in global-master the curve follows the ENV SELECTION — aggregate the selected envs'
+  // series (sorted ids in the cache key so toggling a env refetches). Env-master is unchanged.
+  let cacheKey, fetcher;
+  if (state.invMode === 'global') {
+    const envIds = [...state.globalEnvs].sort();
+    if (envIds.length === 0) { renderHistoryChart([]); return; }
+    cacheKey = `${game}:agg:${envIds.join(',')}`;
+    fetcher = () => api('/api/history/aggregate', { method: 'POST', body: JSON.stringify({ seriesIds: envIds, game }) });
+  } else {
+    if (!seriesId) { renderHistoryChart([]); return; }
+    cacheKey = `${game}:${seriesId}`;
+    fetcher = () => api(`/api/history/${encodeURIComponent(seriesId)}?game=${game}`);
+  }
   const hit = historyCache.get(cacheKey);
   if (hit && Date.now() - hit.ts < HISTORY_TTL_MS) { renderHistoryChart(hit.points); return; }
   try {
-    const points = await api(`/api/history/${encodeURIComponent(seriesId)}?game=${game}`);
+    const points = await fetcher();
     historyCache.set(cacheKey, { ts: Date.now(), points });
-    // Only draw if the user still looks at the same series AND game (async race guard).
-    const current = state.invMode === 'global' ? 'global' : state.activeEnv;
-    if (current === seriesId && state.game === game) renderHistoryChart(points);
+    // Only draw if the user still looks at the same view+selection AND game (async race guard).
+    if (state.game === game && cacheKey === currentHistoryKey()) renderHistoryChart(points);
   } catch {
     renderHistoryChart([]);
   }
+}
+
+/** The history cache key for the CURRENT view/selection/game — the async race guard in
+ *  loadHistory compares against this so a slow fetch for a now-stale selection never draws. */
+function currentHistoryKey() {
+  const game = state.game;
+  if (state.invMode === 'global') {
+    const envIds = [...state.globalEnvs].sort();
+    return envIds.length ? `${game}:agg:${envIds.join(',')}` : null;
+  }
+  return state.activeEnv ? `${game}:${state.activeEnv}` : null;
 }
 
 /** Invalidate the cache (called when a refresh completes → new point exists). */
@@ -2910,7 +2931,19 @@ function shortError(msg) {
   return s.length > 140 ? s.slice(0, 138) + '…' : s;
 }
 function refreshAll() {
-  const body = state.invMode === 'global' ? {} : { environmentId: state.activeEnv };
+  let body;
+  if (state.invMode === 'global') {
+    // F3a: refresh ONLY the accounts in the SELECTED environments (state.globalEnvs),
+    // not the whole farm. All envs selected → all of them; a 2-env selection → only those.
+    // Send an explicit username list (the backend validates each against known accounts).
+    const usernames = state.allAccounts
+      .filter((a) => a.enabled && state.globalEnvs.has(a.environmentId))
+      .map((a) => a.username);
+    if (usernames.length === 0) { toast('No accounts in the selected environment(s) to refresh', 'warn'); return; }
+    body = { usernames };
+  } else {
+    body = { environmentId: state.activeEnv };
+  }
   startInventoryRefresh({ ...body, game: state.game });
 }
 function refreshFolder(usernames) {

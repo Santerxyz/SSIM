@@ -689,6 +689,20 @@ export function createApp(deps: ApiDeps): Express {
   });
 
   // ── Value history (worth/wallet curve, one point per refresh) ──────────────
+  // F3b — aggregate the per-environment series of the SELECTED environments into one curve,
+  // so the global-master chart follows the environment selection. Registered BEFORE the
+  // parameterized GET below; POST (a read with a body list) so it never collides with it.
+  // Read-only; unknown ids are dropped (an empty selection yields []).
+  app.post('/api/history/aggregate', (req: Request, res: Response) => {
+    const raw = req.body?.seriesIds;
+    if (!Array.isArray(raw)) return res.status(400).json({ error: 'seriesIds must be an array of environment ids' });
+    const game: 'cs2' | 'tf2' = req.body?.game === 'tf2' ? 'tf2' : 'cs2';
+    // Keep only known environment ids (or the global series) — never aggregate an unknown id.
+    const ids = raw.filter((id: unknown): id is string =>
+      typeof id === 'string' && (id === GLOBAL_SERIES || !!accounts.getEnvironment(id)));
+    res.json(history.aggregate(ids, game));
+  });
+
   // :seriesId is 'global' or an environment id.
   app.get('/api/history/:seriesId', (req: Request, res: Response) => {
     const id = req.params.seriesId;

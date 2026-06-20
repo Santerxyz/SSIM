@@ -100,6 +100,44 @@ export class ValueHistoryService {
     return this.data.series[game === 'tf2' ? `tf2:${seriesId}` : seriesId] ?? [];
   }
 
+  /**
+   * Aggregates the per-environment series of `seriesIds` into ONE curve for `game`,
+   * summing items + wallet across the selected environments (F3b — the global-master chart
+   * follows the environment selection). Robust to environments that started recording at
+   * different times: at each timestamp present in ANY selected series, every series
+   * contributes its latest value AT-OR-BEFORE that timestamp (carry-forward), or 0 before
+   * its first point — so toggling a young environment in never makes the total dip. Output
+   * is chronological and capped to MAX_POINTS_PER_SERIES (most-recent kept).
+   */
+  aggregate(seriesIds: string[], game: 'cs2' | 'tf2' = 'cs2'): HistoryPoint[] {
+    const prefix = game === 'tf2' ? 'tf2:' : '';
+    const series = [...new Set(seriesIds)]
+      .map((id) => this.data.series[prefix + id])
+      .filter((arr): arr is HistoryPoint[] => Array.isArray(arr) && arr.length > 0);
+    if (series.length === 0) return [];
+    if (series.length === 1) return series[0].map((p) => ({ ...p })); // one env → its own curve
+
+    const tsSet = new Set<number>();
+    for (const arr of series) for (const p of arr) tsSet.add(p.t);
+    const timestamps = [...tsSet].sort((a, b) => a - b);
+
+    const cursors = series.map(() => 0); // per-series carry-forward index (timestamps ascending)
+    const out: HistoryPoint[] = [];
+    for (const t of timestamps) {
+      let items = 0, wallet = 0;
+      for (let s = 0; s < series.length; s++) {
+        const arr = series[s];
+        let i = cursors[s];
+        while (i + 1 < arr.length && arr[i + 1].t <= t) i++;
+        cursors[s] = i;
+        const p = arr[i];
+        if (p && p.t <= t) { items += p.items; wallet += p.wallet; } // before first point → 0
+      }
+      out.push({ t, items, wallet });
+    }
+    return out.length > MAX_POINTS_PER_SERIES ? out.slice(out.length - MAX_POINTS_PER_SERIES) : out;
+  }
+
   // ── Snapshots ────────────────────────────────────────────────────────────────
 
   /**
