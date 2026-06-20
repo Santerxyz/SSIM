@@ -5152,7 +5152,10 @@ async function tuStart() {
   const contracts = chosen.map(c => ({ inputAssetIds: c.inputs.map(i => i.assetId), rarityId: c.rarityId, stattrak: !!c.stattrak }));
   const ok = await ssimConfirm({
     title: 'Execute trade-ups?',
-    body: `Execute <b class="text-slate-100">${chosen.length}</b> trade-up(s) on <b class="text-slate-100">${escapeHtml(tuState.username)}</b>?<br><span class="text-amber-400 font-semibold">Each destroys 10 real items. Irreversible.</span>`,
+    body: `Execute <b class="text-slate-100">${chosen.length}</b> trade-up(s) on <b class="text-slate-100">${escapeHtml(tuState.username)}</b>?`
+      + `<br><span class="text-rose-400 font-semibold">Each destroys 10 real items. IRREVERSIBLE.</span>`
+      + `<br><span class="text-amber-400">⚠ GC trade-up execution has NOT been live-verified. Run ONE cheap contract first and confirm the output arrives before batching more. To disable execution entirely, relaunch with SSIM_GC_VERIFIED=0.</span>`
+      + (chosen.length > 1 ? `<br><span class="text-amber-300">You selected ${chosen.length} — consider starting with just 1 until you've confirmed it works.</span>` : ''),
     confirmLabel: 'Execute', confirmIcon: 'fa-bolt', tone: 'danger',
   });
   if (!ok) return;

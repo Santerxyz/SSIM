@@ -1,5 +1,6 @@
 import type { SessionManager } from '../core/SessionManager';
 import { SessionState } from '../types/session';
+import { IS_PACKAGED } from '../utils/paths';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -116,7 +117,23 @@ export class GcActionLayer {
   }
 
   available(): boolean { return !!loadGc(); }
-  private craftVerified(): boolean { return process.env.SSIM_GC_VERIFIED === '1'; }
+
+  /**
+   * Trade-up CRAFT gate (irreversible — destroys 10 items). Resolution:
+   *   • SSIM_GC_VERIFIED = 0/false/off  → FORCE OFF — the KILL SWITCH. Set this (then relaunch) to
+   *     instantly disable trade-up execution in production, no rebuild, if anything looks wrong.
+   *   • SSIM_GC_VERIFIED = 1/true/on    → FORCE ON.
+   *   • unset → ON in the shipped (packaged) release, OFF in dev. The shipped default is ON per the
+   *     owner's explicit release decision; storage stays unaffected (it has its own, flagless gate).
+   * NOTE: the mechanism has not been live-verified — the first real contract IS the test. The UI
+   * warns loudly and the kill switch above is the panic button.
+   */
+  private craftVerified(): boolean {
+    const v = (process.env.SSIM_GC_VERIFIED ?? '').trim().toLowerCase();
+    if (v === '0' || v === 'false' || v === 'off') return false; // kill switch (works everywhere)
+    if (v === '1' || v === 'true' || v === 'on') return true;     // explicit enable
+    return IS_PACKAGED;                                            // shipped release ON; dev OFF
+  }
 
   status(): GcStatus {
     const available = this.available();
@@ -128,8 +145,8 @@ export class GcActionLayer {
       reason: !available
         ? 'globaloffensive is not installed (npm i globaloffensive)'
         : craftEnabled
-          ? 'GC ready — storage + trade-up craft enabled'
-          : 'GC ready — storage enabled; trade-up craft disabled (set SSIM_GC_VERIFIED=1 after a verified test)',
+          ? 'GC ready — storage + trade-up craft ENABLED (unverified live — test one cheap contract first; SSIM_GC_VERIFIED=0 disables)'
+          : 'GC ready — storage enabled; trade-up craft disabled (SSIM_GC_VERIFIED=0)',
     };
   }
 
