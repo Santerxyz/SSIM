@@ -112,10 +112,16 @@ stays a documented global operator override. The pure planner `planPerEnvBanChec
 
 ## 4) The GC mechanism — what is verified vs. what is still needed
 
-| Operation | In published `globaloffensive`? | This build |
+> **⚠ SUPERSEDED by `GC_INTEGRATION_REPORT.md` (Task 3).** `globaloffensive@3.3.0` was installed and its
+> real API read: it **does** expose `craft(items, recipe)` (with a documented trade-up recipe table) and
+> `paint_wear` floats on `gc.inventory`. Both features were subsequently made **genuinely functional**
+> (storage works; trade-up floats accurate; craft wired behind `SSIM_GC_VERIFIED`). The table below
+> reflects the Task-2 state when the library was not yet installed.
+
+| Operation | In published `globaloffensive`? | Task-2 build (now superseded) |
 |---|---|---|
-| Storage: list units (`gc.inventory`), read (`getCasketContents`), deposit (`addToCasket`), withdraw (`removeFromCasket`) | **Yes** (documented) | Implemented against that API, gated. **Untested live** (no library installed; owner runs first move). |
-| Trade-up **craft** | **No** — the library exposes no craft/trade-up call | `craftTradeUp` **probes** for a `gc.craft` method and **refuses** (throws, touches nothing) if absent. It never guesses a raw GC message that could destroy items. |
+| Storage: list units (`gc.inventory`), read (`getCasketContents`), deposit (`addToCasket`), withdraw (`removeFromCasket`) | **Yes** (documented) | Implemented against that API, gated. Now REAL + verified — see GC_INTEGRATION_REPORT. |
+| Trade-up **craft** | **Yes in v3.3.0** (`craft(items, recipe)`) — Task 2 mis-stated this as absent | Now wired with the documented recipe table + `craftingComplete` confirm — see GC_INTEGRATION_REPORT. |
 
 **Exact mechanism still required for trade-up EXECUTION:** a GC craft message must be sent — historically
 `k_EMsgGCCraft` (the in-client "craft/trade-up" request carrying the 10 input item ids + recipe), via
