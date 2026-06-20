@@ -191,5 +191,5 @@ New: `src/trading/tradeupMath.ts`, `src/core/Cs2SchemaService.ts`, `src/trading/
 `src/trading/GcActionLayer.ts`, `src/trading/CasketService.ts`.
 Changed: `src/api/server.ts` (deps + endpoints + money-op breaker), `src/trading/BanService.ts` (F3c),
 `src/core/ValueHistoryService.ts` (F3b aggregate), `public/app.js` (F3a/b + both modals + header buttons).
-Commits: `7a45415` (F3c) · `310cb90` (trade-up math/schema) · `8504d39` (GC layer + execution + API) ·
-`248f1f4` (UIs), plus `c9d9938`/earlier (F3a/F3b).
+Commits: `666d311` (F3a/F3b) · `7a45415` (F3c) · `310cb90` (trade-up math/schema) ·
+`8504d39` (GC layer + execution + API) · `248f1f4` (UIs) · `d877ccb` (this report).
