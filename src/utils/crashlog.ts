@@ -50,3 +50,28 @@ export function writeCrash(label: string, detail: unknown): void {
     fs.appendFileSync(CRASH_FILE, record);
   } catch { /* a crash sink must never throw */ }
 }
+
+/** exit-trace.log – the internal-vs-external death discriminator (see writeExit). */
+export const EXIT_FILE: string = (() => {
+  try { fs.mkdirSync(logsDir(), { recursive: true }); return logsDir('exit-trace.log'); }
+  catch { return baseDir('exit-trace.log'); }
+})();
+
+/**
+ * Synchronous breadcrumb written from `process.on('exit')` — i.e. on EVERY exit the
+ * process initiates itself (a clean shutdown, a license/boot exit, a SIGHUP handler, or
+ * even a vendor library calling process.exit()). Node runs 'exit' handlers synchronously
+ * before the process leaves, so fs.appendFileSync here is guaranteed on disk.
+ *
+ * THE DIAGNOSIS HINGES ON THIS LINE'S PRESENCE OR ABSENCE:
+ *   • a death that leaves an EXIT line ⇒ the process exited ITSELF — `code` names which path.
+ *   • a death with NO EXIT line (heartbeat/ssim.log just stop) ⇒ an UNCATCHABLE external
+ *     TerminateProcess / SIGKILL — nothing inside the process chose to die.
+ * That single fact has been unknowable for two days because nothing recorded it.
+ */
+export function writeExit(code: number | string): void {
+  try {
+    const rec = `[${new Date().toISOString()}] EXIT code=${code} pid=${process.pid} up=${Math.round(process.uptime())}s${memTag()}\n`;
+    fs.appendFileSync(EXIT_FILE, rec);
+  } catch { /* a crash sink must never throw */ }
+}

@@ -13,7 +13,7 @@
 //
 //  USAGE (sign an update):
 //    node build/sign-update.js \
-//      --exe release-tauri/SSIM/ssim-backend.exe \
+//      --exe release-tauri/SSIM/SSIM.exe \
 //      --version 1.1.6 \
 //      --url https://your-cdn/ssim-backend-1.1.6.exe \
 //      --key path/to/license_private.pem        # or set env LICENSE_PRIVATE_KEY (PEM)

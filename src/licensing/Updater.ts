@@ -10,21 +10,32 @@ import { LICENSE_API_URL, LICENSE_PUBLIC_KEY, LICENSE_HTTP_TIMEOUT_MS } from './
 import { IS_SIDECAR_MODE } from '../utils/paths';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Updater – signed, self-replacing auto-update flow (Windows .exe)
+//  Updater — signed, self-replacing auto-update for the SINGLE self-contained SSIM.exe.
 //
-//  Flow:  version check → download to %TEMP% → verify sha256 + Ed25519 sig
-//         → write updater.bat → spawn detached → exit → bat replaces exe + relaunch
+//  SSIM now ships as ONE binary: the Tauri shell with the Node backend embedded inside it. The
+//  backend (this code) runs as the shell's child; the shell passes its own path as SSIM_SHELL_EXE.
+//  So an update is a ONE-FILE swap: download the new SSIM.exe → verify (sha256 + Ed25519) → prove it
+//  boots (anti-brick self-test) → swap SSIM_SHELL_EXE → relaunch it. The new shell re-extracts its
+//  (new) embedded backend on next launch.
 //
-//  A running .exe cannot overwrite itself on Windows, so the actual file swap is
-//  delegated to a tiny detached batch script that waits for our PID to die.
-//  The signature check is what makes auto-update safe: a hijacked update URL
-//  cannot ship a payload we will execute, because it can't sign it.
+//  Flow:  GET /version → download to %TEMP% → verify sha256 + Ed25519 sig over `${latest}:${sha256}`
+//         → self-test the new exe → write updater.bat → spawn detached → emit SSIM_UPDATING → exit
+//         → bat waits for backend + shell to die, swaps SSIM.exe, relaunches it, self-cleans.
+//
+//  A running .exe can't overwrite itself on Windows, so the swap is delegated to a tiny detached
+//  batch launched via a hidden VBScript (so it survives our exit). The Ed25519 signature is what makes
+//  this safe: a hijacked update URL can't ship a payload we'll execute, because it can't sign it.
+//
+//  MIGRATION (existing two-file installs → this single-exe build): handled SERVER-SIDE. The license
+//  server publishes a transitional manifest carrying the new SSIM.exe as the file the OLD two-file
+//  updater already knows how to swap; that hop lands the consolidated exe, which then takes over with
+//  this simple single-file path. This client is single-file ONLY (no dual-format).
 // ════════════════════════════════════════════════════════════════════════════
 
 interface VersionInfo {
   latest: string;   // semver
-  url:    string;   // download URL of the new exe
-  sha256: string;   // hex digest of the new exe
+  url:    string;   // download URL of the new SSIM.exe (the single self-contained binary)
+  sha256: string;   // hex digest of that file
   sig:    string;   // base64url Ed25519 signature over `${latest}:${sha256}`
 }
 
@@ -67,12 +78,11 @@ async function check(currentVersion: string): Promise<VersionInfo | null> {
   }
 }
 
-/** 2. Stream the new exe to a temp file. */
+/** 2. Stream a URL to a fresh temp file. */
 async function download(info: VersionInfo): Promise<string> {
-  const tmp = path.join(os.tmpdir(), `ssim_update_${Date.now()}.exe`);
+  const tmp = path.join(os.tmpdir(), `ssim_update_${Date.now()}_${process.pid}_${Math.floor(Math.random() * 1e6)}.exe`);
   const res = await http.get(info.url, { responseType: 'stream' });
   if (res.status !== 200) {
-    // Drain the already-open response stream so its socket isn't leaked, then fail.
     try { res.data.destroy(); } catch { /* noop */ }
     throw new Error(`download HTTP ${res.status}`);
   }
@@ -81,8 +91,8 @@ async function download(info: VersionInfo): Promise<string> {
     res.data.pipe(out);
     out.on('finish', resolve);
     const cleanup = (err: Error): void => {
-      // On any stream/write error: tear down BOTH streams and remove the partial
-      // temp file so a failed update leaks neither sockets nor multi-MB .exe scraps.
+      // On any stream/write error: tear down BOTH streams and remove the partial temp file so a
+      // failed update leaks neither sockets nor a multi-MB .exe scrap.
       try { out.destroy(); } catch { /* noop */ }
       try { res.data.destroy(); } catch { /* noop */ }
       try { fsExtra.removeSync(tmp); } catch { /* noop */ }
@@ -112,55 +122,100 @@ function verify(file: string, info: VersionInfo): boolean {
 }
 
 /**
- * 4. Write the swap script and launch it so it can replace us after we exit.
- *
- *  CRITICAL (Windows): a plain `spawn('cmd', …, {detached:true}).unref()` is NOT
- *  enough – the child shares our console and gets torn down the instant we
- *  process.exit() moments later, so the swap never runs (the bat dies in its
- *  wait loop). We therefore launch the bat through a tiny HIDDEN VBScript
- *  (WScript.Shell.Run, window-style 0, wait=false): WScript starts the bat in
- *  its own process, invisible, fully decoupled from us, surviving our exit.
- *
- *  The bat: waits for our PID to die → retries `move` for up to 15s (Windows can
- *  hold the old exe's file handle briefly after exit) → relaunches → self-cleans.
+ * 4. ANTI-BRICK: prove the new SSIM.exe extracts + boots its EMBEDDED backend (and that all bundled
+ * deps — incl. the globaloffensive + steam stack — load) BEFORE we replace the working one. The new
+ * exe is already authentic (sha256 + Ed25519). We run it with SSIM_SELFTEST=1 in an ISOLATED temp
+ * home, so its ~171 MB extraction + logs never touch the live install; the shell's passthrough runs
+ * the embedded backend's self-test, writes the report to <home>/.ssim-selftest.out, and exits 0 (ok)
+ * / 2 (fail). We trust the EXIT CODE (reliable regardless of the exe's GUI subsystem) and confirm the
+ * report for good measure. A new exe that fails to boot is REJECTED here — a bad publish can never
+ * replace a working install with one that won't start.
  */
-function swapAndRelaunch(newExe: string): void {
-  const target = process.execPath; // the running backend exe (ssim-backend.exe under the Tauri shell)
+function selfTestNewExe(file: string): boolean {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim_selftest_'));
+  try {
+    execFileSync(file, [], {
+      env: { ...process.env, SSIM_SELFTEST: '1', SSIM_HOME: home },
+      timeout: 120_000, windowsHide: true, stdio: 'ignore',
+    });
+    let report = '';
+    try { report = fs.readFileSync(path.join(home, '.ssim-selftest.out'), 'utf8'); } catch { /* no report */ }
+    if (/SSIM_SELFTEST_OK/.test(report)) {
+      logger.info('update self-test passed – new SSIM.exe boots its embedded backend + deps');
+      return true;
+    }
+    logger.error(`update self-test: exit 0 but no OK report – not swapping: ${report.trim().slice(0, 300)}`);
+    return false;
+  } catch (err) {
+    logger.error(`update self-test failed (non-zero exit / crash) – not swapping: ${(err as Error).message}`);
+    return false;
+  } finally {
+    try { fsExtra.removeSync(home); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Build the Windows .bat for the single-file swap. Pure + exported so the swap logic can be tested
+ * without overwriting a live install: waits for BOTH our backend PID and the shell PID (force-kills
+ * after ~12 s so a stuck shell can't deadlock it), moves the new exe over the running SSIM.exe with
+ * retry (Windows can hold a file handle briefly after exit), relaunches the shell, then self-cleans.
+ */
+export function buildSwapScript(o: {
+  tmp: string;        // downloaded new SSIM.exe
+  target: string;     // the running SSIM.exe (shell) to replace AND relaunch
+  backendPid: number; // our (extracted backend) PID
+  shellPid: number;   // the SSIM.exe shell PID (our parent)
+  vbsPath: string;    // deleted by the bat
+  selfPath?: string;  // what the bat deletes last; defaults to %~f0 (itself) in production
+}): string {
+  const waitOrKill = (pid: number, label: string): string =>
+    `set /a ${label}=0\r\n:${label}\r\n` +
+    `tasklist /FI "PID eq ${pid}" | find "${pid}" >nul || goto ${label}_ok\r\n` +
+    `set /a ${label}+=1\r\n` +
+    `if %${label}% GEQ 12 (taskkill /F /PID ${pid} >nul 2>&1 & goto ${label}_ok)\r\n` +
+    `timeout /t 1 >nul & goto ${label}\r\n:${label}_ok\r\n`;
+  return (
+    `@echo off\r\n` +
+    waitOrKill(o.backendPid, 'wbk') +    // our backend (the extracted child)
+    waitOrKill(o.shellPid, 'wsh') +      // the SSIM.exe shell
+    `set /a tries=0\r\n:swap\r\n` +
+    `move /Y "${o.tmp}" "${o.target}" >nul 2>&1 && goto done\r\n` +
+    `set /a tries+=1\r\n` +
+    `if %tries% LSS 15 (timeout /t 1 >nul & goto swap)\r\n:done\r\n` +
+    `start "" "${o.target}"\r\n` +
+    `del "${o.vbsPath}" >nul 2>&1\r\ndel "${o.selfPath ?? '%~f0'}"\r\n`
+  );
+}
+
+/** 5. Write the swap script + launch it (hidden, detached) so it can replace us after we exit. */
+function swapAndRelaunch(newExe: string): { updated: boolean; reason: string } {
+  // The shell passes its own path; without it we cannot know which OUTER exe to replace, so we fail
+  // honestly and keep the working install rather than guess (owner directive: no band-aids).
+  const shellExe = process.env.SSIM_SHELL_EXE;
+  if (!shellExe) {
+    try { fsExtra.removeSync(newExe); } catch { /* noop */ }
+    return { updated: false, reason: 'SSIM_SHELL_EXE not set — cannot self-update; kept current version' };
+  }
   const stamp = Date.now();
   const bat = path.join(os.tmpdir(), `ssim_updater_${stamp}.bat`);
   const vbs = path.join(os.tmpdir(), `ssim_updater_${stamp}.vbs`);
-
-  // Two-artifact (Tauri) model: the backend is a SIDECAR of SSIM.exe. We swap ssim-backend.exe, but
-  // must wait for BOTH the sidecar AND its parent shell to exit (the shell follows the sidecar out
-  // via its Terminated handler) before relaunching the SHELL — which respawns the freshly-swapped
-  // sidecar (and the single-instance guard is safe because the old shell is already gone).
-  // Standalone/headless: wait for our PID only and relaunch the swapped exe itself.
-  const sidecar = IS_SIDECAR_MODE;
-  const relaunch = sidecar ? path.join(path.dirname(target), 'SSIM.exe') : target;
-  const waitFor = (pid: number, label: string): string =>
-    `:${label}\r\ntasklist /FI "PID eq ${pid}" | find "${pid}" >nul && (timeout /t 1 >nul & goto ${label})\r\n`;
-
-  const script =
-    `@echo off\r\n` +
-    waitFor(process.pid, 'wbk') +
-    (sidecar ? waitFor(process.ppid, 'wsh') : '') +
-    `set /a tries=0\r\n` +
-    `:swap\r\n` +
-    `move /Y "${newExe}" "${target}" >nul 2>&1 && goto done\r\n` +
-    `set /a tries+=1\r\n` +
-    `if %tries% LSS 15 (timeout /t 1 >nul & goto swap)\r\n` +
-    `:done\r\n` +
-    `start "" "${relaunch}"\r\n` +
-    `del "${vbs}" >nul 2>&1\r\n` +
-    `del "%~f0"\r\n`;
+  const script = buildSwapScript({
+    tmp: newExe,
+    target: shellExe,
+    backendPid: process.pid,
+    shellPid: process.ppid,
+    vbsPath: vbs,
+  });
   fsExtra.writeFileSync(bat, script);
   // Hidden + detached launcher: window style 0 = invisible, False = don't wait.
   fsExtra.writeFileSync(vbs, `CreateObject("WScript.Shell").Run "cmd /c ""${bat}""", 0, False\r\n`);
   spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  logger.info('update staged – swap script launched, exiting for replacement');
-  // Give WScript a moment to spin the bat up as an independent process before we
-  // vanish (do NOT unref – we want this delay to actually elapse).
+  // Tell the shell this is an UPDATE, not a crash → it quits cleanly (no crash screen) so SSIM.exe frees up.
+  try { if (IS_SIDECAR_MODE) process.stdout.write('SSIM_UPDATING\n'); } catch { /* stdout may be closed */ }
+  logger.info('update staged (single-exe) – swap script launched, exiting for replacement');
+  // Give WScript a moment to spin the bat up as an independent process before we vanish (do NOT unref).
   setTimeout(() => process.exit(0), 800);
+  return { updated: true, reason: 'swapping' };
 }
 
 /** Full orchestration; safe to call on boot or from a manual trigger. */
@@ -169,6 +224,10 @@ export async function runUpdate(currentVersion: string): Promise<{ updated: bool
   if (!info) return { updated: false, reason: 'up-to-date' };
   printUpdateBanner(currentVersion, info.latest);
   logger.info(`update available: ${currentVersion} → ${info.latest}`);
+  // Tell the shell to show "Downloading update…" on its splash — the download can be ~175 MB and runs
+  // BEFORE our server starts, so without this the launch window would just look frozen.
+  try { if (IS_SIDECAR_MODE) process.stdout.write('SSIM_UPDATE_DOWNLOADING\n'); } catch { /* stdout may be closed */ }
+
   let file: string;
   try {
     file = await download(info);
@@ -179,37 +238,11 @@ export async function runUpdate(currentVersion: string): Promise<{ updated: bool
     fsExtra.removeSync(file);
     return { updated: false, reason: 'verification failed' };
   }
-  // ANTI-BRICK GATE: prove the downloaded backend actually BOOTS + loads its deps (incl.
-  // globaloffensive + the steam stack) BEFORE we throw away the working one. The new exe is
-  // already authentic (sha256 + Ed25519), so running its own self-test is safe; it exits without
-  // a license check / port bind / Steam. A new exe that fails to boot is REJECTED here, so a bad
-  // publish can never replace a working install with one that won't start.
   if (!selfTestNewExe(file)) {
     fsExtra.removeSync(file);
     return { updated: false, reason: 'new exe failed its self-test – kept the current version' };
   }
-  swapAndRelaunch(file); // does not return (process exits)
-  return { updated: true, reason: 'swapping' };
-}
-
-/** Runs the freshly-downloaded exe with SSIM_SELFTEST=1 and returns true only if it prints
- *  SSIM_SELFTEST_OK (boots + all bundled deps load). Throws on a non-zero exit → caught → false. */
-function selfTestNewExe(file: string): boolean {
-  try {
-    const out = execFileSync(file, [], {
-      env: { ...process.env, SSIM_SELFTEST: '1' },
-      timeout: 60_000, encoding: 'utf8', windowsHide: true,
-    });
-    if (/SSIM_SELFTEST_OK/.test(out)) {
-      logger.info('update self-test passed – new backend boots + loads its deps');
-      return true;
-    }
-    logger.error(`update self-test did not pass – not swapping: ${out.trim().slice(0, 300)}`);
-    return false;
-  } catch (err) {
-    logger.error(`update self-test failed (non-zero exit / crash) – not swapping: ${(err as Error).message}`);
-    return false;
-  }
+  return swapAndRelaunch(file); // does not return on success (process exits)
 }
 
 export const Updater = { check, runUpdate };

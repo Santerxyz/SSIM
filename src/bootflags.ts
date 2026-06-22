@@ -56,4 +56,30 @@ try {
   }
 } catch { /* best-effort: diagnostics must never block boot */ }
 
+// ── Raw-stderr tee: capture dying last-words winston cannot ─────────────────────
+// winston's File transport is async and only sees logger.* calls. If a native/V8 fatal
+// prints "FATAL ERROR: …" or a vendor library writes to stderr (console.error /
+// process.stderr.write) immediately before the process dies, NOTHING reaches ssim.log.
+// Tee every stderr write into a SYNCHRONOUS file so those last-words survive a death.
+// Best-effort; the original stderr write ALWAYS still runs, and a failure here is swallowed.
+try {
+  fs.mkdirSync(logsDir(), { recursive: true });
+  const stderrTrace = logsDir('stderr-trace.log');
+  const orig = process.stderr.write.bind(process.stderr) as (...a: unknown[]) => boolean;
+  const mask = (s: string): string =>
+    s.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@'); // scrub proxy creds
+  (process.stderr as unknown as { write: (...a: unknown[]) => boolean }).write = (
+    chunk: unknown,
+    ...rest: unknown[]
+  ): boolean => {
+    try {
+      const s = typeof chunk === 'string'
+        ? chunk
+        : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      fs.appendFileSync(stderrTrace, mask(s));
+    } catch { /* never break stderr */ }
+    return orig(chunk, ...rest);
+  };
+} catch { /* best-effort: a diagnostic must never block boot */ }
+
 export {};

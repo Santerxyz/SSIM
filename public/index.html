@@ -77,6 +77,13 @@
   <link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css" />
   <link rel="stylesheet" href="/assets/vendor/fonts.css" />
 
+  <!-- DS-04: canonical design-system layer (buttons/fields/surfaces/modal frame/
+       pills/empty/toast primitives). Additive — every selector is a new class no
+       existing element uses yet, so this only adds vocabulary, changes nothing.
+       Surfaces migrate onto it in later phases. Loaded before the inline <style>
+       so page-specific rules below always win. -->
+  <link rel="stylesheet" href="/assets/ssim-ui.css" />
+
   <style>
     /* ── DS-01: single source of truth for the palette. Channels are "R G B" so
        Tailwind /alpha modifiers resolve via rgb(var(--x) / <alpha-value>) and
@@ -136,6 +143,48 @@
     @keyframes skel-shimmer { 100% { transform: translateX(100%); } }
     @media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } .fade-in { animation: none; } }
 
+    /* ── Startup splash: one-shot brand flourish on the unlock→dashboard transition
+       (triggered in app.js init(), gated by sessionStorage so it never plays on soft
+       reloads). A purple bloom swells in behind the Santer diamond mark, which strokes
+       itself in and fills, then the whole overlay fades out (≤1.2s total) to hand off
+       into the dashboard skeleton already rendered underneath. Pure CSS, brand-token
+       driven, above every overlay (toasts z-[60]). Fully static under reduced motion. ── */
+    #ssim-splash { background: rgb(var(--slate-950)); pointer-events: none; }
+    #ssim-splash.is-playing { animation: ssim-splash-out .3s ease-in .9s forwards; }
+    .ssim-splash-bloom {
+      position: absolute; top: 50%; left: 50%;
+      width: min(70vw, 520px); height: min(70vw, 520px); border-radius: 50%;
+      background: radial-gradient(circle, rgb(var(--brand-rgb) / .55) 0%, rgb(var(--brand-rgb) / .14) 38%, transparent 70%);
+      transform: translate(-50%, -50%) scale(.4); opacity: 0;
+    }
+    .is-playing .ssim-splash-bloom { animation: ssim-splash-bloom .7s ease-out forwards; }
+    .ssim-splash-mark { position: relative; filter: drop-shadow(0 0 14px rgb(var(--brand-rgb) / .55)); }
+    .ssim-splash-mark .s0 { stop-color: rgb(var(--brand-l-rgb)); }
+    .ssim-splash-mark .s1 { stop-color: rgb(var(--brand-rgb)); }
+    .ssim-splash-mark path {
+      stroke: rgb(var(--brand-l-rgb)); stroke-width: 6; stroke-linejoin: round; stroke-linecap: round;
+      stroke-dasharray: 240; stroke-dashoffset: 240; fill-opacity: 0;
+    }
+    .is-playing .ssim-splash-mark { animation: ssim-splash-pop .85s ease-out forwards; }
+    .is-playing .ssim-splash-mark path { animation: ssim-splash-draw .85s ease-in-out forwards; }
+    @keyframes ssim-splash-bloom {
+      0%   { transform: translate(-50%, -50%) scale(.4); opacity: 0; }
+      45%  { opacity: 1; }
+      100% { transform: translate(-50%, -50%) scale(1); opacity: .85; }
+    }
+    @keyframes ssim-splash-pop {
+      0%   { transform: scale(.82); opacity: .2; }
+      60%  { transform: scale(1.04); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    @keyframes ssim-splash-draw {
+      0%   { stroke-dashoffset: 240; fill-opacity: 0; }
+      55%  { stroke-dashoffset: 0;   fill-opacity: 0; }
+      100% { stroke-dashoffset: 0;   fill-opacity: 1; }
+    }
+    @keyframes ssim-splash-out { to { opacity: 0; visibility: hidden; } }
+    @media (prefers-reduced-motion: reduce) { #ssim-splash { display: none !important; } }
+
     /* Micro-interactions: every button presses down slightly, inputs glow in */
     button { transition-property: background-color, border-color, color, box-shadow, transform, opacity; transition-duration: .15s; }
     button:active:not(:disabled) { transform: translateY(1px) scale(.985); }
@@ -148,12 +197,10 @@
     :focus-visible { outline: 2px solid rgb(var(--brand-rgb)); outline-offset: 2px; border-radius: 3px; }
     input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; }
 
-    /* Primary (violet) buttons get a subtle top-light + depth */
-    button.bg-brand {
-      background-image: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,0));
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 1px 3px rgba(0,0,0,.45);
-    }
-    button.bg-emerald-600 {
+    /* Filled accent buttons get a subtle top-light + depth. DS-04: teal (Buy) and
+       rose (destructive) now match brand/emerald so the whole filled-button family
+       reads with the same physicality (was: only brand + emerald had it). */
+    button.bg-brand, button.bg-emerald-600, button.bg-teal-600, button.bg-rose-600 {
       background-image: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,0));
       box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 1px 3px rgba(0,0,0,.45);
     }
@@ -185,6 +232,18 @@
        column headers stay pinned (see #items-head th above). */
     #toolbar { padding-bottom: .25rem; }
 
+    /* DS-04 responsiveness: these data toolbars carry many controls on one row. In a
+       narrow Tauri window they used to overflow horizontally (clipping the Refresh /
+       selection actions); now they wrap gracefully. The window is the container, so
+       flex-wrap + a row-gap is the simplest robust fit (no fixed breakpoints). */
+    #stat-bar { flex-wrap: wrap; row-gap: .75rem; }
+    #toolbar  { flex-wrap: wrap; row-gap: .5rem; }
+    /* Account/master header (title ↔ action cluster) wraps before it overflows. */
+    #main-header { flex-wrap: wrap; gap: .75rem; }
+    /* Keep the right-hand control cluster (game toggle · Buy · currency · Refresh)
+       together as one wrapping unit so it never splits mid-group. */
+    #stat-bar > .flex-1 { min-width: 0; }
+
     /* KPI stat cards: hairline gradient top accent */
     .stat-card { position: relative; overflow: hidden; }
     .stat-card::before {
@@ -200,8 +259,21 @@
     }
     .env-tile:hover { transform: translateY(-3px); box-shadow: 0 16px 36px -18px rgb(var(--brand-rgb) / .5); }
 
-    /* Modals: deep, violet-tinted shadow */
-    div[id$="-overlay"] > div { box-shadow: 0 24px 80px -24px rgb(var(--brand-rgb) / .35), 0 10px 36px rgba(0,0,0,.6); }
+    /* DS-04 Hybrid: OVERLAYS are glass. The frozen `[id$="-overlay"] > div` card gets a
+       translucent blurred surface (color-mix + backdrop-filter) + the deep violet-tinted
+       elevation — applied here so every modal (static AND the JS-built feature overlays)
+       converts uniformly with no markup change. This descendant selector out-specifies the
+       card's own bg-slate-900/border utilities, so it overrides them cleanly. Data surfaces
+       stay flat/opaque; only overlays float as glass. */
+    div[id$="-overlay"] > div {
+      background: var(--glass-bg);
+      backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+      border-color: var(--glass-border) !important;
+      box-shadow: var(--elev-3);
+    }
+    /* Sticky modal sub-headers (e.g. the Sell modal) are opaque slate over the glass —
+       make them match the glass so they don't read as a separate solid block. */
+    div[id$="-overlay"] .sticky.bg-slate-900 { background: transparent !important; backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
 
     /* Sidebar: vertical depth gradient + active-row left indicator */
     #app-sidebar { background-image: linear-gradient(180deg, rgb(var(--slate-900)), rgb(var(--bg-2)) 70%, rgb(var(--slate-950))); }
@@ -262,6 +334,27 @@
 </head>
 
 <body class="bg-slate-950 text-slate-200 font-sans antialiased h-screen overflow-hidden">
+
+  <!-- One-shot startup splash (styling: #ssim-splash above). Revealed once by
+       playStartupSplash() in app.js on the unlock→dashboard transition; `hidden` by
+       default so it never shows on soft reloads or under reduced motion. Decorative
+       only (aria-hidden + pointer-events:none) — fades out to reveal the skeleton. -->
+  <div id="ssim-splash" class="hidden fixed inset-0 z-[70] flex items-center justify-center" aria-hidden="true">
+    <div class="ssim-splash-bloom"></div>
+    <svg class="ssim-splash-mark" width="84" height="84" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="ssim-splash-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop class="s0" offset="0" />
+          <stop class="s1" offset="1" />
+        </linearGradient>
+      </defs>
+      <!-- pathLength="240" normalizes the measured outline length to exactly 240 so the
+           stroke-dasharray/dashoffset draw-in (240→0) maps to a true 0→100% and CLOSES the
+           loop. The real perimeter is 4·44√2 ≈ 248.9, so the prior dasharray:240 only drew
+           ~96% — leaving a permanent gap that read as "stuck at ~98%". -->
+      <path d="M50 6 L94 50 L50 94 L6 50 Z" pathLength="240" fill="url(#ssim-splash-grad)" />
+    </svg>
+  </div>
 
   <div class="flex h-screen">
 
@@ -380,7 +473,9 @@
       <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
         <div class="flex items-center gap-2 text-2xs text-slate-500 min-w-0">
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
-          <span id="footer-status" data-no-i18n class="truncate font-mono">v1.2.1</span>
+          <!-- Version text is filled at runtime from the API (pkg.version -> app.js), so there is
+               exactly ONE version source and the footer can never drift. No hardcoded literal here. -->
+          <span id="footer-status" data-no-i18n class="truncate font-mono"></span>
         </div>
       </div>
     </aside>
@@ -1272,8 +1367,8 @@
         'position:fixed', 'right:18px', 'bottom:18px', 'z-index:99999',
         'padding:9px 14px', 'border:0', 'border-radius:999px', 'cursor:pointer',
         'font:600 12.5px -apple-system,Segoe UI,Roboto,sans-serif', 'color:#fff',
-        'background:linear-gradient(135deg,#c084fc,#a855f7)',
-        'box-shadow:0 6px 20px rgba(168,85,247,.35)', 'opacity:.92'
+        'background:linear-gradient(135deg,#c084fc,#9333ea)',
+        'box-shadow:0 6px 20px rgba(147,51,234,.35)', 'opacity:.92'
       ].join(';');
       b.onmouseenter = function () { b.style.opacity = '1'; };
       b.onmouseleave = function () { b.style.opacity = '.92'; };

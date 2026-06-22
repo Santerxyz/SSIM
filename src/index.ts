@@ -4,7 +4,7 @@ import net from 'net';
 import type { Server } from 'http';
 import { createApp, createDeps } from './api/server';
 import { logger, LOG_FILE } from './utils/logger';
-import { writeCrash, CRASH_FILE } from './utils/crashlog';
+import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
 import { HwidService } from './licensing/HwidService';
 import { LicenseClient } from './licensing/LicenseClient';
@@ -352,7 +352,14 @@ for (const sig of ['SIGHUP', 'SIGBREAK'] as const) {
 // Belt-and-braces (#38): release the single-instance lock on ANY process exit so a
 // leftover lockfile never blocks the next start. (SIGKILL can't be caught — the
 // stale-PID liveness check in acquireInstanceLock() covers that case.)
-process.on('exit', () => { try { releaseInstanceLock(); } catch { /* best-effort */ } });
+process.on('exit', (code) => {
+  // FIRST: drop the internal-exit breadcrumb (logs/exit-trace.log). Its presence proves the
+  // process exited itself (and `code` names which path); its ABSENCE after a death proves an
+  // uncatchable external TerminateProcess/SIGKILL. This is the discriminator the silent-death
+  // investigation has been missing — synchronous, so it survives an immediate exit.
+  try { writeExit(code); } catch { /* best-effort */ }
+  try { releaseInstanceLock(); } catch { /* best-effort */ }
+});
 
 // ── Build-time packaged-VFS self-test ─────────────────────────────────────────
 // build/pack.js launches the freshly-packaged exe with SSIM_SELFTEST=1 right

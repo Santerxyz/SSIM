@@ -5,9 +5,8 @@
 //  Run:  node build/make-zip.js            (after `npm run build:tauri`)
 //  Out:  release/SSIM-<version>.zip
 //
-//  Two-artifact (Tauri) model: ships SSIM.exe (window shell) + ssim-backend.exe
-//  (the app + the WHOLE UI bundled inside it) + an EMPTY data/ + mafiles/ skeleton
-//  + READ ME FIRST.txt + START.txt.
+//  Single-artifact model: ships ONE SSIM.exe (shell + embedded backend + the WHOLE UI inside it)
+//  + an EMPTY data/ + mafiles/ skeleton + READ ME FIRST.txt + START.txt.
 //
 //  SAFETY (the whole point): the stage is built from an EXPLICIT ALLOW-LIST — only
 //  the two exes and the generated text/skeletons are ever copied, so the dev's real
@@ -31,19 +30,16 @@ const ZIP = path.join(RELEASE_DIR, `SSIM-${VERSION}.zip`);
 
 const fail = (m) => { console.error(`\n✗ ${m}\n`); process.exit(1); };
 
-// 1. Preconditions — the Tauri build must have produced both artifacts.
-for (const f of ['SSIM.exe', 'ssim-backend.exe']) {
-  if (!fs.existsSync(path.join(SRC, f))) fail(`${f} not found in release-tauri/SSIM — run \`npm run build:tauri\` first.`);
-}
+// 1. Precondition — the Tauri build must have produced the single SSIM.exe.
+if (!fs.existsSync(path.join(SRC, 'SSIM.exe'))) fail('SSIM.exe not found in release-tauri/SSIM — run `npm run build:tauri` first.');
 
 // 2. Fresh stage (never reuse / never the dev folder).
 fs.removeSync(STAGE);
 fs.ensureDirSync(APP);
 
-// 3. ALLOW-LIST copy: ONLY the two binaries. Nothing else from SRC is touched.
-console.log('▸ staging SSIM.exe + ssim-backend.exe (allow-list only)');
+// 3. ALLOW-LIST copy: ONLY the single binary. Nothing else from SRC is touched.
+console.log('▸ staging SSIM.exe (allow-list only)');
 fs.copySync(path.join(SRC, 'SSIM.exe'), path.join(APP, 'SSIM.exe'));
-fs.copySync(path.join(SRC, 'ssim-backend.exe'), path.join(APP, 'ssim-backend.exe'));
 
 // 4. Empty data/ + mafiles/ skeletons (the app fills them on first launch).
 fs.ensureDirSync(path.join(APP, 'data'));
@@ -61,7 +57,7 @@ if (fs.existsSync(readmeSrc)) {
 fs.writeFileSync(path.join(APP, 'START.txt'), [
   'SSIM — Santer Steam Inventory Manager', '======================================', '',
   `Version ${VERSION}`, '',
-  '1. Keep this whole folder together (SSIM.exe + ssim-backend.exe must stay side by side).',
+  '1. Keep SSIM.exe in a folder it can write to (it creates data\\, Vault\\, logs\\, runtime\\ next to it).',
   '2. Double-click SSIM.exe — the SSIM window opens. No console, no browser needed.',
   '3. On first start, paste your license key to activate, then set a vault Master Password.',
   '4. SSIM updates itself automatically when a new version is released.',

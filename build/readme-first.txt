@@ -25,14 +25,14 @@ except a single license check. Your account passwords and
 --------------------------------------------------------------
  1. QUICK START
 --------------------------------------------------------------
-1) Keep this whole folder together. SSIM.exe and ssim-backend.exe
-   must stay side by side; SSIM.exe creates "data", "Vault" and
-   "mafiles" folders next to them on first launch.
+1) SSIM is a single program: SSIM.exe . Keep it in a folder where
+   it can write - on first launch it creates "data", "Vault",
+   "mafiles" and "runtime" folders next to itself.
 
 2) Double-click  SSIM.exe .
    The SSIM window opens directly - no console, no separate
-   browser tab. (ssim-backend.exe is started automatically in the
-   background; you never run it yourself.)
+   browser tab. (Everything it needs is built in; you never run
+   anything else yourself.)
 
 3) First start = activation. Paste your license key when asked
    and click Activate, then set a Master Password for your vault.
@@ -225,10 +225,10 @@ handy for checking what a specific account has been doing.
 --------------------------------------------------------------
 SSIM keeps itself up to date: on start it checks for a newer
 signed version and installs it automatically before launching.
-Just keep using it - no manual download needed. The whole
-dashboard ships INSIDE ssim-backend.exe, so an update can never
-leave the interface out of sync with the program again. (Updates
-replace the background service and SSIM relaunches itself.)
+Just keep using it - no manual download needed. The whole app
+(window, dashboard and engine) ships INSIDE the single SSIM.exe,
+so an update can never leave the interface out of sync with the
+program again. (Updates replace SSIM.exe and it relaunches itself.)
 
 
 --------------------------------------------------------------

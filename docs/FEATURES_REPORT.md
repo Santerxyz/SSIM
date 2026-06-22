@@ -100,7 +100,7 @@ contributes its latest value at-or-before that time, or 0 before its first point
 env in never makes the total dip). Endpoint `POST /api/history/aggregate`; the global chart fetches it
 with a selection-keyed cache + async race guard, updating live as envs toggle.
 
-**3c — Per-environment ban API keys, 20/key rotation, strict no cross-env.** `BanService.checkBans` now
+**3c — Per-environment ban API keys, 50/key rotation (3-way threaded), strict no cross-env.** `BanService.checkBans` now
 groups accounts by environment and checks **each env only with key(s) sourced from accounts within that
 env** (`acquireEnvKeys` — already-logged-in accounts first, bounded logins). A key covers ≤ **20** accounts
 then **rotates** to another same-env key; a key is **never** reused across environments. Envs that can't be
@@ -134,7 +134,7 @@ gated + documented rather than guessed. **The calculation, search, and full UI a
 
 ## 5) What was unit-tested (3 throwaway harnesses, all deleted; real `Vault/`/`data/` untouched)
 
-- **F3 (26 assertions):** `planPerEnvBanChecks` — 20/key chunking, key-index rotation, **strict cross-env
+- **F3 (26 assertions):** `planPerEnvBanChecks` — 50/key chunking, key-index rotation, **strict cross-env
   isolation** (every chunk's SteamIDs belong to its own env), 0-key + over-capacity uncovered; and
   `ValueHistoryService.aggregate` — carry-forward sum, single-env passthrough, unknown/empty, TF2 prefix.
 - **Trade-up math (40 assertions):** wear-band boundaries, output-float formula, `parseSkinName`
@@ -187,7 +187,7 @@ No unexplained open points.
 5. **First real trade-up:** run ONE positive-profit contract on a bot you don't mind spending; confirm the
    10 inputs are consumed and the output arrives, and that re-clicking never double-crafts.
 6. **Ban-check at scale (read-only, allowed):** run a multi-env Global ban check; confirm per-env keys,
-   the 20-per-key rotation, and that no env's key ever touches another env's accounts (watch the logs).
+   the 50-per-key rotation (threaded ×3), and that no env's key ever touches another env's accounts (watch the logs).
 
 ---
 

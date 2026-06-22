@@ -10,10 +10,11 @@
 //   4. On window close, ask the backend to shut down gracefully by writing
 //      "quit" to its stdin (clean Steam logout); only exit once it has
 //      terminated (watchdog force-kills if it hangs) so we never orphan it.
-//   5. RESILIENCE: if the backend dies UNEXPECTEDLY (an external kill, a fatal,
-//      anything that is NOT the user closing the window), AUTOMATICALLY RESPAWN it
-//      and point the window back at it — so a refresh/trade/sell can never leave
-//      the app dead with its state "wiped". Only an intentional window-close quits.
+//   5. ON CRASH (owner directive — NO auto-restart band-aid): if the backend dies
+//      UNEXPECTEDLY (anything that is NOT the user closing the window), the shell does
+//      NOT respawn it. It records the exit code/signal + the backend's stderr to
+//      logs/shell.log and shows a clear, persistent "SSIM crashed — relaunch" screen.
+//      A crash must be FIXED, not hidden. Only an intentional window-close quits the shell.
 //   6. Single instance: a second launch focuses the existing window.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -21,26 +22,44 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, window::Color, webview::PageLoadEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+// Boot splash is a BUNDLED asset (public/splash.html) loaded via the Tauri asset protocol in
+// setup() below — WebView2 renders that reliably, whereas a top-level data: URL renders blank
+// WHITE (that was the "white window before the password screen"). Shown the instant SSIM launches
+// so a double-click never looks dead while the backend boots; replaced once the app is ready.
+
 /// Shared state: the running sidecar (for the stdin "quit" + force-kill), the live
-/// dashboard port, an intentional-quit flag (so an unexpected death auto-restarts but
-/// a user close does not), and a sliding window of recent restart times (crash-loop guard).
+/// dashboard port, and an intentional-quit flag (so a user-initiated close is told
+/// apart from an unexpected backend death — a crash).
 struct AppState {
     sidecar: Mutex<Option<CommandChild>>,
     port: AtomicU16,
-    /// True once the user has asked to close the app → a subsequent backend exit must NOT restart.
+    /// True once the user has asked to close the app → distinguishes a clean quit from a crash.
     quitting: AtomicBool,
-    /// Timestamps of recent auto-restarts, pruned to a 120s window (crash-loop backstop).
-    restarts: Mutex<Vec<Instant>>,
+    /// True once the backend signaled `SSIM_UPDATING` on stdout → the next backend exit is an
+    /// auto-update (swap both exes), so the shell must quit cleanly (free SSIM.exe), NOT crash-screen.
+    updating: AtomicBool,
 }
 
-/// How many unexpected backend deaths we will auto-restart within RESTART_WINDOW before giving up.
-const MAX_RESTARTS: usize = 8;
-const RESTART_WINDOW: Duration = Duration::from_secs(120);
-const RESTART_BACKOFF: Duration = Duration::from_millis(800);
+/// Append a timestamped line to <ssim_home>/logs/shell.log. This is the SHELL-side death record:
+/// the backend's exit code/signal and any stderr it emitted before dying — captured here because
+/// the backend's own JS handlers cannot see an external kill, and tauri-plugin-shell was previously
+/// throwing this evidence away. Best-effort; never panics.
+fn log_shell(msg: &str) {
+    let dir = ssim_home().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("shell.log")) {
+        use std::io::Write;
+        let _ = f.write_all(format!("[{ts}] {msg}\n").as_bytes());
+    }
+}
 
 /// Pull the port out of a `SSIM_PORT=<n>` stdout line (ignores all other backend log lines).
 fn parse_port(chunk: &str) -> Option<u16> {
@@ -67,10 +86,17 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
     false
 }
 
-/// The folder where the backend's runtime data (data/, Vault/, logs/) should live, passed to the
-/// sidecar as SSIM_HOME. Packaged → the folder containing the shell exe (the portable folder);
-/// dev → the repo root (so the sidecar uses the real local data/ + Vault/).
+/// The folder where the backend's runtime data (data/, Vault/, logs/) AND the self-extracted backend
+/// (runtime/) live — the single writable base, passed to the backend as SSIM_HOME. An explicit
+/// SSIM_HOME env wins (mirrors the backend's paths.ts; used by the build self-test to redirect to a
+/// temp dir). Otherwise: packaged → the folder containing the shell exe (the portable folder); dev →
+/// the repo root. A normal production launch never sets SSIM_HOME, so behavior is unchanged there.
 fn ssim_home() -> std::path::PathBuf {
+    if let Ok(h) = std::env::var("SSIM_HOME") {
+        if !h.is_empty() {
+            return std::path::PathBuf::from(h);
+        }
+    }
     if cfg!(debug_assertions) {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
     } else {
@@ -78,6 +104,100 @@ fn ssim_home() -> std::path::PathBuf {
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
+    }
+}
+
+/// The SSIM Node backend, embedded INTO this shell at build time (build/make-tauri.js stages it →
+/// build.rs copies it into OUT_DIR). Shipping it inside the shell is what makes SSIM ONE .exe.
+static BACKEND_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ssim-backend.exe"));
+/// Content stamp (len + FNV-1a) of BACKEND_BYTES, from build.rs. The extraction marker: we re-write
+/// the 171 MB backend only when this changed (post-update) or the file is missing — never otherwise.
+const BACKEND_STAMP: &str = env!("SSIM_BACKEND_STAMP");
+
+/// Extract the embedded backend to <ssim_home>/runtime/ssim-backend.exe — the SAME writable base
+/// data/ already uses, so storage stays ONE location and the install stays fully portable (the
+/// runtime/ copy regenerates from the exe on any machine). Marker-guarded + atomic (temp + rename):
+/// a normal launch returns near-instantly; only a changed backend triggers the one-time write. A
+/// failure is a HARD error reported to the caller — never silently retried (owner directive: no band-aids).
+fn ensure_backend_extracted() -> std::io::Result<std::path::PathBuf> {
+    if BACKEND_BYTES.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "this SSIM.exe was built with NO embedded backend — rebuild via build/make-tauri.js",
+        ));
+    }
+    let dir = ssim_home().join("runtime");
+    std::fs::create_dir_all(&dir)?;
+    let target = dir.join("ssim-backend.exe");
+    let marker = dir.join(".backend-stamp");
+    let current = std::fs::read_to_string(&marker).unwrap_or_default();
+    if target.exists() && current == BACKEND_STAMP {
+        return Ok(target); // this exact backend is already extracted
+    }
+    // Write to a temp file in the same dir, then atomically rename over the target. (The backend is
+    // never running at this point — the shell always extracts BEFORE it spawns the child.)
+    let tmp = dir.join(format!("ssim-backend.exe.tmp{}", std::process::id()));
+    std::fs::write(&tmp, BACKEND_BYTES)?;
+    let _ = std::fs::remove_file(&target);
+    std::fs::rename(&tmp, &target)?;
+    std::fs::write(&marker, BACKEND_STAMP)?;
+    log_shell(&format!("extracted embedded backend → {} (stamp {})", target.display(), BACKEND_STAMP));
+    Ok(target)
+}
+
+/// Remove a stray ssim-backend.exe sitting NEXT TO SSIM.exe — a leftover from the old two-file
+/// layout after a single-exe migration. Best-effort; the embedded backend in runtime/ is authoritative.
+fn cleanup_orphan_sidecar() {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let orphan = parent.join("ssim-backend.exe");
+            if orphan.exists() {
+                match std::fs::remove_file(&orphan) {
+                    Ok(_) => log_shell("removed orphan ssim-backend.exe (migrated from the old two-file layout)"),
+                    Err(e) => log_shell(&format!("could not remove orphan ssim-backend.exe: {e}")),
+                }
+            }
+        }
+    }
+}
+
+/// Replace the window contents with a clear, persistent fatal notice (same look as the crash screen).
+/// Used when the backend can't even be PREPARED (extract/spawn failed) — a real error, never hidden.
+fn show_fatal(handle: &tauri::AppHandle, title: &str, detail: &str) {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', " ").replace('\r', " ");
+    if let Some(w) = handle.get_webview_window("main") {
+        let _ = w.eval(&format!(
+            "document.documentElement.innerHTML='<div style=\"font:15px system-ui;color:#e5e7eb;background:#0a0a0f;height:100vh;margin:0;display:flex;flex-direction:column;gap:.6rem;align-items:center;justify-content:center;text-align:center;padding:2rem\"><div style=\"font-size:18px;font-weight:600\">{}</div><div style=\"opacity:.7\">{}</div><div style=\"opacity:.5;font-size:12px;margin-top:.6rem\">Details in logs/shell.log. Please relaunch SSIM.</div></div>';",
+            esc(title), esc(detail)
+        ));
+        let _ = w.show();
+    }
+}
+
+/// Anti-brick self-test passthrough: the updater runs `SSIM.exe` with SSIM_SELFTEST=1 before trusting
+/// a downloaded build. We extract the embedded backend and run ITS self-test (the GC + steam stack
+/// load check in src/index.ts), returning its exit code (0 ok / 2 fail) — no window, no Tauri. The
+/// backend's report is also persisted to <home>/.ssim-selftest.out so the build/updater can read it
+/// reliably even if a GUI-subsystem exe's inherited stdout doesn't survive the pipe.
+fn run_backend_selftest() -> i32 {
+    let path = match ensure_backend_extracted() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("SSIM_SELFTEST_FAIL extract: {e}"); return 2; }
+    };
+    match std::process::Command::new(&path)
+        .env("SSIM_SIDECAR", "1")
+        .env("SSIM_HOME", ssim_home().to_string_lossy().to_string())
+        .env("SSIM_SELFTEST", "1")
+        .output()
+    {
+        Ok(o) => {
+            let _ = std::fs::write(ssim_home().join(".ssim-selftest.out"), &o.stdout);
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(&o.stdout);
+            let _ = std::io::stdout().flush();
+            o.status.code().unwrap_or(2)
+        }
+        Err(e) => { eprintln!("SSIM_SELFTEST_FAIL spawn: {e}"); 2 }
     }
 }
 
@@ -105,25 +225,51 @@ fn open_logs_window(app: &tauri::AppHandle) {
     }
 }
 
-/// Spawn (or RESPAWN) the SSIM backend sidecar and wire up its stdout → window + its termination →
-/// graceful-quit-or-auto-restart. `forced_port` re-uses the previous port across a restart so the
-/// existing window can simply be re-pointed at the new backend (seamless reconnect, no new window).
-fn spawn_backend(handle: tauri::AppHandle, forced_port: Option<u16>) {
-    let mut cmd = handle
-        .shell()
-        .sidecar("ssim-backend")
-        .expect("ssim-backend sidecar binary not found")
-        .env("SSIM_SIDECAR", "1")
-        .env("SSIM_HOME", ssim_home().to_string_lossy().to_string());
-    // On a restart, bias the backend to the SAME port it used before (it is free now that the old
-    // process has exited), so the window can be re-pointed at an unchanged URL.
-    if let Some(p) = forced_port {
-        cmd = cmd.env("PORT", p.to_string());
-    }
-    let (mut rx, child) = cmd.spawn().expect("failed to spawn ssim-backend sidecar");
-    *handle.state::<AppState>().sidecar.lock().unwrap() = Some(child);
-
+/// Prepare + spawn the SSIM backend and wire up its stdout → window, its stderr → logs/shell.log, and
+/// its termination → clean-quit-or-crash-notice (NO auto-restart). The backend is EMBEDDED in this exe
+/// (BACKEND_BYTES) and self-extracted to <home>/runtime first; we then spawn THAT path. Everything
+/// downstream (the stdout drain, port handshake, update + crash handling) is unchanged from the
+/// two-binary build — embedding changed the backend's DELIVERY, not the runtime supervision contract.
+fn spawn_backend(handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        // Prepare the embedded backend OFF the UI thread (first run / post-update writes ~171 MB while
+        // the splash keeps painting). Marker-guarded → near-instant on every normal launch. A failure
+        // here is a HARD, reported error — never a silent retry (owner directive: no band-aids).
+        let prepared = tauri::async_runtime::spawn_blocking(ensure_backend_extracted).await;
+        let backend_path = match prepared {
+            Ok(Ok(p)) => p,
+            err => {
+                let msg = format!("{err:?}");
+                log_shell(&format!("FATAL: could not prepare embedded backend: {msg}"));
+                show_fatal(&handle, "SSIM could not prepare its backend.", &msg);
+                return;
+            }
+        };
+        // Drop a stray ssim-backend.exe left beside us by a migrated two-file install.
+        cleanup_orphan_sidecar();
+
+        // SSIM_SHELL_EXE tells the updater which OUTER exe to swap; SSIM_HOME is the single data/runtime
+        // base; SSIM_SIDECAR keeps the backend in shell-managed (no-console) mode for the handshake.
+        let shell_exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let (mut rx, child) = match handle
+            .shell()
+            .command(backend_path.to_string_lossy().to_string())
+            .env("SSIM_SIDECAR", "1")
+            .env("SSIM_HOME", ssim_home().to_string_lossy().to_string())
+            .env("SSIM_SHELL_EXE", shell_exe)
+            .spawn()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                log_shell(&format!("FATAL: failed to spawn backend: {e}"));
+                show_fatal(&handle, "SSIM could not start its backend.", &e.to_string());
+                return;
+            }
+        };
+        *handle.state::<AppState>().sidecar.lock().unwrap() = Some(child);
+
         // One-shot per spawn: only the FIRST SSIM_PORT line of this backend instance opens/points the window.
         let mut handled_port = false;
         while let Some(event) = rx.recv().await {
@@ -132,6 +278,19 @@ fn spawn_backend(handle: tauri::AppHandle, forced_port: Option<u16>) {
                     let chunk = String::from_utf8_lossy(&bytes);
                     if chunk.contains("SSIM_OPEN_LOGS") {
                         open_logs_window(&handle);
+                    }
+                    if chunk.contains("SSIM_UPDATE_DOWNLOADING") {
+                        // Backend is pulling an auto-update (can be ~163 MB) before its server starts —
+                        // update the splash so the wait is explained instead of looking frozen.
+                        if let Some(w) = handle.get_webview_window("main") {
+                            let _ = w.eval("var m=document.getElementById('msg'),s=document.getElementById('sub');if(m)m.textContent='Downloading update\\u2026';if(s)s.textContent='This can take a minute \\u2014 please keep SSIM open.';");
+                        }
+                    }
+                    if chunk.contains("SSIM_UPDATING") {
+                        // Auto-update started: the backend will exit so its bat can swap BOTH exes.
+                        // Mark it so the upcoming Terminated is treated as a clean quit, not a crash.
+                        handle.state::<AppState>().updating.store(true, Ordering::SeqCst);
+                        log_shell("backend signaled SSIM_UPDATING — quitting cleanly for the swap (not a crash)");
                     }
                     if let Some(port) = parse_port(&chunk) {
                         if handled_port {
@@ -151,13 +310,13 @@ fn spawn_backend(handle: tauri::AppHandle, forced_port: Option<u16>) {
                             .await
                             .unwrap_or(false);
                             if !ready {
-                                eprintln!("[ssim] backend never opened port {port} — will restart on exit");
-                                return; // a never-listening backend exits → Terminated handles the restart
+                                eprintln!("[ssim] backend never opened port {port}");
+                                return; // a never-listening backend will hit Terminated → crash notice
                             }
                             h2.state::<AppState>().port.store(port, Ordering::SeqCst);
                             let url = format!("http://127.0.0.1:{port}");
                             if let Some(w) = h2.get_webview_window("main") {
-                                // RESTART path: re-point the existing window at the respawned backend.
+                                // Existing window already present → point it at the backend URL.
                                 if let Ok(u) = url.parse() {
                                     let _ = w.navigate(u);
                                 }
@@ -180,37 +339,45 @@ fn spawn_backend(handle: tauri::AppHandle, forced_port: Option<u16>) {
                         });
                     }
                 }
-                CommandEvent::Terminated(_) => {
+                CommandEvent::Stderr(bytes) => {
+                    // The backend's dying last-words (a native/V8 fatal line, or a vendor library
+                    // writing to stderr) were previously DROPPED here. Capture them — for a death
+                    // that bypasses the JS handlers this is often the only trace of what happened.
+                    let chunk = String::from_utf8_lossy(&bytes);
+                    let line = chunk.trim_end();
+                    if !line.is_empty() {
+                        log_shell(&format!("backend stderr: {line}"));
+                    }
+                }
+                CommandEvent::Terminated(payload) => {
                     let state = handle.state::<AppState>();
                     // Intentional quit (user closed the window) → follow the backend out cleanly.
                     if state.quitting.load(Ordering::SeqCst) {
+                        log_shell("backend terminated after user close (clean quit)");
                         std::process::exit(0);
                     }
-                    // UNEXPECTED death (external kill / fatal) → auto-restart so the app + state survive.
-                    let port = {
-                        let p = state.port.load(Ordering::SeqCst);
-                        if p == 0 { None } else { Some(p) }
-                    };
-                    let too_many = {
-                        let mut times = state.restarts.lock().unwrap();
-                        let now = Instant::now();
-                        times.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
-                        times.push(now);
-                        times.len() > MAX_RESTARTS
-                    };
-                    if too_many {
-                        eprintln!("[ssim] backend died repeatedly (>{MAX_RESTARTS} in {}s) — giving up", RESTART_WINDOW.as_secs());
-                        if let Some(w) = handle.get_webview_window("main") {
-                            let _ = w.eval(
-                                "document.documentElement.innerHTML='<div style=\"font:16px system-ui;color:#e5e7eb;background:#0a0a0f;height:100vh;margin:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:2rem\">SSIM stopped unexpectedly and could not be restarted.<br>Please relaunch SSIM — your saved data is safe.</div>';",
-                            );
-                        }
-                        return; // leave the window with the message; the user relaunches
+                    // AUTO-UPDATE: the backend exited so its bat can swap BOTH exes. Quit cleanly (NO
+                    // crash screen) so SSIM.exe is freed; the bat relaunches a fresh SSIM.exe after the swap.
+                    if state.updating.load(Ordering::SeqCst) {
+                        log_shell("backend terminated for UPDATE — quitting so the swap can replace SSIM.exe");
+                        std::process::exit(0);
                     }
-                    eprintln!("[ssim] backend exited unexpectedly — restarting…");
-                    std::thread::sleep(RESTART_BACKOFF);
-                    spawn_backend(handle.clone(), port);
-                    return; // this reader task ends; the respawned backend has its own
+                    // UNEXPECTED death = a CRASH. Per owner directive the auto-restart band-aid is
+                    // GONE: a crash must be FIXED, not silently relaunched. Record the exit
+                    // code/signal (the first time SSIM has ever captured it — the key diagnostic)
+                    // and show a clear, persistent "crashed" screen. The shell stays alive so the
+                    // notice + the on-disk evidence remain; NOTHING is respawned.
+                    log_shell(&format!(
+                        "BACKEND CRASH — terminated unexpectedly: code={:?} signal={:?} (auto-restart removed; no respawn)",
+                        payload.code, payload.signal
+                    ));
+                    if let Some(w) = handle.get_webview_window("main") {
+                        let _ = w.eval(&format!(
+                            "document.documentElement.innerHTML='<div style=\"font:15px system-ui;color:#e5e7eb;background:#0a0a0f;height:100vh;margin:0;display:flex;flex-direction:column;gap:.6rem;align-items:center;justify-content:center;text-align:center;padding:2rem\"><div style=\"font-size:18px;font-weight:600\">SSIM backend crashed (exit code {:?}).</div><div style=\"opacity:.75\">Your saved data is safe. Please relaunch SSIM.</div><div style=\"opacity:.5;font-size:12px;margin-top:.6rem\">Crash details saved to the logs folder (exit-trace.log / stderr-trace.log / shell.log).</div></div>';",
+                            payload.code
+                        ));
+                    }
+                    return; // window stays with the crash notice; NO auto-restart
                 }
                 _ => {}
             }
@@ -220,6 +387,20 @@ fn spawn_backend(handle: tauri::AppHandle, forced_port: Option<u16>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Anti-brick self-test passthrough: the updater runs `SSIM.exe` with SSIM_SELFTEST=1 before it
+    // trusts a downloaded build. Extract + run the EMBEDDED backend's self-test and exit with its code
+    // (0 ok / 2 fail) — no window, no Tauri. This is what keeps the update anti-brick gate working now
+    // that the backend ships inside the shell. Must be the very first thing run() does.
+    if std::env::var("SSIM_SELFTEST").as_deref() == Ok("1") {
+        std::process::exit(run_backend_selftest());
+    }
+    // Kill the WebView2 white flash at the source. WebView2 paints its DefaultBackgroundColor
+    // for the instant BEFORE the first HTML frame, and that default is WHITE — the window's own
+    // dark background_color sits BEHIND the webview, so it can't cover this. This env var is read
+    // by the WebView2 runtime when its environment is created (which Tauri does lazily on the first
+    // window), so it MUST be set before the builder runs. Value is ARGB hex → FF0A0A0F = opaque
+    // #0a0a0f (our canvas), so the pre-paint frame is already dark instead of white.
+    std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF0A0A0F");
     tauri::Builder::default()
         // Second launch → focus the existing window instead of starting a 2nd backend.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -234,11 +415,41 @@ pub fn run() {
             sidecar: Mutex::new(None),
             port: AtomicU16::new(0),
             quitting: AtomicBool::new(false),
-            restarts: Mutex::new(Vec::new()),
+            updating: AtomicBool::new(false),
         })
         .setup(|app| {
-            // Spawn the SSIM backend sidecar (hidden); it auto-restarts on an unexpected exit.
-            spawn_backend(app.handle().clone(), None);
+            // Show a window IMMEDIATELY with a loading splash. The backend's boot + any 163 MB
+            // auto-update happen BEFORE its server/port exists, so without this the window would only
+            // appear much later (or never, during an update) and a launch looks like nothing happened.
+            {
+                let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("splash.html".into()))
+                    .title("SSIM")
+                    .inner_size(1280.0, 860.0)
+                    .min_inner_size(1024.0, 700.0)
+                    .center()
+                    .resizable(true)
+                    // Paint the native window dark (#0a0a0f) so any sliver behind the webview is dark.
+                    .background_color(Color(10, 10, 15, 255))
+                    // The real white-flash killer: create the window HIDDEN and reveal it only once the
+                    // (dark) page has actually PAINTED — a white pre-paint frame can never reach the
+                    // screen. Fires for the splash first (≈instant), so the instant-splash UX is kept.
+                    .visible(false)
+                    .on_page_load(|window, payload| {
+                        if matches!(payload.event(), PageLoadEvent::Finished) {
+                            let _ = window.show();
+                        }
+                    })
+                    .build();
+            }
+            // Prepare + spawn the EMBEDDED SSIM backend (hidden). On a crash it does NOT restart (owner directive).
+            spawn_backend(app.handle().clone());
+            // Safety net: reveal the window after a short delay even if the page-load event is missed,
+            // so a launch never looks dead. Normally on_page_load shows it within ~tens of ms.
+            let reveal = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                if let Some(w) = reveal.get_webview_window("main") { let _ = w.show(); }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

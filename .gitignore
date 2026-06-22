@@ -36,6 +36,12 @@ loader.js
 # --- Rust / Tauri build output (generated, large) --------------------------
 src-tauri/target/
 src-tauri/gen/
+src-tauri/binaries/
+
+# --- Embedded-backend self-extraction (generated at runtime / dev run) ------
+runtime/
+.backend-stamp
+.ssim-selftest.out
 
 # --- Logs & atomic-write artifacts (may contain credentials) ---------------
 logs/
@@ -46,3 +52,9 @@ logs/
 
 # --- Stray OS/tooling folders ----------------------------------------------
 Microsoft/
+
+# --- Frontend UI-pass dev/QA artifacts (NOT shipped; safe to delete) --------
+_sg_server.cjs
+public/_ssim_styleguide.html
+.shot_*.png
+.sg_*.png
