@@ -163,7 +163,7 @@ function sha256OfUrl(urlStr) {
 async function rollback(prev, cookie) {
   if (!prev || !prev.latest) { console.error('  ✗ no previous manifest captured — cannot auto-rollback; restore /version manually.'); return; }
   try {
-    const r = await request('POST', `${API}/admin/api/release/rollback`, { cookie, body: { to: prev.latest } });
+    const r = await request('POST', `${API}/admin/api/release/rollback`, { cookie, body: { to: prev.latest, manifest: prev } });
     if (r.status === 200 || r.status === 201) { console.error(`  ↩ rolled /version back to the previously-live v${prev.latest}`); return; }
     console.error(`  ✗ rollback route returned HTTP ${r.status}. Manually re-point /version to v${prev.latest} (sha ${String(prev.sha256).slice(0, 12)}…).`);
   } catch (e) { console.error(`  ✗ rollback error: ${e.message}. Manually restore /version to v${prev.latest}.`); }
