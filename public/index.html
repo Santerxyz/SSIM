@@ -505,6 +505,10 @@
               class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-sm font-bold transition flex items-center gap-2">
               <i class="fa-solid fa-globe text-brand"></i><span>Global Master</span>
             </button>
+            <button id="btn-account-login" title="Log in &amp; import an account via QR or credentials"
+              class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2">
+              <i class="fa-solid fa-right-to-bracket text-brand"></i><span>Account Login</span>
+            </button>
             <button id="btn-bulk-import"
               class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2">
               <i class="fa-solid fa-file-import"></i><span>Import bots</span>
@@ -564,10 +568,28 @@
               class="px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition flex items-center gap-2">
               <i class="fa-solid fa-cart-shopping"></i><span>Buy</span>
             </button>
-            <button id="btn-currency" title="Toggle currency"
-              class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2">
-              <i class="fa-solid fa-coins text-brand-light"></i><span id="currency-label">EUR</span>
-            </button>
+            <!-- Feature 3: price-source (Steam ⟷ CSFloat) + currency (USD ⟷ EUR) split control -->
+            <div class="flex items-stretch rounded-lg border border-slate-700 bg-slate-800 text-sm font-bold">
+              <div class="relative">
+                <button id="src-btn" title="Price source" class="h-full px-3 py-2.5 rounded-l-lg hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
+                  <img id="src-logo" src="/assets/logos/steam.svg" alt="" class="w-4 h-4 shrink-0"/><span id="src-label">Steam</span><i class="fa-solid fa-chevron-down text-3xs text-slate-500"></i>
+                </button>
+                <div id="src-menu" class="hidden absolute right-0 mt-1 w-48 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl z-50 overflow-hidden py-1">
+                  <button data-src="steam" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200 flex items-center gap-2"><img src="/assets/logos/steam.svg" alt="" class="w-4 h-4"/>Steam Market</button>
+                  <button data-src="csfloat" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200 flex items-center gap-2"><img src="/assets/logos/csfloat.svg" alt="" class="w-4 h-4"/>CSFloat</button>
+                </div>
+              </div>
+              <div class="w-px bg-slate-700"></div>
+              <div class="relative">
+                <button id="cur-btn" title="Currency" class="h-full px-3 py-2.5 rounded-r-lg hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
+                  <i class="fa-solid fa-coins text-brand-light"></i><span id="currency-label">EUR</span><i class="fa-solid fa-chevron-down text-3xs text-slate-500"></i>
+                </button>
+                <div id="cur-menu" class="hidden absolute right-0 mt-1 w-32 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl z-50 overflow-hidden py-1">
+                  <button data-cur="USD" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200">USD&nbsp;($)</button>
+                  <button data-cur="EUR" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200">EUR&nbsp;(€)</button>
+                </div>
+              </div>
+            </div>
             <!-- The single Refresh button assembles the COMPLETE inventory (owned +
                  trade-locked + listed) directly from Steam — one button, does everything. -->
             <button id="btn-load"
@@ -710,6 +732,106 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ════════════════ ACCOUNT-LOGIN MODAL (Feature 1: QR / credentials import) ════════════════ -->
+  <div id="login-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
+      <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
+        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-right-to-bracket text-brand mr-2"></i>Account Login</h3>
+        <button id="login-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+      </div>
+      <div class="px-6 py-5 space-y-4">
+        <!-- Environment is shared by both methods: it sets the proxy the token is minted on. -->
+        <div>
+          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Environment</label>
+          <select id="login-env"
+            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+        </div>
+        <!-- Method tabs -->
+        <div class="flex rounded-lg overflow-hidden border border-slate-700">
+          <button type="button" data-login-tab="qr" class="login-tab flex-1 px-3 py-2 text-sm font-bold transition inline-flex items-center justify-center gap-2"><i class="fa-solid fa-qrcode"></i><span>QR code</span></button>
+          <button type="button" data-login-tab="credentials" class="login-tab flex-1 px-3 py-2 text-sm font-bold transition inline-flex items-center justify-center gap-2"><i class="fa-solid fa-keyboard"></i><span>Credentials</span></button>
+        </div>
+        <!-- QR pane -->
+        <div id="login-pane-qr" class="space-y-3">
+          <div class="rounded-xl bg-white p-3 mx-auto w-[232px] h-[232px] flex items-center justify-center relative">
+            <img id="login-qr-img" alt="" class="w-full h-full object-contain" />
+            <div id="login-qr-overlay" class="hidden absolute inset-0 rounded-xl bg-slate-950/90 flex flex-col items-center justify-center text-center p-4"></div>
+          </div>
+          <div id="login-qr-status" class="flex items-center justify-center gap-1.5 flex-wrap"></div>
+          <p class="text-2xs text-slate-500 text-center leading-relaxed">
+            Open the <b class="text-slate-300">Steam Mobile App</b> → <b class="text-slate-300">Steam&nbsp;Guard</b> → scan this code, then approve the login.
+          </p>
+        </div>
+        <!-- Credentials pane -->
+        <form id="login-cred-form" class="hidden space-y-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Username</label>
+            <input name="username" autocomplete="off" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Password</label>
+            <input name="password" type="password" autocomplete="off" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          </div>
+          <div id="login-guard" class="hidden">
+            <label id="login-guard-label" class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Guard code</label>
+            <input id="login-guard-input" inputmode="numeric" autocomplete="one-time-code" placeholder="•••••"
+              class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 tracking-[0.4em] text-center focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          </div>
+          <p id="login-cred-msg" class="hidden text-2xs"></p>
+          <button type="submit" id="login-cred-submit" class="w-full px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 inline-flex items-center justify-center gap-2">
+            <i class="fa-solid fa-right-to-bracket"></i><span id="login-cred-submit-label">Log in</span>
+          </button>
+        </form>
+        <!-- Limited-tier note -->
+        <div class="rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2.5 flex gap-2.5">
+          <i class="fa-solid fa-circle-info text-amber-400 mt-0.5 shrink-0"></i>
+          <p class="text-2xs text-slate-400 leading-relaxed">
+            Imports as a <b class="text-amber-300">Limited</b> account (no maFile): buy orders, market buys &amp; cancels work; sell listings &amp; trade offers are queued <b class="text-slate-300">pending confirmation</b>. Attach a maFile later to upgrade to <b class="text-emerald-300">Full</b>.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ ATTACH-MAFILE MODAL (Feature 1: upgrade Limited → Full) ════════════════ -->
+  <div id="attach-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
+      <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
+        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-shield-halved text-emerald-400 mr-2"></i>Attach maFile</h3>
+        <button id="attach-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+      </div>
+      <form id="attach-form" class="px-6 py-5 space-y-4">
+        <p class="text-2xs text-slate-400 leading-relaxed">Upgrade <b id="attach-username" class="text-slate-200"></b> from <b class="text-amber-300">Limited</b> to <b class="text-emerald-300">Full</b>. Drop the maFile into <span class="font-mono text-slate-500">./mafiles</span> and enter its filename — its <b class="text-slate-300">identity_secret</b> enables sell-listing &amp; trade confirmations.</p>
+        <div>
+          <label class="block text-xs font-semibold text-slate-400 mb-1.5">maFile path</label>
+          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile"
+            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+        </div>
+        <div class="flex gap-3 pt-1">
+          <button type="button" id="attach-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
+          <button type="submit" id="attach-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition disabled:opacity-50 inline-flex items-center justify-center gap-2">
+            <i class="fa-solid fa-arrow-up"></i><span>Upgrade to Full</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ════════════════ CSFLOAT WORKSPACE MODAL (Feature 2) ════════════════ -->
+  <div id="csfloat-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+    <div class="w-full max-w-4xl h-[85vh] bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between shrink-0">
+        <h3 class="text-lg font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-water text-cyan-400"></i>CSFloat
+          <span id="csfloat-account" class="text-sm font-mono text-slate-500"></span>
+        </h3>
+        <button id="csfloat-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+      </div>
+      <div id="csfloat-tabs" class="px-6 pt-3 flex gap-1 flex-wrap border-b border-slate-800 shrink-0"></div>
+      <div id="csfloat-body" class="flex-1 overflow-y-auto px-6 py-5"></div>
     </div>
   </div>
 

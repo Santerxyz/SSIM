@@ -42,6 +42,7 @@ const state = {
   gcCat: 'all', // active GC category filter (all | tradable | tradelocked | listed)
   massTimer: null,
   currency: localStorage.getItem('ssim.currency') || 'EUR',  // 'EUR' | 'USD'
+  priceSource: localStorage.getItem('ssim.priceSource') || 'steam', // Feature 3: 'steam' | 'csfloat'
   usdToEur: 0.92,               // live rate from /api/exchange-rate (fallback 0.92)
 };
 
@@ -102,8 +103,13 @@ const el = {
   statValueLabel:  $('stat-value-label'),
   statWallet:      $('stat-wallet'),
   statWalletLabel: $('stat-wallet-label'),
-  btnCurrency:     $('btn-currency'),
   currencyLabel:   $('currency-label'),
+  srcBtn:          $('src-btn'),
+  srcMenu:         $('src-menu'),
+  srcLogo:         $('src-logo'),
+  srcLabel:        $('src-label'),
+  curBtn:          $('cur-btn'),
+  curMenu:         $('cur-menu'),
   btnLoad:      $('btn-load'),
   gcCatTabs:      $('gc-cat-tabs'),
   globalFilter: $('global-filter'),
@@ -159,6 +165,35 @@ const el = {
   modalSubmit:   $('modal-submit'),
   addForm:       $('add-form'),
   addEnv:        $('add-env'),
+  // account-login modal (Feature 1)
+  btnAccountLogin: $('btn-account-login'),
+  loginOverlay:    $('login-overlay'),
+  loginClose:      $('login-close'),
+  loginEnv:        $('login-env'),
+  loginPaneQr:     $('login-pane-qr'),
+  loginQrImg:      $('login-qr-img'),
+  loginQrOverlay:  $('login-qr-overlay'),
+  loginQrStatus:   $('login-qr-status'),
+  loginCredForm:   $('login-cred-form'),
+  loginGuard:      $('login-guard'),
+  loginGuardLabel: $('login-guard-label'),
+  loginGuardInput: $('login-guard-input'),
+  loginCredMsg:    $('login-cred-msg'),
+  loginCredSubmit: $('login-cred-submit'),
+  loginCredSubmitLabel: $('login-cred-submit-label'),
+  // attach-maFile modal (Feature 1)
+  attachOverlay:   $('attach-overlay'),
+  attachClose:     $('attach-close'),
+  attachCancel:    $('attach-cancel'),
+  attachForm:      $('attach-form'),
+  attachUsername:  $('attach-username'),
+  attachSubmit:    $('attach-submit'),
+  // CSFloat workspace (Feature 2)
+  csfloatOverlay:  $('csfloat-overlay'),
+  csfloatClose:    $('csfloat-close'),
+  csfloatAccount:  $('csfloat-account'),
+  csfloatTabs:     $('csfloat-tabs'),
+  csfloatBody:     $('csfloat-body'),
   // environment modal
   envOverlay:    $('env-overlay'),
   envClose:      $('env-close'),
@@ -581,6 +616,52 @@ function updateCurrencyButton() {
   if (el.currencyLabel) el.currencyLabel.textContent = state.currency;
   if (el.valueFilterCur) el.valueFilterCur.textContent = state.currency === 'EUR' ? '€' : '$';
 }
+
+// ── Feature 3: price source (Steam ⟷ CSFloat) ──
+function closeSourceMenus() { if (el.srcMenu) el.srcMenu.classList.add('hidden'); if (el.curMenu) el.curMenu.classList.add('hidden'); }
+function updatePriceSourceButton() {
+  const csf = state.priceSource === 'csfloat';
+  if (el.srcLabel) el.srcLabel.textContent = csf ? 'CSFloat' : 'Steam';
+  if (el.srcLogo) el.srcLogo.setAttribute('src', csf ? '/assets/logos/csfloat.svg' : '/assets/logos/steam.svg');
+}
+async function setPriceSource(src) {
+  closeSourceMenus();
+  if ((src !== 'steam' && src !== 'csfloat') || src === state.priceSource) return;
+  const prev = state.priceSource;
+  state.priceSource = src; localStorage.setItem('ssim.priceSource', src); updatePriceSourceButton();
+  try {
+    const r = await api('/api/pricing/source', { method: 'PUT', body: JSON.stringify({ source: src }) });
+    const eff = (r && r.effective) || src;
+    if (eff !== state.priceSource) { state.priceSource = eff; localStorage.setItem('ssim.priceSource', eff); updatePriceSourceButton(); }
+    if (src === 'csfloat' && eff === 'steam') toast('No CSFloat API key found — pricing from Steam. Add a key in an account’s CSFloat → Settings.', 'error');
+    else toast(`Price source: ${eff === 'csfloat' ? 'CSFloat' : 'Steam Market'} — re-pricing…`, 'success');
+    await reloadAll(); renderMain();
+    pollRepricing();           // live-fill the new source's prices without a manual Refresh
+  } catch (err) {
+    state.priceSource = prev; localStorage.setItem('ssim.priceSource', prev); updatePriceSourceButton();
+    toast(`Could not switch price source: ${err.message}`, 'error');
+  }
+}
+
+/** After a source switch the new source's price cache is cold, so the dashboard shows
+ *  "—" until the background fill lands. Poll the fill and re-pull/re-render live so values
+ *  populate WITHOUT a manual Refresh. A token cancels the loop if the user switches again;
+ *  we only re-render when new prices actually arrived (cheap) and cap the watch at 90s. */
+async function pollRepricing() {
+  const token = (state.repriceToken = (state.repriceToken || 0) + 1);
+  const deadline = Date.now() + 60_000;        // watch window; the background fill continues past it
+  let lastFetched = -1;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    if (state.repriceToken !== token) return;                    // superseded by a newer switch
+    let st; try { st = await api('/api/pricing/status'); } catch { return; }
+    if (state.repriceToken !== token) return;
+    const fetched = st ? (st.fetched || 0) : 0;
+    const busy = !!(st && (st.running || (st.queued || 0) > 0));
+    if (fetched !== lastFetched || !busy) { lastFetched = fetched; await reloadAll(); renderMain(); }
+    if (!busy) return;                                            // fill drained → final render done above
+  }
+}
 /** Updates the Item value + Balance stat cards. Pass null to show "—".
  *  ST-02: cards show a COMPACT value (€1.2M) only when large; the exact amount is
  *  always on hover (title). */
@@ -958,6 +1039,7 @@ function renderAccountRow(acc, depth) {
           <div class="flex items-center gap-1.5">
             <p class="text-sm font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-300'}">
               ${escapeHtml(acc.displayName || acc.username)}</p>
+            ${acc.tier === 'limited' ? `<span class="shrink-0 text-3xs font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Limited — imported without a maFile. Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need a maFile. Attach one to upgrade to Full.">LTD</span>` : ''}
             <span class="acct-balance ml-auto shrink-0 text-2xs font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
           </div>
           <p class="text-2xs text-slate-500 truncate">${escapeHtml(acc.username)}</p></div>
@@ -972,6 +1054,8 @@ function renderAccountRow(acc, depth) {
         <button data-hide="${escapeAttr(acc.username)}" data-hidden="${acc.hidden ? '1' : '0'}"
           title="${acc.hidden ? 'Show' : 'Hide'}" aria-label="${acc.hidden ? 'Show' : 'Hide'} ${escapeAttr(acc.username)}"
           class="hide-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} text-2xs"></i></button>
+        ${acc.tier === 'limited' ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
+          class="attach-btn w-6 h-6 rounded-md bg-slate-900/95 text-emerald-400 hover:text-white hover:bg-emerald-700 transition flex items-center justify-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>` : ''}
       </div>
     </div>`;
 }
@@ -1022,6 +1106,7 @@ function onSidebarClick(e) {
   if ((n = t.closest('[data-delfolder]')))  return deleteFolder(n.dataset.delfolder, n.dataset.name);
   if ((n = t.closest('[data-banfolder]')))  return checkFolderBans(n.dataset.banfolder);
   if ((n = t.closest('.bancheck-btn')))     return checkAccountBans(n.dataset.bancheck);
+  if ((n = t.closest('.attach-btn')))       return openAttachMaFile(n.dataset.attach);
   if ((n = t.closest('.hide-btn')))         return toggleHide(n.dataset.hide, n.dataset.hidden === '1');
   if ((n = t.closest('.move-btn')))         return openMoveModal(n.dataset.move);
   if ((n = t.closest('.edit-btn')))         return openEditAccount(n.dataset.edit);
@@ -1532,6 +1617,9 @@ function renderAccountView() {
         <button id="btn-trade-offers" title="Manage this account's sent &amp; received trade offers"
           class="px-3 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition inline-flex items-center gap-2">
           <i class="fa-solid fa-right-left"></i><span>Trade Offers</span></button>
+        <button id="btn-csfloat" title="Manage this account on CSFloat (listings, market, trades)"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-brand-light text-sm font-bold transition inline-flex items-center gap-2">
+          <i class="fa-solid fa-water"></i><span>CSFloat</span></button>
       </div></div>`;
   bindTradeLink(username);
   const bansBtn = $('btn-account-bans');
@@ -1544,6 +1632,8 @@ function renderAccountView() {
   if (tuBtn) tuBtn.addEventListener('click', () => openTradeUpModal(username));
   const ckBtn = $('btn-caskets');
   if (ckBtn) ckBtn.addEventListener('click', () => openCasketModal(username));
+  const cfBtn = $('btn-csfloat');
+  if (cfBtn) cfBtn.addEventListener('click', () => openCsFloat(username));
 
   el.btnLoad.classList.remove('hidden');
   el.btnLoad.disabled = false; // reset any leftover loading state from a previous refresh
@@ -3171,6 +3261,565 @@ async function submitAddAccount(ev) {
   finally { el.modalSubmit.disabled = false; }
 }
 
+// ── account login (Feature 1: QR / credentials import → Limited tier) ──
+const LOGIN = { method: 'qr', sessionId: null, credSessionId: null, phase: 'creds', poll: null };
+
+function openLogin() {
+  el.loginEnv.innerHTML = state.environments.map((e) => `<option value="${escapeAttr(e.id)}">${escapeHtml(e.name)}</option>`).join('');
+  if (state.activeEnv) el.loginEnv.value = state.activeEnv;
+  resetLoginCred();
+  el.loginOverlay.classList.remove('hidden');
+  switchLoginTab('qr');
+}
+
+function closeLogin() {
+  stopLoginPoll();
+  cancelLoginSession(LOGIN.sessionId); LOGIN.sessionId = null;
+  cancelLoginSession(LOGIN.credSessionId); LOGIN.credSessionId = null;
+  el.loginOverlay.classList.add('hidden');
+}
+
+function cancelLoginSession(id) {
+  if (id) api(`/api/accounts/login/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).catch(() => {});
+}
+
+function onLoginClick(e) {
+  const tab = e.target.closest('[data-login-tab]');
+  if (tab) return switchLoginTab(tab.getAttribute('data-login-tab'));
+  if (e.target.closest('[data-login-retry]')) return startQr();
+}
+
+function switchLoginTab(method) {
+  LOGIN.method = method;
+  document.querySelectorAll('#login-overlay .login-tab').forEach((b) => {
+    const on = b.getAttribute('data-login-tab') === method;
+    b.classList.toggle('bg-brand', on); b.classList.toggle('text-white', on);
+    b.classList.toggle('bg-slate-800', !on); b.classList.toggle('text-slate-400', !on);
+  });
+  el.loginPaneQr.classList.toggle('hidden', method !== 'qr');
+  el.loginCredForm.classList.toggle('hidden', method !== 'credentials');
+  if (method === 'qr') { cancelLoginSession(LOGIN.credSessionId); LOGIN.credSessionId = null; startQr(); }
+  else { stopLoginPoll(); cancelLoginSession(LOGIN.sessionId); LOGIN.sessionId = null; resetLoginCred(); }
+}
+
+// QR sub-flow
+async function startQr() {
+  stopLoginPoll();
+  hideQrOverlay();
+  el.loginQrImg.removeAttribute('src');
+  renderQrStatus('waiting');
+  try {
+    const st = await api('/api/accounts/login/qr/start', { method: 'POST', body: JSON.stringify({ environmentId: el.loginEnv.value }) });
+    LOGIN.sessionId = st.sessionId;
+    if (st.qrDataUrl) el.loginQrImg.src = st.qrDataUrl;
+    applyLoginStatus(st);
+    if (!isTerminalLogin(st.state)) startLoginPoll(st.sessionId, applyLoginStatus);
+  } catch (err) {
+    showQrOverlay(`<i class="fa-solid fa-triangle-exclamation text-rose-400 text-2xl mb-2"></i><p class="text-rose-300 text-sm font-semibold mb-3">${escapeHtml(err.message)}</p><button data-login-retry class="px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold">Try again</button>`);
+  }
+}
+
+function applyLoginStatus(st) {
+  renderQrStatus(st.state);
+  if (st.state === 'imported') { stopLoginPoll(); onLoginImported(st); }
+  else if (st.state === 'expired') { stopLoginPoll(); showQrOverlay(`<i class="fa-solid fa-clock-rotate-left text-amber-400 text-2xl mb-2"></i><p class="text-amber-300 text-sm font-semibold mb-3">QR code expired</p><button data-login-retry class="px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold">New code</button>`); }
+  else if (st.state === 'error') { stopLoginPoll(); showQrOverlay(`<i class="fa-solid fa-triangle-exclamation text-rose-400 text-2xl mb-2"></i><p class="text-rose-300 text-sm font-semibold mb-3">${escapeHtml(st.error || 'Login failed')}</p><button data-login-retry class="px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold">Try again</button>`); }
+}
+
+function renderQrStatus(stateName) {
+  const steps = [['waiting', 'Waiting', 'fa-hourglass-half'], ['scanned', 'Scanned', 'fa-mobile-screen-button'], ['approved', 'Approved', 'fa-circle-check'], ['imported', 'Done', 'fa-flag-checkered']];
+  const order = ['waiting', 'scanned', 'approved', 'imported'];
+  const idx = order.indexOf(isTerminalLogin(stateName) && stateName !== 'imported' ? 'waiting' : stateName);
+  el.loginQrStatus.innerHTML = steps.map(([key, label, icon], i) => {
+    const done = i < idx, cur = i === idx;
+    const cls = cur ? 'bg-brand/20 text-brand-light border-brand/40' : done ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-slate-800/60 text-slate-500 border-slate-700';
+    const ic = (cur && key !== 'imported') ? 'fa-spinner cs2-spin' : icon;
+    return `<span class="text-3xs font-semibold px-2 py-0.5 rounded-full border ${cls} inline-flex items-center gap-1"><i class="fa-solid ${ic}"></i>${label}</span>`;
+  }).join('');
+}
+
+function showQrOverlay(html) { el.loginQrOverlay.innerHTML = html; el.loginQrOverlay.classList.remove('hidden'); }
+function hideQrOverlay() { el.loginQrOverlay.classList.add('hidden'); el.loginQrOverlay.innerHTML = ''; }
+
+// Credentials sub-flow
+function resetLoginCred() {
+  LOGIN.phase = 'creds';
+  if (el.loginCredForm.reset) el.loginCredForm.reset();
+  el.loginGuard.classList.add('hidden');
+  el.loginCredMsg.classList.add('hidden');
+  el.loginCredSubmitLabel.textContent = 'Log in';
+}
+
+async function submitLoginCredentials(ev) {
+  ev.preventDefault();
+  el.loginCredSubmit.disabled = true;
+  try {
+    if (LOGIN.phase === 'guard') {
+      const st = await api(`/api/accounts/login/${encodeURIComponent(LOGIN.credSessionId)}/guard`, { method: 'POST', body: JSON.stringify({ code: el.loginGuardInput.value.trim() }) });
+      applyCredStatus(st);
+    } else {
+      const fd = new FormData(el.loginCredForm);
+      const body = { username: String(fd.get('username') || '').trim(), password: String(fd.get('password') || ''), environmentId: el.loginEnv.value };
+      const st = await api('/api/accounts/login/credentials', { method: 'POST', body: JSON.stringify(body) });
+      LOGIN.credSessionId = st.sessionId;
+      applyCredStatus(st);
+      if (!isTerminalLogin(st.state)) startLoginPoll(st.sessionId, applyCredStatus);
+    }
+  } catch (err) {
+    showCredMsg(err.message, 'error');
+  } finally { el.loginCredSubmit.disabled = false; }
+}
+
+function applyCredStatus(st) {
+  if (st.state === 'guard') {
+    LOGIN.phase = 'guard';
+    el.loginGuard.classList.remove('hidden');
+    el.loginGuardLabel.textContent = st.guardType === 'EmailCode'
+      ? `Email Steam Guard code${st.guardDetail ? ` (sent to …@${st.guardDetail})` : ''}`
+      : 'Steam Guard mobile code';
+    el.loginCredSubmitLabel.textContent = 'Verify code';
+    el.loginGuardInput.focus();
+    showCredMsg('Enter your Steam Guard code, or just approve the login in your Steam Mobile app.', 'info');
+    if (!LOGIN.poll && LOGIN.credSessionId) startLoginPoll(LOGIN.credSessionId, applyCredStatus);
+  } else if (st.state === 'imported') {
+    stopLoginPoll(); onLoginImported(st);
+  } else if (st.state === 'error') {
+    stopLoginPoll(); showCredMsg(st.error || 'Login failed', 'error');
+  } else if (st.state === 'expired') {
+    stopLoginPoll(); showCredMsg('Login attempt expired — try again.', 'error');
+  } else {
+    showCredMsg('Waiting for approval…', 'info');
+  }
+}
+
+function showCredMsg(msg, tone) {
+  el.loginCredMsg.className = `text-2xs ${tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-slate-400' : 'text-emerald-300'}`;
+  el.loginCredMsg.textContent = msg;
+  el.loginCredMsg.classList.remove('hidden');
+}
+
+// Shared poll/helpers
+function isTerminalLogin(s) { return s === 'imported' || s === 'expired' || s === 'error'; }
+function startLoginPoll(sessionId, onStatus) {
+  stopLoginPoll();
+  LOGIN.poll = setInterval(async () => {
+    try { onStatus(await api(`/api/accounts/login/${encodeURIComponent(sessionId)}/status`)); }
+    catch { /* transient / 404 — keep polling until terminal or the modal closes */ }
+  }, 1500);
+}
+function stopLoginPoll() { if (LOGIN.poll) { clearInterval(LOGIN.poll); LOGIN.poll = null; } }
+
+async function onLoginImported(st) {
+  toast(`Account "${st.username}" ${st.isUpdate ? 'updated' : 'imported'} as Limited`, 'success');
+  closeLogin();
+  await reloadAll();
+  if (state.screen === 'inventory') renderSidebar();
+  try { selectAccount(st.username); } catch { /* not in the active env view — it still appears in the sidebar */ }
+}
+
+// ── attach maFile → upgrade Limited to Full (Feature 1) ──
+function openAttachMaFile(username) {
+  el.attachForm.reset();
+  el.attachUsername.textContent = username;
+  el.attachForm.dataset.username = username;
+  el.attachOverlay.classList.remove('hidden');
+}
+function closeAttach() { el.attachOverlay.classList.add('hidden'); }
+async function submitAttach(ev) {
+  ev.preventDefault();
+  const username = el.attachForm.dataset.username;
+  const maFilePath = String(new FormData(el.attachForm).get('maFilePath') || '').trim();
+  el.attachSubmit.disabled = true;
+  try {
+    const acc = await api(`/api/accounts/${encodeURIComponent(username)}/attach-mafile`, { method: 'POST', body: JSON.stringify({ maFilePath }) });
+    closeAttach();
+    toast(`"${acc.username}" upgraded to Full`, 'success');
+    await reloadAll();
+    if (state.screen === 'inventory') renderSidebar();
+  } catch (err) { toast(err.message, 'error'); }
+  finally { el.attachSubmit.disabled = false; }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  CSFloat workspace (Feature 2) — per-account marketplace control.
+//  Documented core tabs (Dashboard / My Listings / Market / Settings) are always
+//  shown; Buy Orders / Trades / Inventory appear only when experimental is ON.
+//  All renderers extract fields defensively (undocumented response shapes).
+// ════════════════════════════════════════════════════════════════════════════
+const CSF = { username: null, tab: 'dashboard', experimental: false, key: { configured: false }, market: { cursor: null, items: [], query: {}, loading: false } };
+const csfUsd = (cents) => '$' + (Number(cents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function csfApi(path, opts) { return api('/api/csfloat/' + encodeURIComponent(CSF.username) + path, opts); }
+function csfImg(hash) { return !hash ? '' : (/^https?:/.test(hash) ? hash : 'https://community.akamai.steamstatic.com/economy/image/' + hash); }
+function csfSkeleton(rows = 5) { return `<div class="space-y-2">${Array.from({ length: rows }, () => '<div class="h-14 rounded-lg bg-slate-800/50 animate-pulse"></div>').join('')}</div>`; }
+function csfError(msg) { return `<div class="empty"><div class="empty-icon text-warn"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="empty-title">${escapeHtml(msg)}</div><button data-csf="retry" class="btn btn-secondary btn-sm mt-4"><i class="fa-solid fa-rotate-right"></i>Retry</button></div>`; }
+function csfEmpty(icon, msg) { return `<div class="empty"><div class="empty-icon"><i class="fa-solid ${icon}"></i></div><div class="empty-title">${escapeHtml(msg)}</div></div>`; }
+function csfArr(res) { if (Array.isArray(res)) return res; const r = res || {}; return r.data || r.listings || r.orders || r.trades || r.results || r.items || []; }
+function csfMsg(eln, text, tone) { if (!eln) return; eln.className = `text-2xs mt-2 ${tone === 'error' ? 'text-rose-300' : tone === 'ok' ? 'text-emerald-300' : 'text-slate-400'}`; eln.textContent = text; eln.classList.remove('hidden'); }
+
+async function openCsFloat(username) {
+  CSF.username = username; CSF.tab = 'dashboard'; CSF.market = { cursor: null, items: [], query: {}, loading: false };
+  el.csfloatAccount.textContent = username;
+  el.csfloatOverlay.classList.remove('hidden');
+  el.csfloatTabs.innerHTML = ''; el.csfloatBody.innerHTML = csfSkeleton();
+  try {
+    const [cfg, key] = await Promise.all([
+      api('/api/csfloat/config').catch(() => ({ experimental: false })),
+      csfApi('/key').catch(() => ({ configured: false })),
+    ]);
+    CSF.experimental = !!cfg.experimental; CSF.key = key || { configured: false };
+  } catch { CSF.experimental = false; CSF.key = { configured: false }; }
+  csfRenderTabs();
+  csfSwitchTab(CSF.key.configured ? 'dashboard' : 'settings');
+}
+function closeCsFloat() { el.csfloatOverlay.classList.add('hidden'); }
+
+function csfRenderTabs() {
+  const core = [['dashboard', 'Dashboard', 'fa-gauge'], ['listings', 'My Listings', 'fa-tags'], ['market', 'Market', 'fa-store']];
+  const exp = [['buyorders', 'Buy Orders', 'fa-hand-holding-dollar'], ['trades', 'Trades', 'fa-right-left'], ['inventory', 'Inventory', 'fa-boxes-stacked']];
+  const tabs = [...core, ...(CSF.experimental ? exp : []), ['settings', 'Settings', 'fa-gear']];
+  el.csfloatTabs.innerHTML = tabs.map(([id, label, icon]) => {
+    const on = CSF.tab === id;
+    return `<button data-csf-tab="${id}" class="px-3 py-2 -mb-px text-sm font-bold transition inline-flex items-center gap-2 border-b-2 ${on ? 'border-brand text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}"><i class="fa-solid ${icon}"></i>${label}</button>`;
+  }).join('');
+}
+
+function csfSwitchTab(tab) {
+  CSF.tab = tab; csfRenderTabs();
+  if (tab !== 'settings' && !CSF.key.configured) return csfNeedKey();
+  ({ dashboard: csfLoadDashboard, listings: csfLoadListings, market: csfRenderMarket, buyorders: csfLoadBuyOrders, trades: csfLoadTrades, inventory: csfLoadInventory, settings: csfRenderSettings }[tab] || csfRenderSettings)();
+}
+
+function csfNeedKey() {
+  el.csfloatBody.innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-key"></i></div><div class="empty-title">No CSFloat API key for this account</div><div class="empty-sub mb-4">Add your key to manage this account on CSFloat.</div><button data-csf="gosettings" class="btn btn-primary btn-sm"><i class="fa-solid fa-gear"></i>Open Settings</button></div>`;
+}
+
+// ── Dashboard ──
+async function csfLoadDashboard() {
+  el.csfloatBody.innerHTML = csfSkeleton(3);
+  try {
+    const me = await csfApi('/me');
+    const bal = me.balance ?? (me.user && me.user.balance) ?? me.pending_balance ?? 0;
+    const name = me.username || (me.user && me.user.username) || me.steam_id || (me.user && me.user.steam_id) || CSF.username;
+    let listingCount = '—';
+    try { listingCount = String(csfArr(await csfApi('/listings?limit=50')).length); } catch { /* leave as — */ }
+    el.csfloatBody.innerHTML = `
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        ${csfStat('Balance', csfUsd(bal), 'fa-wallet', 'text-emerald-400')}
+        ${csfStat('Active listings', listingCount, 'fa-tags', 'text-brand-light')}
+        ${csfStat('Account', escapeHtml(String(name)), 'fa-user', 'text-slate-300')}
+      </div>
+      <div class="flex gap-2">
+        <button data-csf-tab="market" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold"><i class="fa-solid fa-store mr-1.5"></i>Browse market</button>
+        <button data-csf-tab="listings" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold"><i class="fa-solid fa-tags mr-1.5"></i>My listings</button>
+      </div>`;
+  } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
+}
+function csfStat(label, value, icon, color) {
+  return `<div class="surface px-4 py-3"><p class="text-2xs uppercase tracking-wider text-slate-500 mb-1">${label}</p><p class="text-xl font-bold ${color} truncate"><i class="fa-solid ${icon} mr-1.5 text-sm"></i>${value}</p></div>`;
+}
+
+// ── My Listings ──
+async function csfLoadListings() {
+  el.csfloatBody.innerHTML = csfSkeleton();
+  try {
+    const items = csfArr(await csfApi('/listings?limit=50'));
+    el.csfloatBody.innerHTML = items.length ? `<div class="space-y-2">${items.map(csfListingRow).join('')}</div>` : csfEmpty('fa-tags', 'No active listings on CSFloat.');
+  } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
+}
+function csfListingRow(l) {
+  const item = l.item || {}; const id = l.id || l.listing_id || '';
+  const name = item.market_hash_name || item.full_item_name || item.item_name || 'Unknown item';
+  const price = l.price ?? 0; const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
+  return `<div class="csf-row flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+    ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
+    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="text-2xs text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
+    <input type="number" step="0.01" min="0.03" placeholder="${(price / 100).toFixed(2)}" class="csf-price field !w-24 !py-1.5 text-right" />
+    <button data-csf="editprice" data-id="${escapeAttr(id)}" title="Update price" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold"><i class="fa-solid fa-pen"></i></button>
+    <button data-csf="delist" data-id="${escapeAttr(id)}" title="Delist" class="px-2.5 py-1.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold"><i class="fa-solid fa-xmark"></i></button>
+    <span class="text-sm font-bold text-emerald-400 w-20 text-right">${csfUsd(price)}</span></div>`;
+}
+
+// ── Market ──
+function csfRenderMarket() {
+  el.csfloatBody.innerHTML = `
+    <form id="csf-market-form" class="flex flex-wrap items-end gap-2 mb-4">
+      <div class="flex-1 min-w-[180px]"><label class="block text-2xs text-slate-500 mb-1">Search</label>
+        <input name="market_hash_name" placeholder="e.g. AK-47 | Redline" class="field" /></div>
+      <div><label class="block text-2xs text-slate-500 mb-1">Min $</label><input name="min" type="number" step="0.01" class="field !w-24" /></div>
+      <div><label class="block text-2xs text-slate-500 mb-1">Max $</label><input name="max" type="number" step="0.01" class="field !w-24" /></div>
+      <div><label class="block text-2xs text-slate-500 mb-1">Sort</label>
+        <select name="sort_by" class="field !w-auto">
+          <option value="best_deal">Best deal</option><option value="lowest_price">Lowest price</option><option value="highest_price">Highest price</option><option value="most_recent">Most recent</option><option value="lowest_float">Lowest float</option><option value="highest_float">Highest float</option></select></div>
+      <button type="submit" class="px-4 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold"><i class="fa-solid fa-magnifying-glass mr-1.5"></i>Search</button>
+    </form>
+    <div id="csf-market-results">${CSF.market.items.length ? '' : csfEmpty('fa-store', 'Search the CSFloat marketplace above.')}</div>`;
+  if (CSF.market.items.length) csfRenderMarketResults();
+}
+async function csfDoMarketSearch(reset) {
+  const form = $('csf-market-form'); if (!form) return;
+  if (reset) {
+    const fd = new FormData(form);
+    CSF.market.cursor = null; CSF.market.items = [];
+    CSF.market.query = {
+      market_hash_name: String(fd.get('market_hash_name') || '').trim() || undefined,
+      min_price: fd.get('min') ? Math.round(Number(fd.get('min')) * 100) : undefined,
+      max_price: fd.get('max') ? Math.round(Number(fd.get('max')) * 100) : undefined,
+      sort_by: String(fd.get('sort_by') || 'best_deal'),
+    };
+  }
+  const results = $('csf-market-results'); if (reset && results) results.innerHTML = csfSkeleton();
+  CSF.market.loading = true;
+  try {
+    const q = { ...CSF.market.query, limit: 24 }; if (CSF.market.cursor) q.cursor = CSF.market.cursor;
+    const pairs = Object.entries(q).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, String(v)]);
+    const res = await csfApi('/listings/search?' + new URLSearchParams(pairs).toString());
+    CSF.market.cursor = res.cursor || null;
+    CSF.market.items = reset ? csfArr(res) : CSF.market.items.concat(csfArr(res));
+    csfRenderMarketResults();
+  } catch (err) { if (results) results.innerHTML = csfError(err.message); }
+  finally { CSF.market.loading = false; }
+}
+function csfRenderMarketResults() {
+  const results = $('csf-market-results'); if (!results) return;
+  if (!CSF.market.items.length) { results.innerHTML = csfEmpty('fa-store', 'No listings match — try a different search.'); return; }
+  results.innerHTML = `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">${CSF.market.items.map(csfMarketCard).join('')}</div>
+    ${CSF.market.cursor ? '<div class="text-center mt-4"><button data-csf="marketmore" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold">Load more</button></div>' : ''}`;
+}
+function csfMarketCard(l) {
+  const item = l.item || {}; const id = l.id || ''; const price = l.price ?? 0;
+  const name = item.market_hash_name || 'Unknown item';
+  const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : ''; const wear = item.wear_name || '';
+  return `<div class="rounded-xl bg-slate-950/50 border border-slate-800 p-3 flex flex-col">
+    <div class="flex items-center justify-center h-24 mb-2">${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="max-h-24 object-contain"/>` : '<i class="fa-solid fa-image text-slate-700 text-2xl"></i>'}</div>
+    <p class="text-sm text-slate-200 truncate" title="${escapeAttr(name)}">${escapeHtml(name)}</p>
+    <p class="text-2xs text-slate-500 mb-2 truncate">${escapeHtml(wear)}${fl ? ` · ${fl}` : ''}</p>
+    <div class="mt-auto flex items-center justify-between">
+      <span class="text-base font-bold text-emerald-400">${csfUsd(price)}</span>
+      <button data-csf="buy" data-id="${escapeAttr(id)}" data-price="${price}" data-name="${escapeAttr(name)}" class="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"><i class="fa-solid fa-cart-shopping mr-1"></i>Buy</button>
+    </div></div>`;
+}
+
+// ── Buy Orders (experimental) ──
+async function csfLoadBuyOrders() {
+  el.csfloatBody.innerHTML = csfSkeleton(3);
+  try {
+    const orders = csfArr(await csfApi('/buy-orders?limit=50'));
+    el.csfloatBody.innerHTML = `
+      <form id="csf-bo-form" class="flex flex-wrap items-end gap-2 mb-5 pb-5 border-b border-slate-800">
+        <div class="relative flex-1 min-w-[200px]">
+          <label class="block text-2xs text-slate-500 mb-1">Item</label>
+          <input name="market_hash_name" id="csf-bo-name" autocomplete="off" required placeholder="Search CS2 items…" class="field"/>
+          <div id="csf-bo-results" class="hidden absolute left-0 right-0 mt-1 z-20 max-h-64 overflow-y-auto rounded-lg bg-slate-900 border border-slate-700 shadow-2xl"></div>
+        </div>
+        <div><label class="block text-2xs text-slate-500 mb-1">Max $</label><input name="max_price" type="number" step="0.01" required class="field !w-24"/></div>
+        <div><label class="block text-2xs text-slate-500 mb-1">Qty</label><input name="quantity" type="number" min="1" value="1" required class="field !w-20"/></div>
+        <button type="submit" class="px-4 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold">Place order</button>
+      </form>
+      ${orders.length ? `<div class="space-y-2">${orders.map(csfBuyOrderRow).join('')}</div>` : csfEmpty('fa-hand-holding-dollar', 'No active buy orders.')}`;
+    csfWireBoSearch();
+  } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
+}
+
+/** Search-as-you-type for the buy-order item field (mirrors the mass-buy search): hits the
+ *  Steam market search, shows a result dropdown, click fills the exact market_hash_name. */
+function csfWireBoSearch() {
+  const input = $('csf-bo-name'); const box = $('csf-bo-results');
+  if (!input || !box) return;
+  const hide = () => { box.classList.add('hidden'); box.innerHTML = ''; };
+  input.addEventListener('input', () => {
+    clearTimeout(CSF.boSearchTimer);
+    const q = input.value.trim();
+    if (q.length < 2) { hide(); return; }
+    CSF.boSearchTimer = setTimeout(async () => {
+      try {
+        const r = await api(`/api/market/search?q=${encodeURIComponent(q)}&appId=730`);
+        if (input.value.trim() !== q) return;                 // a newer query is in flight
+        const list = (r.results || []).slice(0, 20);
+        if (!list.length) { hide(); return; }
+        // Steam market search only supplies the canonical CS2 item NAME here (names are identical
+        // across Steam/CSFloat) — we deliberately do NOT surface its Steam price inside CSFloat.
+        box.innerHTML = list.map((it, i) => `
+          <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand/20 transition">
+            ${it.iconUrl ? `<img src="${escapeAttr(safeIconUrl(it.iconUrl))}" class="w-7 h-7 object-contain shrink-0" onerror="this.style.display='none'"/>` : ''}
+            <span class="block min-w-0 flex-1 text-sm text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
+          </button>`).join('');
+        box.querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => {
+          input.value = list[Number(b.dataset.i)].marketHashName; hide(); input.focus();
+        }));
+        box.classList.remove('hidden');
+      } catch { hide(); }
+    }, 300);
+  });
+  input.addEventListener('blur', () => setTimeout(hide, 200));
+}
+function csfBuyOrderRow(o) {
+  const id = o.id || ''; const name = o.market_hash_name || o.expression || (o.item && o.item.market_hash_name) || 'Buy order';
+  const price = o.max_price ?? o.price ?? 0; const qty = o.quantity ?? o.qty ?? 1;
+  return `<div class="flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="text-2xs text-slate-500">qty ${escapeHtml(String(qty))}</p></div>
+    <span class="text-sm font-bold text-emerald-400">${csfUsd(price)}</span>
+    <button data-csf="delorder" data-id="${escapeAttr(id)}" class="px-2.5 py-1.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold"><i class="fa-solid fa-xmark"></i></button></div>`;
+}
+
+// ── Trades (experimental) — incl. the Auto-Accept toggle ──
+async function csfLoadTrades() {
+  el.csfloatBody.innerHTML = csfSkeleton(3);
+  try {
+    const [auto, tradesRes] = await Promise.all([ csfApi('/auto-accept').catch(() => ({ enabled: false })), csfApi('/trades?limit=50') ]);
+    const trades = csfArr(tradesRes);
+    const acc = state.allAccounts.find((a) => a.username === CSF.username);
+    const limited = !!(acc && acc.tier === 'limited');
+    el.csfloatBody.innerHTML = `
+      <div class="surface flex items-center justify-between px-4 py-3 mb-4">
+        <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? 'Unavailable on Limited accounts (no maFile to confirm the Steam delivery).' : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
+        <button data-csf="autoaccept" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
+      </div>
+      ${trades.length ? `<div class="space-y-2">${trades.map(csfTradeRow).join('')}</div>` : csfEmpty('fa-right-left', 'No trades yet.')}`;
+  } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
+}
+function csfTradeRow(t) {
+  const item = (t.contract && t.contract.item) || t.item || {};
+  const name = item.market_hash_name || 'Trade'; const st = t.state || t.status || '';
+  const price = (t.contract && t.contract.price) ?? t.price ?? 0;
+  return `<div class="flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="text-2xs text-slate-500">${escapeHtml(String(st))}</p></div>
+    <span class="text-sm font-bold text-emerald-400">${csfUsd(price)}</span></div>`;
+}
+
+// ── Inventory (experimental) — list an item for sale ──
+async function csfLoadInventory() {
+  el.csfloatBody.innerHTML = csfSkeleton();
+  try {
+    const items = csfArr(await csfApi('/inventory'));
+    el.csfloatBody.innerHTML = items.length
+      ? `<p class="text-2xs text-slate-500 mb-3">Set a price and list an item for sale on CSFloat.</p><div class="space-y-2">${items.map(csfInvRow).join('')}</div>`
+      : csfEmpty('fa-boxes-stacked', 'No tradable CS2 items found on CSFloat.');
+  } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
+}
+function csfInvRow(it) {
+  const item = it.item || it; const asset = item.asset_id || item.assetid || it.asset_id || '';
+  const name = item.market_hash_name || item.full_item_name || 'Item';
+  const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
+  return `<div class="csf-row flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+    ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
+    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="text-2xs text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
+    <input type="number" step="0.01" min="0.03" placeholder="price $" class="csf-price field !w-24 !py-1.5 text-right" />
+    <button data-csf="listasset" data-asset="${escapeAttr(asset)}" ${asset ? '' : 'disabled'} class="px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold ${asset ? '' : 'opacity-40'}">List</button></div>`;
+}
+
+// ── Settings ──
+function csfRenderSettings() {
+  const k = CSF.key || { configured: false };
+  el.csfloatBody.innerHTML = `
+    <div class="max-w-lg space-y-5">
+      <div>
+        <h4 class="text-sm font-bold text-slate-200 mb-1">CSFloat API key</h4>
+        <p class="text-2xs text-slate-500 mb-3">Generate a key at <span class="text-brand-light">csfloat.com/profile → Developer</span>. Stored encrypted per-account in your vault; never shown again.</p>
+        <form id="csf-key-form" class="flex gap-2">
+          <input name="apiKey" type="password" autocomplete="off" placeholder="${k.configured ? 'configured (ending …' + escapeHtml(k.tail || '') + ') — paste to replace' : 'paste your CSFloat API key'}" class="field flex-1"/>
+          <button type="submit" class="px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold">Save</button>
+          ${k.configured ? '<button type="button" data-csf="clearkey" class="px-4 py-2.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-sm font-bold">Clear</button>' : ''}
+        </form>
+        <p id="csf-key-msg" class="hidden text-2xs mt-2"></p>
+      </div>
+      <div class="surface px-4 py-3 flex items-center justify-between gap-3">
+        <div><p class="text-sm font-bold text-slate-200">Experimental features</p><p class="text-2xs text-slate-500">Buy Orders, Trades &amp; Inventory tabs + auto-accept. These use undocumented CSFloat endpoints that may change.</p></div>
+        <button data-csf="experimental" class="px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 ${CSF.experimental ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'}">${CSF.experimental ? 'ON' : 'OFF'}</button>
+      </div>
+    </div>`;
+}
+
+// ── delegation ──
+function onCsfTabClick(e) { const b = e.target.closest('[data-csf-tab]'); if (b) csfSwitchTab(b.getAttribute('data-csf-tab')); }
+function onCsfBodyClick(e) {
+  const tabBtn = e.target.closest('[data-csf-tab]'); if (tabBtn) return csfSwitchTab(tabBtn.getAttribute('data-csf-tab'));
+  const b = e.target.closest('[data-csf]'); if (!b) return;
+  const act = b.getAttribute('data-csf');
+  if (act === 'retry') return csfSwitchTab(CSF.tab);
+  if (act === 'gosettings') return csfSwitchTab('settings');
+  if (act === 'marketmore') return csfDoMarketSearch(false);
+  if (act === 'clearkey') return csfClearKey();
+  if (act === 'experimental') return csfToggleExperimental();
+  if (act === 'autoaccept') return csfToggleAutoAccept(b);
+  if (act === 'delist') return csfDelist(b.getAttribute('data-id'));
+  if (act === 'delorder') return csfDeleteBuyOrder(b.getAttribute('data-id'));
+  if (act === 'editprice') return csfEditPrice(b);
+  if (act === 'buy') return csfBuy(b.getAttribute('data-id'), Number(b.getAttribute('data-price')), b.getAttribute('data-name'));
+  if (act === 'listasset') return csfListAsset(b);
+}
+function onCsfBodySubmit(e) {
+  if (e.target.id === 'csf-key-form') { e.preventDefault(); return csfSaveKey(e.target); }
+  if (e.target.id === 'csf-market-form') { e.preventDefault(); return csfDoMarketSearch(true); }
+  if (e.target.id === 'csf-bo-form') { e.preventDefault(); return csfCreateBuyOrder(e.target); }
+}
+
+// ── actions ──
+async function csfSaveKey(form) {
+  const apiKey = String(new FormData(form).get('apiKey') || '').trim();
+  const msg = $('csf-key-msg');
+  if (!apiKey) return csfMsg(msg, 'Enter a key first.', 'error');
+  csfMsg(msg, 'Validating…', 'info');
+  try {
+    const r = await csfApi('/key', { method: 'PUT', body: JSON.stringify({ apiKey }) });
+    CSF.key = { configured: true, tail: r.tail };
+    csfMsg(msg, r.warning || 'Key saved & validated.', r.warning ? 'info' : 'ok');
+    setTimeout(() => csfSwitchTab('dashboard'), 700);
+  } catch (err) { csfMsg(msg, err.message, 'error'); }
+}
+async function csfClearKey() {
+  if (!(await ssimConfirm({ title: 'Clear API key', body: 'Remove this account\'s CSFloat API key?', tone: 'danger', confirmLabel: 'Clear', confirmIcon: 'fa-xmark' }))) return;
+  try { await csfApi('/key', { method: 'DELETE' }); CSF.key = { configured: false }; toast('CSFloat key cleared', 'success'); csfSwitchTab('settings'); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfToggleExperimental() {
+  try { const r = await api('/api/csfloat/config', { method: 'PUT', body: JSON.stringify({ experimental: !CSF.experimental }) }); CSF.experimental = !!r.experimental; csfRenderTabs(); csfSwitchTab('settings'); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfToggleAutoAccept(btn) {
+  const cur = btn.textContent.includes('ON');
+  try { const r = await csfApi('/auto-accept', { method: 'PUT', body: JSON.stringify({ enabled: !cur }) }); toast(`Auto-accept ${r.enabled ? 'enabled' : 'disabled'}`, 'success'); csfSwitchTab('trades'); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfDelist(id) {
+  if (!id || !(await ssimConfirm({ title: 'Delist', body: 'Remove this listing from CSFloat?', tone: 'danger', confirmLabel: 'Delist', confirmIcon: 'fa-xmark' }))) return;
+  try { await csfApi('/listings/' + encodeURIComponent(id), { method: 'DELETE' }); toast('Listing removed', 'success'); csfLoadListings(); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfEditPrice(btn) {
+  const id = btn.getAttribute('data-id'); const row = btn.closest('.csf-row');
+  const input = row && row.querySelector('.csf-price'); const dollars = input && Number(input.value);
+  if (!dollars || dollars < 0.03) return toast('Enter a new price first', 'error');
+  try { await csfApi('/listings/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ price: Math.round(dollars * 100) }) }); toast('Price updated', 'success'); csfLoadListings(); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfBuy(id, priceCents, name) {
+  if (!id) return;
+  if (!(await ssimConfirm({ title: 'Buy on CSFloat', tone: 'spend', confirmLabel: `Buy for ${csfUsd(priceCents)}`, confirmIcon: 'fa-cart-shopping', body: `Buy <b class="text-slate-100">${escapeHtml(name || 'this item')}</b> for <b class="text-teal-300">${csfUsd(priceCents)}</b> from your CSFloat balance?` }))) return;
+  try { await csfApi('/buy', { method: 'POST', body: JSON.stringify({ listingId: id, totalPrice: priceCents }) }); toast('Purchase sent', 'success'); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfCreateBuyOrder(form) {
+  const fd = new FormData(form);
+  const body = { market_hash_name: String(fd.get('market_hash_name') || '').trim(), max_price: Math.round(Number(fd.get('max_price')) * 100), quantity: Math.round(Number(fd.get('quantity')) || 1) };
+  if (!body.market_hash_name || !body.max_price) return toast('Name and max price are required', 'error');
+  try { await csfApi('/buy-orders', { method: 'POST', body: JSON.stringify(body) }); toast('Buy order placed', 'success'); csfLoadBuyOrders(); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfDeleteBuyOrder(id) {
+  if (!id || !(await ssimConfirm({ title: 'Cancel buy order', body: 'Cancel this buy order?', tone: 'danger', confirmLabel: 'Cancel order', confirmIcon: 'fa-xmark' }))) return;
+  try { await csfApi('/buy-orders/' + encodeURIComponent(id), { method: 'DELETE' }); toast('Buy order cancelled', 'success'); csfLoadBuyOrders(); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function csfListAsset(btn) {
+  const asset = btn.getAttribute('data-asset'); const row = btn.closest('.csf-row');
+  const input = row && row.querySelector('.csf-price'); const dollars = input && Number(input.value);
+  if (!asset) return toast('Missing asset id', 'error');
+  if (!dollars || dollars < 0.03) return toast('Enter a price first', 'error');
+  if (!(await ssimConfirm({ title: 'List on CSFloat', tone: 'brand', confirmLabel: `List for $${dollars.toFixed(2)}`, confirmIcon: 'fa-tag', body: `Create a CSFloat listing at <b class="text-brand-light">$${dollars.toFixed(2)}</b>?` }))) return;
+  try { await csfApi('/listings', { method: 'POST', body: JSON.stringify({ asset_id: asset, price: Math.round(dollars * 100), type: 'buy_now' }) }); toast('Listing created', 'success'); csfLoadInventory(); }
+  catch (err) { toast(err.message, 'error'); }
+}
+
 // ── new / edit environment ──
 async function openEnvModal(mode = 'create', id = null) {
   el.envForm.reset();
@@ -4005,9 +4654,11 @@ function pollSell() {
       el.sellBar.style.width = pct + '%';
       el.sellCount.textContent = `${job.done}/${job.total}`;
       const deferred = (job.deferred || []).length;
+      const gone = (job.gone || []).length;
       const parts = [`${job.listed} listed`, `${job.confirmed} confirmed`];
       if (job.recovered) parts.push(`${job.recovered} recovered`);
       if (job.retried) parts.push(`${job.retried} Retries`);
+      if (gone) parts.push(`${gone} gone`);
       if (deferred) parts.push(`${deferred} deferred`);
       parts.push(`${job.failed.length} failed`);
       // Live phase + current bot so the operator sees motion, not a frozen bar.
@@ -4025,7 +4676,7 @@ function pollSell() {
       }
       resetPoller('sell');
 
-      const extra = `${job.recovered ? `, ${job.recovered} recovered` : ''}${deferred ? `, ${deferred} deferred (connection – retryable)` : ''}${job.failed.length ? `, ${job.failed.length} failed` : ''}`;
+      const extra = `${job.recovered ? `, ${job.recovered} recovered` : ''}${gone ? `, ${gone} gone (already sold/moved)` : ''}${deferred ? `, ${deferred} deferred (connection – retryable)` : ''}${job.failed.length ? `, ${job.failed.length} failed` : ''}`;
       const tone = (job.failed.length || deferred) ? 'warn' : 'success';
       const verb = job.cancelled ? 'ended' : 'done';
       toast(`Market sale ${verb}: ${job.listed} listed, ${job.confirmed} confirmed${extra}`, tone);
@@ -4691,6 +5342,7 @@ const OVERLAY_CLOSERS = new Map([
   ['move-overlay', closeMoveModal], ['ban-overlay', closeBan], ['edit-overlay', closeEditAccount], ['trade-overlay', closeTradeModal],
   ['sell-overlay', closeSellModal], ['buy-overlay', closeBuyModal], ['fbuy-overlay', closeFolderBuy],
   ['bulk-overlay', closeBulk], ['logs-overlay', closeLogs], ['offers-overlay', closeTradeOffers],
+  ['login-overlay', closeLogin], ['attach-overlay', closeAttach], ['csfloat-overlay', closeCsFloat],
   ['confirm-overlay', () => closeConfirm(false)],   // FB-01: Esc / registry-close = safe cancel (no-op)
 ]);
 const FB04 = { stack: [], triggers: new WeakMap(), lastTrigger: null };
@@ -4919,6 +5571,21 @@ function bindStaticEvents() {
   el.modalClose.addEventListener('click', closeAddAccount);
   el.modalCancel.addEventListener('click', closeAddAccount);
   el.addForm.addEventListener('submit', submitAddAccount);
+  // account login (Feature 1)
+  if (el.btnAccountLogin) el.btnAccountLogin.addEventListener('click', openLogin);
+  if (el.loginClose) el.loginClose.addEventListener('click', closeLogin);
+  if (el.loginOverlay) el.loginOverlay.addEventListener('click', onLoginClick);
+  if (el.loginCredForm) el.loginCredForm.addEventListener('submit', submitLoginCredentials);
+  if (el.loginEnv) el.loginEnv.addEventListener('change', () => { if (LOGIN.method === 'qr' && !el.loginOverlay.classList.contains('hidden')) startQr(); });
+  // attach maFile → Full (Feature 1)
+  if (el.attachClose) el.attachClose.addEventListener('click', closeAttach);
+  if (el.attachCancel) el.attachCancel.addEventListener('click', closeAttach);
+  if (el.attachForm) el.attachForm.addEventListener('submit', submitAttach);
+  // CSFloat workspace (Feature 2)
+  if (el.csfloatClose) el.csfloatClose.addEventListener('click', closeCsFloat);
+  if (el.csfloatTabs) el.csfloatTabs.addEventListener('click', onCsfTabClick);
+  if (el.csfloatBody) el.csfloatBody.addEventListener('click', onCsfBodyClick);
+  if (el.csfloatBody) el.csfloatBody.addEventListener('submit', onCsfBodySubmit);
   // environment
   el.envClose.addEventListener('click', closeEnvModal);
   el.envCancel.addEventListener('click', closeEnvModal);
@@ -4986,7 +5653,12 @@ function bindStaticEvents() {
     el.fbuyName.addEventListener('input', () => { clearTimeout(state.fbuySearchTimer); state.fbuySearchTimer = setTimeout(searchFbuyItems, 350); });
     el.fbuyName.addEventListener('blur', () => setTimeout(hideFbuySearch, 200));
   }
-  if (el.btnCurrency) el.btnCurrency.addEventListener('click', () => setCurrency(state.currency === 'EUR' ? 'USD' : 'EUR'));
+  // Feature 3: price-source + currency split control (replaces the old single toggle)
+  if (el.srcBtn) el.srcBtn.addEventListener('click', (e) => { e.stopPropagation(); if (el.curMenu) el.curMenu.classList.add('hidden'); if (el.srcMenu) el.srcMenu.classList.toggle('hidden'); });
+  if (el.curBtn) el.curBtn.addEventListener('click', (e) => { e.stopPropagation(); if (el.srcMenu) el.srcMenu.classList.add('hidden'); if (el.curMenu) el.curMenu.classList.toggle('hidden'); });
+  if (el.srcMenu) el.srcMenu.addEventListener('click', (e) => { const b = e.target.closest('[data-src]'); if (b) setPriceSource(b.getAttribute('data-src')); });
+  if (el.curMenu) el.curMenu.addEventListener('click', (e) => { const b = e.target.closest('[data-cur]'); if (b) { setCurrency(b.getAttribute('data-cur')); closeSourceMenus(); } });
+  document.addEventListener('click', closeSourceMenus);
   el.tradeEnv.addEventListener('change', () => { void populateTradeFolders(); });
   el.tradeFolder.addEventListener('change', buildRecipientList);
   el.tradeSearch.addEventListener('input', buildRecipientList);
@@ -5240,12 +5912,34 @@ function casketInvRows() {
   return q ? items.filter(i => (i.marketHashName || '').toLowerCase().includes(q)) : items;
 }
 
+/**
+ * Whether an item can actually be deposited into a CS2 storage unit (casket). The
+ * GC rejects a handful of categories, so we gray these out rather than let a deposit
+ * fail mid-batch: storage units themselves (can't nest), and Collectibles / Passes /
+ * Gifts (coins, medals, pins, badges, operation passes). Type = the localized "Type"
+ * tag (see InventoryManager.mapItem). Conservative on purpose — only the known-bad set.
+ */
+function casketStorable(item) {
+  const name = (item.marketHashName || item.name || '').toLowerCase();
+  if (name === 'storage unit') return false;
+  const t = (item.type || '').toLowerCase();
+  if (t === 'collectible' || t === 'pass' || t === 'gift') return false;
+  return true;
+}
+
 function renderCasketPanels() {
   const ov = document.getElementById('casket-overlay'); if (!ov) return;
   const invRows = casketInvRows();
-  const invCount = invRows.reduce((n, i) => n + i.assetIds.length, 0);
+  const invCount = invRows.reduce((n, i) => casketStorable(i) ? n + i.assetIds.length : n, 0);
   const unit = ckState.caskets.find(c => c.id === ckState.casketId);
   const invInner = invRows.length ? invRows.map(i => {
+    if (!casketStorable(i)) {
+      return `<div class="flex items-center gap-2.5 px-3 py-2 text-xs opacity-40 cursor-not-allowed" title="This item type can't be stored in a storage unit">
+        <i class="fa-solid fa-ban w-3.5 text-slate-600 shrink-0"></i>
+        <span class="truncate flex-1 text-slate-300">${escapeHtml(i.name || i.marketHashName)}</span>
+        <span class="text-3xs uppercase tracking-wide text-slate-600 shrink-0">not storable</span>
+        <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></div>`;
+    }
     const sel = ckState.invSel.has(i.marketHashName);
     return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer text-xs">
       <input type="checkbox" data-ck-inv="${escapeAttr(i.marketHashName)}" ${sel ? 'checked' : ''} class="accent-brand w-3.5 h-3.5 shrink-0">
@@ -5286,7 +5980,7 @@ function renderCasketPanels() {
   body.querySelector('[data-ck-search]')?.addEventListener('input', (e) => { ckState.search = e.target.value; renderCasketPanels(); body.querySelector('[data-ck-search]')?.focus(); });
   body.querySelectorAll('[data-ck-inv]').forEach(cb => cb.addEventListener('change', () => { cb.checked ? ckState.invSel.add(cb.dataset.ckInv) : ckState.invSel.delete(cb.dataset.ckInv); }));
   body.querySelectorAll('[data-ck-unit-item]').forEach(cb => cb.addEventListener('change', () => { cb.checked ? ckState.unitSel.add(cb.dataset.ckUnitItem) : ckState.unitSel.delete(cb.dataset.ckUnitItem); }));
-  body.querySelector('[data-ck-sel="inv"]')?.addEventListener('click', () => { casketInvRows().forEach(i => ckState.invSel.add(i.marketHashName)); renderCasketPanels(); });
+  body.querySelector('[data-ck-sel="inv"]')?.addEventListener('click', () => { casketInvRows().filter(casketStorable).forEach(i => ckState.invSel.add(i.marketHashName)); renderCasketPanels(); });
   body.querySelector('[data-ck-sel="unit"]')?.addEventListener('click', () => { ckState.contents.forEach(i => ckState.unitSel.add(String(i.id))); renderCasketPanels(); });
   body.querySelector('[data-ck-deposit]')?.addEventListener('click', () => casketMove('deposit'));
   body.querySelector('[data-ck-withdraw]')?.addEventListener('click', () => casketMove('withdraw'));
@@ -5375,6 +6069,8 @@ async function init() {
   setupModalInfra();
   setupDelegation();
   updateCurrencyButton();
+  updatePriceSourceButton();
+  api('/api/pricing/source').then((r) => { if (r && r.effective) { state.priceSource = r.effective; localStorage.setItem('ssim.priceSource', r.effective); updatePriceSourceButton(); } }).catch(() => {});
   try {
     showScreen('dashboard'); renderDashboardSkeleton();   // FB-03: skeleton tiles while the first load runs
     await reloadAll();

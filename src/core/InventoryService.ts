@@ -214,22 +214,42 @@ export class InventoryService {
     const steamId = String(session.steamId ?? '');
 
     // 1) Market listings FIRST. Their asset ids are excluded below so a listed item is
-    //    NEVER also counted as owned/locked (one asset = one bucket). Best-effort.
+    //    NEVER also counted as owned/locked (one asset = one bucket). Best-effort —
+    //    `listingsOk` tracks whether the fetch SUCCEEDED so a transient hiccup is never
+    //    mistaken for "no listings" (which would wipe the listed bucket from the cache).
     let listed: CS2Item[] = [];
+    let listingsOk = true;
     try {
       listed = InventoryManager.stack(await fetchListedItems(session));
     } catch (err) {
-      logger.warn(`[${username}] market-listings fetch failed (listed bucket empty): ${(err as Error).message}`);
+      listingsOk = false;
+      logger.warn(`[${username}] market-listings fetch failed (listed bucket unread this pass): ${(err as Error).message}`);
     }
-    const listedAssetIds = new Set<string>(listed.flatMap(i => i.assetIds));
+    const listedAssetIds = new Set<string>(listed.flatMap(i => i.assetIds.map(String)));
 
     // 2) The complete inventory from PURE WEB (no Game Coordinator): context 2 holds
     //    owned + market-bought holds; context 16 holds trade-received trade-locked AND
     //    currently-listed items. Names + exact unlock dates come straight from Steam's
     //    own descriptions (owner_descriptions "Tradable/Marketable After …"), so no
     //    schema resolver and no game-client connection are needed.
-    const ctx2  = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 2),  steamId, 'cs2');
-    const ctx16 = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 16), steamId, 'cs2');
+    let ctx2  = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 2),  steamId, 'cs2');
+    let ctx16 = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 16), steamId, 'cs2');
+
+    // Genuine retry on a suspicious empty read: if BOTH inventory contexts came back
+    // with zero assets while the cache holds owned/locked items, Steam very likely served
+    // a partial/empty page (total_inventory_count disagreeing with reality). Give it ONE
+    // more chance before we trust the empty read — far better than accepting the first bad
+    // page and then having the partial-read path kick in. (One re-fetch, bounded.)
+    if (ctx2.length + ctx16.length === 0) {
+      const cached = this.gcStore.get(username);
+      const cachedOwned = cached ? cached.items.some(i => i.category !== 'listed') : false;
+      if (cachedOwned) {
+        logger.warn(`[${username}] inventory contexts returned 0 assets while cache holds items – retrying inventory read once`);
+        await sleep(2_000);
+        ctx2  = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 2),  steamId, 'cs2');
+        ctx16 = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 16), steamId, 'cs2');
+      }
+    }
 
     // 3) Combine, drop anything that's on the market (dedup by asset id), then stack +
     //    categorise: a future trade-lock → 'tradelocked', otherwise → 'tradable'.
@@ -247,10 +267,20 @@ export class InventoryService {
       it.category = (it.tradeLockExpiry && new Date(it.tradeLockExpiry).getTime() > now) ? 'tradelocked' : 'tradable';
     }
 
-    // 4) The listed stacks form the 3rd bucket.
+    // 4) The listed stacks form the 3rd bucket. When the listings fetch FAILED this pass
+    //    (listingsOk=false), carry the previously-cached listed bucket forward instead of
+    //    writing an empty one — a transient market-endpoint hiccup must never silently drop
+    //    listed items (the 31-listed-but-24-shown / Locked↔Tradable instability).
     if (listed.length) {
       inv.items.push(...listed);
       inv.totalItems += listed.reduce((n, i) => n + i.quantity, 0);
+    } else if (!listingsOk) {
+      const prevListed = this.gcStore.get(username)?.items.filter(i => i.category === 'listed') ?? [];
+      if (prevListed.length) {
+        inv.items.push(...prevListed);
+        inv.totalItems += prevListed.reduce((n, i) => n + (i.quantity || 0), 0);
+        logger.warn(`[${username}] market listings unread this pass – kept ${prevListed.length} cached listed stack(s) (no wipe)`);
+      }
     }
 
     // Attach the wallet whenever the 'wallet' event fired — INCLUDING accounts with NO Steam
@@ -263,18 +293,28 @@ export class InventoryService {
       };
     }
 
-    // #10 money-safety: a GC handshake that settles slowly can read an EMPTY backpack
-    // for an account that actually holds items. NEVER overwrite a known-non-empty GC
-    // cache with a 0-owned read — the operator gates trade/sell decisions on this cache.
-    // (Listed-only churn doesn't trip this; we compare the GC owned/locked count.)
-    if (gcOwnedLockedCount === 0) {
+    // #10 money-safety: a partial inventory read can return an EMPTY backpack for an account
+    // that actually holds items. NEVER let that wipe a known-non-empty cache — the operator
+    // gates trade/sell decisions on this cache. BUT the protection must RECONCILE, not FREEZE:
+    // the old guard returned the pre-refresh record verbatim, so an account that had just
+    // listed/sold items kept showing them as Owned forever (every refresh re-tripped it).
+    //
+    // The fix turns on telling two zeros apart:
+    //   • rawCount === 0  → the inventory contexts returned NOTHING (a true empty/partial
+    //     read). Protect the cached owned/locked set, but still reconcile the AUTHORITATIVE
+    //     `mylistings` set into it (Owned→Listed) so just-listed items don't freeze as Owned.
+    //   • rawCount  >  0  → the read succeeded; owned/locked is 0 only because EVERYTHING the
+    //     account holds is now listed/sold. That is the TRUTH and MUST overwrite the cache.
+    // (`gcOwnedLockedCount` = ctx2+ctx16 AFTER removing listed; `rawCount` = before removing.)
+    const rawCount = ctx2.length + ctx16.length;
+    if (rawCount === 0) {
       const prev = this.gcStore.get(username);
       const prevOwnedLocked = prev
         ? prev.items.filter(i => i.category !== 'listed').reduce((n, i) => n + (i.quantity || 0), 0)
         : 0;
       if (prevOwnedLocked > 0) {
-        logger.warn(`[${username}] full refresh returned 0 owned/locked items but cache holds ${prevOwnedLocked} – keeping cached record (suspected partial read)`);
-        return prev!;
+        logger.warn(`[${username}] inventory contexts returned 0 assets but cache holds ${prevOwnedLocked} owned/locked – reconciling listings into cache (suspected partial read)`);
+        return this.reconcilePartialRead(username, prev!, listed, listedAssetIds, listingsOk);
       }
     }
 
@@ -285,6 +325,117 @@ export class InventoryService {
     // Return an independent copy (see InventoryStore.get clone note): the API enriches
     // the result in place and must not write back into the cache it was just stored in.
     return this.gcStore.get(username) ?? inv;
+  }
+
+  /**
+   * Suspected-partial-read reconciliation (replaces the old "freeze the stale cache").
+   * The inventory contexts came back empty while the cache holds items, so we KEEP the
+   * cached owned/locked set (data-loss protection) — but we still trust the AUTHORITATIVE
+   * `mylistings` read: any cached asset now in `listedAssetIds` is moved Owned→Listed, and
+   * the listed bucket is replaced with the freshly-fetched listings. This is what stops a
+   * just-listed item from being frozen as Owned across refreshes. If the listings fetch
+   * ALSO failed this pass (`listingsOk=false`), the cached listed bucket is kept untouched
+   * (we never wipe listed items on a double miss).
+   */
+  private reconcilePartialRead(
+    username: string,
+    prev: AccountInventory,
+    listed: CS2Item[],
+    listedAssetIds: Set<string>,
+    listingsOk: boolean,
+  ): AccountInventory {
+    const now = Date.now();
+
+    // Cached owned/locked, minus any asset that authoritative `mylistings` now reports as
+    // listed (those leave the Owned bucket). Re-derive each surviving stack's category from
+    // its own lock state so classification stays deterministic.
+    const ownedLocked = prev.items
+      .filter(i => i.category !== 'listed')
+      .map((i) => {
+        const remaining = i.assetIds.filter(id => !listedAssetIds.has(String(id)));
+        return { ...i, assetIds: remaining, quantity: remaining.length };
+      })
+      .filter(i => i.quantity > 0);
+    for (const it of ownedLocked) {
+      it.category = (it.tradeLockExpiry && new Date(it.tradeLockExpiry).getTime() > now) ? 'tradelocked' : 'tradable';
+    }
+
+    // Listed bucket: authoritative fresh listings when the fetch succeeded; otherwise keep
+    // whatever the cache already had (don't drop listings on a double miss).
+    const listedBucket = listingsOk ? listed : prev.items.filter(i => i.category === 'listed');
+
+    const inv: AccountInventory = {
+      ...prev,
+      username,
+      game:       'cs2',
+      source:     'gc',
+      fromCache:  false,
+      fetchedAt:  new Date(),
+      items:      [...ownedLocked, ...listedBucket],
+      totalItems: ownedLocked.reduce((n, i) => n + i.quantity, 0)
+                + listedBucket.reduce((n, i) => n + (i.quantity || 0), 0),
+    };
+    this.gcStore.set(username, inv);
+    const movedToListed = listingsOk
+      ? prev.items.filter(i => i.category !== 'listed').reduce((n, i) => n + i.assetIds.filter(id => listedAssetIds.has(String(id))).length, 0)
+      : 0;
+    logger.info(`[${username}] partial-read reconciled: kept ${inv.totalItems - listedBucket.reduce((n, i) => n + (i.quantity || 0), 0)} owned/locked, ${listedBucket.length} listed stack(s)${movedToListed ? ` (moved ${movedToListed} Owned→Listed)` : ''}`);
+    return this.gcStore.get(username) ?? inv;
+  }
+
+  /**
+   * Optimistic post-mass-sell cache update: moves the given assets Owned→Listed in the CS2
+   * cache IMMEDIATELY after their listings are created/confirmed, so the panel reflects the
+   * sale at once instead of waiting for (and depending on) a clean follow-up refresh. The
+   * next reconciled refresh verifies this against the live `mylistings` set. Idempotent —
+   * assets already in the listed bucket (or not found owned) are skipped. Best-effort: any
+   * failure is swallowed so it can never break the mass-sell.
+   */
+  markListed(username: string, assetIds: string[]): void {
+    try {
+      if (!assetIds.length) return;
+      const rec = this.gcStore.get(username);
+      if (!rec) return; // no cache yet → the next refresh will populate it correctly
+
+      const toList = new Set(assetIds.map(String));
+      const ownedStacks  = rec.items.filter(i => i.category !== 'listed');
+      const listedStacks = rec.items.filter(i => i.category === 'listed');
+      const alreadyListed = new Set(listedStacks.flatMap(i => i.assetIds.map(String)));
+
+      const newlyListed: CS2Item[] = [];
+      for (const stack of ownedStacks) {
+        const moving = stack.assetIds.filter(id => toList.has(String(id)) && !alreadyListed.has(String(id)));
+        if (!moving.length) continue;
+        stack.assetIds = stack.assetIds.filter(id => !toList.has(String(id)));
+        stack.quantity = stack.assetIds.length;
+        for (const id of moving) {
+          newlyListed.push({ ...stack, category: 'listed', tradable: false, tradeLockExpiry: null, quantity: 1, assetIds: [id] });
+        }
+      }
+      if (!newlyListed.length) return; // nothing actually moved (already reflected)
+
+      const remainingOwned = ownedStacks.filter(s => s.quantity > 0);
+      // Re-stack the listed bucket by name. stack() consumes single items, so explode the
+      // existing listed stacks back to singles first (passing a quantity>1 stack would
+      // mis-count it as a single item).
+      const explode = (arr: CS2Item[]): CS2Item[] =>
+        arr.flatMap(s => s.assetIds.map(id => ({ ...s, quantity: 1, assetIds: [id] })));
+      const mergedListed = InventoryManager.stack([...explode(listedStacks), ...newlyListed]);
+
+      const inv: AccountInventory = {
+        ...rec,
+        source:     'gc',
+        fromCache:  false,
+        fetchedAt:  new Date(),
+        items:      [...remainingOwned, ...mergedListed],
+        totalItems: remainingOwned.reduce((n, i) => n + i.quantity, 0)
+                  + mergedListed.reduce((n, i) => n + (i.quantity || 0), 0),
+      };
+      this.gcStore.set(username, inv);
+      logger.info(`[${username}] optimistic cache update: moved ${newlyListed.length} item(s) Owned→Listed after mass-sell`);
+    } catch (err) {
+      logger.warn(`[${username}] optimistic post-sell cache update failed (next refresh will reconcile): ${(err as Error).message}`);
+    }
   }
 
   private async doRefreshOne(username: string, game: GameId): Promise<AccountInventory> {

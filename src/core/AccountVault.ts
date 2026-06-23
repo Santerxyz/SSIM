@@ -38,9 +38,10 @@ export interface VaultAccount {
 }
 
 interface VaultPayload {
-  version:  number;
-  accounts: Record<string, VaultAccount>; // key: username.toLowerCase()
-  tokens:   Record<string, string>;       // key: username.toLowerCase() → Steam refresh token
+  version:     number;
+  accounts:    Record<string, VaultAccount>; // key: username.toLowerCase()
+  tokens:      Record<string, string>;       // key: username.toLowerCase() → Steam refresh token
+  csfloatKeys: Record<string, string>;       // key: username.toLowerCase() → CSFloat API key (Feature 2)
 }
 
 /** On-disk envelope. Header is plaintext; `ct` is the AES-256-GCM ciphertext of the payload JSON. */
@@ -115,7 +116,7 @@ class AccountVaultImpl {
     const salt = crypto.randomBytes(16);
     this.salt = salt;
     this.key = this.deriveKey(password, salt);
-    this.payload = { version: 1, accounts: {}, tokens: {} };
+    this.payload = { version: 1, accounts: {}, tokens: {}, csfloatKeys: {} };
     this.save();
     logger.info('[vault] new vault created + unlocked');
     return { created: true };
@@ -199,9 +200,10 @@ class AccountVaultImpl {
   removeAccount(username: string): void {
     if (!this.payload) return;
     const k = username.toLowerCase();
-    if (this.payload.accounts[k] || this.payload.tokens[k]) {
+    if (this.payload.accounts[k] || this.payload.tokens[k] || this.payload.csfloatKeys[k]) {
       delete this.payload.accounts[k];
       delete this.payload.tokens[k];
+      delete this.payload.csfloatKeys[k];
       this.save();
     }
   }
@@ -219,15 +221,31 @@ class AccountVaultImpl {
     const k = username.toLowerCase();
     if (this.payload.tokens[k]) { delete this.payload.tokens[k]; this.scheduleSave(); }
   }
+
+  // ── CSFloat API keys (per account, consolidated into the portable vault) ─────
+  getCsFloatKey(username: string): string | undefined { return this.payload?.csfloatKeys[username.toLowerCase()]; }
+  setCsFloatKey(username: string, key: string): void {
+    if (!this.payload) return;
+    this.payload.csfloatKeys[username.toLowerCase()] = key;
+    this.scheduleSave();
+  }
+  deleteCsFloatKey(username: string): void {
+    if (!this.payload) return;
+    const k = username.toLowerCase();
+    if (this.payload.csfloatKeys[k]) { delete this.payload.csfloatKeys[k]; this.scheduleSave(); }
+  }
+  /** Usernames (lowercase) that currently have a CSFloat key — for F3 "any available key". */
+  csfloatKeyUsernames(): string[] { return this.payload ? Object.keys(this.payload.csfloatKeys) : []; }
 }
 
 /** Defensive shape normalization for a decrypted payload (corrupt/older file safety). */
 function normalizePayload(p: unknown): VaultPayload {
   const obj = (p && typeof p === 'object') ? p as Record<string, unknown> : {};
   return {
-    version:  1,
-    accounts: (obj.accounts && typeof obj.accounts === 'object') ? obj.accounts as Record<string, VaultAccount> : {},
-    tokens:   (obj.tokens && typeof obj.tokens === 'object') ? obj.tokens as Record<string, string> : {},
+    version:     1,
+    accounts:    (obj.accounts && typeof obj.accounts === 'object') ? obj.accounts as Record<string, VaultAccount> : {},
+    tokens:      (obj.tokens && typeof obj.tokens === 'object') ? obj.tokens as Record<string, string> : {},
+    csfloatKeys: (obj.csfloatKeys && typeof obj.csfloatKeys === 'object') ? obj.csfloatKeys as Record<string, string> : {},
   };
 }
 

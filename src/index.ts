@@ -163,6 +163,7 @@ async function teardownFullApp(): Promise<void> {
   LicenseClient.stopHeartbeat();
   stopMemHeartbeat();
   if (deps) {
+    deps.csfloatWorker.stop();
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();
@@ -320,6 +321,7 @@ async function shutdown(signal: string): Promise<void> {
   LicenseClient.stopHeartbeat();
   stopMemHeartbeat();
   if (deps) {
+    deps.csfloatWorker.stop();
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();

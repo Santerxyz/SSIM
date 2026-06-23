@@ -1,4 +1,5 @@
 import type { TradeService } from './TradeService';
+import type { InventoryService } from '../core/InventoryService';
 import type { MarketOrders } from './AccountTrader';
 import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, type SellStrategy } from '../pricing/MarketPricing';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
@@ -31,6 +32,17 @@ function isAlreadyListed(err: unknown): boolean {
   return /already|pending listing|bereits|vorhanden|aktiv|listed/.test(m);
 }
 
+/**
+ * "The item is no longer in your inventory / not allowed to be traded on the Community
+ * Market" → the asset is GONE (already moved/sold/listed elsewhere). This is NOT a genuine
+ * failure: it means the candidate set was stale, so it is reported as `gone`, not `failed`,
+ * and never retried. Steam localizes it, so match the stable English keywords leniently.
+ */
+function isGone(err: unknown): boolean {
+  const m = ((err as Error)?.message ?? '').toLowerCase();
+  return /no longer in your inventory|not allowed to be traded|is not in your inventory|nicht mehr in deinem inventar/.test(m);
+}
+
 /** One bot's slice of a mass-sell: its selected assets + their market names. */
 export interface MassSellGroup {
   username: string;
@@ -55,6 +67,9 @@ export interface MassSellJob {
   failed:      Array<{ username: string; assetId: string; error: string }>;
   /** Connection/pre-flight issues – NOT attempted or aborted; safe to retry later. */
   deferred:    Array<{ username: string; assetId: string; error: string }>;
+  /** Asset was no longer in the inventory (already moved/sold/listed) – stale candidate,
+   *  not a real failure and not retryable. */
+  gone:        Array<{ username: string; assetId: string; error: string }>;
   /** Live progress for the UI so the operator isn't staring at a blank bar. */
   currentBot?: string;
   phase?:      'preflight' | 'pricing' | 'listing' | 'confirming' | 'done';
@@ -75,7 +90,7 @@ export class MarketService {
   private readonly pricing = new MarketPricing();
   private job: MassSellJob = {
     running: false, strategy: 'lowest', total: 0, done: 0, listed: 0,
-    confirmed: 0, recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [],
+    confirmed: 0, recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [], gone: [],
   };
   // Tuning knobs (overridable per run; defaults from the consts above).
   private retryBackoffs = SELL_BACKOFF_MS;
@@ -84,10 +99,15 @@ export class MarketService {
   /** Co-operative cancel flag for the live mass-sell (set by cancelSell()). */
   private cancelRequested = false;
 
-  constructor(private readonly trades: TradeService) {}
+  constructor(
+    private readonly trades: TradeService,
+    /** Lets a completed sell move the just-listed assets Owned→Listed in the cache
+     *  immediately (optimistic), instead of relying on a clean follow-up refresh. */
+    private readonly inventory?: InventoryService,
+  ) {}
 
   status(): MassSellJob {
-    return { ...this.job, failed: [...this.job.failed], deferred: [...this.job.deferred] };
+    return { ...this.job, failed: [...this.job.failed], deferred: [...this.job.deferred], gone: [...this.job.gone] };
   }
 
   /** Lowest market ask (minor units of `currency`) for the buy modal's live-price
@@ -170,7 +190,7 @@ export class MarketService {
     const total = groups.reduce((n, g) => n + g.items.length, 0);
     this.job = {
       running: true, cancelling: false, cancelled: false, strategy, total, done: 0, listed: 0, confirmed: 0,
-      recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [],
+      recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [], gone: [],
       startedAt: new Date().toISOString(),
     };
     // Timing overrides (tests/tuning) – otherwise the documented defaults apply.
@@ -252,7 +272,7 @@ export class MarketService {
     logger.info(
       `[mass-sell] ═══ ${this.cancelRequested ? 'CANCELLED' : 'COMPLETE'}: ${this.job.listed} listed / ${this.job.confirmed} confirmed / ` +
       `${this.job.recovered} recovered / ${this.job.retried} retries / ` +
-      `${this.job.failed.length} failed / ${this.job.deferred.length} deferred ═══`,
+      `${this.job.failed.length} failed / ${this.job.gone.length} gone / ${this.job.deferred.length} deferred ═══`,
     );
     this.cancelRequested = false;
   }
@@ -360,6 +380,12 @@ export class MarketService {
         logger.warn(`[mass-sell] ${user} ${pos}: connection lost – deferring ${rest.length + 1} remaining item(s)`);
         this.deferAll(group, rest, 'connection lost – not attempted');
         break;
+      }
+      else if (outcome === 'gone') {
+        // Stale candidate: the asset already left the inventory (sold/moved/listed elsewhere).
+        // Reported as `gone`, not a failure, and not retried.
+        this.job.gone.push({ username: user, assetId: item.assetId, error: 'no longer in inventory' });
+        logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} no longer in inventory → skipped (gone)`);
       } else {
         this.job.failed.push({ username: user, assetId: item.assetId, error: outcome.error });
         failedHere.push({ assetId: item.assetId, idx: this.job.failed.length - 1 });
@@ -403,6 +429,15 @@ export class MarketService {
         }
       } catch { /* reconciliation is best-effort */ }
     }
+
+    // ── Optimistic cache update ─────────────────────────────────────────────────
+    // Move every asset that is now listed for this bot Owned→Listed in the inventory cache
+    // RIGHT NOW, so the panel reflects the sale immediately instead of depending on a clean
+    // follow-up refresh (which used to leave them stuck under "Owned"). `listedSet` holds
+    // the bot's pre-existing listings + everything created this run; markListed is idempotent
+    // and best-effort. The next reconciled refresh verifies it against the live listings set.
+    const nowListed = group.items.filter(it => listedSet.has(it.assetId)).map(it => it.assetId);
+    if (nowListed.length) this.inventory?.markListed(user, nowListed);
   }
 
   /**
@@ -459,6 +494,7 @@ export class MarketService {
    *   'listed'   – created this run
    *   'phantom'  – Steam had already created it (recovered, no double-list)
    *   'deferred' – the bot's connection is dead → caller defers the rest
+   *   'gone'     – the asset is no longer in the inventory (stale candidate; not a failure)
    *   { error }  – a genuine, non-recoverable failure
    */
   private async listWithRetry(
@@ -466,7 +502,7 @@ export class MarketService {
     assetId: string,
     net: number,
     listedSet: Set<string>,
-  ): Promise<'listed' | 'phantom' | 'deferred' | { error: string }> {
+  ): Promise<'listed' | 'phantom' | 'deferred' | 'gone' | { error: string }> {
     let lastErr = '';
     for (let attempt = 0; attempt <= MAX_SELL_RETRIES; attempt++) {
       try {
@@ -481,6 +517,12 @@ export class MarketService {
           listedSet.add(assetId);
           logger.info(`[mass-sell] ${trader.username} ${assetId}: already listed → counted (recovered)`);
           return 'phantom';
+        }
+
+        // The asset is gone from the inventory (already moved/sold) → stale candidate, not a
+        // failure and not retryable. Report it as such so the operator sees the real outcome.
+        if (isGone(err) && !isTransient(err)) {
+          return 'gone';
         }
 
         // Rule 3: did Steam create the listing despite this error? (phantom probe)

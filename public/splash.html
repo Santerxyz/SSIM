@@ -28,7 +28,12 @@
   @keyframes breathe{ 0%,100%{ transform:scale(1); } 50%{ transform:scale(1.035); } }
   .msg{ font-size:14px; color:#c9c6d6; letter-spacing:.2px; }
   .sub{ font-size:12px; color:#6b6878; margin-top:.45rem; min-height:1em; }
-  @media (prefers-reduced-motion:reduce){ .ring,.logo{ animation:none; } }
+  /* Update progress bar — hidden until the shell reports an auto-update is in flight. */
+  .track{ display:none; width:240px; height:5px; margin:14px auto 0; border-radius:99px;
+    background:rgba(255,255,255,.08); overflow:hidden; }
+  .bar{ width:0%; height:100%; border-radius:99px;
+    background:linear-gradient(90deg,#9333ea,#c084fc); transition:width .3s ease; }
+  @media (prefers-reduced-motion:reduce){ .ring,.logo{ animation:none; } .bar{ transition:none; } }
 </style>
 </head>
 <body>
@@ -37,10 +42,26 @@
       <div class="ring"></div>
       <img class="logo" src="assets/logo.png" alt="SSIM">
     </div>
-    <!-- id="msg"/id="sub" are updated by the Tauri shell (src-tauri/src/lib.rs) to explain a long
-         auto-update download wait; these IDs MUST stay in sync with that eval. -->
+    <!-- id="msg"/id="sub"/id="bar" + window.__ssimUpd are driven by the Tauri shell
+         (src-tauri/src/lib.rs) to narrate a long auto-update; these MUST stay in sync with it. -->
     <div id="msg" class="msg">Starting SSIM…</div>
     <div id="sub" class="sub"></div>
+    <div id="track" class="track"><div id="bar" class="bar"></div></div>
   </div>
+  <script>
+    // Single entry point the shell calls per update phase: set the message, the sub-line, and
+    // (when a number is given) reveal + fill the progress bar. Centralised here so lib.rs stays
+    // a one-liner eval per phase. Guarded everywhere because the splash may already be torn down.
+    window.__ssimUpd = function (msg, sub, pct) {
+      var m = document.getElementById('msg'), s = document.getElementById('sub'),
+          t = document.getElementById('track'), b = document.getElementById('bar');
+      if (m && msg != null) m.textContent = msg;
+      if (s && sub != null) s.textContent = sub;
+      if (typeof pct === 'number') {
+        if (t) t.style.display = 'block';
+        if (b) b.style.width = Math.max(0, Math.min(100, pct)) + '%';
+      }
+    };
+  </script>
 </body>
 </html>

@@ -279,18 +279,49 @@ fn spawn_backend(handle: tauri::AppHandle) {
                     if chunk.contains("SSIM_OPEN_LOGS") {
                         open_logs_window(&handle);
                     }
-                    if chunk.contains("SSIM_UPDATE_DOWNLOADING") {
-                        // Backend is pulling an auto-update (can be ~163 MB) before its server starts —
-                        // update the splash so the wait is explained instead of looking frozen.
-                        if let Some(w) = handle.get_webview_window("main") {
-                            let _ = w.eval("var m=document.getElementById('msg'),s=document.getElementById('sub');if(m)m.textContent='Downloading update\\u2026';if(s)s.textContent='This can take a minute \\u2014 please keep SSIM open.';");
+                    // Auto-update lifecycle. The whole update (download → verify → install) runs BEFORE
+                    // the backend's server/port exists, so without narration the splash looks frozen for
+                    // minutes. Parse per-line so we can read the download percentage and reflect each
+                    // phase on the splash via window.__ssimUpd (defined in splash.html). Token spellings
+                    // mirror src/licensing/Updater.ts — keep them in sync.
+                    for line in chunk.lines() {
+                        let line = line.trim();
+                        if let Some(rest) = line.strip_prefix("SSIM_UPDATE_PROGRESS::") {
+                            // pct::haveMB::totalMB
+                            let mut it = rest.split("::");
+                            let pct = it.next().unwrap_or("0");
+                            let have = it.next().unwrap_or("?");
+                            let total = it.next().unwrap_or("?");
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.eval(&format!(
+                                    "window.__ssimUpd&&window.__ssimUpd('Downloading update\\u2026 {pct}%','{have} / {total} MB downloaded',{pct});"
+                                ));
+                            }
+                        } else if let Some(rest) = line.strip_prefix("SSIM_UPDATE_DOWNLOADING") {
+                            let ver = rest.trim_start_matches("::").trim();
+                            let head = if ver.is_empty() {
+                                "Downloading update\\u2026".to_string()
+                            } else {
+                                format!("Downloading update v{ver}\\u2026")
+                            };
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.eval(&format!(
+                                    "window.__ssimUpd&&window.__ssimUpd('{head}','Getting the latest version \\u2014 please keep SSIM open.',0);"
+                                ));
+                            }
+                        } else if line.contains("SSIM_UPDATE_VERIFYING") {
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.eval("window.__ssimUpd&&window.__ssimUpd('Verifying update\\u2026','Checking the new version is genuine \\u2014 almost there.',100);");
+                            }
+                        } else if line.contains("SSIM_UPDATING") {
+                            // Auto-update is being applied: the backend will exit so its bat can swap BOTH
+                            // exes. Mark it so the upcoming Terminated is a clean quit, not a crash.
+                            handle.state::<AppState>().updating.store(true, Ordering::SeqCst);
+                            log_shell("backend signaled SSIM_UPDATING — quitting cleanly for the swap (not a crash)");
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.eval("window.__ssimUpd&&window.__ssimUpd('Installing update\\u2026','SSIM will restart automatically in a moment.',100);");
+                            }
                         }
-                    }
-                    if chunk.contains("SSIM_UPDATING") {
-                        // Auto-update started: the backend will exit so its bat can swap BOTH exes.
-                        // Mark it so the upcoming Terminated is treated as a clean quit, not a crash.
-                        handle.state::<AppState>().updating.store(true, Ordering::SeqCst);
-                        log_shell("backend signaled SSIM_UPDATING — quitting cleanly for the swap (not a crash)");
                     }
                     if let Some(port) = parse_port(&chunk) {
                         if handled_port {
@@ -422,6 +453,10 @@ pub fn run() {
             // auto-update happen BEFORE its server/port exists, so without this the window would only
             // appear much later (or never, during an update) and a launch looks like nothing happened.
             {
+                // The updater's swap bat relaunches us with --ssim-updated after applying an update, so
+                // this first boot is a post-update start: confirm it on the splash (the fresh exe re-
+                // extracts its 171 MB backend, which would otherwise look like a generic slow launch).
+                let just_updated = std::env::args().any(|a| a == "--ssim-updated");
                 let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("splash.html".into()))
                     .title("SSIM")
                     .inner_size(1280.0, 860.0)
@@ -434,8 +469,12 @@ pub fn run() {
                     // (dark) page has actually PAINTED — a white pre-paint frame can never reach the
                     // screen. Fires for the splash first (≈instant), so the instant-splash UX is kept.
                     .visible(false)
-                    .on_page_load(|window, payload| {
+                    .on_page_load(move |window, payload| {
                         if matches!(payload.event(), PageLoadEvent::Finished) {
+                            if just_updated {
+                                // No-op once navigated to the real app page (the ids/helper won't exist there).
+                                let _ = window.eval("window.__ssimUpd&&window.__ssimUpd('Update installed \\u2014 starting SSIM\\u2026','You\\u2019re now on the latest version.');");
+                            }
                             let _ = window.show();
                         }
                     })

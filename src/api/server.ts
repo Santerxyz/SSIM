@@ -5,6 +5,11 @@ import axios from 'axios';
 
 import { AccountManager } from '../core/AccountManager';
 import { SessionManager } from '../core/SessionManager';
+import { AccountImportService } from '../core/AccountImportService';
+import { CsFloatService } from '../csfloat/CsFloatService';
+import { CsFloatAutoAcceptWorker } from '../csfloat/CsFloatAutoAcceptWorker';
+import type { ListingSearchParams } from '../csfloat/CsFloatClient';
+import { AppSettings } from '../core/AppSettings';
 import { InventoryService } from '../core/InventoryService';
 import { ValueHistoryService, GLOBAL_SERIES } from '../core/ValueHistoryService';
 import { ProcessHealth } from '../core/ProcessHealth';
@@ -57,6 +62,9 @@ export interface ApiDeps {
   gc:        GcActionLayer;
   tradeup:   TradeUpService;
   casket:    CasketService;
+  accountImport: AccountImportService;
+  csfloat:       CsFloatService;
+  csfloatWorker: CsFloatAutoAcceptWorker;
 }
 
 /** Creates the core services and wires their lifecycle events into the logger. */
@@ -64,11 +72,16 @@ export function createDeps(): ApiDeps {
   const accounts  = new AccountManager();
   const sessions  = new SessionManager();
   const trades    = new TradeService(sessions, accounts);
-  const market    = new MarketService(trades);
   const inventory = new InventoryService(sessions, accounts);
+  // Market gets the inventory cache so a completed mass-sell moves the just-listed assets
+  // Owned→Listed immediately (optimistic), rather than waiting on a follow-up refresh.
+  const market    = new MarketService(trades, inventory);
   const buy       = new BuyService(trades, inventory);
   const bans      = new BanService(accounts, sessions, trades);
-  const pricing   = new PricingService();
+  // Feature 2 "CSFloat": per-account marketplace control. Built BEFORE pricing so the
+  // CSFloat price source (Feature 3) can reuse it.
+  const csfloat   = new CsFloatService(accounts);
+  const pricing   = new PricingService(csfloat);
   const exchange  = new ExchangeRateService();
   // Shared GC action layer (trade-up + casket execution; gated behind SSIM_GC_VERIFIED).
   const gc        = new GcActionLayer(sessions);
@@ -94,7 +107,13 @@ export function createDeps(): ApiDeps {
   // needing a SteamID. getSteamID64() is an exact string (the maFile's numeric value is lossy).
   sessions.on('loggedIn',     (u, steamId) => { if (steamId) accounts.rememberSteamId(u, steamId); });
 
-  return { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, gc, tradeup, casket };
+  // Feature 1 "Account Login": QR / credentials import → token-first Limited accounts.
+  const accountImport = new AccountImportService(accounts, sessions);
+  // Feature 2 "CSFloat": auto-accept delivery worker (CsFloatService is built above, before pricing).
+  const csfloatWorker = new CsFloatAutoAcceptWorker(accounts, trades, csfloat);
+  csfloatWorker.start();
+
+  return { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, gc, tradeup, casket, accountImport, csfloat, csfloatWorker };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -102,7 +121,7 @@ export function createDeps(): ApiDeps {
 // ════════════════════════════════════════════════════════════════════════════
 
 export function createApp(deps: ApiDeps): Express {
-  const { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, tradeup, casket } = deps;
+  const { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, tradeup, casket, accountImport, csfloat } = deps;
   const app = express();
 
   const VALID_STRATEGIES: SellStrategy[] = ['lowest', 'undercut', 'custom'];
@@ -472,6 +491,255 @@ export function createApp(deps: ApiDeps): Express {
     } catch (err) {
       res.status(409).json({ error: (err as Error).message });
     }
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  Feature 1 — Account Login (QR / credentials import → LIMITED tier)
+  //  steam-session negotiates a refresh token; the account then logs in
+  //  token-first with no maFile. Sell/trade confirmations stay gated until a
+  //  maFile is attached (→ Full) via /attach-mafile.
+  // ════════════════════════════════════════════════════════════════════════
+
+  app.post('/api/accounts/login/qr/start', asyncHandler(async (req, res) => {
+    const environmentId = typeof req.body?.environmentId === 'string' ? req.body.environmentId : '';
+    try {
+      res.status(201).json(await accountImport.startQr(environmentId));
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  }));
+
+  app.post('/api/accounts/login/credentials', asyncHandler(async (req, res) => {
+    const { username, password, environmentId } = req.body ?? {};
+    if (typeof username !== 'string' || !username.trim() || typeof password !== 'string' || !password) {
+      return res.status(400).json({ error: 'username and password are required' });
+    }
+    try {
+      const status = await accountImport.startCredentials({
+        accountName: username, password, environmentId: typeof environmentId === 'string' ? environmentId : '',
+      });
+      res.status(201).json(status);
+    } catch (err) {
+      const msg = (err as Error).message || 'login failed';
+      res.status(/RateLimit/i.test(msg) ? 429 : 400).json({ error: msg });
+    }
+  }));
+
+  app.get('/api/accounts/login/:sessionId/status', (req: Request, res: Response) => {
+    const status = accountImport.getStatus(req.params.sessionId);
+    if (!status) return res.status(404).json({ error: 'login session not found or expired' });
+    res.json(status);
+  });
+
+  app.post('/api/accounts/login/:sessionId/guard', asyncHandler(async (req, res) => {
+    const code = typeof req.body?.code === 'string' ? req.body.code : '';
+    if (!code.trim()) return res.status(400).json({ error: 'a Steam Guard code is required' });
+    try {
+      res.json(await accountImport.submitGuard(req.params.sessionId, code));
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message || 'invalid code' });
+    }
+  }));
+
+  app.post('/api/accounts/login/:sessionId/cancel', (req: Request, res: Response) => {
+    accountImport.cancel(req.params.sessionId);
+    res.json({ ok: true });
+  });
+
+  // ── POST /api/accounts/:username/attach-mafile  → upgrade LIMITED to FULL ─────
+  app.post('/api/accounts/:username/attach-mafile', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    const maFilePath = typeof req.body?.maFilePath === 'string' ? req.body.maFilePath.trim() : '';
+    if (!maFilePath) {
+      return res.status(400).json({ error: 'maFilePath is required (drop the maFile into ./mafiles and pass its filename)' });
+    }
+    let maFile;
+    try { maFile = loadMaFileFromDisk(maFilePath); }
+    catch (e) { return res.status(400).json({ error: `maFile: ${(e as Error).message}` }); }
+    if (!maFile.identity_secret) {
+      return res.status(400).json({ error: 'maFile has no identity_secret — it cannot confirm trades, so it will not upgrade this account to Full' });
+    }
+    // Vault mode: store the secret in the vault so accounts.json stays secret-free.
+    if (AccountVault.isEnabled()) {
+      const existing = AccountVault.getAccount(account.username);
+      AccountVault.upsertAccount({
+        username: account.username,
+        password: existing?.password ?? '',
+        maFile,
+        proxy: existing?.proxy,
+      });
+    }
+    const updated = accounts.update(account.username, { tier: 'full', maFilePath });
+    logger.info(`[${account.username}] maFile attached → upgraded to FULL`);
+    res.json(sanitizeAccount(updated));
+  }));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  Feature 2 — CSFloat management (per account). Documented core is always on;
+  //  buy-orders / trades / inventory / auto-accept are gated behind the global
+  //  `csfloatExperimental` flag (undocumented endpoints — opt-in).
+  // ════════════════════════════════════════════════════════════════════════
+
+  app.get('/api/csfloat/config', (_req: Request, res: Response) => {
+    res.json({ experimental: AppSettings.isCsfloatExperimental() });
+  });
+  app.put('/api/csfloat/config', (req: Request, res: Response) => {
+    if (typeof req.body?.experimental === 'boolean') AppSettings.setCsfloatExperimental(req.body.experimental);
+    res.json({ experimental: AppSettings.isCsfloatExperimental() });
+  });
+
+  // ── Feature 3: app-wide price source (Steam ⟷ CSFloat). `effective` reflects the
+  //    no-key → Steam fallback so the UI can show what's actually pricing. ──
+  app.get('/api/pricing/source', (_req: Request, res: Response) => {
+    res.json({ preference: AppSettings.getPriceSource(), effective: pricing.getSource() });
+  });
+  app.put('/api/pricing/source', (req: Request, res: Response) => {
+    const s = req.body?.source === 'csfloat' ? 'csfloat' : 'steam';
+    pricing.setSource(s);
+    res.json({ preference: AppSettings.getPriceSource(), effective: pricing.getSource() });
+  });
+
+  // Resolve the account or 404 (returns null after responding). Defined here so it
+  // closes over `accounts`; used only by the CSFloat routes below.
+  const csAccount = (req: Request, res: Response): AccountConfig | null => {
+    const acc = accounts.get(req.params.username);
+    if (!acc) { res.status(404).json({ error: `Account "${req.params.username}" not found` }); return null; }
+    return acc;
+  };
+  const requireExperimental = (res: Response): boolean => {
+    if (!AppSettings.isCsfloatExperimental()) {
+      res.status(403).json({ error: 'CSFloat experimental features are off — enable them in CSFloat → Settings' });
+      return false;
+    }
+    return true;
+  };
+
+  // ── key management (masked; never returns the raw key) ──
+  app.get('/api/csfloat/:username/key', (req: Request, res: Response) => {
+    if (!csAccount(req, res)) return;
+    res.json(csfloat.keyInfo(req.params.username));
+  });
+  app.put('/api/csfloat/:username/key', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    const apiKey = typeof req.body?.apiKey === 'string' ? req.body.apiKey : '';
+    try {
+      const r = await csfloat.setKey(req.params.username, apiKey);
+      res.json({ ok: true, ...csfloat.keyInfo(req.params.username), warning: r.warning });
+    } catch (err) { res.status(400).json({ error: (err as Error).message }); }
+  }));
+  app.delete('/api/csfloat/:username/key', (req: Request, res: Response) => {
+    if (!csAccount(req, res)) return;
+    csfloat.clearKey(req.params.username);
+    res.json({ ok: true, configured: false });
+  });
+
+  // ── documented core ──
+  app.get('/api/csfloat/:username/me', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    try { res.json(await csfloat.me(req.params.username)); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.get('/api/csfloat/:username/listings/search', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    try { res.json(await csfloat.search(req.params.username, parseSearch(req.query as Record<string, unknown>))); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.get('/api/csfloat/:username/listings', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    try { res.json(await csfloat.myListings(req.params.username, { page: numQ(req.query.page), limit: numQ(req.query.limit) })); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.post('/api/csfloat/:username/listings', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    const { asset_id, price, type, description } = req.body ?? {};
+    if (typeof asset_id !== 'string' || !asset_id) return res.status(400).json({ error: 'asset_id is required' });
+    try {
+      res.status(201).json(await csfloat.createListing(req.params.username, {
+        asset_id,
+        type: type === 'auction' ? 'auction' : 'buy_now',
+        price: Number.isFinite(Number(price)) ? Math.round(Number(price)) : undefined,
+        description: typeof description === 'string' ? description : undefined,
+      }));
+    } catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.get('/api/csfloat/:username/listing/:id', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    try { res.json(await csfloat.getListing(req.params.username, req.params.id)); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.delete('/api/csfloat/:username/listings/:id', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    try { res.json({ ok: true, result: await csfloat.delist(req.params.username, req.params.id) }); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.patch('/api/csfloat/:username/listings/:id', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    const price = Number(req.body?.price);
+    if (!Number.isFinite(price) || price < 1) return res.status(400).json({ error: 'price (cents) is required' });
+    try { res.json({ ok: true, result: await csfloat.editPrice(req.params.username, req.params.id, Math.round(price)) }); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.post('/api/csfloat/:username/buy', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    const listingId = typeof req.body?.listingId === 'string' ? req.body.listingId : '';
+    const totalPrice = Number(req.body?.totalPrice);
+    if (!listingId || !Number.isFinite(totalPrice) || totalPrice < 1) {
+      return res.status(400).json({ error: 'listingId and totalPrice (cents) are required' });
+    }
+    try { res.json({ ok: true, result: await csfloat.buy(req.params.username, listingId, Math.round(totalPrice)) }); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+
+  // ── experimental (flag-gated) ──
+  app.get('/api/csfloat/:username/buy-orders', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res) || !requireExperimental(res)) return;
+    try { res.json(await csfloat.buyOrders(req.params.username, { page: numQ(req.query.page), limit: numQ(req.query.limit) })); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.post('/api/csfloat/:username/buy-orders', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res) || !requireExperimental(res)) return;
+    const { market_hash_name, expression, max_price, quantity } = req.body ?? {};
+    if (!Number.isFinite(Number(max_price)) || !Number.isFinite(Number(quantity))) {
+      return res.status(400).json({ error: 'max_price (cents) and quantity are required' });
+    }
+    try {
+      res.status(201).json(await csfloat.createBuyOrder(req.params.username, {
+        market_hash_name: typeof market_hash_name === 'string' ? market_hash_name : undefined,
+        expression: typeof expression === 'string' ? expression : undefined,
+        max_price: Math.round(Number(max_price)),
+        quantity: Math.round(Number(quantity)),
+      }));
+    } catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.delete('/api/csfloat/:username/buy-orders/:id', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res) || !requireExperimental(res)) return;
+    try { res.json({ ok: true, result: await csfloat.deleteBuyOrder(req.params.username, req.params.id) }); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.get('/api/csfloat/:username/trades', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res) || !requireExperimental(res)) return;
+    try { res.json(await csfloat.trades(req.params.username, { page: numQ(req.query.page), limit: numQ(req.query.limit), state: typeof req.query.state === 'string' ? req.query.state : undefined })); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.get('/api/csfloat/:username/inventory', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res) || !requireExperimental(res)) return;
+    try { res.json(await csfloat.inventory(req.params.username)); }
+    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+  app.get('/api/csfloat/:username/auto-accept', (req: Request, res: Response) => {
+    if (!csAccount(req, res)) return;
+    res.json({ enabled: csfloat.getAutoAccept(req.params.username) });
+  });
+  app.put('/api/csfloat/:username/auto-accept', (req: Request, res: Response) => {
+    const acc = csAccount(req, res); if (!acc) return;
+    if (!requireExperimental(res)) return;
+    const enabled = !!req.body?.enabled;
+    if (enabled && acc.tier === 'limited') {
+      return res.status(400).json({ error: 'Limited accounts cannot auto-deliver sales (no maFile to confirm). Attach a maFile to upgrade to Full first.' });
+    }
+    csfloat.setAutoAccept(req.params.username, enabled);
+    res.json({ enabled: csfloat.getAutoAccept(req.params.username) });
   });
 
   // ── PATCH /api/accounts/:username ──────────────────────────────────────────
@@ -1720,6 +1988,20 @@ function sanitizeTree(tree: import('../types/account').AccountTree): unknown {
 }
 
 /** Strips the password and redacts proxy credentials (resolved + override). */
+function numQ(v: unknown): number | undefined { const n = Number(v); return Number.isFinite(n) ? n : undefined; }
+function csErr(err: unknown): number { return (err as { status?: number }).status === 429 ? 429 : 400; }
+function parseSearch(q: Record<string, unknown>): ListingSearchParams {
+  const num = (v: unknown): number | undefined => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+  return {
+    cursor: str(q.cursor), limit: num(q.limit), sort_by: str(q.sort_by), category: num(q.category),
+    min_float: num(q.min_float), max_float: num(q.max_float), min_price: num(q.min_price), max_price: num(q.max_price),
+    market_hash_name: str(q.market_hash_name), def_index: num(q.def_index), rarity: num(q.rarity),
+    paint_seed: num(q.paint_seed), paint_index: num(q.paint_index), collection: str(q.collection),
+    type: q.type === 'auction' ? 'auction' : q.type === 'buy_now' ? 'buy_now' : undefined,
+  };
+}
+
 function sanitizeAccount(account: AccountConfig): Record<string, unknown> {
   const { password, networkOverride, ...rest } = account;
   void password;

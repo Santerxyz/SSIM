@@ -28,6 +28,8 @@ export interface Environment {
   createdAt: string; // ISO 8601
 }
 
+export type AccountTier = 'limited' | 'full';
+
 export interface AccountConfig {
   id:          string;
   username:    string;
@@ -87,6 +89,16 @@ export interface AccountConfig {
    * Empty/absent/past = no manual protection.
    */
   protectedUntil?: string;
+  /**
+   * Account capability tier (Feature 1 "Account Login"). 'limited' = imported via
+   * QR/credentials with NO maFile → cannot confirm sell listings or trade offers
+   * (no identity_secret); 'full' = has a maFile and confirms normally. Absent is
+   * treated as 'full' (accounts added the classic way always have a maFile). The
+   * RUNTIME source of truth for "can confirm" remains maFile.identity_secret; this
+   * is the persisted UI label, set to 'limited' at import and flipped to 'full'
+   * when a maFile is attached.
+   */
+  tier?:       AccountTier;
   addedAt:     string; // ISO 8601
 }
 

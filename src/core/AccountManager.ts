@@ -2,7 +2,7 @@ import path from 'path';
 import fsExtra from 'fs-extra';
 import { v4 as uuidv4 } from 'uuid';
 import type {
-  AccountConfig, AccountsDatabase, NetworkConfig,
+  AccountConfig, AccountTier, AccountsDatabase, NetworkConfig,
   Environment, Folder, TreeNode, AccountTree,
 } from '../types/account';
 import { logger } from '../utils/logger';
@@ -252,6 +252,7 @@ export class AccountManager {
     enabled?:         boolean;
     displayName?:     string;
     userAgent?:       string;
+    tier?:            AccountTier;
   }): AccountConfig {
     if (!this.getEnvironment(config.environmentId)) {
       throw new Error(`Environment "${config.environmentId}" not found`);
@@ -280,6 +281,7 @@ export class AccountManager {
       enabled:         config.enabled ?? true,
       displayName:     config.displayName,
       userAgent:       config.userAgent,
+      tier:            config.tier,
       addedAt:         new Date().toISOString(),
     };
 

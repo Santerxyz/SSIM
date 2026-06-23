@@ -189,10 +189,18 @@ export class InventoryManager {
     }
 
     const items: CS2Item[] = [];
+    let orphans = 0;
     for (const asset of assets) {
       const desc = descMap.get(`${asset.classid}_${asset.instanceid}`);
-      if (!desc) continue; // orphan asset without description – skip
+      if (!desc) { orphans++; continue; } // asset with no matching description – cannot classify
       items.push(InventoryManager.mapItem(asset, desc, steamId, game));
+    }
+    // Descriptions are deduped by classid_instanceid, so identical items legitimately SHARE
+    // one description (e.g. 31 assets / 28 descriptions = 3 duplicate skins) — that is NOT a
+    // drop and every asset still maps. A genuine orphan (asset with NO description at all) is
+    // rare and DOES vanish from the count, so surface it loudly to keep the totals honest.
+    if (orphans > 0) {
+      logger.warn(`parsed ${items.length} item(s) from ${assets.length} asset(s) – ${orphans} asset(s) had no matching description and were dropped (totals may under-count)`);
     }
     return items;
   }

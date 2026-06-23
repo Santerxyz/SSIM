@@ -174,6 +174,16 @@ export class SessionManager extends EventEmitter {
     return p;
   }
 
+  /**
+   * Persists a freshly-negotiated Auth-v2 refresh token for an account (Feature 1
+   * "Account Login" import). Routes through the SAME TokenStore loginAccount() reads,
+   * so a QR/credentials-imported account logs in TOKEN-FIRST with no further prompts —
+   * landing in the portable vault in vault mode, or refresh_tokens.json otherwise.
+   */
+  rememberRefreshToken(username: string, token: string): void {
+    if (typeof token === 'string' && token) this.tokenStore.set(username, token);
+  }
+
   private async doLoginAccount(account: AccountConfig, key: string): Promise<ManagedSession> {
     await this.destroySession(key);
 
