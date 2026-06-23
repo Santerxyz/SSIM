@@ -40,10 +40,8 @@
     "@types/qrcode": "^1.5.6",
     "@types/uuid": "^9.0.7",
     "@yao-pkg/pkg": "^6.1.1",
-    "bytenode": "^1.5.7",
     "javascript-obfuscator": "^4.1.1",
     "nodemon": "^3.0.2",
-    "rcedit": "^5.0.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   },

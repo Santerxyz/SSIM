@@ -30,8 +30,6 @@ license.meta.json
 *.exe
 release/
 release-tauri/
-loader.js
-*.jsc
 
 # --- Rust / Tauri build output (generated, large) --------------------------
 src-tauri/target/
