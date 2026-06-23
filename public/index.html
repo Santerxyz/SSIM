@@ -1469,8 +1469,7 @@
   <div id="toast-stack" class="fixed bottom-6 right-6 z-[60] flex flex-col gap-2 items-end pointer-events-none max-w-[90vw]" aria-live="polite" aria-atomic="false"></div>
 
   <script src="/app.js"></script>
-  <!-- App-window heartbeat: while this window is open, tell the backend so it stays up.
-       When the window is closed the pings stop and SSIM winds down (see appAlive.ts). -->
+  <!-- Keep-alive ping (legacy Edge-window heartbeat; the Tauri shell now owns shutdown). -->
   <script>
     (function () {
       function ping() { try { fetch('/api/app/ping').catch(function () {}); } catch (e) {} }

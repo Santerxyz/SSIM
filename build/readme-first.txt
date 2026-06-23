@@ -1,6 +1,6 @@
 ==============================================================
   SSIM - Santer Steam Inventory Manager
-  READ ME FIRST   -   Version 1.2.1
+  READ ME FIRST   -   Version 1.3.0
 ==============================================================
 
 Thank you for choosing SSIM. This guide explains how to start

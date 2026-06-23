@@ -1,6 +1,7 @@
 import './bootflags'; // MUST be first – sets process flags before deps load
 import fs from 'fs';
 import net from 'net';
+import { execFileSync } from 'child_process';
 import type { Server } from 'http';
 import { createApp, createDeps } from './api/server';
 import { logger, LOG_FILE } from './utils/logger';
@@ -39,12 +40,35 @@ function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } // exists, no perm
 }
+/**
+ * The image name (lower-cased, e.g. "ssim-backend.exe") of a live PID on Windows, or '' if it
+ * can't be determined. Used ONLY to disambiguate a RECYCLED PID: a hard-killed SSIM (an uncatchable
+ * TerminateProcess/SIGKILL leaves no lock release — e.g. the update swap bat taskkills the backend)
+ * can have its PID reused by an unrelated program, which the old PID-liveness-only guard then mistook
+ * for "SSIM already running" and refused to boot. Cheap, runs only on the rare lock-conflict path.
+ */
+function processImageName(pid: number): string {
+  if (process.platform !== 'win32') return '';
+  try {
+    const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
+      { encoding: 'utf8', windowsHide: true, timeout: 4000 });
+    return (out.match(/^"([^"]+)"/)?.[1] ?? '').toLowerCase(); // first CSV column = image name
+  } catch { return ''; }
+}
 /** Single-instance guard: false when ANOTHER live SSIM already holds the lock. */
 function acquireInstanceLock(): boolean {
   try {
     if (fs.existsSync(LOCK_FILE)) {
       const pid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
-      if (Number.isFinite(pid) && pid !== process.pid && isProcessAlive(pid)) return false;
+      if (Number.isFinite(pid) && pid !== process.pid && isProcessAlive(pid)) {
+        // PID is alive — but confirm it's really OUR binary before refusing to start. A recycled
+        // PID (different image) means the real SSIM is gone and the lock is stale → reclaim it.
+        // This only ever ADDS safety: it never steals the lock from a genuine second SSIM.
+        const ours = (process.execPath.split(/[\\/]/).pop() ?? '').toLowerCase();
+        const holder = processImageName(pid);
+        if (holder === '' || holder === ours) return false; // another instance (or undeterminable → keep the safe old behavior)
+        logger.warn(`single-instance lock held by recycled PID ${pid} (${holder} ≠ ${ours}) – reclaiming stale lock`);
+      }
     }
     fs.writeFileSync(LOCK_FILE, String(process.pid)); // claim (overwrites a stale lock)
     return true;

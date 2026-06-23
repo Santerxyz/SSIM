@@ -87,8 +87,7 @@
   var firstRun = false;
   var el = function (id) { return document.getElementById(id); };
 
-  // App-window heartbeat: while this window is open, tell the backend so it stays up.
-  // When the window closes the pings stop and SSIM winds down (see appAlive.ts).
+  // Keep-alive ping (legacy Edge-window heartbeat; the Tauri shell now owns shutdown).
   function ping() { try { fetch('/api/app/ping').catch(function () {}); } catch (e) {} }
   ping();
   setInterval(ping, 4000);
