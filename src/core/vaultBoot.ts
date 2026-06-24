@@ -180,6 +180,22 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
     }
   } catch (e) { logger.warn(`[vault] refresh-token migration skipped: ${(e as Error).message}`); }
 
+  // 2b) Migrate per-account CSFloat API keys into the vault. Without this, keys saved in
+  //     plaintext mode become invisible after vault mode is enabled (the key store reads
+  //     ONLY the active backend), orphaning them. Non-destructive: the file is left on disk.
+  //     (F3 / INV-F3.)
+  try {
+    const keyFile = dataDir('csfloat_keys.json');
+    if (fsExtra.existsSync(keyFile)) {
+      const kf = fsExtra.readJsonSync(keyFile) as { keys?: Record<string, string> };
+      let n = 0;
+      for (const [u, k] of Object.entries(kf?.keys ?? {})) {
+        if (typeof k === 'string' && k && !AccountVault.getCsFloatKey(u)) { AccountVault.setCsFloatKey(u, k); n++; }
+      }
+      if (n) logger.info(`[vault] migrated ${n} CSFloat API key(s) into the vault`);
+    }
+  } catch (e) { logger.warn(`[vault] CSFloat-key migration skipped: ${(e as Error).message}`); }
+
   AccountVault.save();
   accounts.enterVaultMode(); // blank the now-vaulted secrets out of accounts.json
 

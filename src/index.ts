@@ -41,18 +41,24 @@ function isProcessAlive(pid: number): boolean {
   catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } // exists, no perm
 }
 /**
- * The image name (lower-cased, e.g. "ssim-backend.exe") of a live PID on Windows, or '' if it
+ * The image/command name (lower-cased, e.g. "ssim-backend.exe") of a live PID, or '' if it
  * can't be determined. Used ONLY to disambiguate a RECYCLED PID: a hard-killed SSIM (an uncatchable
  * TerminateProcess/SIGKILL leaves no lock release — e.g. the update swap bat taskkills the backend)
  * can have its PID reused by an unrelated program, which the old PID-liveness-only guard then mistook
- * for "SSIM already running" and refused to boot. Cheap, runs only on the rare lock-conflict path.
+ * for "SSIM already running" and refused to boot. Cross-platform (POSIX via `ps`) so the
+ * recycled-PID reclaim works off Windows too, not just on win32. (INV-G5 / G-4.) Cheap; runs only
+ * on the rare lock-conflict path.
  */
 function processImageName(pid: number): string {
-  if (process.platform !== 'win32') return '';
   try {
-    const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
-      { encoding: 'utf8', windowsHide: true, timeout: 4000 });
-    return (out.match(/^"([^"]+)"/)?.[1] ?? '').toLowerCase(); // first CSV column = image name
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
+        { encoding: 'utf8', windowsHide: true, timeout: 4000 });
+      return (out.match(/^"([^"]+)"/)?.[1] ?? '').toLowerCase(); // first CSV column = image name
+    }
+    // POSIX: the command name of the live PID (basename of comm).
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8', timeout: 4000 });
+    return (out.trim().split(/[\\/]/).pop() ?? '').toLowerCase();
   } catch { return ''; }
 }
 /** Single-instance guard: false when ANOTHER live SSIM already holds the lock. */
@@ -149,6 +155,11 @@ function startFullApp(): void {
     );
   }
   deps = createDeps();
+  // Fresh app state → clear any money-ops quarantine that latched in a PRIOR lifecycle.
+  // On first boot this is a no-op; on an in-process re-license (teardownFullApp →
+  // startFullApp) the suspect session map that tripped the breaker is now discarded and
+  // rebuilt, so the breaker must not survive into the clean rebuild. (INV-G6 / G-5.)
+  ProcessHealth.reset();
   // Non-destructive UPGRADE migration ONLY: absorb accounts ALREADY registered in accounts.json
   // (+ legacy refresh tokens) into the vault, then blank the plaintext secrets. This NEVER scans
   // the mafiles/ drop zone — loose maFiles are imported solely by the explicit "Import Bots" UI,

@@ -4,6 +4,7 @@ import type { MarketOrders } from './AccountTrader';
 import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, type SellStrategy } from '../pricing/MarketPricing';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { isSellable } from '../core/MarketModel';
+import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { logger } from '../utils/logger';
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
@@ -393,7 +394,18 @@ export class MarketService {
         continue;
       }
 
-      const outcome = await this.listWithRetry(trader, item.assetId, net, listedSet);
+      // Cross-service guard (D2 / INV-D2): don't list an asset that is mid-flight in
+      // another money op (e.g. a trade-send of the same asset). Held only for the list
+      // call, so legitimate sequential ops are unaffected.
+      const mk = moneyKey(user, item.assetId);
+      if (!MoneyOps.claim(mk)) {
+        this.job.blocked.push({ username: user, assetId: item.assetId, error: 'busy in another money operation' });
+        this.job.done++;
+        logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} busy in another money op → skipped`);
+        continue;
+      }
+      const outcome = await this.listWithRetry(trader, item.assetId, net, listedSet)
+        .finally(() => MoneyOps.release(mk));
       this.job.done++;
       if (outcome === 'listed')      { this.job.listed++; listedForBot++; pendingForBot++;
         logger.info(`[mass-sell] ${user} ${pos}: ✓ listed ${item.marketHashName} @ ${(net / 100).toFixed(2)}€ (${listedForBot} listed / ${N})`);

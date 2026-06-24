@@ -21,13 +21,15 @@ export class PriceCache {
   private map = new Map<string, PriceEntry>();
   private dirty = false;
   private flushTimer?: NodeJS.Timeout;
+  private readonly path: string;
 
-  constructor() { this.load(); }
+  /** `filePath` overridable for tests. */
+  constructor(filePath: string = CACHE_FILE) { this.path = filePath; this.load(); }
 
   private load(): void {
     try {
-      if (fsExtra.existsSync(CACHE_FILE)) {
-        const raw = fsExtra.readJsonSync(CACHE_FILE) as Record<string, PriceEntry>;
+      if (fsExtra.existsSync(this.path)) {
+        const raw = fsExtra.readJsonSync(this.path) as Record<string, PriceEntry>;
         for (const [k, v] of Object.entries(raw)) this.map.set(k, v);
         logger.info(`PriceCache loaded (${this.map.size} entries)`);
       }
@@ -48,11 +50,22 @@ export class PriceCache {
   private static readonly MAX_ENTRIES = 100_000;
 
   set(name: string, cents: number | null): void {
+    // Unit guard (INV-E2 / E-1): every cached price is USD cents — a finite, non-negative
+    // value, or null. A NaN / negative / non-finite value signals a parse or unit error at
+    // the source (e.g. a non-USD price source); store it as a MISS rather than poisoning
+    // every totalValueUsd that sums this entry. Normalize to integer cents.
+    let v: number | null = cents;
+    if (v != null && (!Number.isFinite(v) || v < 0)) {
+      logger.warn(`PriceCache: rejected non-cents price for "${name}" (${cents}) – storing as miss`);
+      v = null;
+    } else if (v != null) {
+      v = Math.round(v);
+    }
     if (!this.map.has(name) && this.map.size >= PriceCache.MAX_ENTRIES) {
       const oldest = this.map.keys().next().value;
       if (oldest !== undefined) this.map.delete(oldest);
     }
-    this.map.set(name, { cents, fetchedAt: new Date().toISOString() });
+    this.map.set(name, { cents: v, fetchedAt: new Date().toISOString() });
     this.scheduleFlush();
   }
 
@@ -69,7 +82,7 @@ export class PriceCache {
     try {
       const obj: Record<string, PriceEntry> = {};
       for (const [k, v] of this.map) obj[k] = v;
-      writeJsonAtomic(CACHE_FILE, obj);
+      writeJsonAtomic(this.path, obj);
       this.dirty = false;
     } catch (err) {
       logger.warn(`PriceCache flush failed: ${(err as Error).message}`);

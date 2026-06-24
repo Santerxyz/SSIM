@@ -119,6 +119,7 @@ function writeMeta(m: LicenseMeta): void {
  */
 function markOnline(): void {
   writeMeta(nextClockMeta(readMeta(), Date.now(), true));
+  licenseRevoked = false; // a successful server contact means the seat is live
 }
 
 // Optional handler invoked when the backend revokes/deactivates the seat at
@@ -128,6 +129,11 @@ let onRevoked: ((reason: string) => void) | undefined;
 export function onRevocation(cb: (reason: string) => void): void {
   onRevoked = cb;
 }
+
+// Last-known seat state, so the full-app /api/system/status reflects an ACTUAL license
+// check rather than the positional "any request here is licensed" assumption — the
+// dashboard can then see a revocation even before the server is torn down. (INV-G1/G-1.)
+let licenseRevoked = false;
 
 // ── token crypto ──────────────────────────────────────────────────────────────
 // Token wire format:  base64url(payloadJSON) + "." + base64url(ed25519Sig)
@@ -309,6 +315,7 @@ async function heartbeat(hwid: string): Promise<void> {
  * over to it. Otherwise fall back to a console lock screen + exit.
  */
 async function handleRevoked(reason: string): Promise<void> {
+  licenseRevoked = true; // surface to /api/system/status before the server is rebound
   stopHeartbeat();
   if (onRevoked) { onRevoked(reason); return; }
   const { printLockScreen } = await import('./lockscreen');
@@ -320,4 +327,6 @@ async function handleRevoked(reason: string): Promise<void> {
 export const LicenseClient = {
   validate, activate, saveKey, clearToken,
   startHeartbeat, stopHeartbeat, onRevocation,
+  /** Last-known revoked state for the status route (INV-G1). */
+  isRevoked: (): boolean => licenseRevoked,
 };

@@ -2,6 +2,7 @@ import { type SessionManager, refreshWebSession } from '../core/SessionManager';
 import type { AccountManager } from '../core/AccountManager';
 import type { InventoryService } from '../core/InventoryService';
 import { isSellable } from '../core/MarketModel';
+import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { SessionState, type ManagedSession } from '../types/session';
 import { AccountTrader, type SendTradeParams, type SendTradeResult, type TradeOfferView } from './AccountTrader';
 import { logger } from '../utils/logger';
@@ -417,6 +418,15 @@ export class TradeService {
       throw new Error('An identical trade from this account is already in flight');
     }
     this.inFlight.add(guardKey);
+    // Cross-service guard (D2 / INV-D2): refuse if any of these assets is mid-flight in
+    // ANOTHER money op (e.g. being listed for sale), then hold them for this op's lifetime.
+    const moneyKeys = (params.myItems ?? []).map((i) => moneyKey(fromUsername, i.assetId));
+    const collision = moneyKeys.find((k) => MoneyOps.held(k));
+    if (collision) {
+      this.inFlight.delete(guardKey);
+      throw new Error('An asset in this trade is already in another money operation (sell/buy) – try again shortly');
+    }
+    moneyKeys.forEach((k) => MoneyOps.claim(k));
     try {
       const trader = await this.getTrader(fromUsername);
       try {
@@ -434,6 +444,7 @@ export class TradeService {
       }
     } finally {
       this.inFlight.delete(guardKey);
+      moneyKeys.forEach((k) => MoneyOps.release(k));
     }
   }
 

@@ -546,7 +546,15 @@ export class SessionManager extends EventEmitter {
   // ── Logout ─────────────────────────────────────────────────────────────────
 
   async logoutAccount(username: string): Promise<void> {
-    await this.destroySession(username.toLowerCase());
+    const key = username.toLowerCase();
+    // If a login for this account is mid-handshake, let it SETTLE before tearing the
+    // session down — otherwise destroySession races the in-flight performLogin and can
+    // leave a half-built client. This also makes a proxy-edit's logout deterministic: the
+    // old-proxy login finishes and is destroyed, and the next login uses the freshly-set
+    // proxy (resolveNetwork reads it at login time). (INV-A4 / A-4.)
+    const inFlight = this.loginsInFlight.get(key);
+    if (inFlight) { try { await inFlight; } catch { /* a failed login still needs teardown */ } }
+    await this.destroySession(key);
   }
 
   async logoutAll(): Promise<void> {

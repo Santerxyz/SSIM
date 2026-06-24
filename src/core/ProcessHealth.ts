@@ -43,4 +43,18 @@ export const ProcessHealth = {
 
   /** Human-readable reason for the quarantine (empty when healthy). */
   blockReason(): string { return reason; },
+
+  /**
+   * Clears the breaker. Call ONLY after a full teardown+rebuild of the app's in-memory
+   * state (an in-process re-license: teardownFullApp → startFullApp), where the suspect
+   * session map / mass-jobs that tripped it have been discarded and rebuilt fresh. A
+   * normal uncaught-burst is NOT cleared by this — it stays latched until a real restart.
+   * (INV-G6 / G-5.)
+   */
+  reset(): void {
+    if (blocked) logger.warn('[safety] money-ops breaker reset — app in-memory state was rebuilt (re-license)');
+    recent = [];
+    blocked = false;
+    reason  = '';
+  },
 };

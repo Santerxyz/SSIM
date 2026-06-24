@@ -10,7 +10,9 @@ export enum SessionState {
   LOGGING_IN    = 'LOGGING_IN',
   LOGGED_IN     = 'LOGGED_IN',
   ERROR         = 'ERROR',
-  RATE_LIMITED  = 'RATE_LIMITED',
+  // (Removed the unreachable RATE_LIMITED member — it was declared but never assigned
+  //  or read; rate limits are classified 'connection' and surface as ERROR/retry. Every
+  //  declared state is now reachable. INV-A7 / A-7.)
 }
 
 // ─── Session Data ─────────────────────────────────────────────────────────────

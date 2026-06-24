@@ -17,6 +17,7 @@ import { AccountVault } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
+import { LicenseClient } from '../licensing/LicenseClient';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
@@ -1891,12 +1892,12 @@ export function createApp(deps: ApiDeps): Express {
   });
 
   // ── License/boot status (the dashboard's client-guard polls this on load) ───
-  // The FULL app is constructed ONLY after the license gate passes, so any request
-  // reaching this route is licensed by definition → report it. The unlicensed
-  // counterpart (licensed:false + a 403 on every other /api route) is served by
-  // ActivationServer while the activation portal is up.
+  // The FULL app is constructed ONLY after the license gate passes, so a request reaching
+  // here is licensed by construction — but report the LIVE seat state (LicenseClient's
+  // last-known revoked flag), not a hardcoded true, so a runtime revocation is visible to
+  // the dashboard even in the brief window before the server is torn down. (INV-G1/G-1.)
   app.get('/api/system/status', (_req: Request, res: Response) => {
-    res.json({ licensed: true, version: pkg.version });
+    res.json({ licensed: !LicenseClient.isRevoked(), version: pkg.version });
   });
 
   // ── Health check ───────────────────────────────────────────────────────────
