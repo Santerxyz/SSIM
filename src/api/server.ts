@@ -17,6 +17,8 @@ import { AccountVault } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
+import { loadMaFile, generateTotpCode, msUntilNextTotp } from '../core/LoginFlow';
+import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
 import { LicenseClient } from '../licensing/LicenseClient';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
@@ -583,6 +585,79 @@ export function createApp(deps: ApiDeps): Express {
     catch (e) { logger.warn(`[${account.username}] post-attach session reload failed: ${(e as Error).message}`); }
     logger.info(`[${account.username}] maFile attached → upgraded to FULL (session reloaded)`);
     res.json(sanitizeAccount(updated));
+  }));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  Phase-6 — Account Master View tools (per SELECTED account): SDA overview
+  //  (Steam Guard OTP + live mobile confirmations) and "Open in clean browser".
+  //  All REUSE the canonical primitives — generateTotpCode (OTP), getConfirmations/
+  //  conf.respond via AccountTrader (confirmations), the session/login flow (web
+  //  cookies) and the per-account resolved proxy. No second source / parser.
+  // ════════════════════════════════════════════════════════════════════════
+
+  // Current Steam Guard code for ONE account (OTP is offline — no login needed). The
+  // shared_secret NEVER leaves the backend; only the 5-char code is returned.
+  app.get('/api/accounts/:username/otp', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    let maFile;
+    try { maFile = loadMaFile(account); }
+    catch { return res.status(400).json({ error: 'this account has no maFile (no Steam Guard secret) — cannot show a code' }); }
+    if (!maFile.shared_secret) return res.status(400).json({ error: 'maFile has no shared_secret — cannot generate a code' });
+    res.json({ code: generateTotpCode(maFile.shared_secret), msRemaining: msUntilNextTotp() });
+  }));
+
+  // Live pending mobile confirmations for ONE account (reuses AccountTrader.listConfirmations).
+  app.get('/api/accounts/:username/confirmations', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    try {
+      const trader = await trades.ensureWebSession(account.username);
+      res.json({ confirmations: await trader.listConfirmations() });
+    } catch (e) {
+      res.status(502).json({ error: `could not load confirmations: ${(e as Error).message}` });
+    }
+  }));
+
+  // Approve / deny confirmations (single, multi, or ALL); the UI re-fetches from truth after.
+  app.post('/api/accounts/:username/confirmations/respond', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    const body = req.body ?? {};
+    const ids: string[] = Array.isArray(body.ids) ? body.ids.map(String) : [];
+    const accept = body.accept !== false; // default = approve
+    const all = body.all === true;
+    if (!all && ids.length === 0) return res.status(400).json({ error: 'ids[] required (or all:true)' });
+    try {
+      const trader = await trades.ensureWebSession(account.username);
+      res.json(await trader.respondToConfirmations(ids, accept, all));
+    } catch (e) {
+      res.status(502).json({ error: `confirmation action failed: ${(e as Error).message}` });
+    }
+  }));
+
+  // Open ONE account in an isolated, proxied, ephemeral browser (its own session only).
+  app.post('/api/accounts/:username/open-browser', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    let session;
+    try { session = await sessions.loginAccount(account); }
+    catch (e) { return res.status(502).json({ error: `could not establish this account's web session: ${(e as Error).message}` }); }
+    const spec = buildIsolatedSession({
+      username: account.username,
+      cookieStrings: session.webSession?.cookies ?? [],
+      network: account.network,
+    });
+    // Safety: a configured-but-unresolvable proxy must NOT degrade to the host IP.
+    if (account.network?.type === 'proxy' && !spec.proxyServer) {
+      return res.status(400).json({ error: 'could not resolve this account\'s proxy — refusing to open (would leak the host IP)', warnings: spec.warnings });
+    }
+    try {
+      const r = await launchIsolatedBrowser(spec);
+      res.json({ ok: true, proxy: r.proxyUsed, warnings: spec.warnings });
+    } catch (e) {
+      res.status(500).json({ error: `could not open clean browser: ${(e as Error).message}`, warnings: spec.warnings });
+    }
   }));
 
   // ════════════════════════════════════════════════════════════════════════

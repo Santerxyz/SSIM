@@ -194,6 +194,20 @@ const el = {
   csfloatAccount:  $('csfloat-account'),
   csfloatTabs:     $('csfloat-tabs'),
   csfloatBody:     $('csfloat-body'),
+  // SDA overview (Phase 6)
+  sdaOverlay:        $('sda-overlay'),
+  sdaClose:          $('sda-close'),
+  sdaAccount:        $('sda-account'),
+  sdaOtp:            $('sda-otp'),
+  sdaOtpBar:         $('sda-otp-bar'),
+  sdaOtpCopy:        $('sda-otp-copy'),
+  sdaOtpCopyLabel:   $('sda-otp-copy-label'),
+  sdaConfBody:       $('sda-conf-body'),
+  sdaConfCount:      $('sda-conf-count'),
+  sdaConfSelCount:   $('sda-conf-sel-count'),
+  sdaConfApproveSel: $('sda-conf-approve-sel'),
+  sdaConfApproveAll: $('sda-conf-approve-all'),
+  sdaConfRefresh:    $('sda-conf-refresh'),
   // environment modal
   envOverlay:    $('env-overlay'),
   envClose:      $('env-close'),
@@ -1646,6 +1660,12 @@ function renderAccountView() {
         <button id="btn-csfloat" title="Manage this account on CSFloat (listings, market, trades)"
           class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-brand-light text-sm font-bold transition inline-flex items-center gap-2">
           <i class="fa-solid fa-water"></i><span>CSFloat</span></button>
+        <button id="btn-sda" title="Steam Guard code + pending mobile confirmations for this account"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 text-sm font-bold transition inline-flex items-center gap-2">
+          <i class="fa-solid fa-mobile-screen-button"></i><span>SDA</span></button>
+        <button id="btn-clean-browser" title="Open this account in an isolated, proxied, ephemeral browser (its own session only)"
+          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-violet-300 text-sm font-bold transition inline-flex items-center gap-2">
+          <i class="fa-solid fa-window-restore"></i><span>Clean Browser</span></button>
       </div></div>`;
   bindTradeLink(username);
   const bansBtn = $('btn-account-bans');
@@ -1660,6 +1680,10 @@ function renderAccountView() {
   if (ckBtn) ckBtn.addEventListener('click', () => openCasketModal(username));
   const cfBtn = $('btn-csfloat');
   if (cfBtn) cfBtn.addEventListener('click', () => openCsFloat(username));
+  const sdaBtn = $('btn-sda');
+  if (sdaBtn) sdaBtn.addEventListener('click', () => openSda(username));
+  const cbBtn = $('btn-clean-browser');
+  if (cbBtn) cbBtn.addEventListener('click', () => openCleanBrowser(cbBtn, username));
 
   el.btnLoad.classList.remove('hidden');
   el.btnLoad.disabled = false; // reset any leftover loading state from a previous refresh
@@ -3498,6 +3522,152 @@ async function openCsFloat(username) {
   csfSwitchTab(CSF.key.configured ? 'dashboard' : 'settings');
 }
 function closeCsFloat() { el.csfloatOverlay.classList.add('hidden'); }
+
+// ════════════════════════════════════════════════════════════════════════════
+//  SDA Overview (Phase 6 Feature B): Steam Guard OTP (auto-rolling + copy) + live
+//  mobile confirmations (approve single / multi / all). The backend owns the
+//  canonical OTP + getConfirmations/respond; this panel only renders + refreshes
+//  from truth (no optimistic-only state). Acts on EXACTLY the selected account.
+// ════════════════════════════════════════════════════════════════════════════
+const SDA = { username: null, otpTimer: null, barTimer: null, code: '·····', confs: [], open: false };
+
+async function openSda(username) {
+  SDA.username = username; SDA.open = true; SDA.code = '·····';
+  if (el.sdaAccount) el.sdaAccount.textContent = username;
+  if (el.sdaOtp) el.sdaOtp.textContent = '·····';
+  if (el.sdaOverlay) el.sdaOverlay.classList.remove('hidden');
+  startSdaOtp(username);
+  await refreshSdaConfirmations();
+}
+
+function closeSda() {
+  SDA.open = false;
+  if (SDA.otpTimer) { clearTimeout(SDA.otpTimer); SDA.otpTimer = null; }
+  if (SDA.barTimer) { clearInterval(SDA.barTimer); SDA.barTimer = null; }
+  if (el.sdaOverlay) el.sdaOverlay.classList.add('hidden');
+}
+
+// OTP: fetch the current code + ms-remaining, display, animate the bar, re-fetch at expiry.
+// The shared_secret stays server-side; we only ever receive the 5-char code.
+async function startSdaOtp(username) {
+  if (SDA.otpTimer) { clearTimeout(SDA.otpTimer); SDA.otpTimer = null; }
+  if (SDA.barTimer) { clearInterval(SDA.barTimer); SDA.barTimer = null; }
+  try {
+    const { code, msRemaining } = await api(`/api/accounts/${encodeURIComponent(username)}/otp`);
+    if (!SDA.open || SDA.username !== username) return;
+    SDA.code = code;
+    if (el.sdaOtp) el.sdaOtp.textContent = code;
+    const total = 30000;
+    const remaining = Math.max(500, Number(msRemaining) || 0);
+    const start = Date.now();
+    if (el.sdaOtpBar) el.sdaOtpBar.style.width = `${Math.round((remaining / total) * 100)}%`;
+    SDA.barTimer = setInterval(() => {
+      const left = remaining - (Date.now() - start);
+      if (el.sdaOtpBar) el.sdaOtpBar.style.width = `${Math.max(0, Math.round((left / total) * 100))}%`;
+      if (left <= 0 && SDA.barTimer) { clearInterval(SDA.barTimer); SDA.barTimer = null; }
+    }, 200);
+    // Re-fetch the FRESH code a hair past the boundary so the displayed value is never stale.
+    SDA.otpTimer = setTimeout(() => { if (SDA.open && SDA.username === username) startSdaOtp(username); }, remaining + 300);
+  } catch (e) {
+    if (el.sdaOtp) el.sdaOtp.textContent = '—';
+    if (el.sdaOtpBar) el.sdaOtpBar.style.width = '0%';
+    toast(e.message || 'could not load Steam Guard code', 'error');
+  }
+}
+
+async function copySdaOtp() {
+  // Copy the code CURRENTLY displayed (read live from the DOM) so a click at the 30s
+  // boundary copies the fresh value, never a stale one.
+  const code = ((el.sdaOtp && el.sdaOtp.textContent) || SDA.code || '').trim();
+  if (!code || code === '·····' || code === '—') return;
+  try { await navigator.clipboard.writeText(code); } catch { /* clipboard may be blocked */ }
+  if (el.sdaOtpCopyLabel) {
+    const prev = el.sdaOtpCopyLabel.textContent;
+    el.sdaOtpCopyLabel.textContent = 'Copied';
+    setTimeout(() => { if (el.sdaOtpCopyLabel) el.sdaOtpCopyLabel.textContent = prev || 'Copy'; }, 1200);
+  }
+}
+
+async function refreshSdaConfirmations() {
+  const username = SDA.username;
+  if (!el.sdaConfBody) return;
+  el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-slate-500 text-sm"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Loading confirmations…</div>`;
+  try {
+    const { confirmations } = await api(`/api/accounts/${encodeURIComponent(username)}/confirmations`);
+    if (!SDA.open || SDA.username !== username) return;
+    SDA.confs = Array.isArray(confirmations) ? confirmations : [];
+    renderSdaConfirmations();
+  } catch (e) {
+    if (!SDA.open || SDA.username !== username) return;
+    const msg = escapeHtml(e.message || 'failed to load confirmations');
+    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-rose-300 text-sm"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}<div class="mt-3"><button id="sda-conf-retry" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold">Refresh</button></div></div>`;
+    const r = $('sda-conf-retry'); if (r) r.addEventListener('click', refreshSdaConfirmations);
+  }
+}
+
+function renderSdaConfirmations() {
+  if (el.sdaConfCount) el.sdaConfCount.textContent = SDA.confs.length ? `(${SDA.confs.length})` : '';
+  if (!SDA.confs.length) {
+    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-slate-600 text-sm">No pending confirmations.</div>`;
+    updateSdaSelCount(); return;
+  }
+  const typeIcon = (t) => (t === 'trade' ? 'fa-right-left' : t === 'market' ? 'fa-tag' : 'fa-shield-halved');
+  el.sdaConfBody.innerHTML = SDA.confs.map((c) => `
+    <div class="flex items-center gap-3 px-4 py-2.5" data-conf-id="${escapeAttr(c.id)}">
+      <input type="checkbox" class="sda-conf-check accent-emerald-500 w-4 h-4 shrink-0" />
+      ${c.iconUrl ? `<img src="${escapeAttr(safeIconUrl(c.iconUrl))}" alt="" loading="lazy" class="w-9 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : `<i class="fa-solid ${typeIcon(c.typeName)} text-slate-500 w-9 text-center shrink-0"></i>`}
+      <div class="min-w-0 flex-1">
+        <div class="text-sm text-slate-200 truncate" title="${escapeAttr(c.title)}">${escapeHtml(c.title)}</div>
+        <div class="text-2xs text-slate-500">${escapeHtml(c.typeName)}${c.receiving ? ' · ' + escapeHtml(c.receiving) : ''}</div>
+      </div>
+      <button data-conf-approve="${escapeAttr(c.id)}" class="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-check"></i><span>Approve</span></button>
+    </div>`).join('');
+  el.sdaConfBody.querySelectorAll('.sda-conf-check').forEach((cb) => cb.addEventListener('change', updateSdaSelCount));
+  el.sdaConfBody.querySelectorAll('[data-conf-approve]').forEach((b) => b.addEventListener('click', () => respondSda([b.dataset.confApprove], true)));
+  updateSdaSelCount();
+}
+
+function selectedSdaIds() {
+  return [...el.sdaConfBody.querySelectorAll('.sda-conf-check')]
+    .filter((cb) => cb.checked)
+    .map((cb) => cb.closest('[data-conf-id]') && cb.closest('[data-conf-id]').dataset.confId)
+    .filter(Boolean);
+}
+function updateSdaSelCount() {
+  const n = selectedSdaIds().length;
+  if (el.sdaConfSelCount) el.sdaConfSelCount.textContent = String(n);
+  if (el.sdaConfApproveSel) el.sdaConfApproveSel.disabled = n === 0;
+}
+
+async function respondSda(ids, accept, all = false) {
+  const username = SDA.username;
+  try {
+    const r = await api(`/api/accounts/${encodeURIComponent(username)}/confirmations/respond`, { method: 'POST', body: JSON.stringify({ ids, accept, all }) });
+    const failed = (r.failed || []).length;
+    toast(`${accept ? 'Approved' : 'Denied'} ${r.done || 0} confirmation(s)${failed ? `, ${failed} failed` : ''}`, failed ? 'error' : 'success');
+  } catch (e) {
+    toast(e.message || 'confirmation action failed', 'error');
+  }
+  await refreshSdaConfirmations(); // ALWAYS re-fetch from the canonical source
+}
+
+// ── Clean browser (Phase 6 Feature A): isolated, proxied, ephemeral session ──
+async function openCleanBrowser(btn, username) {
+  const prev = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i><span>Opening…</span>';
+  try {
+    const r = await api(`/api/accounts/${encodeURIComponent(username)}/open-browser`, { method: 'POST', body: '{}' });
+    for (const w of (r.warnings || [])) toast(w, 'info');
+    toast(`Opened ${username} in a clean browser${r.proxy ? ` (proxy ${r.proxy})` : ' (LOCAL IP)'}`, 'success');
+  } catch (e) {
+    toast(e.message || 'could not open clean browser', 'error');
+    for (const w of ((e.data && e.data.warnings) || [])) toast(w, 'info');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = prev;
+  }
+}
 
 function csfRenderTabs() {
   const core = [['dashboard', 'Dashboard', 'fa-gauge'], ['listings', 'My Listings', 'fa-tags'], ['market', 'Market', 'fa-store']];
@@ -5369,6 +5539,7 @@ const OVERLAY_CLOSERS = new Map([
   ['sell-overlay', closeSellModal], ['buy-overlay', closeBuyModal], ['fbuy-overlay', closeFolderBuy],
   ['bulk-overlay', closeBulk], ['logs-overlay', closeLogs], ['offers-overlay', closeTradeOffers],
   ['login-overlay', closeLogin], ['attach-overlay', closeAttach], ['csfloat-overlay', closeCsFloat],
+  ['sda-overlay', closeSda],
   ['confirm-overlay', () => closeConfirm(false)],   // FB-01: Esc / registry-close = safe cancel (no-op)
 ]);
 const FB04 = { stack: [], triggers: new WeakMap(), lastTrigger: null };
@@ -5609,6 +5780,12 @@ function bindStaticEvents() {
   if (el.attachForm) el.attachForm.addEventListener('submit', submitAttach);
   // CSFloat workspace (Feature 2)
   if (el.csfloatClose) el.csfloatClose.addEventListener('click', closeCsFloat);
+  // SDA overview (Phase 6) wiring
+  if (el.sdaClose) el.sdaClose.addEventListener('click', closeSda);
+  if (el.sdaOtpCopy) el.sdaOtpCopy.addEventListener('click', copySdaOtp);
+  if (el.sdaConfRefresh) el.sdaConfRefresh.addEventListener('click', refreshSdaConfirmations);
+  if (el.sdaConfApproveAll) el.sdaConfApproveAll.addEventListener('click', () => respondSda([], true, true));
+  if (el.sdaConfApproveSel) el.sdaConfApproveSel.addEventListener('click', () => { const ids = selectedSdaIds(); if (ids.length) respondSda(ids, true); });
   if (el.csfloatTabs) el.csfloatTabs.addEventListener('click', onCsfTabClick);
   if (el.csfloatBody) el.csfloatBody.addEventListener('click', onCsfBodyClick);
   if (el.csfloatBody) el.csfloatBody.addEventListener('submit', onCsfBodySubmit);

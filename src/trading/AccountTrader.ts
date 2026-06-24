@@ -9,6 +9,7 @@ import {
   parseMyListings, mergeParsed, emptyParsed,
   listedAssetIdsForApp, type MarketListing,
 } from '../core/MarketModel';
+import { shapeConfirmations, type ConfirmationView } from './confirmations';
 
 // Trade-offer state + filter enums (static members of the manager class).
 const ETradeOfferState = (TradeOfferManager as any).ETradeOfferState as Record<string, number | string>;
@@ -974,6 +975,75 @@ export class AccountTrader {
             conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) => {
               if (rErr) { if (!firstErr) firstErr = rErr; }
               else confirmed++;
+              next();
+            });
+          };
+          next();
+        });
+      });
+    });
+  }
+
+  /**
+   * SDA panel — list this account's pending mobile confirmations (trade + market).
+   * REUSES the canonical primitive confirmMarketListings uses: getConfirmations(time,
+   * {tag:'list', key}) keyed off identity_secret + Steam server time, then shapes the
+   * result (dedup/order). One source of truth, no new parser. (Phase-6 Feature B.)
+   */
+  listConfirmations(): Promise<ConfirmationView[]> {
+    const identitySecret = this.session.maFile?.identity_secret;
+    if (!identitySecret) {
+      return Promise.reject(new Error(`[${this.username}] no identity_secret in the maFile – cannot list confirmations`));
+    }
+    const community = this.community as unknown as {
+      getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
+    };
+    return new Promise<ConfirmationView[]>((resolve, reject) => {
+      SteamTotp.getTimeOffset((offErr, offset) => {
+        const off = offErr ? 0 : offset;
+        const time = SteamTotp.time(off);
+        const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
+        community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
+          if (err) { reject(err); return; }
+          resolve(shapeConfirmations(confs));
+        });
+      });
+    });
+  }
+
+  /**
+   * Approve (accept=true) / deny (accept=false) confirmations. Re-fetches the LIVE list
+   * from the canonical source and responds to the matching ones via conf.respond(...) —
+   * the SAME accept primitive confirmMarketListings uses. `all=true` actions every pending
+   * confirmation. Returns counts so the caller can refresh from truth. (Feature B.)
+   */
+  respondToConfirmations(ids: string[], accept: boolean, all = false): Promise<{ done: number; failed: string[] }> {
+    const identitySecret = this.session.maFile?.identity_secret;
+    if (!identitySecret) {
+      return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot respond to confirmations`));
+    }
+    const community = this.community as unknown as {
+      getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
+    };
+    const wanted = new Set(ids.map(String));
+    return new Promise((resolve, reject) => {
+      SteamTotp.getTimeOffset((offErr, offset) => {
+        const off = offErr ? 0 : offset;
+        const time = SteamTotp.time(off);
+        const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
+        community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
+          if (err) { reject(err); return; }
+          const targets = (confs ?? []).filter((c: any) => all || wanted.has(String(c?.id)));
+          if (targets.length === 0) { resolve({ done: 0, failed: [] }); return; }
+          const tag = accept ? 'accept' : 'reject';
+          let idx = 0, done = 0; const failed: string[] = [];
+          const next = (): void => {
+            if (idx >= targets.length) { resolve({ done, failed }); return; }
+            const conf = targets[idx++];
+            const t = SteamTotp.time(off) + idx;                       // unique time per response
+            const key = SteamTotp.getConfirmationKey(identitySecret, t, tag);
+            conf.respond(t, { tag, key }, accept, (rErr: Error | null) => {
+              if (rErr) failed.push(String(conf?.id)); else done++;
               next();
             });
           };
