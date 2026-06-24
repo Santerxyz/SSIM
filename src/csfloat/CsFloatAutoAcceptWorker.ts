@@ -1,6 +1,7 @@
 import { scaleConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
 import { AppSettings } from '../core/AppSettings';
+import { CsFloatDeliveredStore } from './CsFloatDeliveredStore';
 import type { AccountManager } from '../core/AccountManager';
 import type { TradeService } from '../trading/TradeService';
 import type { CsFloatService } from './CsFloatService';
@@ -23,7 +24,9 @@ const POLL_INTERVAL_MS = 45_000;
 export class CsFloatAutoAcceptWorker {
   private timer?: NodeJS.Timeout;
   private running = false;
-  private readonly delivered = new Set<string>(); // CSFloat trade ids actioned this process-run (dedup)
+  /** DURABLE dedup of delivered CSFloat trade ids — survives restarts so a sale is
+   *  never delivered twice across a process bounce (C6 / INV-F1). */
+  private readonly delivered = new CsFloatDeliveredStore();
 
   constructor(
     private readonly accounts: AccountManager,
@@ -46,6 +49,9 @@ export class CsFloatAutoAcceptWorker {
 
   private async runOnce(): Promise<void> {
     if (this.running) return; // never overlap passes
+    // Experimental kill-switch: turning the flag off must STOP auto-delivery, even for
+    // accounts whose per-account toggle is still persisted (C15 / INV-F2).
+    if (!AppSettings.isCsfloatExperimental()) return;
     this.running = true;
     try {
       const enabled = AppSettings.autoAcceptUsernames()
@@ -86,6 +92,14 @@ export class CsFloatAutoAcceptWorker {
         logger.warn(`[csfloat-auto-accept] ${username}: trade ${id || '?'} — could not read delivery details from the CSFloat response (undocumented shape). Skipping; verify the trades payload against a live key.`);
         continue;
       }
+      // F-2 / INV-F1: never send to an unverified destination. The CSFloat trades
+      // payload is undocumented, so validate the parsed target (steamID64 / Steam trade
+      // URL / numeric asset) before creating a real offer — a drifted field must not
+      // ship an asset to the wrong place.
+      if (!isValidDeliveryTarget(d)) {
+        logger.warn(`[csfloat-auto-accept] ${username}: trade ${id} has an invalid delivery target (steamID/tradeURL/asset) – skipping (will not send to an unverified destination)`);
+        continue;
+      }
       logger.info(`[csfloat-auto-accept] ${username}: delivering CSFloat trade ${id} (asset ${d.assetId})`);
       const sent = await this.trades.sendTrade(username, {
         tradeUrl: d.tradeUrl,
@@ -96,6 +110,25 @@ export class CsFloatAutoAcceptWorker {
       logger.info(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} (${sent.status})`);
     }
   }
+}
+
+// ── delivery-target validation (F-2) ─────────────────────────────────────────
+const STEAMID64_RE = /^7656\d{13}$/;
+const TRADE_URL_RE = /^https:\/\/steamcommunity\.com\/tradeoffer\/new\/\?partner=\d+&token=[\w-]+/;
+
+/**
+ * Is the parsed CSFloat delivery target well-formed enough to send a REAL Steam offer
+ * to? Requires a numeric asset id and at least one VALID destination (a steamID64 or a
+ * Steam trade URL); a present-but-malformed steamID/URL is rejected outright so a
+ * drifted/undocumented payload can never mis-deliver. (F-2 / INV-F1.)
+ */
+export function isValidDeliveryTarget(d: { tradeUrl?: string; partnerSteamId?: string; assetId?: string }): boolean {
+  if (!d.assetId || !/^\d+$/.test(d.assetId)) return false;
+  if (d.partnerSteamId && !STEAMID64_RE.test(d.partnerSteamId)) return false;
+  if (d.tradeUrl && !TRADE_URL_RE.test(d.tradeUrl)) return false;
+  const steamOk = !!d.partnerSteamId && STEAMID64_RE.test(d.partnerSteamId);
+  const urlOk   = !!d.tradeUrl && TRADE_URL_RE.test(d.tradeUrl);
+  return steamOk || urlOk;
 }
 
 // ── defensive parsing of the UNDOCUMENTED CSFloat trades payload ──────────────

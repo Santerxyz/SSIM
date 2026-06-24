@@ -13,13 +13,14 @@
 ## Remediation progress (Phase 3)
 
 CRITICAL · `C1 ☑` `C2 ☑`
-HIGH · `C3 ☑` `C4 ☑` `C5 ☑` `C6 ☐` `C7 ☑` `C8 ☑`
-MEDIUM · `C9 ☐` `C10 ☐` `C11 ☐` `C12 ☐` `C13 ☐` `C14 ☐` `C15 ☐` `C16 ☐` `C17 ☐` `C18 ☐`
+HIGH · `C3 ☑` `C4 ☑` `C5 ☑` `C6 ☑` `C7 ☑` `C8 ☑`
+MEDIUM · `C9 ☐` `C10 ☐` `C11 ☐` `C12 ☐` `C13 ☐` `C14 ☐` `C15 ☑` `C16 ☐` `C17 ☐` `C18 ☐`
 LOW · `C19 ☐` `C20 ☐` `C21 ☐` `C22 ☑`
 
 ☑ = fixed + covered by a test in `test/` (run `npm test`).
 - Batch 1 — canonical MarketListing model: C1–C4, C7, C22 (`test/marketModel.test.ts`, `test/inventoryDeterminism.test.ts`).
 - Batch 2 — account capability/recovery: C5, C8 (`test/accountCapability.test.ts`).
+- Batch 3 — CSFloat auto-deliver safety: C6, C15, F-2 (`test/csfloatDelivery.test.ts`). C15 (experimental-gate early-return) is verified by construction + tsc; C6/F-2 have unit tests.
 
 ---
 
