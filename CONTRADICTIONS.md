@@ -103,8 +103,18 @@ If `sellOnMarket` succeeds but `confirmMarketListings` ultimately fails, the run
 ### C13 — A valid offline license locked out by a clock change — **MEDIUM · PROVEN**
 `maxSeenMs` is advanced from local `Date.now()` on every signature-valid boot (`LicenseClient.ts:120,210`) and HMAC-persisted. A single forward clock jump while a valid token is loaded writes a far-future `maxSeenMs`; on return to true time, `now < maxSeenMs − skew` (`:224`) becomes true and **offline grace is refused** for a legitimately-licensed user until they get online. Fail-closed, but a real lockout of a paying user. **Breaks INV-G2.**
 
-### C14 — Update mis-placed/bricked via the unsigned `kind` flag — **MEDIUM · PROVEN (path)**
+### C14 — Update mis-placed/bricked via the unsigned `kind` flag — **MEDIUM · PROVEN (path) · ½ FIXED, ½ PARKED**
 The Ed25519 signature covers `${latest}:${sha256}` only; `info.kind` (the swap-shape selector) is **outside** it (`Updater.ts:48-51,204`). A MITM that cannot forge the signature can still flip `kind:'backend'→'single-exe'`; on a two-file sidecar with a sibling `SSIM.exe`, the swap then overwrites the GUI shell with the authentic backend artifact **and deletes the running backend** (`deletePaths:[process.execPath]` `:319`) → a broken install. The migration swap also runs the orphan-delete unconditionally after the move loop (no swap-success gate, `:283-288`). **Breaks INV-G3.**
+
+**FIXED (client-side, shipped):** the orphan-delete — the actual *harm* of a flipped `kind` — is now gated on a **confirmed successful swap** (`buildSwapScript` `:swapped`/`:swapfail`). A failed `move` degrades to a no-op update; it can no longer delete the running backend and relaunch an un-swapped target. Test: `test/licenseUpdate.test.ts`.
+
+**PARKED (needs the license server — do NOT ship a client-only signature change):** signing `kind` so a flipped value is *rejected*. A client-only change would break the deployed mixed-version fleet's update path the moment the server publishes a `kind` the new client expects signed. Exact step + safe rollout order:
+
+> 1. **License server, additively:** in `publish.js` (the `/version` manifest signer), keep the existing `sig = Ed25519(${latest}:${sha256})` **unchanged** (old clients depend on it) and add a NEW field `sigKind = Ed25519(${latest}:${sha256}:${kind ?? 'backend'})`. Old clients ignore the unknown field → unaffected.
+> 2. **Client, next release:** in `Updater.verify`, keep verifying `sig` for artifact authenticity, and additionally — **only** when `info.kind === 'single-exe'` (the destructive migration shape) — REQUIRE a valid `sigKind` over `${latest}:${sha256}:single-exe`. If absent/invalid for a destructive kind, refuse the migration (fall back to the in-place backend swap or skip the update). The safe default (`kind` absent/`'backend'`) requires no `sigKind` → backward compatible, so normal backend updates keep flowing during rollout.
+> 3. **Coordination gate:** before the new client enforces step 2, ensure any migration cut the server publishes carries `sigKind` (it's the server publishing those, so this is a publish-time guarantee). Once the whole fleet is on the new client, make `sigKind` mandatory for every `kind` server-side.
+>
+> Order is **server-additive → client-enforce-destructive-only → fleet-wide → mandatory**. At no point is an in-flight update rejected for lack of a field the producing side hasn't emitted yet. Tracking: this is the one item that crosses the repo boundary into the sibling `license-server` repo (see [[updater-fleet-dual-mode]]).
 
 ---
 

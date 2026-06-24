@@ -14,7 +14,7 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "watch": "nodemon --exec ts-node src/index.ts --ext ts",
-    "test": "node --require ts-node/register/transpile-only --test \"test/**/*.test.ts\""
+    "test": "node --require ts-node/register/transpile-only --require ./test/_setup.cjs --test \"test/**/*.test.ts\""
   },
   "dependencies": {
     "axios": "^1.6.0",
