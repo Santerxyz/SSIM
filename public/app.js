@@ -3659,7 +3659,7 @@ async function openCleanBrowser(btn, username) {
   try {
     const r = await api(`/api/accounts/${encodeURIComponent(username)}/open-browser`, { method: 'POST', body: '{}' });
     for (const w of (r.warnings || [])) toast(w, 'info');
-    toast(`Opened ${username} in a clean browser${r.proxy ? ` (proxy ${r.proxy})` : ' (LOCAL IP)'}`, 'success');
+    toast(`Opened ${username} in a clean browser${r.proxy ? ` (proxy ${r.proxy}${r.proxyAuth ? ', authed' : ''})` : ' (LOCAL IP)'}`, 'success');
   } catch (e) {
     toast(e.message || 'could not open clean browser', 'error');
     for (const w of ((e.data && e.data.warnings) || [])) toast(w, 'info');

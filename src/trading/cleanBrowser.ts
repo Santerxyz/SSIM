@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import net from 'net';
+import { parseProxy } from '../network/AgentFactory';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -61,20 +62,6 @@ export function parseCookieStrings(cookieStrings: string[]): Record<string, stri
   return out;
 }
 
-/** Split a proxy URL (http://user:pass@host:port | socks5://host:port) into parts. */
-export function splitProxy(url: string): { scheme: string; host: string; port: number; user: string; pass: string } | null {
-  try {
-    const u = new URL(/:\/\//.test(url) ? url : `http://${url}`);
-    return {
-      scheme: (u.protocol || 'http:').replace(':', ''),
-      host:   u.hostname,
-      port:   Number(u.port) || (u.protocol === 'socks5:' ? 1080 : 3128),
-      user:   decodeURIComponent(u.username || ''),
-      pass:   decodeURIComponent(u.password || ''),
-    };
-  } catch { return null; }
-}
-
 /**
  * PURE: build the isolated-session spec for ONE account. Carries ONLY this account's
  * steamLoginSecure + sessionid, and ONLY this account's proxy. No proxy → a warning
@@ -98,16 +85,32 @@ export function buildIsolatedSession(input: {
     warnings.push('no steamLoginSecure cookie for this account — the browser will open NOT logged in; refresh/log the account in first');
   }
 
-  // Proxy: ONLY this account's resolved proxy. localip / none → warn, never leak.
+  // Proxy: ONLY this account's resolved proxy, parsed by the SAME canonical parser the
+  // login flow uses (AgentFactory.parseProxy) — so the host/port/user/pass are extracted
+  // IDENTICALLY for EVERY accepted format (URL, host:port:user:pass, user:pass@host:port,
+  // …). One source of truth, no re-shaping. localip / none / unparseable → warn (never leak).
   let proxyServer: string | null = null;
   let proxyAuth: IsolatedSessionSpec['proxyAuth'] = null;
   if (input.network && input.network.type === 'proxy' && input.network.value) {
-    const p = splitProxy(input.network.value);
-    if (p) {
-      proxyServer = `${p.scheme}://${p.host}:${p.port}`;
-      if (p.user) proxyAuth = { host: p.host, port: p.port, username: p.user, password: p.pass, scheme: p.scheme };
+    const p = parseProxy(input.network.value);
+    if (!p) {
+      warnings.push("could not parse this account's proxy — refusing to open without it");
     } else {
-      warnings.push(`could not parse this account's proxy ("${input.network.value}") — refusing to open without it`);
+      const scheme = p.scheme || 'http';
+      proxyServer = `${scheme}://${p.host}:${p.port}`;
+      if (p.username) {
+        // Authenticated proxy. Chromium can't take proxy creds on --proxy-server, so an
+        // authed HTTP proxy is chained through a local relay that injects Proxy-Authorization.
+        if (!p.password) {
+          warnings.push("this account's proxy requires authentication but its password is empty — refusing to open on a failing proxy");
+          proxyServer = null; // force the caller's guard to refuse rather than open credential-less
+        } else if (/^socks/i.test(scheme)) {
+          warnings.push('this account uses an AUTHENTICATED SOCKS proxy — the clean browser cannot apply SOCKS auth; refusing rather than opening on a failing proxy');
+          proxyServer = null;
+        } else {
+          proxyAuth = { host: p.host, port: Number(p.port), username: p.username, password: p.password ?? '', scheme };
+        }
+      }
     }
   } else {
     warnings.push('this account has NO proxy (runs on the host IP) — opening on the local IP may differ from its normal egress and risk a Steam lock');
@@ -140,34 +143,80 @@ function freePort(): Promise<number> {
 }
 
 /**
- * Minimal local relay so Chromium (which takes no proxy creds on the CLI) can use an
- * AUTHENTICATED http proxy: Chromium → 127.0.0.1:relay → upstream (with Proxy-Authorization).
- * Handles CONNECT (HTTPS, which Steam is). Returns the relay port.
+ * Local relay so Chromium (which takes NO proxy creds on the CLI / in --proxy-server) can
+ * still use an AUTHENTICATED HTTP proxy: Chromium → 127.0.0.1:relay → upstream, with the
+ * relay injecting `Proxy-Authorization: Basic …` on every hop. Same upstream host/port/creds
+ * the login flow uses (passed in via the spec). Handles both:
+ *   • CONNECT  → the HTTPS tunnel Steam actually uses (authenticate, verify 200, splice).
+ *   • absolute-form GET/POST → plain-HTTP subresources (replay to the upstream with auth),
+ *     so nothing 405s and silently looks like a proxy failure.
+ * Returns the relay's loopback port + a close().
  */
-function startProxyRelay(auth: NonNullable<IsolatedSessionSpec['proxyAuth']>): Promise<{ port: number; close: () => void }> {
-  const cred = Buffer.from(`${auth.username}:${auth.password}`).toString('base64');
+export function startProxyRelay(auth: NonNullable<IsolatedSessionSpec['proxyAuth']>, label = 'clean-browser'): Promise<{ port: number; close: () => void }> {
+  const credHeader = `Proxy-Authorization: Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
+
   const server = net.createServer((client) => {
-    client.once('data', (chunk) => {
-      const line = chunk.toString('latin1').split('\r\n')[0];
-      const m = /^CONNECT\s+(\S+)\s+HTTP/i.exec(line);
-      if (!m) { client.end('HTTP/1.1 405 Method Not Allowed\r\n\r\n'); return; }
-      const up = net.connect(auth.port, auth.host, () => {
-        up.write(`CONNECT ${m[1]} HTTP/1.1\r\nHost: ${m[1]}\r\nProxy-Authorization: Basic ${cred}\r\nProxy-Connection: Keep-Alive\r\n\r\n`);
+    client.on('error', () => client.destroy());
+    let buf = Buffer.alloc(0);
+
+    const onData = (chunk: Buffer): void => {
+      buf = Buffer.concat([buf, chunk]);
+      const end = buf.indexOf('\r\n\r\n');               // wait for the full request header block
+      if (end === -1) { if (buf.length > 65536) client.destroy(); return; }
+      client.removeListener('data', onData);
+
+      const headerBlock = buf.slice(0, end).toString('latin1');
+      const rest = buf.slice(end + 4);                    // any bytes already past the headers
+      const firstLine = headerBlock.split('\r\n')[0];
+      const connect = /^CONNECT\s+(\S+)\s+HTTP\/1\.[01]/i.exec(firstLine);
+
+      const upstream = net.connect(auth.port, auth.host);
+      upstream.on('error', (e) => {
+        logger.warn(`[${label}] proxy relay: cannot reach upstream proxy ${auth.host}:${auth.port} — ${(e as Error).message}`);
+        try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ }
       });
-      let established = false;
-      up.once('data', (resp) => {
-        established = /^HTTP\/1\.[01]\s+200/.test(resp.toString('latin1'));
-        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        if (established) { up.pipe(client); client.pipe(up); }
-        else { client.end(); up.end(); }
+      client.on('error', () => upstream.destroy());
+
+      upstream.once('connect', () => {
+        if (connect) {
+          // HTTPS tunnel: authenticate to the upstream, confirm 200, then splice raw streams.
+          const target = connect[1];
+          upstream.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${credHeader}\r\nProxy-Connection: Keep-Alive\r\n\r\n`);
+          let upBuf = Buffer.alloc(0);
+          const onUp = (uc: Buffer): void => {
+            upBuf = Buffer.concat([upBuf, uc]);
+            const he = upBuf.indexOf('\r\n\r\n');
+            if (he === -1) return;
+            upstream.removeListener('data', onUp);
+            const statusLine = upBuf.slice(0, upBuf.indexOf('\r\n')).toString('latin1');
+            const ok = /^HTTP\/1\.[01]\s+200\b/.test(statusLine);
+            if (!ok) {
+              logger.warn(`[${label}] proxy relay: upstream ${auth.host}:${auth.port} refused CONNECT (${statusLine}) — proxy credentials likely wrong`);
+              try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ } upstream.end(); return;
+            }
+            client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            const leftover = upBuf.slice(he + 4);
+            if (leftover.length) client.write(leftover);   // tunneled bytes that rode in with the 200
+            if (rest.length) upstream.write(rest);          // early client bytes (rare for CONNECT)
+            upstream.pipe(client); client.pipe(upstream);
+          };
+          upstream.on('data', onUp);
+        } else {
+          // Plain-HTTP (absolute-form) request: inject auth after the request line, replay, splice.
+          const lines = headerBlock.split('\r\n');
+          lines.splice(1, 0, credHeader);
+          upstream.write(lines.join('\r\n') + '\r\n\r\n');
+          if (rest.length) upstream.write(rest);
+          upstream.pipe(client); client.pipe(upstream);
+        }
       });
-      up.on('error', () => { if (!established) client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); });
-      client.on('error', () => up.destroy());
-    });
+    };
+    client.on('data', onData);
   });
+
   return new Promise((resolve, reject) => {
-    server.listen(0, '127.0.0.1', () => resolve({ port: (server.address() as net.AddressInfo).port, close: () => server.close() }));
     server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve({ port: (server.address() as net.AddressInfo).port, close: () => { try { server.close(); } catch { /* ignore */ } } }));
   });
 }
 
@@ -176,25 +225,56 @@ async function cdp(ws: WebSocket, id: number, method: string, params: unknown): 
   ws.send(JSON.stringify({ id, method, params }));
 }
 
+// ── Ephemeral-session lifetime ──────────────────────────────────────────────
+// Teardown (close relay + delete profile) MUST follow the BROWSER, not the process we spawn.
+// Edge/Chrome hand off to a separate browser process and the launcher we spawned exits almost
+// immediately — so the original `child.on('exit')` tore the relay down WHILE the window was
+// still open, and the window then hit a dead 127.0.0.1:<relayPort> → ERR_PROXY_CONNECTION_FAILED.
+// We instead watch the browser's own debug port (which survives the hand-off) and tear down when
+// IT disappears, with a process-shutdown backstop so nothing leaks if SSIM exits first.
+const liveTeardowns = new Set<() => void>();
+let shutdownHooked = false;
+function hookShutdownOnce(): void {
+  if (shutdownHooked) return;
+  shutdownHooked = true;
+  const all = (): void => { for (const t of [...liveTeardowns]) { try { t(); } catch { /* ignore */ } } };
+  process.once('exit', all);
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    try { process.once(sig, () => { all(); process.exit(0); }); } catch { /* signal N/A on this platform */ }
+  }
+}
+
 /**
  * Launch the isolated browser for `spec` and inject its cookies. Best-effort: any failure
  * logs + cleans up the ephemeral profile and throws. The browser stays open until the
  * operator closes it (closing discards the ephemeral profile).
  */
-export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<{ profileDir: string; proxyUsed: string | null }> {
+export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<{ profileDir: string; proxyUsed: string | null; proxyAuthApplied: boolean }> {
   const exe = findChromium();
   if (!exe) throw new Error('no Chromium browser (Edge/Chrome) found to open a clean session — set SSIM_BROWSER_EXE');
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-clean-'));
   let relay: { port: number; close: () => void } | null = null;
   let child: ChildProcess | undefined;
-  const cleanup = (): void => {
+  let tornDown = false;
+  const teardown = (): void => {
+    if (tornDown) return;
+    tornDown = true;
+    liveTeardowns.delete(teardown);
     try { relay?.close(); } catch { /* ignore */ }
     try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
   };
   try {
-    // Resolve the --proxy-server Chromium will use (chain authed proxies through the relay).
+    // Resolve the --proxy-server Chromium will use. An AUTHENTICATED proxy is NEVER handed to
+    // Chromium credential-stripped (that yields ERR_PROXY_CONNECTION_FAILED): it is chained
+    // through the local relay, which carries this account's proxy creds. proxyAuth came from
+    // the SAME parser the login flow uses, so the relay's egress == the account's login egress.
     let proxyArg = spec.proxyServer;
-    if (spec.proxyAuth) { relay = await startProxyRelay(spec.proxyAuth); proxyArg = `http://127.0.0.1:${relay.port}`; }
+    let proxyAuthApplied = false;
+    if (spec.proxyAuth) {
+      relay = await startProxyRelay(spec.proxyAuth, spec.username);
+      proxyArg = `http://127.0.0.1:${relay.port}`;
+      proxyAuthApplied = true;
+    }
 
     const port = await freePort();
     const args = [
@@ -205,7 +285,10 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
       'about:blank',
     ];
     child = spawn(exe, args, { detached: true, stdio: 'ignore' });
-    child.on('exit', cleanup);   // ephemeral: profile gone when the browser closes
+    // NOTE: deliberately NOT child.on('exit', teardown) — Edge/Chrome hand off and this spawned
+    // process exits immediately while the real window lives on. Teardown is driven by the debug-port
+    // watcher below (set up after injection), which tracks the actual browser.
+    child.on('error', () => { /* spawn failure surfaces as the debugger-discovery timeout below */ });
     child.unref();
 
     // Discover the page debugger WS endpoint (poll — Chromium needs a moment).
@@ -237,11 +320,27 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
       ws.onerror = () => { clearTimeout(t); reject(new Error('debugger connection failed')); };
     });
 
-    logger.info(`[${spec.username}] clean browser opened (proxy=${spec.proxyServer ?? 'LOCAL IP'}, cookies=${spec.cookies.map((c) => c.name).join('+') || 'none'})`);
-    return { profileDir, proxyUsed: spec.proxyServer };
+    const authNote = proxyAuthApplied ? 'yes (via local relay)' : (spec.proxyServer ? 'no (open proxy)' : 'n/a');
+    logger.info(`[${spec.username}] clean browser opened (proxy=${spec.proxyServer ?? 'LOCAL IP'}, proxy auth: ${authNote}, cookies=${spec.cookies.map((c) => c.name).join('+') || 'none'})`);
+
+    // Keep the relay (+ ephemeral profile) alive for EXACTLY as long as the browser is open, by
+    // watching its debug port — which follows the real browser process across Edge's hand-off, so
+    // the relay no longer dies under a live window. Backstop: tear everything down if SSIM exits.
+    hookShutdownOnce();
+    liveTeardowns.add(teardown);
+    let misses = 0;
+    const watch = setInterval(() => {
+      fetch(`http://127.0.0.1:${port}/json/version`).then(
+        () => { misses = 0; },
+        () => { if (++misses >= 6) { clearInterval(watch); teardown(); } }, // ~9s of no debug port ⇒ window closed
+      );
+    }, 1500);
+    watch.unref?.();
+
+    return { profileDir, proxyUsed: spec.proxyServer, proxyAuthApplied };
   } catch (err) {
     try { child?.kill(); } catch { /* ignore */ }
-    cleanup();
+    teardown();
     throw err;
   }
 }

@@ -654,7 +654,7 @@ export function createApp(deps: ApiDeps): Express {
     }
     try {
       const r = await launchIsolatedBrowser(spec);
-      res.json({ ok: true, proxy: r.proxyUsed, warnings: spec.warnings });
+      res.json({ ok: true, proxy: r.proxyUsed, proxyAuth: r.proxyAuthApplied, warnings: spec.warnings });
     } catch (e) {
       res.status(500).json({ error: `could not open clean browser: ${(e as Error).message}`, warnings: spec.warnings });
     }
