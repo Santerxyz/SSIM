@@ -103,5 +103,6 @@ function toListedItem(l: MarketListing): CS2Item {
     assetIds:       [l.assetId],
     iconUrl:        l.iconUrl,
     category:       'listed',
+    listingConfirmed: l.confirmed, // false ⇒ awaiting 2FA confirmation (C9 / INV-D4)
   };
 }

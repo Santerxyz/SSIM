@@ -3,6 +3,7 @@ import type { PricingService } from '../pricing/PricingService';
 import type { GcActionLayer } from './GcActionLayer';
 import { Cs2SchemaService, parseSkinName, type SkinDef } from '../core/Cs2SchemaService';
 import { computeContract, wearMidpoint, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
+import { isSellable } from '../core/MarketModel';
 import { logger } from '../utils/logger';
 
 const CS2_APPID = 730;
@@ -244,10 +245,13 @@ export class TradeUpService {
   }
 
   /** Expands inventory stacks into individual trade-up-eligible input items (≤10 per stack). */
-  private buildEligibleInputs(items: Array<{ marketHashName: string; quantity?: number; assetIds?: string[]; price?: number | null; category?: string }>): TuInput[] {
+  private buildEligibleInputs(items: Array<{ marketHashName: string; quantity?: number; assetIds?: string[]; price?: number | null; category?: string; tradeLockExpiry?: Date | string | null; tradable?: boolean }>): TuInput[] {
     const out: TuInput[] = [];
     for (const it of items) {
       if (it.category === 'listed') continue;                       // on the market, not in inventory
+      // Never feed a trade-locked / non-tradable skin into a craft (INV-D6 / C10). The
+      // forceRefresh path doesn't set `category`, so check the lock state directly.
+      if (!isSellable(it)) continue;
       const parsed = parseSkinName(it.marketHashName);
       if (!parsed || parsed.souvenir || !parsed.wear) continue;     // souvenirs/no-wear → ineligible
       const def: SkinDef | undefined = this.schema.lookup(parsed.baseName);

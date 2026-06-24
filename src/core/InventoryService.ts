@@ -156,6 +156,12 @@ export class InventoryService {
    *  kill each other's session – share one promise per account instead. */
   private readonly inFlight = new Map<string, Promise<AccountInventory>>();
 
+  /** Per-account ownership marker for the bulk refresh: did THIS refresh's ensureSession
+   *  create the live session (true) or reuse/coalesce one another op owns (false)? Set by
+   *  ensureSession, read+cleared by the bulk worker so it releases only sessions it created
+   *  — never tears down a session another operation is using. (C17 / INV-A6.) */
+  private readonly createdSession = new Map<string, boolean>();
+
   refreshOne(username: string, game: GameId = 'cs2'): Promise<AccountInventory> {
     // CS2 has ONE refresh and it is the COMPLETE one: the full pure-web fetch
     // (context 2 + 16 + market listings, fully categorised). The quick single-context
@@ -238,8 +244,10 @@ export class InventoryService {
     //    currently-listed items. Names + exact unlock dates come straight from Steam's
     //    own descriptions (owner_descriptions "Tradable/Marketable After …"), so no
     //    schema resolver and no game-client connection are needed.
-    let ctx2  = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 2),  steamId, 'cs2');
-    let ctx16 = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 16), steamId, 'cs2');
+    let raw2  = await InventoryManager.fetchRaw(session, 'cs2', 2);
+    let raw16 = await InventoryManager.fetchRaw(session, 'cs2', 16);
+    let ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
+    let ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
 
     // Genuine retry on a suspicious empty read: if BOTH inventory contexts came back
     // with zero assets while the cache holds owned/locked items, Steam very likely served
@@ -252,8 +260,10 @@ export class InventoryService {
       if (cachedOwned) {
         logger.warn(`[${username}] inventory contexts returned 0 assets while cache holds items – retrying inventory read once`);
         await sleep(2_000);
-        ctx2  = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 2),  steamId, 'cs2');
-        ctx16 = InventoryManager.parse(await InventoryManager.fetchRaw(session, 'cs2', 16), steamId, 'cs2');
+        raw2  = await InventoryManager.fetchRaw(session, 'cs2', 2);
+        raw16 = await InventoryManager.fetchRaw(session, 'cs2', 16);
+        ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
+        ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
       }
     }
 
@@ -262,12 +272,14 @@ export class InventoryService {
     const now = Date.now();
     const ownedLockedRaw = [...ctx2, ...ctx16].filter(i => !listedAssetIds.has(i.assetId));
     const gcOwnedLockedCount = ownedLockedRaw.length; // owned+locked count, BEFORE listed are merged in
+    const partial = !!(raw2.truncated || raw16.truncated); // page-capped read → INCOMPLETE (C12)
     const inv: AccountInventory = {
       username, steamId, game: 'cs2', source: 'gc',
       items:      InventoryManager.stack(ownedLockedRaw),
       totalItems: gcOwnedLockedCount,
       fetchedAt:  new Date(),
       fromCache:  false,
+      partial,
     };
     for (const it of inv.items) {
       it.category = bucketOf(it, now);
@@ -320,6 +332,21 @@ export class InventoryService {
         : 0;
       if (prevOwnedLocked > 0) {
         logger.warn(`[${username}] inventory contexts returned 0 assets but cache holds ${prevOwnedLocked} owned/locked – reconciling listings into cache (suspected partial read)`);
+        return this.reconcilePartialRead(username, prev!, listed, listedAssetIds, listingsOk);
+      }
+    }
+
+    // A TRUNCATED (page-capped) read is PARTIAL, not authoritative. If the cache already
+    // holds MORE owned/locked than this partial read returned, do not let the smaller set
+    // clobber it — keep the fuller cache and only reconcile listings (same protection as an
+    // empty read, but for the "too-big-to-page" case). (C12 / INV-B10.)
+    if (partial) {
+      const prev = this.gcStore.get(username);
+      const prevOwnedLocked = prev
+        ? prev.items.filter(i => i.category !== 'listed').reduce((n, i) => n + (i.quantity || 0), 0)
+        : 0;
+      if (prevOwnedLocked > gcOwnedLockedCount) {
+        logger.warn(`[${username}] inventory read TRUNCATED at the page cap and cache holds more (${prevOwnedLocked} > ${gcOwnedLockedCount}) – keeping fuller cache, reconciling listings`);
         return this.reconcilePartialRead(username, prev!, listed, listedAssetIds, listingsOk);
       }
     }
@@ -493,9 +520,15 @@ export class InventoryService {
   private async ensureSession(username: string): Promise<ManagedSession> {
     const account = this.accounts.get(username);
     if (!account) throw new Error(`Account "${username}" not found`);
+    const key = username.toLowerCase();
     const existing = this.sessions.getSession(username);
-    if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession) return existing;
-    return this.sessions.loginAccount(account);
+    if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession) {
+      this.createdSession.set(key, false); // reused a live session — not ours to release
+      return existing;
+    }
+    const { session, createdByCall } = await this.sessions.loginAccountOwned(account);
+    this.createdSession.set(key, createdByCall);
+    return session;
   }
 
   // ── Bulk refresh (concurrency-limited, non-blocking job) ─────────────────────
@@ -568,11 +601,11 @@ export class InventoryService {
       while (queue.length > 0) {
         if (this.refreshCancel) break; // "End Task": stop pulling new accounts; in-flight fetch finishes
         const username = queue.shift()!;
-        // Snapshot live-ness BEFORE we touch the account: if it is NOT live now, then a
-        // login that happens during this refresh is OURS to release afterwards. An account
-        // the user already has live (or logs in concurrently before we reach it) reads as
-        // live here and is left untouched — we never tear down someone else's session.
-        const wasLiveBefore = this.sessions.isLive(username);
+        // Ownership is tracked EXPLICITLY (createdSession, set by ensureSession via
+        // loginAccountOwned) instead of a racy isLive() snapshot that a concurrent
+        // LOGGING_IN could corrupt. Clear any stale marker before this account's refresh.
+        const key = username.toLowerCase();
+        this.createdSession.delete(key);
         try {
           await this.refreshMaybeThrottled(username, game);
         } catch (err) {
@@ -580,12 +613,14 @@ export class InventoryService {
           logger.warn(`[${username}] ${game} refresh failed: ${(err as Error).message}`);
         } finally {
           this.job.done++;
-          // Release the session WE created so a full-fleet refresh doesn't end with the
-          // whole fleet held live at once (the resource storm). The inventory is already
-          // cached by this point, so logging out loses nothing; any later action re-logs
-          // the account in on demand. Runs on success AND failure (a failed fetch can still
-          // leave a freshly logged-in client behind). Best-effort — never fail the refresh.
-          if (REFRESH_RELEASE_SESSIONS && !wasLiveBefore) {
+          // Release ONLY a session THIS refresh created (explicit ownership recorded by
+          // ensureSession) so a full-fleet refresh doesn't end with the whole fleet held
+          // live (the resource storm), WITHOUT ever tearing down a session another op owns
+          // or leaking one we created. The inventory is already cached, so logging out loses
+          // nothing; any later action re-logs on demand. Best-effort. (C17 / INV-A6.)
+          const createdByUs = this.createdSession.get(key) === true;
+          this.createdSession.delete(key);
+          if (REFRESH_RELEASE_SESSIONS && createdByUs) {
             try {
               if (this.sessions.isLive(username)) { await this.sessions.logoutAccount(username); released++; }
             } catch (err) {

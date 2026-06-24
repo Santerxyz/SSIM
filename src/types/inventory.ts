@@ -44,6 +44,13 @@ export interface CS2Item {
    */
   category?: 'listed' | 'tradelocked' | 'tradable';
   /**
+   * For a 'listed' item only: false ⇒ the listing is still awaiting mobile (2FA)
+   * confirmation on Steam (it came from pending_listings / listings_to_confirm). Lets
+   * the dashboard distinguish a confirmed live sale from one created-but-not-yet-
+   * confirmed, instead of counting both as simply "listed". (C9 / INV-D4.)
+   */
+  listingConfirmed?: boolean;
+  /**
    * Trade/market restriction period of this item TYPE in days (Steam's
    * `market_tradable_restriction`, typically 7). Metadata only – it does NOT mean
    * the item is currently held. Used by the protection auto-tracker to decide
@@ -77,6 +84,12 @@ export interface AccountInventory {
   fetchedAt:   Date;
   fromCache:   boolean;
   /**
+   * True when this record is known to be INCOMPLETE — the Steam inventory read was
+   * truncated at the page cap (very large inventory). The dashboard must not treat a
+   * partial record as the authoritative full inventory. (C12 / INV-B9/B10.)
+   */
+  partial?:    boolean;
+  /**
    * Which refresh produced this record:
    *   'web' – the Steam Community /inventory endpoint (default, fast, but blind to
    *           items the web layer hasn't synced)
@@ -100,6 +113,9 @@ export interface RawSteamInventoryResponse {
   error?:                 string;
   more_items?:            number;
   last_assetid?:          string;
+  /** Set by InventoryManager.fetchRaw when the read stopped at the page cap while Steam
+   *  still had more pages → the asset list is PARTIAL. (C12.) */
+  truncated?:             boolean;
 }
 
 export interface RawAsset {

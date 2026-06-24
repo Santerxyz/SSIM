@@ -210,8 +210,16 @@ export class BuyService {
       let verifyFailed = false;
       try {
         const after = await this.inventory.forceRefresh(p.username, game);
-        ownedAfter = ownedCount(after, p.marketHashName);
-        walletAfter = after.wallet?.balance;
+        if (after.partial) {
+          // The verification read was TRUNCATED (page cap) → ownedAfter would reflect an
+          // incomplete inventory, so the fill diff is unreliable. Don't report a possibly
+          // wrong fill; mark unverified instead. (C11 / INV-D3.)
+          verifyFailed = true;
+          logger.warn(`[${p.username}] post-buy verification read was PARTIAL (page-capped) – fill count unreliable; order WAS placed, check manually`);
+        } else {
+          ownedAfter = ownedCount(after, p.marketHashName);
+          walletAfter = after.wallet?.balance;
+        }
       } catch (e) {
         verifyFailed = true;
         logger.warn(`[${p.username}] post-buy verification refresh failed: ${(e as Error).message} – order WAS placed, NOT retrying`);

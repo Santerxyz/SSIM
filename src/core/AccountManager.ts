@@ -9,6 +9,7 @@ import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { vaultDir } from '../utils/paths';
 import { AccountVault } from './AccountVault';
+import { loadMaFileFromDisk } from './maFiles';
 
 const DB_PATH    = vaultDir('accounts.json');
 const DB_VERSION = 4; // v2 folders[]; v3 environments[]; v4 portable maFilePath (bare filename in ./mafiles)
@@ -315,6 +316,19 @@ export class AccountManager {
           enabled: true, displayName: item.displayName, addedAt: new Date().toISOString(),
         };
         this.db.accounts.push(account);
+        // Defense-in-depth (C18 / INV-A3): vault the secret in vault mode so the final
+        // save() blanks the plaintext password. The sole caller already gates vault mode,
+        // but vaulting here makes addMany safe regardless of caller. Best-effort per item:
+        // if the maFile can't be loaded the account stays plaintext (the non-destructive
+        // guarantee), exactly like the single-add path.
+        if (AccountVault.isEnabled()) {
+          try {
+            const maFile = loadMaFileFromDisk(item.maFilePath);
+            AccountVault.upsertAccount({ username: item.username, password: item.password, maFile });
+          } catch (err) {
+            logger.warn(`[${item.username}] bulk import: could not vault (kept plaintext until re-vaulted): ${(err as Error).message}`);
+          }
+        }
         added.push(this.withNetwork(account));
       } catch (err) {
         skipped.push({ username: item.username, reason: (err as Error).message });

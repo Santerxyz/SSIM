@@ -173,7 +173,7 @@ export class InventoryManager {
       `[${username}] raw inventory: ${assets.length} assets, ` +
       `${descByKey.size} descriptions (total_inventory_count=${totalCount})`,
     );
-    return { assets, descriptions: [...descByKey.values()], total_inventory_count: totalCount, success: 1 };
+    return { assets, descriptions: [...descByKey.values()], total_inventory_count: totalCount, success: 1, truncated: hitPageCap };
   }
 
   // ── 2) Parse raw assets + descriptions → CS2Item[] ──────────────────────────
@@ -298,6 +298,7 @@ export class InventoryManager {
       totalItems: realCount, // reflects the real number of items, not stack count
       fetchedAt:  new Date(),
       fromCache:  false,
+      partial:    !!raw.truncated, // honest flag: a page-capped read is incomplete (C12)
     };
   }
 }

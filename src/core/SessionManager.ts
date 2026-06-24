@@ -6,6 +6,7 @@ import { AgentFactory } from '../network/AgentFactory';
 import { loadMaFile, buildLogOnOptions, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
+import { webCookiesFresh, ownsCreatedSession } from './sessionHealth';
 import { logger } from '../utils/logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -173,6 +174,19 @@ export class SessionManager extends EventEmitter {
     })().finally(() => this.loginsInFlight.delete(key));
     this.loginsInFlight.set(key, p);
     return p;
+  }
+
+  /**
+   * Like loginAccount, but also reports whether THIS call originated the login, so a
+   * bulk op can release exactly the sessions it created and never tear down a session
+   * another operation owns. `createdByCall` is decided SYNCHRONOUSLY here (before any
+   * await), race-free with loginAccount's in-flight dedup. (C17 / INV-A6.)
+   */
+  async loginAccountOwned(account: AccountConfig): Promise<{ session: ManagedSession; createdByCall: boolean }> {
+    const key = account.username.toLowerCase();
+    const createdByCall = ownsCreatedSession(this.loginsInFlight.has(key), this.sessions.has(key));
+    const session = await this.loginAccount(account);
+    return { session, createdByCall };
   }
 
   /**
@@ -625,7 +639,9 @@ export class SessionManager extends EventEmitter {
    */
   isReady(username: string): boolean {
     const s = this.sessions.get(username.toLowerCase());
-    return !!s && s.state === SessionState.LOGGED_IN && !!s.webSession;
+    // Not just "a webSession object exists" — its cookies must still be FRESH, or a
+    // call would run on silently-expired cookies (C16 / INV-A5).
+    return !!s && s.state === SessionState.LOGGED_IN && !!s.webSession && webCookiesFresh(s.webSession.obtainedAt);
   }
 
   /**
