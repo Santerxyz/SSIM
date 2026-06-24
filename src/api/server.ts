@@ -16,6 +16,7 @@ import { ProcessHealth } from '../core/ProcessHealth';
 import { AccountVault } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk } from '../core/maFiles';
+import { canConfirm } from '../core/accountCapability';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
@@ -573,7 +574,13 @@ export function createApp(deps: ApiDeps): Express {
       });
     }
     const updated = accounts.update(account.username, { tier: 'full', maFilePath });
-    logger.info(`[${account.username}] maFile attached → upgraded to FULL`);
+    // Reload the live session so it picks up the freshly-attached maFile (identity_secret).
+    // Otherwise a still-resident LIMITED session keeps session.maFile === undefined and
+    // cannot confirm trades until its next re-login — a "Full" account that can't confirm.
+    // (INV-A1 / C5.) Best-effort: never fail the upgrade on a logout hiccup.
+    try { await sessions.logoutAccount(account.username); }
+    catch (e) { logger.warn(`[${account.username}] post-attach session reload failed: ${(e as Error).message}`); }
+    logger.info(`[${account.username}] maFile attached → upgraded to FULL (session reloaded)`);
     res.json(sanitizeAccount(updated));
   }));
 
@@ -2009,6 +2016,13 @@ function sanitizeAccount(account: AccountConfig): Record<string, unknown> {
   void password;
   return {
     ...rest,
+    // INV-A1 / C5: the dashboard should show the REAL "can confirm trades" capability
+    // (maFile identity_secret), not the raw tier label. tier is now a projection of this.
+    canConfirm: canConfirm({
+      vaultEnabled: AccountVault.isEnabled(),
+      vaultMaFileHasIdentitySecret: !!AccountVault.getAccount(account.username)?.maFile?.identity_secret,
+      tier: account.tier,
+    }),
     network: account.network
       ? { type: account.network.type, value: redactProxyCredentials(account.network.value) }
       : undefined,

@@ -5,6 +5,7 @@ import { SessionState, type ManagedSession, type WebSession } from '../types/ses
 import { AgentFactory } from '../network/AgentFactory';
 import { loadMaFile, buildLogOnOptions, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
+import { onTokenAuthFailure } from './accountCapability';
 import { logger } from '../utils/logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -200,12 +201,19 @@ export class SessionManager extends EventEmitter {
         return await this.attemptLogin(account, { refreshToken: storedToken }, maFile, 'token');
       } catch (err) {
         const kind = (err as LoginError).loginErrorKind ?? 'connection';
-        if (kind === 'auth') {
-          // STRONG evidence the token itself is bad → delete it and re-login fully.
+        if (kind === 'auth' && onTokenAuthFailure(!!maFile) === 'delete-and-retry') {
+          // STRONG evidence the token is bad AND we have a maFile fallback → delete the
+          // token and re-login via credentials.
           logger.warn(`[${account.username}] refresh token is INVALID (${(err as Error).message}) – deleting token, full login`);
           this.tokenStore.delete(account.username);
           await this.destroySession(key);
           // …fall through to the credential login below.
+        } else if (kind === 'auth') {
+          // Token-only account (no maFile): the refresh token is its SOLE credential.
+          // PRESERVE it — a misclassified/transient 'auth' verdict must never permanently
+          // strand the account — and surface a re-import requirement. (INV-A2 / C8.)
+          logger.error(`[${account.username}] token login failed (auth) with no maFile fallback – token PRESERVED; account needs re-import (QR/credentials)`);
+          throw err;
         } else {
           // Connection/proxy problem after all retries → the token is almost
           // certainly still valid. KEEP it and abort this round; a later attempt
