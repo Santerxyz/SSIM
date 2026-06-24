@@ -71,8 +71,10 @@ export interface ApiDeps {
 export function createDeps(): ApiDeps {
   const accounts  = new AccountManager();
   const sessions  = new SessionManager();
-  const trades    = new TradeService(sessions, accounts);
   const inventory = new InventoryService(sessions, accounts);
+  // Trades gets the inventory cache so the send path can refuse trade-locked / non-tradable
+  // assets before an offer is created (INV-D1 / C3).
+  const trades    = new TradeService(sessions, accounts, inventory);
   // Market gets the inventory cache so a completed mass-sell moves the just-listed assets
   // Owned→Listed immediately (optimistic), rather than waiting on a follow-up refresh.
   const market    = new MarketService(trades, inventory);

@@ -5,6 +5,10 @@ import TradeOfferManager from 'steam-tradeoffer-manager';
 import * as SteamTotp from 'steam-totp';
 import type { ManagedSession } from '../types/session';
 import { logger } from '../utils/logger';
+import {
+  parseMyListings, mergeParsed, emptyParsed,
+  listedAssetIdsForApp, type MarketListing,
+} from '../core/MarketModel';
 
 // Trade-offer state + filter enums (static members of the manager class).
 const ETradeOfferState = (TradeOfferManager as any).ETradeOfferState as Record<string, number | string>;
@@ -295,7 +299,7 @@ export class AccountTrader {
    */
   async getListedAssetIds(): Promise<Set<string>> {
     const cookies = this.session.webSession?.cookies ?? [];
-    const out = new Set<string>();
+    const acc = emptyParsed();
     const PAGE = 100;
     const MAX_PAGES = 30; // up to 3000 listings – plenty for a storage bot
 
@@ -319,31 +323,19 @@ export class AccountTrader {
       const d = r.data;
       if (!d || typeof d !== 'object') throw new Error('market/mylistings: malformed response');
 
-      const before = out.size;
-      // (a) the `assets` map: assets[appid][contextid][assetid] = {…}
-      const assetMap = d.assets?.[String(CS2_APPID)]?.[CS2_CONTEXTID];
-      if (assetMap && typeof assetMap === 'object') {
-        for (const id of Object.keys(assetMap)) out.add(String(id));
-      }
-      // (b) defensive: scan any listings arrays for an .asset.id too (incl. pending)
-      for (const key of ['listings', 'pending_listings', 'listings_to_confirm']) {
-        const arr = d[key];
-        if (Array.isArray(arr)) {
-          for (const l of arr) {
-            const id = l?.asset?.id ?? l?.asset?.assetid;
-            if (id) out.add(String(id));
-          }
-        }
-      }
+      // ONE canonical parse — same membership rule as the inventory "Listed" bucket
+      // (MarketListings.fetchListedItems) and the Active Orders view, so the three
+      // can never disagree about which assets are on the market (the field bug).
+      mergeParsed(acc, parseMyListings(d));
 
-      // Stop when we've covered all listings (total_count) or a page added nothing.
+      // Stop when we've covered all listings (total_count) or hit an empty/partial page.
       const total = Number(d.total_count);
       const fetchedListings = Array.isArray(d.listings) ? d.listings.length : 0;
-      if (out.size === before && fetchedListings === 0) break;          // empty page → done
+      if (fetchedListings === 0) break;                                 // empty page → done
       if (Number.isFinite(total) && start + PAGE >= total) break;       // covered all
       if (fetchedListings < PAGE) break;                                // last partial page
     }
-    return out;
+    return listedAssetIdsForApp(acc, CS2_APPID);
   }
 
   // ── New feature: Active Orders (fetch + cancel sell listings & buy orders) ──
@@ -363,7 +355,7 @@ export class AccountTrader {
    */
   async getMarketOrders(): Promise<MarketOrders> {
     const cookies = this.session.webSession?.cookies ?? [];
-    const sellOrders: ActiveSellOrder[] = [];
+    const seenSell = new Map<string, ActiveSellOrder>();
     const seenBuy = new Map<string, ActiveBuyOrder>();
     const PAGE = 100;
     const MAX_PAGES = 30; // up to 3000 listings
@@ -390,7 +382,13 @@ export class AccountTrader {
       if (status !== 200)            { if (page === 0) throw new Error(`market/mylistings HTTP ${status}`); break; }
       if (!data || typeof data !== 'object') { if (page === 0) throw new Error('market/mylistings: malformed response'); break; }
 
-      collectSellOrders(data, sellOrders);
+      // Canonical parse → Active Orders sell rows. Same membership rule as the
+      // inventory "Listed" bucket, so the two views can never disagree. Deduped by
+      // listingId; pending listings appear too (projected with confirmed=false upstream).
+      for (const l of parseMyListings(data).listings) {
+        const key = l.listingId || `asset:${l.assetId}`;
+        if (!seenSell.has(key)) seenSell.set(key, toSellOrder(l));
+      }
       collectBuyOrders(data, seenBuy); // the first render page usually carries buy_orders too
 
       const total = Number(data.total_count);
@@ -408,8 +406,8 @@ export class AccountTrader {
       } catch { /* buy-order fallback is best-effort – never fail the whole fetch over it */ }
     }
 
-    logger.info(`[${this.username}] market orders: ${sellOrders.length} sell / ${seenBuy.size} buy`);
-    return { sellOrders, buyOrders: [...seenBuy.values()] };
+    logger.info(`[${this.username}] market orders: ${seenSell.size} sell / ${seenBuy.size} buy`);
+    return { sellOrders: [...seenSell.values()], buyOrders: [...seenBuy.values()] };
   }
 
   /**
@@ -1113,33 +1111,21 @@ function shapeOffers(offers: any[], historyLimit: number): TradeOfferView[] {
   return [...active, ...history.slice(0, historyLimit)];
 }
 
-/** Parses active SELL listings out of a market/mylistings payload into `out`. */
-function collectSellOrders(d: any, out: ActiveSellOrder[]): void {
-  const listings: any[] = Array.isArray(d?.listings) ? d.listings : [];
-  const assets = d?.assets ?? {};
-  for (const l of listings) {
-    const listingId = l?.listingid != null ? String(l.listingid) : '';
-    const asset = l?.asset ?? {};
-    const appId = Number(asset.appid) || 0;
-    const ctx   = String(asset.contextid ?? '');
-    const id    = String(asset.id ?? asset.assetid ?? '');
-    if (!listingId || !id || !appId) continue;
-    const desc = assets?.[String(appId)]?.[ctx]?.[id] ?? {};
-    const price = Number(l?.price) || 0; // seller-net price (minor units)
-    const fee   = Number(l?.fee)   || 0; // Steam fee (minor units)
-    // currencyid is 2000 + ECurrencyCode (e.g. 2003 = EUR); 0 when absent.
-    const currency = l?.currencyid != null ? Math.max(0, Number(l.currencyid) - 2000) : 0;
-    const icon = desc.icon_url_large ?? desc.icon_url ?? '';
-    out.push({
-      listingId, assetId: id, appId,
-      marketHashName:    desc.market_hash_name ?? desc.name ?? 'Unknown',
-      name:              desc.name ?? desc.market_hash_name ?? 'Unknown',
-      iconUrl:           icon ? IMG_BASE + icon : '',
-      pricePerItemMinor: price + fee, // what a BUYER pays (net + fee)
-      currency,
-      quantity:          Number(asset.amount) || 1,
-    });
-  }
+/** Projects one canonical MarketListing into an Active-Orders sell row. The parse
+ *  itself now lives in MarketModel.parseMyListings (one parser, shared with the
+ *  inventory "Listed" bucket and the mass-sell pre-flight). */
+function toSellOrder(l: MarketListing): ActiveSellOrder {
+  return {
+    listingId:         l.listingId,
+    assetId:           l.assetId,
+    appId:             l.appId,
+    marketHashName:    l.marketHashName,
+    name:              l.name,
+    iconUrl:           l.iconUrl,
+    pricePerItemMinor: l.pricePerItemMinor,
+    currency:          l.currency,
+    quantity:          l.quantity,
+  };
 }
 
 /** Parses resting BUY orders out of a market/mylistings payload into `out` (deduped by id). */

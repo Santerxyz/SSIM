@@ -2,6 +2,10 @@ import axios from 'axios';
 import type { ManagedSession } from '../types/session';
 import type { CS2Item } from '../types/inventory';
 import { logger } from '../utils/logger';
+import {
+  parseMyListings, mergeParsed, emptyParsed,
+  listingsForApp, listedAssetIdsForApp, type MarketListing,
+} from './MarketModel';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  MarketListings – the 3rd dashboard bucket: items CURRENTLY ON SALE on the
@@ -9,24 +13,39 @@ import { logger } from '../utils/logger';
 //  while listed), so neither the web nor the GC inventory fetch can see them –
 //  they have to be read from the seller's own listings endpoint. Routed through
 //  the account's isolated agent + cookies, same as every other web call.
+//
+//  Parsing is delegated to the SINGLE canonical parser (MarketModel.parseMyListings)
+//  so the "Listed" bucket, the "Active Orders" view and the mass-sell pre-flight can
+//  never disagree about which assets are on the market (the old field bug). Unlike
+//  the previous strict parser, a listing whose asset has no description is KEPT
+//  (name → "Unknown"); its asset id still lands in the dedup superset, so it can
+//  never simultaneously appear as Owned.
 // ════════════════════════════════════════════════════════════════════════════
 
-const IMG_BASE  = 'https://community.cloudflare.steamstatic.com/economy/image/';
 const CS2_APPID = 730;
-const CS2_CTX   = '2';
 const MARKET_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+export interface ListedItems {
+  /** CS2 listed items as dashboard rows (category: 'listed'). */
+  items:    CS2Item[];
+  /**
+   * Canonical CS2 dedup superset: every asset id the market holds for this account.
+   * The inventory refresh subtracts THIS set from ctx2+ctx16 so a listed asset is
+   * never also counted as Owned/locked (one asset = one bucket).
+   */
+  assetIds: Set<string>;
+}
+
 /**
- * Returns the account's active CS2 market listings as CS2Items tagged
- * `category: 'listed'`. Paginated; best-effort names/icons from the listing's
- * own asset description. Throws only on a hard failure of the FIRST page (so the
- * caller can treat a dead proxy as a real error); later-page hiccups just stop.
+ * Returns the account's active CS2 market listings (rows + dedup superset).
+ * Paginated. Throws only on a hard failure of the FIRST page (so the caller can
+ * treat a dead proxy as a real error); later-page hiccups just stop.
  */
-export async function fetchListedItems(session: ManagedSession): Promise<CS2Item[]> {
+export async function fetchListedItems(session: ManagedSession): Promise<ListedItems> {
   const cookies = session.webSession?.cookies ?? [];
-  const out: CS2Item[] = [];
+  const acc = emptyParsed();
   const PAGE = 100;
   const MAX_PAGES = 30; // up to 3000 listings
 
@@ -53,45 +72,36 @@ export async function fetchListedItems(session: ManagedSession): Promise<CS2Item
     const d = r.data;
     if (!d || typeof d !== 'object') break;
 
-    const assetMap = d.assets?.[String(CS2_APPID)]?.[CS2_CTX] ?? {};
-    const listings: unknown[] = Array.isArray(d.listings) ? d.listings : [];
-    for (const raw of listings) {
-      const l = raw as { asset?: { id?: string; assetid?: string } };
-      const id = String(l?.asset?.id ?? l?.asset?.assetid ?? '');
-      if (!id) continue;
-      const desc = assetMap[id];
-      if (!desc) continue;
-      if (!desc.market_hash_name && !desc.name) continue; // #35: no usable name → not a real listing, skip
-      out.push(toListedItem(desc, id));
-    }
+    mergeParsed(acc, parseMyListings(d));
 
     const total = Number(d.total_count);
+    const listings = Array.isArray(d.listings) ? d.listings : [];
     if (listings.length < PAGE) break;                          // last (partial) page
     if (Number.isFinite(total) && start + PAGE >= total) break; // covered all
   }
 
-  logger.info(`[${session.account.username}] market: ${out.length} listed item(s)`);
-  return out;
+  const items = listingsForApp(acc, CS2_APPID).map(toListedItem);
+  logger.info(`[${session.account.username}] market: ${items.length} listed item(s)`);
+  return { items, assetIds: listedAssetIdsForApp(acc, CS2_APPID) };
 }
 
-function toListedItem(desc: any, assetId: string): CS2Item {
-  const icon = desc.icon_url_large ?? desc.icon_url ?? '';
+function toListedItem(l: MarketListing): CS2Item {
   return {
-    assetId,
-    classId:        String(desc.classid ?? ''),
-    instanceId:     String(desc.instanceid ?? ''),
-    marketHashName: desc.market_hash_name ?? desc.name ?? 'Unknown',
-    name:           desc.name ?? desc.market_hash_name ?? 'Unknown',
-    type:           desc.type ?? '',
+    assetId:        l.assetId,
+    classId:        l.classId,
+    instanceId:     l.instanceId,
+    marketHashName: l.marketHashName,
+    name:           l.name,
+    type:           '',
     rarity:         'Unknown',
-    rarityColor:    desc.name_color ? `#${desc.name_color}` : '#6b7280',
+    rarityColor:    '#6b7280',
     exterior:       null,
     tradable:       false, // a listed item is held by the market, not freely tradable
     marketable:     true,
     tradeLockExpiry: null,
     quantity:       1,
-    assetIds:       [assetId],
-    iconUrl:        icon ? IMG_BASE + icon : '',
+    assetIds:       [l.assetId],
+    iconUrl:        l.iconUrl,
     category:       'listed',
   };
 }

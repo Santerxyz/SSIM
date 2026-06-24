@@ -3,6 +3,7 @@ import type { InventoryService } from '../core/InventoryService';
 import type { MarketOrders } from './AccountTrader';
 import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, type SellStrategy } from '../pricing/MarketPricing';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
+import { isSellable } from '../core/MarketModel';
 import { logger } from '../utils/logger';
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
@@ -70,6 +71,9 @@ export interface MassSellJob {
   /** Asset was no longer in the inventory (already moved/sold/listed) – stale candidate,
    *  not a real failure and not retryable. */
   gone:        Array<{ username: string; assetId: string; error: string }>;
+  /** Asset is trade-locked or non-tradable per the cached inventory – refused by the
+   *  pre-list guard so a locked item can never become an active sell listing (INV-B2/D1). */
+  blocked:     Array<{ username: string; assetId: string; error: string }>;
   /** Live progress for the UI so the operator isn't staring at a blank bar. */
   currentBot?: string;
   phase?:      'preflight' | 'pricing' | 'listing' | 'confirming' | 'done';
@@ -90,7 +94,7 @@ export class MarketService {
   private readonly pricing = new MarketPricing();
   private job: MassSellJob = {
     running: false, strategy: 'lowest', total: 0, done: 0, listed: 0,
-    confirmed: 0, recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [], gone: [],
+    confirmed: 0, recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [], gone: [], blocked: [],
   };
   // Tuning knobs (overridable per run; defaults from the consts above).
   private retryBackoffs = SELL_BACKOFF_MS;
@@ -107,7 +111,22 @@ export class MarketService {
   ) {}
 
   status(): MassSellJob {
-    return { ...this.job, failed: [...this.job.failed], deferred: [...this.job.deferred], gone: [...this.job.gone] };
+    return { ...this.job, failed: [...this.job.failed], deferred: [...this.job.deferred], gone: [...this.job.gone], blocked: [...this.job.blocked] };
+  }
+
+  /**
+   * Pre-list guard (INV-B2 / INV-D1 / C3): is this asset sellable per the cached
+   * inventory? A trade-locked or non-tradable item must never reach `sellOnMarket` —
+   * Steam is only a backstop, and a locked item must never surface as an active sell
+   * order. When the cache has no record of the asset we defer to Steam (return true),
+   * since the pre-flight already proved connectivity and `gone` handling covers staleness.
+   */
+  private isAssetSellable(username: string, assetId: string): boolean {
+    const inv = this.inventory?.getCached(username);
+    if (!inv) return true;
+    const stack = inv.items.find(s => (s.assetIds ?? []).some(id => String(id) === String(assetId)));
+    if (!stack) return true;
+    return isSellable(stack);
   }
 
   /** Lowest market ask (minor units of `currency`) for the buy modal's live-price
@@ -190,7 +209,7 @@ export class MarketService {
     const total = groups.reduce((n, g) => n + g.items.length, 0);
     this.job = {
       running: true, cancelling: false, cancelled: false, strategy, total, done: 0, listed: 0, confirmed: 0,
-      recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [], gone: [],
+      recovered: 0, retried: 0, skippedNoPrice: 0, failed: [], deferred: [], gone: [], blocked: [],
       startedAt: new Date().toISOString(),
     };
     // Timing overrides (tests/tuning) – otherwise the documented defaults apply.
@@ -353,6 +372,15 @@ export class MarketService {
       if (listedSet.has(item.assetId)) {
         this.job.listed++; this.job.done++;
         logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} already listed → skipped (${listedForBot} new this bot)`);
+        continue;
+      }
+
+      // Pre-list guard (INV-B2 / INV-D1 / C3): never list a trade-locked or non-tradable
+      // asset. A locked item must never become an active sell listing.
+      if (!this.isAssetSellable(user, item.assetId)) {
+        this.job.blocked.push({ username: user, assetId: item.assetId, error: 'trade-locked or not tradable' });
+        this.job.done++;
+        logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} is trade-locked / not tradable → blocked (not listed)`);
         continue;
       }
 

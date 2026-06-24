@@ -370,7 +370,16 @@ function normalizeExterior(value?: string): ItemExterior | null {
  * (minutes/hours out) and must NOT be mistaken for a trade hold – so we trust it
  * only when the item is actually non-tradable. Returns null when freely tradable.
  */
-function parseTradeLock(desc: RawDescription, allowCacheExpiration = false): Date | null {
+/**
+ * Deterministic sentinel expiry for a trade-lock notice whose DATE could not be
+ * parsed. Constant (NOT now+7d) so that stack() identity — keyed on the ISO expiry
+ * (InventoryManager.stack ~:252) — and the displayed "locked until" stay stable
+ * across refreshes instead of shifting every pass. Re-evaluated each refresh: if
+ * Steam later serves a parseable date, the item picks it up. (B-5 / C22.)
+ */
+export const TRADE_LOCK_DATE_UNKNOWN = new Date('2099-01-01T00:00:00.000Z');
+
+export function parseTradeLock(desc: RawDescription, allowCacheExpiration = false): Date | null {
   // 1) Authoritative: the "Tradable After …" / "Tradable/Marketable After …" notice
   //    Steam puts in owner_descriptions (multi-language note: matched leniently).
   const pools = [desc.owner_descriptions, desc.descriptions];
@@ -396,8 +405,8 @@ function parseTradeLock(desc: RawDescription, allowCacheExpiration = false): Dat
         // Notice present but its date did not parse → fail SAFE: treat as locked (a 7-day
         // rolling placeholder, re-evaluated each refresh) rather than wrongly tradable (#34).
         if (!parsed) {
-          logger.warn(`trade-lock notice present but date unparseable ("${v.slice(0, 60)}") – treating item as locked`);
-          return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+          logger.warn(`trade-lock notice present but date unparseable ("${v.slice(0, 60)}") – treating item as locked (date unknown)`);
+          return new Date(TRADE_LOCK_DATE_UNKNOWN); // deterministic sentinel (B-5 / C22)
         }
         // parsed but in the past → expired hold; keep scanning the other notices.
       }

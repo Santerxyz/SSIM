@@ -1,0 +1,98 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  parseMyListings, listingsForApp, listedAssetIdsForApp,
+  bucketOf, isSellable, assertSellable,
+} from '../src/core/MarketModel';
+
+// A market/mylistings/render page with TWO sell listings:
+//   - asset "111" HAS a description in the assets map (normal case)
+//   - asset "222" has a listing object but NO entry in the assets map (the bug case:
+//     the old strict parser in MarketListings.ts:62-64 DROPPED this, so it became
+//     "Listed=0" while the lenient Active-Orders parser still showed it → contradiction)
+const PAGE = {
+  total_count: 2,
+  listings: [
+    { listingid: 'L111', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: 2003 },
+    { listingid: 'L222', asset: { appid: 730, contextid: '2', id: '222', amount: '1' }, price: 2000, fee: 300, currencyid: 2003 },
+  ],
+  assets: {
+    '730': { '2': {
+      '111': { market_hash_name: 'AK-47 | Redline (FT)', name: 'AK-47 | Redline (FT)', icon_url: 'abc' },
+      // NOTE: no '222' here — the listing has no usable description.
+    } },
+  },
+};
+
+// ── INV-B3 / C1+C2: one inclusive parser, membership independent of metadata ──
+
+test('parseMyListings KEEPS a listing whose asset has no description (inclusive)', () => {
+  const p = parseMyListings(PAGE);
+  const ids = listingsForApp(p, 730).map(l => l.assetId).sort();
+  assert.deepEqual(ids, ['111', '222'], 'both listings kept, even the description-less one');
+  const l222 = listingsForApp(p, 730).find(l => l.assetId === '222')!;
+  assert.equal(l222.name, 'Unknown', 'missing description degrades the name, never drops the listing');
+  assert.equal(l222.pricePerItemMinor, 2300, 'price+fee still parsed');
+});
+
+test('the listed-bucket asset-id set EQUALS the active-orders asset-id set (INV-B3/B6)', () => {
+  const p = parseMyListings(PAGE);
+  // The inventory "Listed" bucket dedup set:
+  const bucketIds = listedAssetIdsForApp(p, 730);
+  // The Active Orders sell list (same canonical listings):
+  const orderIds = new Set(listingsForApp(p, 730).map(l => l.assetId));
+  assert.deepEqual([...bucketIds].sort(), [...orderIds].sort(),
+    'the two views derive from one model and can no longer disagree');
+});
+
+// Demonstrates WHY the old code diverged — the two historical acceptance rules,
+// replicated locally, disagree on asset "222". This guards against ever
+// reintroducing a second, stricter parser.
+test('the historical strict vs lenient rules DIVERGED on the metadata-less listing', () => {
+  const assetMap: any = PAGE.assets['730']['2'];
+  const strictKept = PAGE.listings.filter(l => {                 // old MarketListings.ts:62-64
+    const desc = assetMap[l.asset.id];
+    if (!desc) return false;
+    if (!desc.market_hash_name && !desc.name) return false;
+    return true;
+  }).map(l => l.asset.id);
+  const lenientKept = PAGE.listings.filter(l =>                  // old AccountTrader.ts:1126
+    l.listingid && l.asset.id && l.asset.appid).map(l => l.asset.id);
+  assert.notDeepEqual(strictKept, lenientKept, 'proof the old parsers disagreed (the field bug)');
+  // …and the unified parser matches the inclusive side, eliminating the gap.
+  const unified = listingsForApp(parseMyListings(PAGE), 730).map(l => l.assetId);
+  assert.deepEqual(unified.sort(), lenientKept.sort());
+});
+
+// ── INV-B4 / C4: bucket reads BOTH tradeLockExpiry AND tradable ──────────────
+
+test('bucketOf: a non-tradable item with no lock is NOT in the tradable bucket', () => {
+  const past = Date.now() - 1000;
+  assert.equal(bucketOf({ tradable: false, tradeLockExpiry: null }), 'tradelocked');
+  assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: null }), 'tradable');
+  assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: new Date(Date.now() + 1e7) }), 'tradelocked');
+  assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: new Date(past) }), 'tradable');
+  assert.equal(bucketOf({ category: 'listed', tradable: false }), 'listed');
+});
+
+// ── INV-B2 / INV-D1 / C3: locked/untradable items are not sellable/sendable ──
+
+test('isSellable / assertSellable refuse trade-locked and non-tradable items', () => {
+  assert.equal(isSellable({ tradable: true, tradeLockExpiry: null }), true);
+  assert.equal(isSellable({ tradable: true, tradeLockExpiry: new Date(Date.now() + 1e7) }), false);
+  assert.equal(isSellable({ tradable: false, tradeLockExpiry: null }), false);
+  assert.throws(() => assertSellable({ assetId: '999', tradable: false }), /trade-locked or not tradable/);
+  assert.doesNotThrow(() => assertSellable({ assetId: '1', tradable: true, tradeLockExpiry: null }));
+});
+
+test('parseMyListings folds pending listings into the dedup superset (confirmed=false)', () => {
+  const page = {
+    listings: [], pending_listings: [
+      { listingid: 'P1', asset: { appid: 730, contextid: '2', id: '333', amount: '1' } },
+    ],
+    assets: {},
+  };
+  const p = parseMyListings(page);
+  assert.ok(listedAssetIdsForApp(p, 730).has('333'), 'pending asset is in the no-leak superset');
+  assert.equal(listingsForApp(p, 730)[0].confirmed, false);
+});

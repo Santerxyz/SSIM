@@ -1,5 +1,7 @@
 import { type SessionManager, refreshWebSession } from '../core/SessionManager';
 import type { AccountManager } from '../core/AccountManager';
+import type { InventoryService } from '../core/InventoryService';
+import { isSellable } from '../core/MarketModel';
 import { SessionState, type ManagedSession } from '../types/session';
 import { AccountTrader, type SendTradeParams, type SendTradeResult, type TradeOfferView } from './AccountTrader';
 import { logger } from '../utils/logger';
@@ -124,6 +126,9 @@ export class TradeService {
   constructor(
     private readonly sessions: SessionManager,
     private readonly accounts: AccountManager,
+    /** Optional: lets the send path reject trade-locked / non-tradable assets from
+     *  the cached inventory before an offer is created (INV-D1 / C3). */
+    private readonly inventory?: InventoryService,
   ) {
     // Whenever an account (re)gains web cookies, (re)wire its trader.
     this.sessions.on('webSession', (username: string) => {
@@ -368,7 +373,39 @@ export class TradeService {
 
   // ── Feature 3 / 4: send a trade from a given account ─────────────────────
 
+  /**
+   * Strips trade-locked / non-tradable assets (per the cached inventory) from a send.
+   * Returns params with `myItems` reduced to the sellable subset; throws if that subset
+   * is empty. No cache (or no inventory dep) ⇒ pass through unchanged — Steam stays the
+   * backstop. (INV-D1 / C3.)
+   */
+  private filterSendable(username: string, params: SendTradeParams): SendTradeParams {
+    const items = params.myItems ?? [];
+    if (!items.length || !this.inventory) return params;
+    const inv = this.inventory.getCached(username);
+    if (!inv) return params;
+    const stackOf = (assetId: string) =>
+      inv.items.find(s => (s.assetIds ?? []).some(id => String(id) === String(assetId)));
+    const blocked: string[] = [];
+    const kept = items.filter((it) => {
+      const stack = stackOf(it.assetId);
+      if (stack && !isSellable(stack)) { blocked.push(it.assetId); return false; }
+      return true;
+    });
+    if (blocked.length) {
+      logger.warn(`[trade-send] ${username}: dropped ${blocked.length} trade-locked/non-tradable asset(s) from the offer: ${blocked.join(', ')}`);
+    }
+    if (!kept.length) {
+      throw new Error('All selected items are trade-locked or not tradable – nothing to send');
+    }
+    return { ...params, myItems: kept };
+  }
+
   async sendTrade(fromUsername: string, params: SendTradeParams): Promise<SendTradeResult> {
+    // Guard (INV-D1 / C3): a trade-locked or non-tradable asset can never go into an
+    // offer. Drop such assets up front (Steam rejects the whole offer otherwise) and
+    // proceed with the sellable remainder; throw only if nothing tradable is left.
+    params = this.filterSendable(fromUsername, params);
     // Idempotency guard: an identical (account + destination + item-set) send that is
     // already in flight must NOT fire a second real-asset offer on a double-click or
     // client retry. Mirrors BuyService's per-item in-flight Set. The destination and

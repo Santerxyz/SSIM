@@ -1,6 +1,7 @@
 import { InventoryStore } from './InventoryStore';
 import { InventoryManager } from './InventoryManager';
 import { fetchListedItems } from './MarketListings';
+import { bucketOf } from './MarketModel';
 import type { SessionManager } from './SessionManager';
 import type { AccountManager } from './AccountManager';
 import { LocalIpThrottle } from '../network/LocalIpThrottle';
@@ -218,14 +219,19 @@ export class InventoryService {
     //    `listingsOk` tracks whether the fetch SUCCEEDED so a transient hiccup is never
     //    mistaken for "no listings" (which would wipe the listed bucket from the cache).
     let listed: CS2Item[] = [];
+    let listedAssetIds = new Set<string>();
     let listingsOk = true;
     try {
-      listed = InventoryManager.stack(await fetchListedItems(session));
+      const fetched = await fetchListedItems(session);
+      listed = InventoryManager.stack(fetched.items);
+      // Canonical dedup superset from the single parser (includes metadata-less and
+      // pending listings) — strictly ⊇ the displayed rows, so nothing on the market
+      // can leak back into the Owned/locked bucket.
+      listedAssetIds = fetched.assetIds;
     } catch (err) {
       listingsOk = false;
       logger.warn(`[${username}] market-listings fetch failed (listed bucket unread this pass): ${(err as Error).message}`);
     }
-    const listedAssetIds = new Set<string>(listed.flatMap(i => i.assetIds.map(String)));
 
     // 2) The complete inventory from PURE WEB (no Game Coordinator): context 2 holds
     //    owned + market-bought holds; context 16 holds trade-received trade-locked AND
@@ -264,7 +270,7 @@ export class InventoryService {
       fromCache:  false,
     };
     for (const it of inv.items) {
-      it.category = (it.tradeLockExpiry && new Date(it.tradeLockExpiry).getTime() > now) ? 'tradelocked' : 'tradable';
+      it.category = bucketOf(it, now);
     }
 
     // 4) The listed stacks form the 3rd bucket. When the listings fetch FAILED this pass
@@ -357,7 +363,7 @@ export class InventoryService {
       })
       .filter(i => i.quantity > 0);
     for (const it of ownedLocked) {
-      it.category = (it.tradeLockExpiry && new Date(it.tradeLockExpiry).getTime() > now) ? 'tradelocked' : 'tradable';
+      it.category = bucketOf(it, now);
     }
 
     // Listed bucket: authoritative fresh listings when the fetch succeeded; otherwise keep
