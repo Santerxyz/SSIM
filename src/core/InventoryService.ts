@@ -106,7 +106,7 @@ export class InventoryService {
   private job: RefreshJob = { running: false, total: 0, done: 0, failed: [] };
   /** Co-operative cancel flag for the live bulk refresh (set by cancelRefresh()). */
   private refreshCancel = false;
-  private onCompleteCb?: (reason: string) => void;
+  private onCompleteCb?: (reason: string, game?: GameId) => void;
   /** Serializes + spaces out fetches for no-proxy (local IP) accounts (rate-limit guard). */
   private readonly localIpThrottle = new LocalIpThrottle(LOCALIP_MIN_DELAY_MS, LOCALIP_MAX_DELAY_MS);
 
@@ -125,7 +125,7 @@ export class InventoryService {
    * done / post-trade refetch). Used to take a value-history snapshot –
    * "one point per refresh" for the dashboard's worth/wallet curve.
    */
-  onRefreshComplete(cb: (reason: string) => void): void {
+  onRefreshComplete(cb: (reason: string, game?: GameId) => void): void {
     this.onCompleteCb = cb;
   }
 
@@ -649,7 +649,7 @@ export class InventoryService {
     this.refreshCancel = false;
     // History snapshots track BOTH games (CS2 + a parallel TF2 series), so settle a
     // snapshot after the pass — the snapshot is cache-only and updates both curves.
-    try { this.onCompleteCb?.(`refresh-all-${game}`); } catch (err) {
+    try { this.onCompleteCb?.(`refresh-all-${game}`, game); } catch (err) {
       logger.warn(`refresh-complete hook failed: ${(err as Error).message}`);
     }
     const verb = wasCancelled ? 'cancelled' : 'complete';
@@ -693,7 +693,7 @@ export class InventoryService {
     void Promise.allSettled(targets.map(u => this.refreshOne(u)))
       .then(() => {
         logger.info(`Post-trade inventory refresh done: ${targets.join(', ')}`);
-        try { this.onCompleteCb?.('post-trade'); } catch { /* history is best-effort */ }
+        try { this.onCompleteCb?.('post-trade', 'cs2'); } catch { /* history is best-effort */ }
       });
   }
 }

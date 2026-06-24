@@ -3,7 +3,14 @@ import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { dataDir } from '../utils/paths';
 import type { AccountManager } from './AccountManager';
-import type { AccountInventory } from '../types/inventory';
+import type { AccountInventory, GameId } from '../types/inventory';
+
+/** Which game series a snapshot should touch. Scoping to the refreshed game stops a
+ *  TF2 refresh from rewriting a recent CS2 point (and vice-versa). undefined → both
+ *  (manual/post-trade where the caller doesn't know). (C21 / INV-E6.) */
+export function snapshotGames(game?: GameId): { cs2: boolean; tf2: boolean } {
+  return { cs2: game !== 'tf2', tf2: game !== 'cs2' };
+}
 import type { PricingService } from '../pricing/PricingService';
 import type { ExchangeRateService } from '../pricing/ExchangeRateService';
 
@@ -145,15 +152,17 @@ export class ValueHistoryService {
    * environment series (that has at least one cached inventory) plus the global
    * aggregate. Cheap – memory only – so it is safe to call after every refresh.
    */
-  snapshotAll(reason: string): void {
+  snapshotAll(reason: string, game?: GameId): void {
     const now = Date.now();
-    // Both games get a parallel curve. Cache-only, so a single refresh of either game
-    // harmlessly re-snapshots both from whatever is cached (a game with nothing cached
-    // simply adds no point).
-    this.snapshotGame(now, this.store, '');        // CS2 → '<id>' / 'global'
-    this.snapshotGame(now, this.tf2Store, 'tf2:'); // TF2 → 'tf2:<id>' / 'tf2:global'
+    // Snapshot ONLY the game(s) that actually refreshed. Snapshotting BOTH on every call
+    // let a TF2 refresh rewrite a recent CS2 point (and vice-versa) via burst-coalescing in
+    // append() — last-writer-wins on the curve. `game` undefined → snapshot both (manual/
+    // post-trade where the caller doesn't scope it). (C21 / INV-E6.)
+    const which = snapshotGames(game);
+    if (which.cs2) this.snapshotGame(now, this.store, '');        // CS2 → '<id>' / 'global'
+    if (which.tf2) this.snapshotGame(now, this.tf2Store, 'tf2:'); // TF2 → 'tf2:<id>' / 'tf2:global'
     this.scheduleFlush();
-    logger.debug(`[history] snapshot taken (${reason})`);
+    logger.debug(`[history] snapshot taken (${reason}${game ? `, ${game}` : ''})`);
   }
 
   /** Snapshots ONE game's cache into '<prefix><envId>' + '<prefix>global' series. */

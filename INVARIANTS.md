@@ -9,11 +9,19 @@
 
 Legend for IDs: `INV-<domain><n>` — domains A..G match `FEATURES.md`.
 
-> **Phase-3 status.** Fixes land batch-by-batch (severity order). Now **HOLDS**
-> (was VIOLABLE/BROKEN), covered by tests in `test/`:
-> **batch 1 — canonical MarketListing model:** INV-B1, INV-B2, INV-B3, INV-B4,
-> INV-B6, INV-B7, INV-B8, INV-D1 (the whole market/bucket family), plus the
-> determinism half of INV-B5. The remaining rows are still open and tracked below.
+> **Phase-3 status.** The 22 contradictions (`CONTRADICTIONS.md`) all HOLD, plus the
+> remaining VIOLABLE invariants that did not map to a C-number. Covered by tests in
+> `test/` (`npm test`; `tsc --noEmit` clean). Batches:
+> - **b1 canonical MarketListing model:** INV-B1, B2, B3, B4, B6, B7, B8, D1 + B5-determinism.
+> - **b2 account capability/recovery:** INV-A1, INV-A2.
+> - **b3 CSFloat auto-deliver:** INV-F1, INV-F2.
+> - **b4 inventory/trade integrity:** INV-A3, A5, A6, B9, B10, B13, D3, D4, D6.
+> - **b5 license/update:** INV-G2, INV-G3 (kind-signing is a coordinated server step; the brick is fixed).
+> - **b6 pricing/value SSOT:** INV-E3, E5, E6.
+> - **b7 remaining VIOLABLE invariants:** INV-A4, A7, D2, E2, F3, G1, G5, G6.
+>
+> The per-row statuses below were written at audit time and are NOT rewritten; treat
+> this banner + `CONTRADICTIONS.md` as the current state.
 
 ---
 

@@ -100,7 +100,7 @@ export function createDeps(): ApiDeps {
   exchange.start();
 
   // One value-history point per settled refresh (worth/wallet curve).
-  inventory.onRefreshComplete((reason) => history.snapshotAll(reason));
+  inventory.onRefreshComplete((reason, game) => history.snapshotAll(reason, game));
 
   // The 'error' listener is mandatory – Node throws on an unhandled 'error' event.
   sessions.on('error',        (u, e) => logger.error(`[${u}] ${e.message}`));
@@ -1034,7 +1034,10 @@ export function createApp(deps: ApiDeps): Express {
 
   // ── Pricing + currency ─────────────────────────────────────────────────────
   app.get('/api/exchange-rate', (_req: Request, res: Response) => {
-    res.json({ usdToEur: exchange.getUsdToEur() });
+    // Carry the rate's PROVENANCE so the UI can flag a fallback/stale rate instead of
+    // showing it as if live (C20 / INV-E5). `usdToEur` kept for back-compat.
+    const info = exchange.getInfo();
+    res.json({ usdToEur: info.rate, fallback: info.fallback, ageMs: info.ageMs });
   });
 
   app.get('/api/pricing/status', (_req: Request, res: Response) => {
@@ -1104,7 +1107,7 @@ export function createApp(deps: ApiDeps): Express {
       if (cached) return res.json(enrichInv(cached));
     }
     const inv = await inventory.refreshOne(account.username);
-    history.snapshotAll('single-refresh'); // one curve point per refresh
+    history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (CS2 refresh)
     res.json(enrichInv(inventory.getCached(account.username) ?? inv)); // refreshOne is the full CS2 fetch; getCached returns the freshly-stored complete record
   }));
 
@@ -1112,7 +1115,7 @@ export function createApp(deps: ApiDeps): Express {
     const account = accounts.get(req.params.username);
     if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
     const inv = await inventory.refreshOne(account.username);
-    history.snapshotAll('single-refresh'); // one curve point per refresh
+    history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (CS2 refresh)
     res.json(enrichInv(inventory.getCached(account.username) ?? inv)); // refreshOne is the full CS2 fetch; getCached returns the freshly-stored complete record
   }));
 

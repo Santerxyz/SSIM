@@ -449,6 +449,10 @@ async function reloadAll() {
   state.environments = environments;
   state.allAccounts = allAccounts;
   if (fx && typeof fx.usdToEur === 'number') state.usdToEur = fx.usdToEur;
+  // FX provenance (C20 / INV-E5): record whether the rate is the hardcoded fallback or
+  // stale, so EUR figures aren't presented as live when they aren't.
+  state.fxFallback = !!(fx && fx.fallback);
+  state.fxAgeMs = fx && typeof fx.ageMs === 'number' ? fx.ageMs : null;
   state.inventories = {};
   for (const k of Object.keys(invMap || {})) {
     const inv = invMap[k];
@@ -551,6 +555,16 @@ function fleetCurrency() {
 /** Stack value in USD cents (price × quantity); 0 when unpriced. */
 function stackValueCents(item) { return (item.price || 0) * (item.quantity || 1); }
 
+// SINGLE source of truth for a multi-account "worth" total: sum each account's
+// backend-computed totalValueUsd (USD cents). Every multi-account view (folder, multi-
+// select, env/global) uses THIS, so the headline worth can never disagree between two
+// views the way the old per-view recompute-from-items could. (C19 / INV-E3.)
+function worthCentsForAccounts(usernames) {
+  let cents = 0;
+  for (const u of usernames) { const inv = invFor(u); if (inv) cents += inv.totalValueUsd || 0; }
+  return cents;
+}
+
 // ── Native Steam currencies (code → ISO + minor-unit decimals) ────────────────
 // Used by the market BUY flow so every account is shown/charged in its OWN wallet
 // currency (no global EUR/USD conversion). Mirrors src/pricing/currencies.ts.
@@ -615,6 +629,18 @@ function setCurrency(cur) {
 function updateCurrencyButton() {
   if (el.currencyLabel) el.currencyLabel.textContent = state.currency;
   if (el.valueFilterCur) el.valueFilterCur.textContent = state.currency === 'EUR' ? '€' : '$';
+  // Surface FX-rate provenance as a tooltip (non-structural) so EUR figures from a
+  // fallback/stale rate aren't read as live. (C20 / INV-E5.)
+  const btn = document.getElementById('cur-btn');
+  if (btn) {
+    if (state.currency === 'EUR' && state.fxFallback) {
+      btn.title = `EUR shown at the fallback rate ${state.usdToEur} (live USD→EUR unavailable)`;
+    } else if (state.currency === 'EUR' && state.fxAgeMs != null && state.fxAgeMs > 36 * 3600 * 1000) {
+      btn.title = `EUR rate ${state.usdToEur} is stale (${Math.round(state.fxAgeMs / 3600000)}h old)`;
+    } else {
+      btn.title = 'Currency';
+    }
+  }
 }
 
 // ── Feature 3: price source (Steam ⟷ CSFloat) ──
@@ -1498,7 +1524,7 @@ function renderFolderMaster() {
   setStatLabels('Sendable items', 'Bots');
   setCountStat(el.statItems, totalSendable);
   setCountStat(el.statLocked, usernames.length);
-  const folderValueCents = agg.reduce((s, i) => s + stackValueCents(i), 0);
+  const folderValueCents = worthCentsForAccounts(usernames); // one worth source (C19)
   let folderWalletUsd = 0, folderWalletAccts = 0;
   for (const u of usernames) { const wu = walletToUsd(walletOf(u)); if (wu != null) { folderWalletUsd += wu; folderWalletAccts++; } }
   setMoneyStats(folderValueCents, folderWalletAccts ? folderWalletUsd : null);
@@ -1566,7 +1592,7 @@ function renderSelectionMaster() {
   setStatLabels('Sendable items', 'Bots');
   setCountStat(el.statItems, totalSendable);
   setCountStat(el.statLocked, usernames.length);
-  const valueCents = agg.reduce((s, i) => s + stackValueCents(i), 0);
+  const valueCents = worthCentsForAccounts(usernames); // one worth source (C19)
   let walletUsd = 0, walletAccts = 0;
   for (const u of usernames) { const wu = walletToUsd(walletOf(u)); if (wu != null) { walletUsd += wu; walletAccts++; } }
   setMoneyStats(valueCents, walletAccts ? walletUsd : null);
