@@ -275,15 +275,25 @@ export function buildSwapScript(o: {
     `if %${label}% GEQ 12 (taskkill /F /PID ${pid} >nul 2>&1 & goto ${label}_ok)\r\n` +
     `timeout /t 1 >nul & goto ${label}\r\n:${label}_ok\r\n`;
   const dels = (o.deletePaths ?? []).map((p) => `del /F /Q "${p}" >nul 2>&1\r\n`).join('');
+  // The orphan-delete (e.g. deleting the running ssim-backend.exe on a migration) MUST run
+  // ONLY after a CONFIRMED successful swap. Before, `dels` ran unconditionally after the
+  // move loop, so a move that never succeeded (AV/file lock) still deleted the orphan AND
+  // relaunched the un-swapped target → a bricked install. Now a successful `move` jumps to
+  // :swapped (→ dels), and an exhausted retry jumps to :swapfail (skips dels). Both paths
+  // still relaunch + self-clean, so a failed swap degrades to a no-op update, never a brick.
+  // (C14 / INV-G3.)
   return (
     `@echo off\r\n` +
     waitOrKill(o.backendPid, 'wbk') +                          // our backend
     (o.shellPid != null ? waitOrKill(o.shellPid, 'wsh') : '') + // the shell (if any)
     `set /a tries=0\r\n:swap\r\n` +
-    `move /Y "${o.tmp}" "${o.target}" >nul 2>&1 && goto done\r\n` +
+    `move /Y "${o.tmp}" "${o.target}" >nul 2>&1 && goto swapped\r\n` +
     `set /a tries+=1\r\n` +
-    `if %tries% LSS 15 (timeout /t 1 >nul & goto swap)\r\n:done\r\n` +
-    dels +                                                     // remove orphaned files (migration)
+    `if %tries% LSS 15 (timeout /t 1 >nul & goto swap)\r\n` +
+    `goto swapfail\r\n` +                                       // move never succeeded → SKIP the delete
+    `:swapped\r\n` +
+    dels +                                                     // orphan delete — ONLY after a confirmed swap
+    `:swapfail\r\n` +
     `start "" "${o.relaunch}"${o.relaunchUpdatedFlag ? ' --ssim-updated' : ''}\r\n` +
     `del "${o.vbsPath}" >nul 2>&1\r\ndel "${o.selfPath ?? '%~f0'}"\r\n`
   );

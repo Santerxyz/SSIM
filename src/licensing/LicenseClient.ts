@@ -5,6 +5,7 @@ import axios from 'axios';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { dataDir } from '../utils/paths';
+import { nextClockMeta, offlineGraceDecision } from './licenseClock';
 import {
   LICENSE_API_URL,
   LICENSE_PUBLIC_KEY,
@@ -110,16 +111,14 @@ function writeMeta(m: LicenseMeta): void {
     writeJsonAtomic(fileIn(LICENSE_META_FILE), { ...m, mac: metaMac(m) }, { mode: 0o600 });
   } catch (err) { logger.warn(`could not persist license meta: ${(err as Error).message}`); }
 }
-/** Records a successful backend contact and advances the clock high-water mark. */
+/**
+ * Records a successful backend contact and advances the clock anchors. The anchors
+ * advance ONLY here (server-confirmed) — never from the local clock — so a forward
+ * clock jump while offline can't poison the rollback high-water mark and later lock out
+ * a valid offline user. (C13 / INV-G2.)
+ */
 function markOnline(): void {
-  const now = Date.now();
-  const prev = readMeta();
-  writeMeta({ lastOnlineMs: now, maxSeenMs: Math.max(now, prev?.maxSeenMs ?? 0) });
-}
-/** Advances only the clock high-water mark (no contact) – used on a valid-token boot. */
-function bumpClock(now: number): void {
-  const prev = readMeta();
-  if (prev && now > prev.maxSeenMs) writeMeta({ lastOnlineMs: prev.lastOnlineMs, maxSeenMs: now });
+  writeMeta(nextClockMeta(readMeta(), Date.now(), true));
 }
 
 // Optional handler invoked when the backend revokes/deactivates the seat at
@@ -207,24 +206,26 @@ export async function validate(hwid: string): Promise<ValidateResult> {
     if (payload && payload.hwid === hwid && (!storedKey || payload.key === storedKey)) {
       const now = Date.now();
       if (now < payload.exp) {
-        bumpClock(now);                  // advance the clock high-water mark
-        void onlineRecheck(hwid, token); // fire-and-forget; revocation handled on heartbeat
+        // Do NOT advance maxSeenMs from the local clock here — it is advanced only on a
+        // server-confirmed contact (markOnline, via the recheck below), so a forward clock
+        // jump can't poison the rollback anchor and later lock out a valid user. (C13/INV-G2.)
+        void onlineRecheck(hwid, token); // fire-and-forget; on success markOnline() advances anchors
         return { ok: true, reason: 'token-valid', payload };
       }
       // Expired → offline grace, anchored to the LAST SERVER CONTACT (not the token's
       // own iat), and REFUSED if the system clock was rolled back below the highest
-      // value we have ever seen (the clock-rollback bypass — #21).
-      const meta = readMeta();
-      if (!meta) {
+      // value we have ever seen (the clock-rollback bypass — #21). Pure decision; no
+      // local-clock write happens on any branch (C13).
+      const decision = offlineGraceDecision(now, readMeta(), OFFLINE_GRACE_MS, CLOCK_SKEW_MS);
+      if (decision === 'no-meta') {
         // No integrity record. A valid token's meta is always created at activation/
         // first online contact, so its absence means it was deleted/tampered (or we have
         // never been online) → DO NOT fall back to the token's own iat (that is exactly
         // the rollback bypass). Force an online re-check instead. (#21 fully closed.)
         logger.warn('license token expired and no integrity record present – offline grace refused; re-activating online');
-      } else if (now < meta.maxSeenMs - CLOCK_SKEW_MS) {
+      } else if (decision === 'rollback-refused') {
         logger.error('system clock rolled back below last-seen time – offline grace refused; re-activating online');
-      } else if (now - meta.lastOnlineMs < OFFLINE_GRACE_MS) {
-        bumpClock(now);
+      } else if (decision === 'within-grace') {
         logger.warn('license token expired – running on offline grace (anchored to last server contact)');
         return { ok: true, reason: 'offline-grace', payload };
       } else {

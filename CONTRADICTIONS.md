@@ -14,7 +14,7 @@
 
 CRITICAL · `C1 ☑` `C2 ☑`
 HIGH · `C3 ☑` `C4 ☑` `C5 ☑` `C6 ☑` `C7 ☑` `C8 ☑`
-MEDIUM · `C9 ☑` `C10 ☑` `C11 ☑` `C12 ☑` `C13 ☐` `C14 ☐` `C15 ☑` `C16 ☑` `C17 ☑` `C18 ☑`
+MEDIUM · `C9 ☑` `C10 ☑` `C11 ☑` `C12 ☑` `C13 ☑` `C14 ☑` `C15 ☑` `C16 ☑` `C17 ☑` `C18 ☑`
 LOW · `C19 ☐` `C20 ☐` `C21 ☐` `C22 ☑`
 
 ☑ = fixed + covered by a test in `test/` (run `npm test`).
@@ -22,6 +22,7 @@ LOW · `C19 ☐` `C20 ☐` `C21 ☐` `C22 ☑`
 - Batch 2 — account capability/recovery: C5, C8 (`test/accountCapability.test.ts`).
 - Batch 3 — CSFloat auto-deliver safety: C6, C15, F-2 (`test/csfloatDelivery.test.ts`). C15 (experimental-gate early-return) is verified by construction + tsc; C6/F-2 have unit tests.
 - Batch 4 — inventory/trade integrity: C9, C10, C11, C12, C16, C17, C18 (`test/sessionHealth.test.ts` + the shared predicates `isSellable`/`parseMyListings.confirmed` already tested in batch 1). C18 was a latent (non-reachable) defect, hardened defensively. C9/C11/C12 are flag-propagation/behavioral fixes verified by tsc + their underlying predicates.
+- Batch 5 — license/update integrity: C13, C14 (`test/licenseUpdate.test.ts`). C13: anchors advance only on server-confirmed contact (bumpClock removed). C14: orphan-delete is now gated on a confirmed swap (brick prevention) — fully client-side. NOTE: signing `kind` into the update signature is a coordinated server change deliberately NOT made here (it would break the mixed-version fleet's update path until the license server signs the kind-inclusive payload); the brick — the actual harm of a flipped `kind` — is fixed.
 
 ---
 
