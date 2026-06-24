@@ -96,6 +96,10 @@ const VERSION = require(path.join(ROOT, 'package.json')).version;
 //   client downloads it and then rejects it at the self-test gate, keeping the old version.
 const LEGACY = process.argv.includes('--legacy-backend');
 const MIGRATE = process.argv.includes('--migrate');
+// Re-finalize the SAME (or an older) version — e.g. refresh the manifest to add/repair `kind`
+// or re-sign — over the server's not-newer-than-last guard. The artifact sha is unchanged, so
+// existing installs see the same version+sha and do NOT re-download; only the manifest fields move.
+const ALLOW_DOWNGRADE = process.argv.includes('--allow-downgrade');
 if (LEGACY && MIGRATE) { console.error('\n✗ --legacy-backend and --migrate are mutually exclusive\n'); process.exit(1); }
 const PRIMARY = LEGACY ? 'ssim-backend.exe' : 'SSIM.exe';
 const KIND = MIGRATE ? 'single-exe' : undefined; // server-echoed manifest hint; only the dual updater reads it
@@ -199,6 +203,7 @@ function request(method, urlStr, { body, raw, cookie } = {}) {
     : MIGRATE ? `  • mode: MIGRATE two-file→single-exe  (artifact: ${PRIMARY}, kind=single-exe — only the DUAL updater acts on it)`
     : `  • mode: single-exe  (artifact: ${PRIMARY} — consolidated shell + backend)`);
   if (MIGRATE) console.log('  ⚠ ONLY safe once the whole fleet runs the dual updater; older clients ignore kind and fail. Canary first.');
+  if (ALLOW_DOWNGRADE) console.log('  ⚠ --allow-downgrade: re-finalizing over the not-newer-than-last guard (manifest refresh; identical sha ⇒ existing installs will NOT re-download)');
 
   // ── Gate 1: anti-brick self-test BEFORE any upload ───────────────────────────
   if (!process.argv.includes('--skip-selftest')) {
@@ -239,6 +244,7 @@ function request(method, urlStr, { body, raw, cookie } = {}) {
   // clients swap the whole SSIM.exe. Either way the top-level manifest is what the fleet's updater reads.
   const finalizeBody = { version: VERSION, backend: PRIMARY, files: staged };
   if (KIND) finalizeBody.kind = KIND; // server must echo this into GET /version for the dual updater to read it
+  if (ALLOW_DOWNGRADE) finalizeBody.allowDowngrade = true; // accept re-finalizing the same/older version (manifest refresh)
   const fin = await request('POST', `${API}/admin/api/release/finalize`, { cookie, body: finalizeBody });
   if (fin.status !== 201) fail(`finalize failed (HTTP ${fin.status}): ${fin.body}`);
   const info = JSON.parse(fin.body);
