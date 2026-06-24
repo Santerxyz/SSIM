@@ -42,12 +42,17 @@ interface VersionInfo {
   latest: string;   // semver
   url:    string;   // download URL of the artifact (consolidated SSIM.exe, or two-file ssim-backend.exe)
   sha256: string;   // hex digest of that file
-  sig:    string;   // base64url Ed25519 signature over `${latest}:${sha256}`
-  // OPTIONAL, server-set. 'single-exe' marks a TWO-FILE→single-exe MIGRATION cut: the artifact is the
-  // consolidated SSIM.exe and a two-file client must replace its SHELL + delete ssim-backend.exe (not
-  // swap the backend in place). Absent / 'backend' → normal in-place swap. Not covered by `sig` (which
-  // signs latest:sha256) — but it only SELECTS the swap shape; the artifact is still fully authenticated,
-  // so the worst a forged flag can do is misplace an already-signed exe (a broken install, never RCE).
+  sig:    string;   // base64url Ed25519 over `${latest}:${sha256}` — LEGACY (kind-less). Still emitted by
+                    // the server for the deployed fleet; THIS client verifies `sigKind` instead.
+  /**
+   * base64url Ed25519 over `${latest}:${sha256}:${kind ?? 'backend'}` — the KIND-INCLUSIVE signature.
+   * This client verifies THIS, so a tampered `kind` (the swap-shape selector) is rejected, not just the
+   * artifact bytes. (C14 integrity fix.) Required: an update without it is refused.
+   */
+  sigKind?: string;
+  // OPTIONAL, server-set. 'single-exe' marks a TWO-FILE→single-exe MIGRATION cut (replace the SHELL +
+  // delete ssim-backend.exe). Absent / 'backend' → normal in-place swap. NOW COVERED by `sigKind`, so it
+  // can no longer be forged to force the destructive migration shape on a victim.
   kind?:  'single-exe' | 'backend';
 }
 
@@ -192,20 +197,49 @@ async function download(info: VersionInfo): Promise<string> {
   return tmp;
 }
 
-/** 3. Integrity (sha256) + authenticity (Ed25519) gate before we trust the file. */
+/**
+ * Verifies the KIND-INCLUSIVE update signature: Ed25519 over
+ * `${latest}:${sha256}:${kind ?? 'backend'}`. `kind` defaults to 'backend' identically on the
+ * server (`signing.js`), so both sides sign/verify the same bytes. Returns false if `sigKind`
+ * is absent or doesn't verify — a tampered `kind` changes the payload, so the signature no
+ * longer matches and the destructive swap-shape cannot be forced. Pure (key passed in) so it
+ * is unit-testable with a throwaway keypair. (C14.)
+ */
+export function verifyUpdateSignature(
+  info: { latest: string; sha256: string; kind?: string; sigKind?: string },
+  publicKeyPem: string,
+): boolean {
+  if (!info.sigKind) return false;
+  const kindTag = info.kind ?? 'backend';
+  try {
+    return crypto.verify(
+      null,
+      Buffer.from(`${info.latest}:${info.sha256}:${kindTag}`),
+      publicKeyPem,
+      Buffer.from(info.sigKind, 'base64url'),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** 3. Integrity (sha256) + authenticity (Ed25519 over latest:sha256:kind) gate before we trust the file. */
 function verify(file: string, info: VersionInfo): boolean {
   const digest = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (digest !== info.sha256) {
     logger.error('update sha256 mismatch – discarding download');
     return false;
   }
-  const sigOk = crypto.verify(
-    null,
-    Buffer.from(`${info.latest}:${info.sha256}`),
-    LICENSE_PUBLIC_KEY,
-    Buffer.from(info.sig, 'base64url'),
-  );
-  if (!sigOk) logger.error('update signature invalid – possible tampering, discarding');
+  // Authenticity gate: require the KIND-INCLUSIVE signature so a forged swap-shape `kind`
+  // (the migration/delete selector) is rejected — not just the artifact bytes. An update
+  // manifest without `sigKind` is refused (the server must dual-sign first; that is why the
+  // server rollout ships BEFORE this client). (C14.)
+  if (!info.sigKind) {
+    logger.error('update manifest has no kind-inclusive signature (sigKind) – refusing update');
+    return false;
+  }
+  const sigOk = verifyUpdateSignature(info, LICENSE_PUBLIC_KEY);
+  if (!sigOk) logger.error('update signature invalid (kind-inclusive) – possible tampering, discarding');
   return sigOk;
 }
 
