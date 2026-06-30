@@ -1255,7 +1255,7 @@ export function createApp(deps: ApiDeps): Express {
   // ════════════════════════════════════════════════════════════════════════
 
   app.post('/api/trade/send', asyncHandler(async (req, res) => {
-    const { from, assetIds, toUsername, tradeUrl, message } = req.body ?? {};
+    const { from, assetIds, toUsername, tradeUrl, message, appId, contextId } = req.body ?? {};
 
     const fromAccount = typeof from === 'string' ? accounts.get(from) : undefined;
     if (!fromAccount) return res.status(404).json({ error: `Sender account "${from}" not found` });
@@ -1263,6 +1263,10 @@ export function createApp(deps: ApiDeps): Express {
     if (!Array.isArray(assetIds) || assetIds.length === 0 || !assetIds.every(a => typeof a === 'string')) {
       return res.status(400).json({ error: 'assetIds must be a non-empty string array' });
     }
+    // App-agnostic send: the offer carries each item's real app/context (CS2 730 or TF2 440,
+    // both context 2). The active game tab decides; default to CS2 for older clients.
+    const sendAppId = Number(appId) === 440 ? 440 : 730;
+    const sendContextId = typeof contextId === 'string' && contextId.trim() ? contextId.trim() : '2';
     if (!toUsername && !tradeUrl) {
       return res.status(400).json({ error: 'Provide either toUsername (internal) or tradeUrl (external)' });
     }
@@ -1286,7 +1290,7 @@ export function createApp(deps: ApiDeps): Express {
       if (targetUsername) targetUrl = await trades.getTradeUrl(targetUsername);
       result = await trades.sendTrade(fromAccount.username, {
         tradeUrl: targetUrl,
-        myItems:  assetIds.map((id: string) => ({ assetId: id })),
+        myItems:  assetIds.map((id: string) => ({ assetId: id, appId: sendAppId, contextId: sendContextId })),
         message:  typeof message === 'string' ? message : undefined,
       });
     } catch (err) {
@@ -1327,12 +1331,16 @@ export function createApp(deps: ApiDeps): Express {
 
   // Body: { items: [{username, assetId}], toUsername?|tradeUrl?, message?, concurrency?, delayMs? }
   app.post('/api/trade/mass-send', asyncHandler(async (req, res) => {
-    const { items, toUsername, tradeUrl, message, concurrency, delayMs } = req.body ?? {};
+    const { items, toUsername, tradeUrl, message, concurrency, delayMs, appId, contextId } = req.body ?? {};
 
     if (!Array.isArray(items) || items.length === 0
       || !items.every(i => i && typeof i.username === 'string' && typeof i.assetId === 'string')) {
       return res.status(400).json({ error: 'items must be a non-empty array of { username, assetId }' });
     }
+    // App-agnostic send: a mass-send is driven by ONE game tab, so the whole batch shares one
+    // app/context (CS2 730 / TF2 440, both context 2). Default to CS2 for older clients.
+    const sendAppId = Number(appId) === 440 ? 440 : 730;
+    const sendContextId = typeof contextId === 'string' && contextId.trim() ? contextId.trim() : '2';
     if (!toUsername && !tradeUrl) {
       return res.status(400).json({ error: 'Provide either toUsername (internal) or tradeUrl (external)' });
     }
@@ -1350,7 +1358,8 @@ export function createApp(deps: ApiDeps): Express {
     }
 
     // Group the flat item list by owner bot → one offer per bot. Skip the target itself.
-    const groupMap = new Map<string, { username: string; assetIds: string[] }>();
+    // Each group carries the batch's app/context so the offer is built for the right game.
+    const groupMap = new Map<string, { username: string; assetIds: string[]; appId: number; contextId: string }>();
     const skippedSelf: string[] = [];
     for (const it of items as Array<{ username: string; assetId: string }>) {
       if (targetKey && it.username.toLowerCase() === targetKey) {
@@ -1358,7 +1367,7 @@ export function createApp(deps: ApiDeps): Express {
         continue;
       }
       const key = it.username.toLowerCase();
-      const g = groupMap.get(key) ?? { username: it.username, assetIds: [] };
+      const g = groupMap.get(key) ?? { username: it.username, assetIds: [], appId: sendAppId, contextId: sendContextId };
       g.assetIds.push(it.assetId);
       groupMap.set(key, g);
     }

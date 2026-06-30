@@ -4,6 +4,7 @@ import type { InventoryService } from '../core/InventoryService';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { SessionState, type ManagedSession } from '../types/session';
+import type { GameId } from '../types/inventory';
 import { AccountTrader, type SendTradeParams, type SendTradeResult, type TradeOfferView } from './AccountTrader';
 import { logger } from '../utils/logger';
 import { parseSteamTradeError } from '../utils/steamTradeError';
@@ -86,6 +87,10 @@ function hasLiveSessionId(session: ManagedSession): boolean {
 export interface MassSendGroup {
   username: string;
   assetIds: string[];
+  /** App the assets belong to (730 CS2 / 440 TF2, both context 2). A mass-send is uniform —
+   *  it's driven by ONE game tab. Omitted ⇒ CS2 (back-compat). App-agnostic send. */
+  appId?:     number;
+  contextId?: string;
 }
 
 export interface MassTradeJob {
@@ -383,7 +388,12 @@ export class TradeService {
   private filterSendable(username: string, params: SendTradeParams): SendTradeParams {
     const items = params.myItems ?? [];
     if (!items.length || !this.inventory) return params;
-    const inv = this.inventory.getCached(username);
+    // A send is uniform in appId (driven by one game tab), so resolve the game from the
+    // items' appId — 440 → TF2, else CS2 — and check THAT game's cached inventory for the
+    // trade-lock / non-tradable guard. Using the CS2 cache for a TF2 send would find no
+    // stack and silently skip the guard. (App-agnostic send: CS2 + TF2.)
+    const game: GameId = (items[0]?.appId ?? 730) === 440 ? 'tf2' : 'cs2';
+    const inv = this.inventory.getCached(username, game);
     if (!inv) return params;
     const stackOf = (assetId: string) =>
       inv.items.find(s => (s.assetIds ?? []).some(id => String(id) === String(assetId)));
@@ -530,7 +540,9 @@ export class TradeService {
         try {
           const res = await this.sendTrade(group.username, {
             tradeUrl,
-            myItems: group.assetIds.map(id => ({ assetId: id })),
+            // Carry each asset's real app/context so a TF2 (440) mass-send builds a TF2 offer,
+            // not a CS2 one. group.appId/contextId default to CS2 in toEconItem. (App-agnostic.)
+            myItems: group.assetIds.map(id => ({ assetId: id, appId: group.appId, contextId: group.contextId })),
             message: opts?.message,
           });
           this.massJob.sent++;

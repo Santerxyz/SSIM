@@ -432,6 +432,10 @@ function countTf2Keys(items) {
   return n;
 }
 
+/** Steam app id of the active game tab — drives the app-agnostic send path (CS2 730 / TF2 440,
+ *  both context 2). The send carries this so a TF2 offer is built for 440, not CS2's 730. */
+function currentAppId() { return state.game === 'tf2' ? 440 : 730; }
+
 async function setGame(game) {
   if (state.game === game) return;
   state.game = game;
@@ -683,25 +687,43 @@ async function setPriceSource(src) {
   }
 }
 
-/** After a source switch the new source's price cache is cold, so the dashboard shows
- *  "—" until the background fill lands. Poll the fill and re-pull/re-render live so values
- *  populate WITHOUT a manual Refresh. A token cancels the loop if the user switches again;
- *  we only re-render when new prices actually arrived (cheap) and cap the watch at 90s. */
-async function pollRepricing() {
+/**
+ * Watch the backend's BACKGROUND price-fill and re-pull + re-render as prices land, so item prices,
+ * per-account totals AND portfolio aggregates update on screen WITHOUT a restart.
+ *
+ * WHY THIS EXISTS: a refresh (single/all) or a source switch enriches inventories from the price cache
+ * and QUEUES the missing/stale names; PricingService fills them in the background (~3.5s/name) and
+ * writes the cache. The one-shot fetch+render the trigger already did therefore shows prices as they
+ * were AT THAT INSTANT — every name fetched afterwards stays stale on screen until the app is restarted
+ * (which re-GETs + re-enriches from the now-warm cache). This poller closes that gap: it polls
+ * /api/pricing/status and calls `repull` — which re-fetches the LIVE inventory (the backend re-enriches
+ * from the warm cache, recomputing per-item price AND inv.totalValueUsd) and re-renders — each time new
+ * prices arrive. A token supersedes an older watch (there is a single backend queue); we only re-pull
+ * when `fetched` actually advanced (cheap, no needless re-render); the watch caps at 90s while the fill
+ * continues server-side. `baseline` is read up-front so a fill that completes between polls is still
+ * caught (we re-pull on the drain tick because `fetched` exceeds the pre-fill baseline).
+ */
+async function watchPriceFill(repull) {
   const token = (state.repriceToken = (state.repriceToken || 0) + 1);
-  const deadline = Date.now() + 60_000;        // watch window; the background fill continues past it
-  let lastFetched = -1;
+  let baseline = 0;
+  try { const s0 = await api('/api/pricing/status'); if (state.repriceToken !== token) return; baseline = s0 ? (s0.fetched || 0) : 0; }
+  catch { /* status unavailable → still run the timed watch below */ }
+  let lastPulled = baseline;
+  const deadline = Date.now() + 90_000;        // watch window; the background fill continues past it
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000));
-    if (state.repriceToken !== token) return;                    // superseded by a newer switch
+    if (state.repriceToken !== token) return;                    // superseded by a newer refresh/switch
     let st; try { st = await api('/api/pricing/status'); } catch { return; }
     if (state.repriceToken !== token) return;
     const fetched = st ? (st.fetched || 0) : 0;
     const busy = !!(st && (st.running || (st.queued || 0) > 0));
-    if (fetched !== lastFetched || !busy) { lastFetched = fetched; await reloadAll(); renderMain(); }
-    if (!busy) return;                                            // fill drained → final render done above
+    if (fetched > lastPulled) { lastPulled = fetched; try { await repull(); } catch { /* keep the current view on a transient fetch error */ } }
+    if (!busy) return;                                           // queue drained → final re-pull already done above
   }
 }
+
+/** After a source switch the new source's price cache is cold; watch the fill and live-update. */
+function pollRepricing() { return watchPriceFill(async () => { await reloadAll(); renderMain(); }); }
 /** Updates the Item value + Balance stat cards. Pass null to show "—".
  *  ST-02: cards show a COMPACT value (€1.2M) only when large; the exact amount is
  *  always on hover (title). */
@@ -1663,9 +1685,10 @@ function renderAccountView() {
         <button id="btn-sda" title="Steam Guard code + pending mobile confirmations for this account"
           class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 text-sm font-bold transition inline-flex items-center gap-2">
           <i class="fa-solid fa-mobile-screen-button"></i><span>SDA</span></button>
-        <button id="btn-clean-browser" title="Open this account in an isolated, proxied, ephemeral browser (its own session only)"
+        <button id="btn-clean-browser" title="Open a browser with this account logged in, routed through its linked proxy"
           class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-violet-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-window-restore"></i><span>Clean Browser</span></button>
+          <i class="fa-solid fa-window-restore"></i><span>Browser</span>
+          <i class="fa-solid fa-circle-info text-2xs text-slate-400 hover:text-slate-200" title="Opens a browser with this account already logged in, through its linked proxy — an isolated, ephemeral session (closing the window discards it)."></i></button>
       </div></div>`;
   bindTradeLink(username);
   const bansBtn = $('btn-account-bans');
@@ -1731,7 +1754,9 @@ function renderAccountView() {
   if (inv) {
     el.toolbar.classList.remove('hidden');
     // GC-sourced inventories carry per-item categories → render the strict 3-bucket view.
-    renderTable(inv.items, { selectable: !tf2, categorized }); // TF2 = read-only
+    // Selectable in BOTH games now — the send path is app-agnostic (carries the item's appid),
+    // so TF2 (440) items can be picked + sent just like CS2 (730). (Bug 1.)
+    renderTable(inv.items, { selectable: true, categorized });
   } else {
     el.toolbar.classList.add('hidden');
     el.itemsWrap.classList.add('hidden'); el.emptyState.classList.remove('hidden');
@@ -2637,9 +2662,10 @@ function renderFacetBar(items, opts = {}) {
 function renderTable(items, opts = {}) {
   unmountWindow();   // TBL-02: clear any prior windowed scroll listener; the flat path re-mounts below
   const master = !!opts.master;
-  // TF2 view is strictly read-only: trade/sell flows are CS2-scoped (appid 730),
-  // so selecting TF2 assets would produce offers with the wrong app id.
-  const selectable = !!opts.selectable && state.game !== 'tf2';
+  // App-agnostic selection: the active game tab (CS2 730 / TF2 440) decides which app's items
+  // are selectable, and the send path carries that app id — so TF2 keys are selectable + sendable
+  // too, not just CS2. (Bug 1; market SELL stays CS2-only and is gated in updateSelectionBar.)
+  const selectable = !!opts.selectable;
   // Phase 2 (A): the "select under value" control is only useful where rows are selectable.
   if (el.valueFilter) { el.valueFilter.classList.toggle('hidden', !selectable); el.valueFilter.classList.toggle('flex', selectable); }
   // Selectable MASTER (folder) keys by marketHashName; selectable account by assetId.
@@ -2918,6 +2944,10 @@ function updateSelectionBar() {
   const n = selectedCount();
   if (n === 0) { hideSelectionBar(); return; }
   el.selectionBar.classList.remove('hidden'); el.selectionBar.classList.add('flex');
+  // SEND works for both games (app-agnostic). Market SELL stays CS2-only (Steam's
+  // market/sellitem path is appid 730), so hide the Sell button in the TF2 view rather than
+  // offer an action that would fail. (Bug 1.)
+  if (el.btnSellSel) el.btnSellSel.classList.toggle('hidden', state.game === 'tf2');
   const unit = aggMode()
     ? `${new Set(selectedItemRefs().map((r) => r.username)).size} Bot(s)`
     : `${Object.keys(state.selection).length} Stack(s)`;
@@ -3039,6 +3069,9 @@ async function refreshAccount() {
       const sum = (cat) => inv.items.filter((i) => i.category === cat).reduce((n, i) => n + (i.quantity || 1), 0);
       toast(`Inventory refreshed: ${inv.totalItems} items · ${sum('tradelocked')} locked · ${sum('listed')} listed`, 'success');
     }
+    // The refresh enriched from the cache and queued the missing/stale prices for a background fill;
+    // watch that fill and re-pull so the new item prices + totals appear WITHOUT a restart. (PRICE-REFRESH)
+    void watchPriceFill(refreshActiveViewFromCache);
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -3130,6 +3163,9 @@ function pollRefresh() {
       }
       renderMain();
       renderSidebar(); // refresh-all may have updated wallet balances → update the sidebar
+      // refresh-all enriched from the cache + queued the missing/stale prices for a background fill;
+      // watch it and re-pull so prices + per-account/portfolio totals update live, no restart. (PRICE-REFRESH)
+      void watchPriceFill(refreshActiveViewFromCache);
       const failed = Array.isArray(job.failed) ? job.failed : [];
       const rverb = job.cancelled ? 'ended' : 'complete';
       if (failed.length) {
@@ -3659,9 +3695,9 @@ async function openCleanBrowser(btn, username) {
   try {
     const r = await api(`/api/accounts/${encodeURIComponent(username)}/open-browser`, { method: 'POST', body: '{}' });
     for (const w of (r.warnings || [])) toast(w, 'info');
-    toast(`Opened ${username} in a clean browser${r.proxy ? ` (proxy ${r.proxy}${r.proxyAuth ? ', authed' : ''})` : ' (LOCAL IP)'}`, 'success');
+    toast(`Opened ${username} in a browser${r.proxy ? ` (proxy ${r.proxy}${r.proxyAuth ? ', authed' : ''})` : ' (LOCAL IP)'}`, 'success');
   } catch (e) {
-    toast(e.message || 'could not open clean browser', 'error');
+    toast(e.message || 'could not open browser', 'error');
     for (const w of ((e.data && e.data.warnings) || [])) toast(w, 'info');
   } finally {
     btn.disabled = false;
@@ -4498,7 +4534,7 @@ async function submitTrade(ev) {
 
   setButtonLoading(el.tradeSubmit, true, 'Sending…');
   try {
-    const res = await api('/api/trade/send', { method: 'POST', body: JSON.stringify({ from, assetIds, ...target }) });
+    const res = await api('/api/trade/send', { method: 'POST', body: JSON.stringify({ from, assetIds, appId: currentAppId(), contextId: '2', ...target }) });
     closeTradeModal(); clearSelection();
     if (res.status === 'unconfirmed') {
       // Offer EXISTS on Steam but 2FA confirmation failed — confirm it manually, and do
@@ -4532,7 +4568,7 @@ async function submitMassTrade() {
 
   setButtonLoading(el.tradeSubmit, true, 'Starting…');
   try {
-    const job = await api('/api/trade/mass-send', { method: 'POST', body: JSON.stringify({ items, ...target }) });
+    const job = await api('/api/trade/mass-send', { method: 'POST', body: JSON.stringify({ items, appId: currentAppId(), contextId: '2', ...target }) });
     closeTradeModal(); clearSelection(); renderMain();
     showMassProgress(job);
     resetPoller('mass'); // clean stall window for this run (#27)

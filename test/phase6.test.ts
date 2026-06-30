@@ -59,16 +59,36 @@ test('shapeConfirmations: dedups by id, orders newest-first deterministically', 
 });
 
 // ── Feature A: the three security invariants of the isolated session ──────────
-test('A.1 — context carries ONLY this account\'s auth cookies', () => {
+test('A.1 — context carries ONLY this account\'s auth cookies, on every Steam web domain', () => {
   const spec = buildIsolatedSession({
     username: 'alice',
     cookieStrings: ['steamLoginSecure=ALICE_TOKEN', 'sessionid=ALICE_SID', 'steamCountry=DE%7Cabc', 'foo=bar'],
     network: { type: 'proxy', value: 'http://h:3128' },
   });
-  assert.deepEqual(spec.cookies.map((c) => c.name).sort(), ['sessionid', 'steamLoginSecure']);
-  assert.equal(spec.cookies.find((c) => c.name === 'steamLoginSecure')!.value, 'ALICE_TOKEN');
+  // Still ONLY the two auth cookies — no other site cookie (and no other account's) leaks in.
+  assert.deepEqual([...new Set(spec.cookies.map((c) => c.name))].sort(), ['sessionid', 'steamLoginSecure']);
   assert.ok(!spec.cookies.some((c) => c.name === 'steamCountry' || c.name === 'foo'), 'no other cookie leaks in');
-  assert.ok(spec.cookies.every((c) => c.domain === 'steamcommunity.com'), 'scoped to steamcommunity.com');
+  // THIS account's token is carried on EVERY domain we set it on, never another value.
+  const sls = spec.cookies.filter((c) => c.name === 'steamLoginSecure');
+  assert.ok(sls.length > 0 && sls.every((c) => c.value === 'ALICE_TOKEN'), 'same account token on every domain');
+  // Bug 2: the session is established on the community host AND the steampowered tree, so the
+  // store / account / help pages stay logged in — not steamcommunity.com alone.
+  const domains = new Set(spec.cookies.map((c) => c.domain));
+  assert.ok(domains.has('steamcommunity.com'), 'community domain set');
+  assert.ok(domains.has('.steampowered.com'), 'store/account/help (steampowered) domain set');
+});
+
+test('A.1b — the STORE domain carries steamLoginSecure, not only community (Bug 2)', () => {
+  const spec = buildIsolatedSession({
+    username: 'alice', cookieStrings: ['steamLoginSecure=TOK', 'sessionid=SID'],
+    network: { type: 'proxy', value: 'http://h:3128' },
+  });
+  // A '.steampowered.com' domain cookie is sent to store.steampowered.com, help/checkout/login
+  // and the account pages — exactly the domains that previously showed "logged out".
+  const onSteampowered = (name: string) =>
+    spec.cookies.some((c) => c.name === name && c.domain === '.steampowered.com');
+  assert.ok(onSteampowered('steamLoginSecure'), 'steamLoginSecure present on the steampowered tree (store stays logged in)');
+  assert.ok(onSteampowered('sessionid'), 'sessionid present on the steampowered tree');
 });
 
 test('A.2 — chosen proxy matches THIS account (and differs per account)', () => {

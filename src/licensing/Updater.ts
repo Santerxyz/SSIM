@@ -7,7 +7,7 @@ import fsExtra from 'fs-extra';
 import axios from 'axios';
 import { logger } from '../utils/logger';
 import { LICENSE_API_URL, LICENSE_PUBLIC_KEY, LICENSE_HTTP_TIMEOUT_MS } from './config';
-import { IS_SIDECAR_MODE } from '../utils/paths';
+import { IS_SIDECAR_MODE, dataDir } from '../utils/paths';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Updater — signed, self-replacing auto-update for the SINGLE self-contained SSIM.exe.
@@ -18,8 +18,9 @@ import { IS_SIDECAR_MODE } from '../utils/paths';
 //  boots (anti-brick self-test) → swap SSIM_SHELL_EXE → relaunch it. The new shell re-extracts its
 //  (new) embedded backend on next launch.
 //
-//  Flow:  GET /version → download to %TEMP% → verify sha256 + Ed25519 sig over `${latest}:${sha256}`
-//         → self-test the new exe → write updater.bat → spawn detached → emit SSIM_UPDATING → exit
+//  Flow:  GET /version → download to the app DATA dir (NOT %TEMP%) → verify sha256 + Ed25519 sig over
+//         `${latest}:${sha256}` → self-test the new exe → write updater.bat → spawn detached → emit
+//         SSIM_UPDATING → exit
 //         → bat waits for backend + shell to die, swaps SSIM.exe, relaunches it, self-cleans.
 //
 //  A running .exe can't overwrite itself on Windows, so the swap is delegated to a tiny detached
@@ -106,6 +107,101 @@ async function check(currentVersion: string): Promise<VersionInfo | null> {
 }
 
 /**
+ * Stream `src` to `dest`, resolving ONLY after the file descriptor is fsync'd AND CLOSED.
+ *
+ * THE FIX (Windows EACCES on self-test): the previous code resolved on the writable stream's `finish`
+ * event, which fires when the bytes have been handed to the OS but BEFORE the fd is closed (Node closes
+ * it asynchronously via autoClose, emitting `close` afterwards). Because runUpdate() runs
+ * download→verify→self-test synchronously within ONE event-loop turn (microtasks), the libuv fd-close
+ * macrotask had not yet run — so we still held an OPEN WRITABLE HANDLE to the .exe when execFileSync
+ * asked Windows to CreateProcess it. Windows can't load an image that another handle still has open for
+ * write → ERROR_ACCESS_DENIED / sharing violation → `spawnSync … EACCES`. (Reads still worked, so
+ * verify()'s sha256 passed, because libuv opens the write stream with FILE_SHARE_READ — execution does
+ * not share with a writer.) Resolving on `close` (after an fsync for durability) guarantees the handle
+ * is released AND the bytes are on disk before anyone executes the file.
+ *
+ * KEEPS whatever is already on disk on error (the download loop resumes from the partial). Exported for
+ * tests.
+ */
+export function pipeToFile(
+  src: NodeJS.ReadableStream,
+  dest: string,
+  opts: { append: boolean; stallMs: number; onData?: (hopBytes: number) => void },
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const out = fs.createWriteStream(dest, { flags: opts.append ? 'a' : 'w' });
+    let fd: number | undefined;
+    let idle: NodeJS.Timeout | undefined;
+    let settled = false;
+    const settle = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (idle) clearTimeout(idle);
+      if (err) {
+        // Tear down BOTH streams but KEEP whatever is on disk — the next attempt resumes from it.
+        try { out.destroy(); } catch { /* noop */ }
+        try { (src as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.(); } catch { /* noop */ }
+        reject(err);
+      } else {
+        resolve();
+      }
+    };
+    const arm = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => settle(new Error('stalled — no data')), opts.stallMs);
+      opts.onData?.(out.bytesWritten); // bytesWritten is this-hop only; the caller adds the resume offset
+    };
+    out.on('open', (f: number) => { fd = f; });
+    src.on('data', arm);
+    src.on('error', settle);
+    out.on('error', settle);
+    // Durability: force the bytes to disk while the fd is still open…
+    out.on('finish', () => {
+      if (idle) clearTimeout(idle);
+      try { if (fd !== undefined) fs.fsyncSync(fd); } catch { /* fd may already be gone — best-effort */ }
+    });
+    // …and resolve ONLY once the fd is CLOSED (handle released) — the crux of the EACCES fix.
+    out.on('close', () => settle());
+    src.pipe(out);
+    arm(); // arm the stall timer immediately so a socket that never sends a byte still aborts
+  });
+}
+
+/**
+ * Where we stage the downloaded exe for the self-test + swap. We DELIBERATELY use the app's own data
+ * dir (next to the install / SSIM_HOME) instead of %LOCALAPPDATA%\Temp:
+ *   • %TEMP% is the location most commonly blocked for EXECUTION by AppLocker / SRP / the Defender
+ *     Attachment Manager on managed machines → CreateProcess of the self-test exe returns
+ *     ERROR_ACCESS_DENIED (EACCES). The app's data dir is already trusted + writable by the running
+ *     app, so executing the staged exe from there is not blocked by those %TEMP%-scoped rules.
+ *   • it sits on the SAME volume as the install target, so the swap's `move /Y` is an atomic rename
+ *     rather than a cross-volume copy (faster, and far less exposed to an AV scan mid-copy).
+ * Falls back to os.tmpdir() only if the data dir can't be created (a broken SSIM_HOME), preserving the
+ * previous behaviour rather than dead-ending the update.
+ */
+function updatesStageDir(): string {
+  try {
+    const d = dataDir('updates');
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  } catch {
+    return os.tmpdir();
+  }
+}
+
+/** Best-effort sweep of leftover staged exes from previous (crashed) runs so they don't accumulate in
+ *  the persistent data dir. Keeps `keep` (the file we're about to write). */
+function sweepStaleStaged(dir: string, keep: string): void {
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!/^ssim_update_.*\.exe$/i.test(name)) continue;
+      const p = path.join(dir, name);
+      if (path.resolve(p) !== path.resolve(keep)) { try { fsExtra.removeSync(p); } catch { /* may be in use */ } }
+    }
+  } catch { /* dir unreadable — nothing to sweep */ }
+}
+
+/**
  * 2. Stream the new SSIM.exe to a temp file — RESUMABLY. The single binary is ~185 MB, and a download
  * that big over a real connection gets cut off mid-stream often enough that an all-or-nothing GET can
  * loop forever (every reset throws away everything and restarts from zero — exactly what stranded the
@@ -117,7 +213,9 @@ async function check(currentVersion: string): Promise<VersionInfo | null> {
  * a misassembled file can never be swapped in.
  */
 async function download(info: VersionInfo): Promise<string> {
-  const tmp = path.join(os.tmpdir(), `ssim_update_${Date.now()}_${process.pid}_${Math.floor(Math.random() * 1e6)}.exe`);
+  const stageDir = updatesStageDir();
+  const tmp = path.join(stageDir, `ssim_update_${Date.now()}_${process.pid}_${Math.floor(Math.random() * 1e6)}.exe`);
+  sweepStaleStaged(stageDir, tmp); // clear any orphaned exe from a previous crashed run
   const MAX_ATTEMPTS = 40;   // each good hop ADVANCES, so this tolerates ~40 drops, not 40 full restarts
   const STALL_MS = 30_000;   // no bytes for 30 s on an open socket → wedged; abort so we can resume it
   let total = 0;             // learned from the first response (Content-Length / Content-Range)
@@ -147,35 +245,22 @@ async function download(info: VersionInfo): Promise<string> {
       }
 
       const startHave = have; // bytes already on disk before this hop (resume offset)
-      await new Promise<void>((resolve, reject) => {
-        const out = fs.createWriteStream(tmp, { flags: res.status === 206 ? 'a' : 'w' });
-        let idle: NodeJS.Timeout;
-        const fail = (err: Error): void => {
-          clearTimeout(idle);
-          // Tear down BOTH streams but KEEP the partial file — the next attempt resumes from it.
-          try { out.destroy(); } catch { /* noop */ }
-          try { res.data.destroy(); } catch { /* noop */ }
-          reject(err);
-        };
-        const arm = (): void => {
-          clearTimeout(idle);
-          idle = setTimeout(() => fail(new Error('stalled — no data')), STALL_MS);
-          // Drive the splash progress bar. bytesWritten is this-hop only; add the resume offset.
+      // Write via pipeToFile: it fsyncs + waits for the fd to CLOSE before resolving, so the staged
+      // exe carries no lingering write handle when the self-test executes it (the EACCES fix).
+      await pipeToFile(res.data, tmp, {
+        append: res.status === 206,
+        stallMs: STALL_MS,
+        onData: (hopBytes) => {
+          // Drive the splash progress bar. hopBytes is this-hop only; add the resume offset.
           if (total > 0) {
-            const done = startHave + out.bytesWritten;
+            const done = startHave + hopBytes;
             const pct = Math.min(99, Math.floor((done / total) * 100));
             if (pct !== lastPct) {
               lastPct = pct;
               emitUpdate(`SSIM_UPDATE_PROGRESS::${pct}::${(done / 1048576).toFixed(0)}::${(total / 1048576).toFixed(0)}`);
             }
           }
-        };
-        res.data.on('data', arm);
-        res.data.on('error', fail);
-        res.data.pipe(out);
-        out.on('error', fail);
-        out.on('finish', () => { clearTimeout(idle); resolve(); });
-        arm();
+        },
       });
 
       try { have = fs.statSync(tmp).size; } catch { /* noop */ }
@@ -243,20 +328,58 @@ function verify(file: string, info: VersionInfo): boolean {
   return sigOk;
 }
 
+/** Outcome of one self-test spawn, split into a "retryable lock" vs a "real, keep-current" failure. */
+export type SelfTestOutcome =
+  | { ok: true }
+  | { ok: false; kind: 'lock' | 'crash' | 'no-marker'; errno?: string; detail: string };
+
 /**
- * 4. ANTI-BRICK: prove the new artifact boots + loads all bundled deps (incl. the globaloffensive +
- * steam stack) BEFORE we replace the working one. The artifact is already authentic (sha256 + Ed25519).
- * We run it with SSIM_SELFTEST=1 in an ISOLATED temp home (its extraction + logs never touch the live
- * install) and exit 0 (ok) / 2 (fail).
+ * Classify a thrown execFileSync error so we retry ONLY a transient permission/lock condition and NEVER
+ * a genuine failure (which must keep the current version — the anti-brick guard):
+ *   • the child RAN and exited non-zero (self-test FAIL = 2) → numeric `.status`, no spawn errno →
+ *     'crash'. REAL failure: keep current, do NOT retry. This is what preserves the guard.
+ *   • the child could not be SPAWNED with EACCES/EBUSY/EPERM/ETXTBSY → a lingering write handle, an AV
+ *     scan, or a MOTW/SmartScreen block → 'lock' (RETRYABLE).
+ *   • anything else (ENOENT bad path, a kill/timeout signal) → 'crash'.
+ * Pure + exported so the keep-current-on-real-failure property is unit-testable without a real exe.
+ */
+export function classifySpawnError(err: unknown): Extract<SelfTestOutcome, { ok: false }> {
+  const e = (err ?? {}) as NodeJS.ErrnoException & { status?: number | null; signal?: string | null };
+  // A numeric exit status means the image LOADED and ran, then self-reported failure → real, not a lock.
+  if (typeof e.status === 'number') return { ok: false, kind: 'crash', detail: `exit ${e.status}` };
+  const errno = e.code;
+  if (errno && ['EACCES', 'EBUSY', 'EPERM', 'ETXTBSY', 'UNKNOWN'].includes(errno)) {
+    return { ok: false, kind: 'lock', errno, detail: `${e.syscall || 'spawnSync'} ${errno}` };
+  }
+  return { ok: false, kind: 'crash', errno, detail: `${errno || e.signal || 'spawn-error'}: ${String(e.message || '').slice(0, 160)}` };
+}
+
+/**
+ * Strip the Mark-of-the-Web (NTFS `Zone.Identifier` alternate data stream) from a staged file so
+ * SmartScreen / the Defender Attachment Manager doesn't block CreateProcess of it with
+ * ERROR_ACCESS_DENIED (EACCES). A file we wrote ourselves via fs normally carries NO MOTW, so this is
+ * defence-in-depth (and it is re-applied between retries in case an AV re-tags the file). Best-effort,
+ * no-op on non-NTFS / when absent. Returns whether a tag was actually removed (for tests/logging).
+ */
+export function stripMarkOfTheWeb(file: string): boolean {
+  try {
+    fs.unlinkSync(`${file}:Zone.Identifier`); // remove the ADS by its stream name
+    return true;
+  } catch {
+    return false; // ENOENT (none present — the common case for an fs-written file) or non-NTFS volume
+  }
+}
+
+/**
+ * One self-test spawn → a classified outcome. Boots the new exe with SSIM_SELFTEST=1 in an ISOLATED temp
+ * home (its extraction + logs never touch the live install) and exit 0 (ok) / 2 (fail).
  *
  * DUAL: the OK marker arrives by a DIFFERENT channel per artifact, so we accept EITHER —
  *   • console ssim-backend.exe (two-file fleet artifact) prints `SSIM_SELFTEST_OK` to STDOUT, and
  *   • the GUI SSIM.exe (single-exe artifact) has no usable stdout, so its shell passthrough writes the
  *     report to <home>/.ssim-selftest.out.
- * A non-zero exit (self-test FAIL = 2) throws → caught → rejected. A bad publish can never replace a
- * working install with one that won't start.
  */
-function selfTestNewExe(file: string): boolean {
+function runSelfTestOnce(file: string): SelfTestOutcome {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim_selftest_'));
   try {
     // Capture stdout (NOT 'ignore') so a console artifact's marker is visible; a GUI artifact simply
@@ -267,17 +390,58 @@ function selfTestNewExe(file: string): boolean {
     }) || '').toString();
     let report = '';
     try { report = fs.readFileSync(path.join(home, '.ssim-selftest.out'), 'utf8'); } catch { /* no file report */ }
-    if (/SSIM_SELFTEST_OK/.test(stdout) || /SSIM_SELFTEST_OK/.test(report)) {
-      logger.info('update self-test passed – new artifact boots + loads its deps');
-      return true;
-    }
-    logger.error(`update self-test: exit 0 but no OK marker (stdout+file) – not swapping: ${(stdout || report).trim().slice(0, 300)}`);
-    return false;
+    if (/SSIM_SELFTEST_OK/.test(stdout) || /SSIM_SELFTEST_OK/.test(report)) return { ok: true };
+    return { ok: false, kind: 'no-marker', detail: (stdout || report).trim().slice(0, 300) };
   } catch (err) {
-    logger.error(`update self-test failed (non-zero exit / crash) – not swapping: ${(err as Error).message}`);
-    return false;
+    return classifySpawnError(err);
   } finally {
     try { fsExtra.removeSync(home); } catch { /* best-effort */ }
+  }
+}
+
+const SELFTEST_BACKOFF_MS = [300, 900, 2000, 4000]; // bounded retry for a transient handle/AV/MOTW lock
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 4. ANTI-BRICK: prove the new artifact boots + loads all bundled deps (incl. the globaloffensive +
+ * steam stack) BEFORE we replace the working one — now with a bounded retry-with-backoff so a transient
+ * EACCES/EBUSY (a not-yet-released handle, an AV mid-scan, a MOTW tag) doesn't strand the update, while
+ * a GENUINE failure still keeps the current version. The artifact is already authentic (sha256 + Ed25519).
+ *
+ * KEEP-CURRENT GUARD INTACT: only a 'lock' outcome is retried; a 'crash' (non-zero exit / hang) or a
+ * 'no-marker' boot returns false immediately and we do NOT swap. Even after the retries are exhausted we
+ * still return false — never a weakening. Each failure logs its precise, distinguishable reason (errno /
+ * exit code / path) so future field failures are diagnosable. `runOnce`/`backoffMs` are injectable for
+ * tests.
+ */
+export async function selfTestNewExe(
+  file: string,
+  runOnce: (f: string) => SelfTestOutcome = runSelfTestOnce,
+  backoffMs: readonly number[] = SELFTEST_BACKOFF_MS,
+): Promise<boolean> {
+  stripMarkOfTheWeb(file); // clear any Mark-of-the-Web before the first attempt
+  for (let attempt = 0; ; attempt++) {
+    const r = runOnce(file);
+    if (r.ok) {
+      logger.info(`update self-test passed – new artifact boots + loads its deps${attempt ? ` (after ${attempt} retr${attempt === 1 ? 'y' : 'ies'})` : ''}`);
+      return true;
+    }
+    // A REAL failure (ran and failed, hung, or produced no OK marker) is NOT retried — keep the current
+    // version. This IS the anti-brick guard; do not weaken it.
+    if (r.kind !== 'lock') {
+      logger.error(`update self-test failed – not swapping [${r.kind}]: ${r.detail}`);
+      return false;
+    }
+    // A spawn-level permission/lock condition (EACCES/EBUSY/…): retry with backoff, re-stripping MOTW.
+    if (attempt < backoffMs.length) {
+      logger.warn(`update self-test spawn lock (${r.detail}) on ${file} – retry ${attempt + 1}/${backoffMs.length} after ${backoffMs[attempt]}ms`);
+      await sleep(backoffMs[attempt]);
+      stripMarkOfTheWeb(file);
+      continue;
+    }
+    // Exhausted retries on a PERSISTENT lock → STILL keep the current version (guard intact), but say so.
+    logger.error(`update self-test still locked (${r.detail}) after ${backoffMs.length} retries – not swapping: ${file}`);
+    return false;
   }
 }
 
@@ -417,7 +581,7 @@ export async function runUpdate(currentVersion: string): Promise<{ updated: bool
     fsExtra.removeSync(file);
     return { updated: false, reason: 'verification failed' };
   }
-  if (!selfTestNewExe(file)) {
+  if (!(await selfTestNewExe(file))) {
     fsExtra.removeSync(file);
     return { updated: false, reason: 'new exe failed its self-test – kept the current version' };
   }

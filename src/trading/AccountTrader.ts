@@ -160,8 +160,8 @@ function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout
 
 export interface TradeItemRef {
   assetId:    string;
-  appId?:     number;   // default 730
-  contextId?: string;   // default '2'
+  appId?:     number;   // the item's real app (730 CS2 / 440 TF2); default 730 (back-compat)
+  contextId?: string;   // the item's real context; default '2'
 }
 
 export interface SendTradeParams {
@@ -1107,7 +1107,11 @@ function extractCookie(cookies: string[], name: string): string | undefined {
   return undefined;
 }
 
-function toEconItem(ref: TradeItemRef): { assetid: string; appid: number; contextid: string; amount: number } {
+/** Maps a TradeItemRef to the econ-item shape steam-tradeoffer-manager expects, carrying the
+ *  item's REAL app/context so an offer can mix any Steam game (TF2 440, CS2 730, …). The
+ *  appId/contextId default to CS2 only when the caller omits them (older single-app callers).
+ *  Exported for unit tests (the app-agnostic-send guarantee). */
+export function toEconItem(ref: TradeItemRef): { assetid: string; appid: number; contextid: string; amount: number } {
   return {
     assetid:   ref.assetId,
     appid:     ref.appId ?? CS2_APPID,

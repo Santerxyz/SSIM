@@ -30,7 +30,16 @@ import { logger } from '../utils/logger';
 
 /** Only these auth cookies are carried into the isolated context. */
 export const STEAM_AUTH_COOKIES = ['steamLoginSecure', 'sessionid'] as const;
-const STEAM_DOMAIN = 'steamcommunity.com';
+// Steam's session cookies are DOMAIN-SCOPED. The login only ever sets them for
+// steamcommunity.com, so a clean browser that injects them on that domain ALONE shows the
+// account LOGGED OUT the moment you leave it — the store (store.steampowered.com, e.g. the
+// CS2/Prime shop), help, checkout, login, and the Account-details pages all live on the
+// steampowered.com tree and were never authenticated. But steamLoginSecure is a JWT access
+// token whose audience is "web" — the SAME token value is accepted by EVERY Steam web
+// domain; the cookie merely has to be SET on each. So we establish the session on the
+// community host AND across the whole *.steampowered.com tree via one '.steampowered.com'
+// domain cookie (covers store/help/checkout/login/account). (Bug 2 fix.)
+export const STEAM_COOKIE_DOMAINS = ['steamcommunity.com', '.steampowered.com'] as const;
 const STEAM_URL = 'https://steamcommunity.com';
 
 export interface IsolatedCookie {
@@ -39,7 +48,9 @@ export interface IsolatedCookie {
 
 export interface IsolatedSessionSpec {
   username:    string;
-  /** ONLY this account's auth cookies, scoped to steamcommunity.com. */
+  /** ONLY this account's auth cookies (steamLoginSecure + sessionid), established on EVERY
+   *  Steam web domain — community + the steampowered tree — so the store / account / help
+   *  pages stay logged in too (Bug 2). One entry per (cookie × domain). */
   cookies:     IsolatedCookie[];
   /** Chromium `--proxy-server` value (credentials stripped), or null for local IP. */
   proxyServer: string | null;
@@ -79,7 +90,13 @@ export function buildIsolatedSession(input: {
   const jar = parseCookieStrings(input.cookieStrings);
   const cookies: IsolatedCookie[] = [];
   for (const name of STEAM_AUTH_COOKIES) {
-    if (jar[name]) cookies.push({ name, value: jar[name], domain: STEAM_DOMAIN, path: '/', secure: true, httpOnly: name === 'steamLoginSecure' });
+    if (!jar[name]) continue;
+    // Set the SAME value on every Steam web domain (community host + the steampowered tree)
+    // so the session survives navigating off steamcommunity.com — a community-only cookie did
+    // not, which is why the store/account pages showed "logged out". (Bug 2.)
+    for (const domain of STEAM_COOKIE_DOMAINS) {
+      cookies.push({ name, value: jar[name], domain, path: '/', secure: true, httpOnly: name === 'steamLoginSecure' });
+    }
   }
   if (!cookies.some((c) => c.name === 'steamLoginSecure')) {
     warnings.push('no steamLoginSecure cookie for this account — the browser will open NOT logged in; refresh/log the account in first');
