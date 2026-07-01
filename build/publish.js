@@ -13,6 +13,7 @@
 //                                                    #   is byte-for-byte identical to the build (recommended
 //                                                    #   for a real release; adds a full artifact download)
 //    npm run publish-update -- --skip-selftest       # escape hatch: publish WITHOUT re-booting the artifact
+//    npm run publish-update -- --no-notes            # escape hatch: publish WITHOUT release notes/announcement
 //
 //  WHICH ONE? If your installed clients are the two-file build (SSIM.exe shell + separate
 //  ssim-backend.exe — i.e. 1.2.0/1.2.1/1.2.2), they can ONLY consume --legacy-backend. A consolidated
@@ -22,6 +23,9 @@
 //  Reads the version from package.json (no typing). Needs, from secrets.local.bat or env:
 //    LICENSE_API_URL       the server base (e.g. https://license.ssim.dev)
 //    SSIM_ADMIN_PASSWORD   the admin-panel password (POST /admin/login)
+//    BOT_ANNOUNCE_URL      (optional) the Discord bot's /internal/announce endpoint
+//    ANNOUNCE_HMAC_SECRET  (optional) shared secret to HMAC-sign the announce trigger
+//  Reads RELEASE_NOTES.md (repo root) as this release's notes — REQUIRED unless --no-notes.
 //
 //  SSIM ships as ONE binary now (SSIM.exe = shell + embedded backend). We stage that single file and
 //  finalize. ONE published manifest serves EVERYONE:
@@ -68,6 +72,11 @@ if (fs.existsSync(secretsBat)) {
 const API = (process.env.PUBLISH_API_URL || process.env.LICENSE_API_URL || '').replace(/\/+$/, '');
 const PW = process.env.SSIM_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
 const VERSION = require(path.join(ROOT, 'package.json')).version;
+// Discord bot announce (optional). When set, we fire an HMAC-signed trigger at the bot AFTER a
+// verified publish; the bot re-fetches /version and posts the release. ANNOUNCE_HMAC_SECRET MUST
+// match the bot's. Unset → announce is skipped (the bot's /version poll still catches the release).
+const BOT_ANNOUNCE_URL = (process.env.BOT_ANNOUNCE_URL || '').replace(/\/+$/, '');
+const ANNOUNCE_HMAC_SECRET = process.env.ANNOUNCE_HMAC_SECRET || '';
 
 // ── Publish target ───────────────────────────────────────────────────────────
 // Two kinds of client are in the wild, and they consume INCOMPATIBLE artifacts:
@@ -100,6 +109,8 @@ const MIGRATE = process.argv.includes('--migrate');
 // or re-sign — over the server's not-newer-than-last guard. The artifact sha is unchanged, so
 // existing installs see the same version+sha and do NOT re-download; only the manifest fields move.
 const ALLOW_DOWNGRADE = process.argv.includes('--allow-downgrade');
+// Release notes are REQUIRED by default (no silent empty announcement); --no-notes is the escape hatch.
+const NO_NOTES = process.argv.includes('--no-notes');
 if (LEGACY && MIGRATE) { console.error('\n✗ --legacy-backend and --migrate are mutually exclusive\n'); process.exit(1); }
 const PRIMARY = LEGACY ? 'ssim-backend.exe' : 'SSIM.exe';
 const KIND = MIGRATE ? 'single-exe' : undefined; // server-echoed manifest hint; only the dual updater reads it
@@ -111,6 +122,20 @@ const FILES = [{ name: PRIMARY }];
 function fail(m) { console.error(`\n✗ ${m}\n`); process.exit(1); }
 if (!API) fail('LICENSE_API_URL (or PUBLISH_API_URL) not set — add it to secrets.local.bat');
 if (!PW) fail('SSIM_ADMIN_PASSWORD not set — add  set "SSIM_ADMIN_PASSWORD=…"  to secrets.local.bat');
+
+// ── Release notes ────────────────────────────────────────────────────────────
+// The owner writes the diff-block body (the +/- lines) into RELEASE_NOTES.md; we send it to the
+// server (→ version.json.notes + changelog) and the Discord bot posts it VERBATIM. Required by
+// default so a release can't ship with an empty announcement — --no-notes is the explicit skip.
+const NOTES_FILE = path.join(ROOT, 'RELEASE_NOTES.md');
+let NOTES = '';
+if (NO_NOTES) {
+  console.log('  ⚠ --no-notes: publishing without release notes (no changelog entry / announcement text)');
+} else {
+  if (!fs.existsSync(NOTES_FILE)) fail('RELEASE_NOTES.md not found at repo root — write this release\'s notes there (the +/- lines that go inside the diff block), or pass --no-notes.');
+  NOTES = fs.readFileSync(NOTES_FILE, 'utf8').trim();
+  if (!NOTES) fail('RELEASE_NOTES.md is empty — add this release\'s notes, or pass --no-notes.');
+}
 
 if (process.argv.includes('--build')) {
   console.log(`▸ building (npm run ${BUILD_CMD}${LEGACY ? '  [SSIM_BUILD_SIDECAR=1]' : ''})…`);
@@ -173,8 +198,28 @@ async function rollback(prev, cookie) {
   } catch (e) { console.error(`  ✗ rollback error: ${e.message}. Manually restore /version to v${prev.latest}.`); }
 }
 
-/** Minimal cookie-aware HTTP(S) request → { status, headers, body }. */
-function request(method, urlStr, { body, raw, cookie } = {}) {
+/**
+ * Fire the HMAC-signed announce trigger at the Discord bot. This is a LOW-LATENCY NUDGE only — the bot
+ * re-fetches /version itself and posts from that, so push and poll produce identical output. Best-effort
+ * + NON-FATAL: a Discord/bot hiccup must NEVER fail a verified release (the bot's poll reconciler is the
+ * net), but we log LOUDLY so a broken webhook is never silent. Signs the EXACT body bytes.
+ */
+async function announce({ version, url, notes, publishedAt }) {
+  if (!BOT_ANNOUNCE_URL) { console.log('  • no BOT_ANNOUNCE_URL set — skipping Discord announce (the bot\'s poll will still post this release)'); return; }
+  if (!ANNOUNCE_HMAC_SECRET) { console.error('  ⚠ BOT_ANNOUNCE_URL is set but ANNOUNCE_HMAC_SECRET is not — cannot sign the announce; skipping (the bot\'s poll will catch it)'); return; }
+  try {
+    const raw = Buffer.from(JSON.stringify({ version, url: url || '', notes: notes || '', publishedAt: publishedAt || new Date().toISOString() }));
+    const sig = crypto.createHmac('sha256', ANNOUNCE_HMAC_SECRET).update(raw).digest('hex');
+    const r = await request('POST', BOT_ANNOUNCE_URL, { raw: true, body: raw, headers: { 'Content-Type': 'application/json', 'X-SSIM-Signature': `sha256=${sig}` } });
+    if (r.status >= 200 && r.status < 300) console.log(`  • announced v${version} to the Discord bot (HTTP ${r.status})`);
+    else console.error(`  ⚠ announce returned HTTP ${r.status} — NON-FATAL; the bot's poll reconciler will still post this release. ${String(r.body).slice(0, 160)}`);
+  } catch (e) {
+    console.error(`  ⚠ announce POST failed: ${e.message} — NON-FATAL; the bot's poll reconciler will still post this release.`);
+  }
+}
+
+/** Minimal cookie-aware HTTP(S) request → { status, headers, body }. Extra `headers` merge last. */
+function request(method, urlStr, { body, raw, cookie, headers } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const lib = u.protocol === 'https:' ? https : http;
@@ -185,6 +230,7 @@ function request(method, urlStr, { body, raw, cookie } = {}) {
       headers: {
         ...(cookie ? { Cookie: cookie } : {}),
         ...(data ? { 'Content-Type': raw ? 'application/octet-stream' : 'application/json', 'Content-Length': data.length } : {}),
+        ...(headers || {}),
       },
     }, (res) => {
       const chunks = []; res.on('data', (c) => chunks.push(c));
@@ -245,6 +291,7 @@ function request(method, urlStr, { body, raw, cookie } = {}) {
   const finalizeBody = { version: VERSION, backend: PRIMARY, files: staged };
   if (KIND) finalizeBody.kind = KIND; // server must echo this into GET /version for the dual updater to read it
   if (ALLOW_DOWNGRADE) finalizeBody.allowDowngrade = true; // accept re-finalizing the same/older version (manifest refresh)
+  if (NOTES) finalizeBody.notes = NOTES; // → version.json.notes + changelog (display text, unsigned)
   const fin = await request('POST', `${API}/admin/api/release/finalize`, { cookie, body: finalizeBody });
   if (fin.status !== 201) fail(`finalize failed (HTTP ${fin.status}): ${fin.body}`);
   const info = JSON.parse(fin.body);
@@ -255,11 +302,13 @@ function request(method, urlStr, { body, raw, cookie } = {}) {
 
   // ── Gate 3: post-publish verification (the served manifest == this build) ─────
   const issues = [];
+  let liveManifest = null;
   try {
     const pv = await request('GET', `${API}/version`);
     if (pv.status !== 200) issues.push(`GET /version returned HTTP ${pv.status}`);
     else {
       const live = JSON.parse(pv.body);
+      liveManifest = live;
       if (live.latest !== VERSION) issues.push(`/version advertises v${live.latest}, not v${VERSION}`);
       if (primarySha && live.sha256 !== primarySha) issues.push(`/version sha256 ≠ the staged ${PRIMARY}`);
       if (!live.url) issues.push('/version has no download url');
@@ -279,4 +328,7 @@ function request(method, urlStr, { body, raw, cookie } = {}) {
     process.exit(1);
   }
   console.log('  • verified: /version advertises this exact build' + (process.argv.includes('--verify-download') ? ' (served bytes re-hashed)' : ''));
+
+  // ── Announce (best-effort, NON-FATAL): nudge the Discord bot to post the release ──
+  await announce({ version: VERSION, url: liveManifest && liveManifest.url, notes: NOTES, publishedAt: liveManifest && liveManifest.publishedAt });
 })().catch((e) => fail(e.message));

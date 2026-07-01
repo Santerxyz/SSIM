@@ -32,7 +32,9 @@ Served verbatim from `data/version.json`:
   "sig":     "<ed25519(`${latest}:${sha256}`) base64url>",
   "kind":    "single-exe",          // OPTIONAL — present only on a --migrate cut
   "files":   [ { "name": "SSIM.exe", "url": "…", "sha256": "…" } ],
-  "filesSig":"<ed25519(manifestSigPayload) base64url>"   // for the OLD Gen-B two-file client only
+  "filesSig":"<ed25519(manifestSigPayload) base64url>",  // for the OLD Gen-B two-file client only
+  "publishedAt": "<ISO8601 — server-set at finalize>",
+  "notes":   "<release notes: UNSIGNED display text; present when published with RELEASE_NOTES.md>"
 }
 ```
 - The **single-exe client** (1.3.0) reads only the **top-level** `{latest,url,sha256,sig,kind}`.
@@ -47,7 +49,7 @@ Served verbatim from `data/version.json`:
 |---|---|
 | `POST /admin/login` | `{password}` → session cookie (needs `ADMIN_PASSWORD`) |
 | `POST /admin/api/release/stage?version&name` | upload raw exe bytes → `{storedAs, sha256}` |
-| `POST /admin/api/release/finalize` | `{version, backend, files[], kind?, allowDowngrade?}` → build + **server-sign** the manifest, write `version.json` |
+| `POST /admin/api/release/finalize` | `{version, backend, files[], kind?, allowDowngrade?, notes?}` → build + **server-sign** the manifest, write `version.json` (+ append `changelog`) |
 | `POST /admin/api/release/rollback` | `{to?, manifest?}` → restore `/version` to a prior signed manifest |
 | `GET /admin/api/version` · `/version-history` | inspect current + full publish log |
 
@@ -82,3 +84,41 @@ The license guard (`activate`/`validate`/`heartbeat`/`token`/`licenses`) was **n
 
 > Rollout order (see `docs/UPDATER_RUNBOOK.md`): `--legacy-backend` to get the fleet on the dual updater →
 > **then** `--migrate` (requires the deployed `kind` echo) → canary one client → broad.
+
+---
+
+## Discord bot integration (release announcements + license retrieval)
+
+Backs the SSIM Discord bot (sibling repo `ssim-discord-bot`). All three server changes are **additive** —
+deployed clients and the updater are untouched (extra `/version` fields are tolerated by `Updater.ts`).
+
+**1. Release notes → `/version` + `/changelog`.** `finalize` accepts an optional `notes` string
+(`build/publish.js` sends the contents of `RELEASE_NOTES.md`, **required** unless `--no-notes`). It's stored
+in `version.json` (`GET /version.notes`) and appended to `GET /changelog[/latest]`. **Unsigned** display
+text — never part of the update signature.
+
+**2. Bot API** (`/admin/api/bot/*`, behind a **separate** `BOT_API_TOKEN` bearer — NOT the admin cookie;
+least privilege, rate-limited, audited with redacted keys):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/api/bot/by-discord/:discordId` | the license bound to a Discord account (reveal) |
+| `GET /admin/api/bot/whois/:discordId` | staff lookup (full + redacted key) |
+| `POST /admin/api/bot/claim` | self-service: bind an unclaimed key to a Discord account |
+| `POST /admin/api/bot/assign` · `/unassign` | staff bind / unbind by key |
+
+License records gain `discordId` (immutable snowflake, **unique** — one account ↔ one license) +
+`discordUsername` (display-only). Migrated to `null` on existing rows at boot.
+
+**3. Announce trigger.** After a **verified** publish, `build/publish.js` POSTs an HMAC-signed nudge
+(`X-SSIM-Signature: sha256=…` over the exact body, keyed by `ANNOUNCE_HMAC_SECRET`) to the bot's
+`BOT_ANNOUNCE_URL`. The bot re-fetches `/version` and posts the release, so push and poll produce identical
+output. **Non-fatal**: a failed announce never fails the release — the bot's `/version` poll reconciler is
+the net.
+
+### Deploy order (Discord)
+- [ ] Deploy the sibling server changes (`bot-api.js`, `changelog.js`, `licenses.js` Discord fields,
+      `requireBotToken`) and restart. Set **`BOT_API_TOKEN`** in the server `.env`.
+- [ ] Deploy the bot (`ssim-discord-bot`) with the **matching** `BOT_API_TOKEN` + `ANNOUNCE_HMAC_SECRET`.
+- [ ] Uncomment/fill `BOT_ANNOUNCE_URL` + `ANNOUNCE_HMAC_SECRET` in `secrets.local.bat` (this repo) — publish
+      then announces automatically. Until then, the bot's poll still posts every release.

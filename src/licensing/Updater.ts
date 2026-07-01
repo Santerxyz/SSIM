@@ -55,6 +55,12 @@ interface VersionInfo {
   // delete ssim-backend.exe). Absent / 'backend' → normal in-place swap. NOW COVERED by `sigKind`, so it
   // can no longer be forged to force the destructive migration shape on a victim.
   kind?:  'single-exe' | 'backend';
+  // OPTIONAL, server-set DISPLAY metadata (NOT signed). Present since the Discord-announce feature:
+  // `notes` = this release's changelog text, `publishedAt` = ISO publish time. The update/verify path
+  // ignores both; surfaced only for a possible future in-app changelog. Extra fields are tolerated,
+  // so their presence never affects signature verification or the swap.
+  notes?: string;
+  publishedAt?: string;
 }
 
 const http = axios.create({ timeout: LICENSE_HTTP_TIMEOUT_MS, validateStatus: () => true });
