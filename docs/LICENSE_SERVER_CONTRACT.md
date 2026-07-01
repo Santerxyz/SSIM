@@ -105,6 +105,7 @@ least privilege, rate-limited, audited with redacted keys):
 | `GET /admin/api/bot/by-discord/:discordId` | the license bound to a Discord account (reveal) |
 | `GET /admin/api/bot/whois/:discordId` | staff lookup (full + redacted key) |
 | `POST /admin/api/bot/claim` | self-service: bind an unclaimed key to a Discord account |
+| `POST /admin/api/bot/self-issue` | self-service: mint a NEW key (one per account; server-set policy) |
 | `POST /admin/api/bot/assign` · `/unassign` | staff bind / unbind by key |
 
 License records gain `discordId` (immutable snowflake, **unique** — one account ↔ one license) +
