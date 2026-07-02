@@ -170,6 +170,15 @@ export class BuyService {
       const before = await this.inventory.forceRefresh(p.username, game);
       const ownedBefore = ownedCount(before, p.marketHashName);
       const walletBefore = before.wallet?.balance;
+      // C11 symmetry (B15): if the BASELINE read was page-cap TRUNCATED, ownedBefore is
+      // under-counted, so the later `ownedAfter - ownedBefore` fill diff is unreliable
+      // (it would over-report the fill). The AFTER read already guards this; the BEFORE
+      // read must too. Remember it so the post-order verification reports "unverified"
+      // instead of a wrong fill count — the order still proceeds (money unaffected).
+      const baselinePartial = !!before.partial;
+      if (baselinePartial) {
+        logger.warn(`[${p.username}] pre-buy baseline inventory was PARTIAL (page-capped) – fill count will be reported as unverified`);
+      }
 
       // Currency MUST be known — never guess. A wrong currency/scale spends real
       // money at the wrong amount, so fail closed if the wallet hasn't been seen.
@@ -207,7 +216,9 @@ export class BuyService {
       await sleep(FILL_SETTLE_MS);
       let ownedAfter = ownedBefore;
       let walletAfter = walletBefore;
-      let verifyFailed = false;
+      // A truncated BASELINE already makes the fill diff unreliable (B15), independent of
+      // the AFTER read below.
+      let verifyFailed = baselinePartial;
       try {
         const after = await this.inventory.forceRefresh(p.username, game);
         if (after.partial) {

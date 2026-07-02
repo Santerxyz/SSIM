@@ -46,12 +46,14 @@ verified against current code before fixing.
   journal, no boot reconciliation → a kill between POST and verification + operator re-run
   duplicates the committed money/asset action. Fix: append-only op journal + boot cross-check.
   PROVEN. (Larger; assess scope.)
-- **B15 · W · minor · BuyService.ts:171** — post-buy fill verification ignores a PARTIAL baseline
-  read (C11 fix asymmetric: only `after` checked). Fix: if before.partial, verifyFailed=true.
-  PROVEN.
-- **B16 · W · minor · AccountTrader.ts:683** — sellOnMarket hardcodes 730/2; a TF2 asset in the
-  sell path is misreported 'gone'. Fix: parameterize appId/contextId or reject non-CS2 at route.
-  PROVEN.
+- **B15 · W · minor · BuyService.ts:171** — FIXED (commit b15). post-buy fill verification ignored
+  a PARTIAL baseline read (C11 fix asymmetric). Now `baselinePartial → verifyFailed=true`. Test:
+  buyPartialBaseline.test.ts.
+- **B16 · W · minor · AccountTrader.ts:683 — NON-BLOCKER (CS2-only by construction).** sellOnMarket
+  hardcodes 730/2, but `/api/market/sell` accepts only `{username,assetId,marketHashName}` (no
+  appId) and MassSellGroup carries none — the sell path is CS2-only and a TF2 asset cannot be
+  routed here with a TF2 appId. The theoretical assetId-collision requires manually feeding a TF2
+  id as CS2, which the UI never does. Parameterizing an unexposed path is gold-plating; documented.
 - **B17 · W · minor · server.ts:746** — POST csfloat listing accepts 0/negative price (PATCH edit
   rejects <1). Fix: same `price>=1` + upper-bound validation. PROVEN.
 - **B18 · W · minor · MarketPricing.ts:150** — 0-decimal wallet currencies (JPY/KRW/…) likely
