@@ -382,7 +382,8 @@ export function createApp(deps: ApiDeps): Express {
   app.get('/api/environments/:id/proxy', (req: Request, res: Response) => {
     const env = accounts.getEnvironment(req.params.id);
     if (!env) return res.status(404).json({ error: `Environment "${req.params.id}" not found` });
-    res.json({ proxy: env.proxy ?? '' });
+    // Vault-aware: in vault mode the proxy lives encrypted in the vault, not in accounts.json (B20).
+    res.json({ proxy: accounts.envProxyFor(req.params.id) });
   });
 
   // ── GET /api/environments/:envId/tree ──────────────────────────────────────
@@ -402,7 +403,7 @@ export function createApp(deps: ApiDeps): Express {
       return res.status(404).json({ error: `Environment "${req.params.id}" not found` });
     }
 
-    const proxy = env.proxy?.trim();
+    const proxy = accounts.envProxyFor(req.params.id); // vault-aware (B20)
     const network: NetworkConfig = proxy
       ? { type: 'proxy', value: proxy }
       : { type: 'localip', value: '0.0.0.0' };

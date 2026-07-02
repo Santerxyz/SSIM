@@ -17,6 +17,18 @@ verified against current code before fixing.
 | B02 | C | SessionManager.destroySession | No live 'error' listener if sweep throws → unhandled 'error' | 468609f | teardownQuiescence.test.ts | PROVEN |
 | B03 | N | InventoryService.refreshAfterTrade | Unbounded fan-out, no throttle, no session release | 468609f | teardownQuiescence.test.ts | PROVEN |
 | B04 | C | SessionManager.destroySession | Zombie steam-user client self-resurrects via _logonMsgTimeout → uncapped CM login storm (native-crash lead) | (zombie) | teardownQuiescence.test.ts | PROVEN |
+| B10 | W | AccountTrader.createBuyOrder | Re-POST throw after placed → duplicate-order retry | (buy) | buyOrderMoneySafety.test.ts | PROVEN |
+| B11 | W | MarketService.processBot | Non-EUR wallet lists ~99% underpriced | (sell) | sellCurrencyGuard.test.ts | PROVEN |
+| B12 | W | AccountTrader.createBuyOrder | POST'0' throw → phantom order → double-order | (buy) | buyOrderMoneySafety.test.ts | PROVEN |
+| B13 | W | server.ts MONEY_OP_ROUTE | Breaker missed CSFloat cash + confirmations | (breaker) | moneyBreakerPacing.test.ts | PROVEN |
+| B15 | W | BuyService.buy | Partial baseline → wrong fill count | (b15) | buyPartialBaseline.test.ts | PROVEN |
+| B17 | W | server.ts csfloat listings | 0/negative create-listing price | (breaker) | — | PROVEN |
+| B23 | S | maFiles.resolveMaFilePath | maFile import path traversal | (vault) | maFilePathContainment.test.ts | PROVEN |
+| B30 | D | AccountVault | No version validation → downgrade strips newer sections | (vault) | vaultHardening.test.ts | PROVEN |
+| B33 | B | AccountVault | Corrupt vault.enc → WRONG_PASSWORD, no .bak fallback | (vault) | vaultHardening.test.ts | PROVEN |
+| B20 | S | AccountManager/AccountVault | Env proxy creds plaintext in accounts.json | (vault) | vaultHardening.test.ts (round-trip) | PROVEN |
+| B44 | N | TradeService.batchOfferAction | No inter-action pacing (Error-15) | (breaker) | moneyBreakerPacing.test.ts | PROVEN |
+| B45 | N | MarketService | itemDelayMs:0 removes all pacing | (breaker) | — | PROVEN |
 
 ## OPEN — ordered by severity
 

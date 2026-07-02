@@ -12,9 +12,22 @@ import { maFilesDir } from '../utils/paths';
 
 const MA_FILES_DIR = maFilesDir();
 
-/** Resolves a bare filename against ./mafiles/, or returns an absolute path as-is. */
+/**
+ * Resolves a maFile reference to a path INSIDE the ./mafiles/ drop zone. Containment
+ * (B23): a client-supplied maFilePath reaches this from POST/PATCH /api/accounts and
+ * attach-mafile; an absolute path (C:/Windows/win.ini) or a `../` traversal must never
+ * read outside the drop zone (arbitrary file existence/JSON probing + importing any file
+ * bearing a shared_secret). We strip ALL directory components with path.basename, so the
+ * result is always mafiles/<name> — the same rule the plaintext bulk-import path uses.
+ * The drop zone is flat (listDropZoneMaFiles doesn't recurse), so no legit reference is
+ * broken. An empty/dot basename resolves to the dir itself and fails the existsSync below.
+ */
 export function resolveMaFilePath(maFilePath: string): string {
-  return path.isAbsolute(maFilePath) ? maFilePath : path.join(MA_FILES_DIR, maFilePath);
+  const base = path.basename(String(maFilePath ?? ''));
+  // basename('..') is still '..' (and '' / '.' are non-files) — map every dot/empty name to a
+  // literal, contained, non-existent filename so no input can ever resolve to the dir or above it.
+  if (!base || base === '.' || base === '..') return path.join(MA_FILES_DIR, '__invalid__.maFile');
+  return path.join(MA_FILES_DIR, base);
 }
 
 /** Reads + parses a maFile from DISK (plaintext source). Throws on missing/invalid. */

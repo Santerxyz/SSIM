@@ -119,10 +119,19 @@ export class AccountManager {
     // vault mode, else the .bak would retain the pre-blank plaintext passwords.
     const vault = AccountVault.isEnabled();
     const toWrite = vault
-      ? { ...this.db, accounts: this.db.accounts.map(a =>
-          AccountVault.hasAccount(a.username)
-            ? { ...a, password: '', networkOverride: a.networkOverride?.type === 'proxy' ? undefined : a.networkOverride }
-            : a) }
+      ? { ...this.db,
+          accounts: this.db.accounts.map(a =>
+            AccountVault.hasAccount(a.username)
+              ? { ...a, password: '', networkOverride: a.networkOverride?.type === 'proxy' ? undefined : a.networkOverride }
+              : a),
+          // Environment proxies carry credentials and must NOT sit plaintext in accounts.json
+          // (the file the operator is told to back up / copy between machines). Blank the
+          // plaintext copy ONLY when the SAME value is provably in the encrypted vault
+          // (non-destructive: a not-yet-migrated env keeps its recoverable plaintext). B20.
+          environments: this.db.environments.map(e =>
+            (e.proxy && e.proxy.trim() && AccountVault.getEnvProxy(e.id) === e.proxy.trim())
+              ? { ...e, proxy: '' }
+              : e) }
       : this.db;
     writeJsonAtomic(DB_PATH, toWrite, { spaces: 2, backup: !vault });
     logger.debug('accounts.json saved');
@@ -157,6 +166,13 @@ export class AccountManager {
       acc.password = '';
       if (acc.networkOverride?.type === 'proxy') acc.networkOverride = undefined;
     }
+    // Migrate every credential-bearing ENV proxy into the vault (B20); save() then blanks the
+    // plaintext copy for envs whose proxy is now provably vaulted (non-destructive).
+    let envProxiesMoved = 0;
+    for (const env of this.db.environments) {
+      if (env.proxy && env.proxy.trim() && AccountVault.importEnvProxy(env.id, env.proxy.trim())) envProxiesMoved++;
+    }
+    if (envProxiesMoved > 0) { AccountVault.save(); logger.info(`[vault] migrated ${envProxiesMoved} environment proxy/proxies into the vault`); }
     this.save();
     try { const bak = `${DB_PATH}.bak`; if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); } catch { /* best-effort */ }
   }
@@ -171,12 +187,37 @@ export class AccountManager {
       const vaultProxy = AccountVault.getAccount(account.username)?.proxy?.trim();
       if (vaultProxy) return { type: 'proxy', value: vaultProxy };
       if (account.networkOverride?.type === 'localip') return account.networkOverride;
-    } else if (account.networkOverride) {
-      return account.networkOverride;
+      // Env proxy: the VAULT is authoritative in vault mode (B20 — accounts.json's copy is
+      // blanked once migrated); fall back to the in-memory/plaintext env proxy for a
+      // not-yet-migrated environment so egress is never silently lost.
+      const env = this.getEnvironment(account.environmentId);
+      const envProxy = AccountVault.getEnvProxy(account.environmentId) ?? env?.proxy?.trim();
+      return envProxy ? { type: 'proxy', value: envProxy } : { type: 'localip', value: '0.0.0.0' };
     }
+    if (account.networkOverride) return account.networkOverride;
     const env = this.getEnvironment(account.environmentId);
     const proxy = env?.proxy?.trim();
     return proxy ? { type: 'proxy', value: proxy } : { type: 'localip', value: '0.0.0.0' };
+  }
+
+  /** The effective env proxy for the edit dialog / check-proxy: vault value in vault mode,
+   *  else the plaintext env proxy. Single source so no route reads the wrong copy. (B20) */
+  envProxyFor(environmentId: string): string {
+    if (AccountVault.isEnabled()) {
+      return AccountVault.getEnvProxy(environmentId) ?? this.getEnvironment(environmentId)?.proxy?.trim() ?? '';
+    }
+    return this.getEnvironment(environmentId)?.proxy?.trim() ?? '';
+  }
+
+  /** Fills each in-memory environment's proxy from the vault (vault mode) so the list view,
+   *  edit dialog and sanitizeEnvironment all see the effective value even after the plaintext
+   *  copy was blanked on disk. Called once at boot; does NOT persist. Idempotent. (B20) */
+  hydrateEnvProxies(): void {
+    if (!AccountVault.isEnabled()) return;
+    for (const env of this.db.environments) {
+      const v = AccountVault.getEnvProxy(env.id);
+      if (v) env.proxy = v;
+    }
   }
 
   /** Returns a copy of the account with the resolved `network` attached. */
@@ -205,6 +246,9 @@ export class AccountManager {
       id: uuidv4(), name: trimmed, proxy: proxy.trim(), color, createdAt: new Date().toISOString(),
     };
     this.db.environments.push(env);
+    // Write-through the (credential-bearing) proxy to the encrypted vault; save() then blanks
+    // the plaintext copy in accounts.json. (B20)
+    if (env.proxy && AccountVault.isEnabled()) AccountVault.setEnvProxy(env.id, env.proxy);
     this.save();
     logger.info(`Environment created: ${env.name} (${env.id})`);
     return env;
@@ -216,7 +260,11 @@ export class AccountManager {
       if (!changes.name.trim()) throw new Error('Environment name must not be empty');
       env.name = changes.name.trim();
     }
-    if (typeof changes.proxy === 'string') env.proxy = changes.proxy.trim();
+    if (typeof changes.proxy === 'string') {
+      env.proxy = changes.proxy.trim();
+      // Write-through to the vault (empty string clears it); save() blanks the plaintext copy. (B20)
+      if (AccountVault.isEnabled()) AccountVault.setEnvProxy(env.id, env.proxy);
+    }
     if (typeof changes.color === 'string') env.color = changes.color;
     this.save();
     logger.info(`Environment updated: ${env.name}`);
@@ -232,6 +280,7 @@ export class AccountManager {
     }
     this.db.folders      = this.db.folders.filter(f => f.environmentId !== id);
     this.db.environments = this.db.environments.filter(e => e.id !== id);
+    if (AccountVault.isEnabled()) AccountVault.deleteEnvProxy(id); // drop its vaulted proxy too (B20)
     this.save();
     logger.info(`Environment deleted: ${id}`);
   }

@@ -197,7 +197,10 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
   } catch (e) { logger.warn(`[vault] CSFloat-key migration skipped: ${(e as Error).message}`); }
 
   AccountVault.save();
-  accounts.enterVaultMode(); // blank the now-vaulted secrets out of accounts.json
+  accounts.enterVaultMode(); // blank the now-vaulted secrets (incl. env proxies) out of accounts.json
+  // Hydrate in-memory env proxies from the vault so every reader (list/edit/resolveNetwork)
+  // sees the effective value on THIS and every SUBSEQUENT boot (when the disk copy is blank). B20.
+  accounts.hydrateEnvProxies();
 
   if (migrated > 0) {
     logger.warn(`[vault] migrated ${migrated} pre-existing account(s) into the encrypted vault`);

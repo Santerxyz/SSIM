@@ -23,7 +23,15 @@ import type { MaFile } from '../types/account';
 // ════════════════════════════════════════════════════════════════════════════
 
 const VAULT_FILE = vaultDir('vault.enc');
+const VAULT_BAK  = vaultDir('vault.enc.bak');
 const MAGIC = 'SSIMVAULT';
+/** Current vault schema version (envelope `v` AND payload `version`). A file whose
+ *  version is HIGHER than this was written by a NEWER SSIM — an older binary must
+ *  REFUSE it (never silently rewrite it and strip the newer sections). B30. */
+const VAULT_VERSION = 1;
+/** Distinct error a caller can detect to show "update SSIM first" instead of the
+ *  wrong-password screen (B30). */
+export const VAULT_NEWER_VERSION_ERROR = 'VAULT_NEWER_VERSION';
 // scrypt cost: N=2^15 (~tens of ms / derivation) — strong vs. brute force, fine for
 // a once-per-boot unlock. maxmem raised to fit N (≈128·N·r ≈ 33 MB).
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, keylen: 32, maxmem: 96 * 1024 * 1024 };
@@ -42,6 +50,11 @@ interface VaultPayload {
   accounts:    Record<string, VaultAccount>; // key: username.toLowerCase()
   tokens:      Record<string, string>;       // key: username.toLowerCase() → Steam refresh token
   csfloatKeys: Record<string, string>;       // key: username.toLowerCase() → CSFloat API key (Feature 2)
+  /** Environment-level proxy URLs (may carry credentials), key: environmentId. Kept in the
+   *  ENCRYPTED vault so fleet-wide proxy creds never sit plaintext in accounts.json (B20). */
+  envProxies:  Record<string, string>;
+  /** Unknown/newer top-level sections are PRESERVED verbatim (downgrade-safe, B30). */
+  [extra: string]: unknown;
 }
 
 /** On-disk envelope. Header is plaintext; `ct` is the AES-256-GCM ciphertext of the payload JSON. */
@@ -55,15 +68,22 @@ interface VaultFileFormat {
   ct:     string;
 }
 
-class AccountVaultImpl {
+export class AccountVaultImpl {
   private key?:     Buffer;
   private salt?:    Buffer;
   private payload?: VaultPayload;
   private saveTimer?: NodeJS.Timeout;
 
+  /** File paths are injectable so tests can use isolated temp vaults; production uses the
+   *  fixed vault.enc / vault.enc.bak under SSIM_HOME/Vault. */
+  constructor(
+    private readonly vaultFile: string = VAULT_FILE,
+    private readonly vaultBak:  string = VAULT_BAK,
+  ) {}
+
   /** True if vault.enc exists on disk (used by the boot prompt to require a password). */
   exists(): boolean {
-    try { return fsExtra.existsSync(VAULT_FILE); } catch { return false; }
+    try { return fsExtra.existsSync(this.vaultFile); } catch { return false; }
   }
 
   /** True once unlocked/created → the app is running in VAULT MODE. */
@@ -82,31 +102,66 @@ class AccountVaultImpl {
   }
 
   /**
+   * Reads + envelope-validates a vault file and derives the key from ITS OWN header salt,
+   * then decrypts. Returns the derived key/salt + plaintext, or throws:
+   *   • Error('WRONG_PASSWORD')       — GCM auth failed (wrong key OR a corrupt ciphertext)
+   *   • Error(VAULT_NEWER_VERSION…)   — the file's version is newer than this binary (B30)
+   *   • Error('vault.enc is corrupt') — not an SSIM vault / unreadable envelope
+   */
+  private decryptFile(vaultPath: string, password: string): { key: Buffer; salt: Buffer; plain: string } {
+    const file = fsExtra.readJsonSync(vaultPath) as VaultFileFormat;
+    if (!file || file.magic !== MAGIC || !file.kdf?.salt || !file.iv || !file.tag || !file.ct) {
+      throw new Error('vault.enc is corrupt or not an SSIM vault');
+    }
+    // Envelope version gate (B30): a file written by a NEWER SSIM must be refused with a
+    // DISTINCT error (never decrypted-then-rewritten, which would strip its newer sections).
+    if (Number.isFinite(Number(file.v)) && Number(file.v) > VAULT_VERSION) {
+      throw new Error(VAULT_NEWER_VERSION_ERROR);
+    }
+    const salt = Buffer.from(file.kdf.salt, 'base64');
+    const params = (Number.isInteger(file.kdf.N) && Number.isInteger(file.kdf.r) && Number.isInteger(file.kdf.p))
+      ? { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p }
+      : undefined;
+    const key = this.deriveKey(password, salt, params);
+    let plain: string;
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(file.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
+      plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+    } catch {
+      throw new Error('WRONG_PASSWORD'); // GCM auth failure → wrong key OR corrupt ciphertext
+    }
+    return { key, salt, plain };
+  }
+
+  /**
    * Unlock an existing vault.enc, or CREATE a new empty one with `password`.
-   * Throws Error('WRONG_PASSWORD') when an existing vault won't decrypt (GCM auth fail),
-   * or Error(...) when vault.enc is corrupt / not an SSIM vault.
+   * Throws:
+   *   • Error('WRONG_PASSWORD')            — the password is wrong (both vault.enc AND its .bak fail)
+   *   • Error(VAULT_NEWER_VERSION_ERROR)   — the vault was written by a newer SSIM (B30)
+   *   • Error('vault.enc is corrupt …')    — not an SSIM vault
    */
   unlockOrCreate(password: string): { created: boolean } {
     if (this.exists()) {
-      const file = fsExtra.readJsonSync(VAULT_FILE) as VaultFileFormat;
-      if (!file || file.magic !== MAGIC || !file.kdf?.salt || !file.iv || !file.tag || !file.ct) {
-        throw new Error('vault.enc is corrupt or not an SSIM vault');
-      }
-      const salt = Buffer.from(file.kdf.salt, 'base64');
-      // Use the cost params persisted in the header (fall back to constants for older files).
-      const params = (Number.isInteger(file.kdf.N) && Number.isInteger(file.kdf.r) && Number.isInteger(file.kdf.p))
-        ? { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p }
-        : undefined;
-      const key = this.deriveKey(password, salt, params);
-      let plain: string;
+      let key: Buffer, salt: Buffer, plain: string;
       try {
-        const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(file.iv, 'base64'));
-        decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
-        plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
-      } catch {
-        throw new Error('WRONG_PASSWORD'); // GCM auth failure → wrong key
+        ({ key, salt, plain } = this.decryptFile(this.vaultFile, password));
+      } catch (err) {
+        // A GCM failure means EITHER a wrong password OR a corrupt main file. Distinguish
+        // them with the .bak (B33): if the SAME password decrypts vault.enc.bak, the FILE
+        // is bad (not the password) → recover from the backup and restore it. Only when the
+        // .bak ALSO fails (or doesn't exist) is it a genuine wrong password. A newer-version
+        // refusal is NOT a decrypt failure and is rethrown as-is.
+        if ((err as Error).message !== 'WRONG_PASSWORD') throw err;
+        const rec = this.tryRecoverFromBak(password);
+        if (!rec) throw err; // both main and .bak fail the same password → wrong password
+        logger.error('[vault] vault.enc failed to decrypt but vault.enc.bak did — the main file is CORRUPT (password is correct). Recovering from the backup.');
+        this.payload = rec.payload; this.key = rec.key; this.salt = rec.salt;
+        this.save(); // rewrite a healthy vault.enc from the recovered payload
+        logger.info(`[vault] recovered from backup + rewrote vault.enc (${this.accountCount()} account(s))`);
+        return { created: false };
       }
-      this.payload = normalizePayload(JSON.parse(plain));
+      this.payload = this.parseAndVersionCheck(plain);
       this.key = key;
       this.salt = salt;
       logger.info(`[vault] unlocked (${this.accountCount()} account(s))`);
@@ -116,10 +171,29 @@ class AccountVaultImpl {
     const salt = crypto.randomBytes(16);
     this.salt = salt;
     this.key = this.deriveKey(password, salt);
-    this.payload = { version: 1, accounts: {}, tokens: {}, csfloatKeys: {} };
+    this.payload = { version: VAULT_VERSION, accounts: {}, tokens: {}, csfloatKeys: {}, envProxies: {} };
     this.save();
     logger.info('[vault] new vault created + unlocked');
     return { created: true };
+  }
+
+  /** Parses decrypted JSON, refuses a payload whose version is newer than this binary (B30),
+   *  and normalizes the shape while PRESERVING unknown/newer sections (downgrade-safe). */
+  private parseAndVersionCheck(plain: string): VaultPayload {
+    const raw = JSON.parse(plain) as Record<string, unknown>;
+    if (Number.isFinite(Number(raw.version)) && Number(raw.version) > VAULT_VERSION) {
+      throw new Error(VAULT_NEWER_VERSION_ERROR);
+    }
+    return normalizePayload(raw);
+  }
+
+  /** Attempts to decrypt vault.enc.bak with `password`. Returns the recovered material or null. */
+  private tryRecoverFromBak(password: string): { key: Buffer; salt: Buffer; payload: VaultPayload } | null {
+    try {
+      if (!fsExtra.existsSync(this.vaultBak)) return null;
+      const { key, salt, plain } = this.decryptFile(this.vaultBak, password);
+      return { key, salt, payload: this.parseAndVersionCheck(plain) };
+    } catch { return null; }
   }
 
   /** Encrypt the in-memory payload and atomically (re)write vault.enc with a fresh IV. */
@@ -130,11 +204,11 @@ class AccountVaultImpl {
     const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(this.payload), 'utf8')), cipher.final()]);
     const tag = cipher.getAuthTag();
     const file: VaultFileFormat = {
-      magic: MAGIC, v: 1,
+      magic: MAGIC, v: VAULT_VERSION,
       kdf: { algo: 'scrypt', N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, salt: this.salt.toString('base64') },
       cipher: 'aes-256-gcm', iv: iv.toString('base64'), tag: tag.toString('base64'), ct: ct.toString('base64'),
     };
-    writeJsonAtomic(VAULT_FILE, file, { spaces: 0, mode: 0o600, backup: true });
+    writeJsonAtomic(this.vaultFile, file, { spaces: 0, mode: 0o600, backup: true });
   }
 
   /** Debounced save for high-frequency writes (token churn during mass login). */
@@ -160,6 +234,7 @@ class AccountVaultImpl {
       const salt = Buffer.from(file.kdf.salt, 'base64');
       const params = (Number.isInteger(file.kdf.N) && Number.isInteger(file.kdf.r) && Number.isInteger(file.kdf.p))
         ? { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p } : undefined;
+      if (Number.isFinite(Number(file.v)) && Number(file.v) > VAULT_VERSION) return null; // newer file → don't guess
       const key = this.deriveKey(password, salt, params);
       const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(file.iv, 'base64'));
       decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
@@ -236,16 +311,48 @@ class AccountVaultImpl {
   }
   /** Usernames (lowercase) that currently have a CSFloat key — for F3 "any available key". */
   csfloatKeyUsernames(): string[] { return this.payload ? Object.keys(this.payload.csfloatKeys) : []; }
+
+  // ── Environment proxies (credential-bearing → kept encrypted, never in accounts.json) ──
+  getEnvProxy(environmentId: string): string | undefined {
+    const v = this.payload?.envProxies[environmentId];
+    return v && v.trim() ? v : undefined;
+  }
+  /** Set (non-empty) or clear (empty/undefined) an environment's proxy. Saves immediately. */
+  setEnvProxy(environmentId: string, proxy: string | undefined): void {
+    if (!this.payload) throw new Error('vault not unlocked');
+    const val = (proxy ?? '').trim();
+    if (val) this.payload.envProxies[environmentId] = val;
+    else delete this.payload.envProxies[environmentId];
+    this.save();
+  }
+  /** Import an env proxy WITHOUT saving (boot migration batches one save). Returns true if stored. */
+  importEnvProxy(environmentId: string, proxy: string): boolean {
+    if (!this.payload) throw new Error('vault not unlocked');
+    const val = (proxy ?? '').trim();
+    if (!val || this.payload.envProxies[environmentId]) return false;
+    this.payload.envProxies[environmentId] = val;
+    return true;
+  }
+  deleteEnvProxy(environmentId: string): void {
+    if (!this.payload) return;
+    if (this.payload.envProxies[environmentId]) { delete this.payload.envProxies[environmentId]; this.save(); }
+  }
 }
 
-/** Defensive shape normalization for a decrypted payload (corrupt/older file safety). */
+/** Defensive shape normalization for a decrypted payload (corrupt/older file safety).
+ *  PRESERVES unknown/newer top-level sections (spread first) so an older binary that reads
+ *  a newer-but-same-version vault never DROPS sections it doesn't recognise on the next save
+ *  (B30 downgrade-safety); the known sections are then coerced to safe shapes. */
 function normalizePayload(p: unknown): VaultPayload {
   const obj = (p && typeof p === 'object') ? p as Record<string, unknown> : {};
+  const version = Number(obj.version);
   return {
-    version:     1,
+    ...obj,
+    version:     Number.isFinite(version) && version > 0 ? version : VAULT_VERSION,
     accounts:    (obj.accounts && typeof obj.accounts === 'object') ? obj.accounts as Record<string, VaultAccount> : {},
     tokens:      (obj.tokens && typeof obj.tokens === 'object') ? obj.tokens as Record<string, string> : {},
     csfloatKeys: (obj.csfloatKeys && typeof obj.csfloatKeys === 'object') ? obj.csfloatKeys as Record<string, string> : {},
+    envProxies:  (obj.envProxies && typeof obj.envProxies === 'object') ? obj.envProxies as Record<string, string> : {},
   };
 }
 
