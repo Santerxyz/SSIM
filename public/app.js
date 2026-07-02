@@ -727,22 +727,32 @@ async function setPriceSource(src) {
  * continues server-side. `baseline` is read up-front so a fill that completes between polls is still
  * caught (we re-pull on the drain tick because `fetched` exceeds the pre-fill baseline).
  */
+// Mirrors src/pricing/repriceReconciler.ts (repriceDecision) — keep in sync. DURABLE, NOT
+// deadline-capped: re-pulls whenever the backend's `fetched` advances and keeps watching until
+// the fill queue DRAINS, so a large fleet's price fill (which can far outlast the old 90s
+// window) always reaches the UI — no displayed total stays stale-as-if-live after prices have
+// actually been fetched (INV-E1). A single no-progress safety stop bounds a wedged backend.
+const REPRICE_NO_PROGRESS_MS = 15 * 60_000;
 async function watchPriceFill(repull) {
   const token = (state.repriceToken = (state.repriceToken || 0) + 1);
   let baseline = 0;
   try { const s0 = await api('/api/pricing/status'); if (state.repriceToken !== token) return; baseline = s0 ? (s0.fetched || 0) : 0; }
-  catch { /* status unavailable → still run the timed watch below */ }
+  catch { /* status unavailable → nothing to watch */ return; }
   let lastPulled = baseline;
-  const deadline = Date.now() + 90_000;        // watch window; the background fill continues past it
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 3000));
+  let lastProgressAt = Date.now();
+  while (true) {
+    await new Promise((r) => setTimeout(r, 2500));
     if (state.repriceToken !== token) return;                    // superseded by a newer refresh/switch
-    let st; try { st = await api('/api/pricing/status'); } catch { return; }
+    let st; try { st = await api('/api/pricing/status'); } catch { continue; } // transient status error → retry, don't abandon
     if (state.repriceToken !== token) return;
     const fetched = st ? (st.fetched || 0) : 0;
     const busy = !!(st && (st.running || (st.queued || 0) > 0));
-    if (fetched > lastPulled) { lastPulled = fetched; try { await repull(); } catch { /* keep the current view on a transient fetch error */ } }
-    if (!busy) return;                                           // queue drained → final re-pull already done above
+    let repullNow = false, stop = false;
+    if (fetched > lastPulled) { lastPulled = fetched; lastProgressAt = Date.now(); repullNow = true; }
+    if (!busy) { repullNow = true; stop = true; }                // queue drained → final re-pull, then stop
+    else if (Date.now() - lastProgressAt > REPRICE_NO_PROGRESS_MS) { stop = true; console.warn('[reprice] no pricing progress for 15 min – stopping the watch'); }
+    if (repullNow) { try { await repull(); } catch { /* keep the current view on a transient fetch error */ } }
+    if (stop) return;
   }
 }
 
