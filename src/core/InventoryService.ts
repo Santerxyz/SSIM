@@ -509,6 +509,22 @@ export class InventoryService {
         balance:  session.wallet.hasWallet ? session.wallet.balance : 0,
       };
     }
+
+    // Empty / partial-read protection (B31 — parity with the CS2 path's #10/C12 guards, which
+    // this TF2 + forceRefresh path lacked). A transient bad page can return an EMPTY or page-cap
+    // TRUNCATED (smaller) inventory for an account that actually holds items; letting that WIPE a
+    // known-non-empty cache is data loss the operator gates send/sell on — and a wiped cache
+    // silently disables the send-side trade-lock guard (filterSendable passes an asset through
+    // when it has no cached stack). Keep the fuller cache; the next good read overwrites it.
+    const prev = this.storeFor(game).get(username);
+    const prevCount = prev ? prev.items.reduce((n, i) => n + (i.quantity || 0), 0) : 0;
+    const suspectEmpty     = inv.totalItems === 0 && prevCount > 0;
+    const suspectTruncated = !!inv.partial && prevCount > inv.totalItems;
+    if (suspectEmpty || suspectTruncated) {
+      logger.warn(`[${username}] ${game} refresh returned ${inv.totalItems} item(s) (${suspectEmpty ? 'empty' : 'page-cap truncated'}) while cache holds ${prevCount} – keeping fuller cache (suspected partial read), NOT wiping`);
+      return prev!; // the cache already holds this record (returned as an independent clone)
+    }
+
     this.storeFor(game).set(username, inv);
     const lockedStacks = inv.items.filter(i => i.tradeLockExpiry).length;
     logger.info(`[${username}] ${game} inventory refreshed (${inv.totalItems} items, ${lockedStacks} locked stacks) → cache`);

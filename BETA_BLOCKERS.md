@@ -29,6 +29,14 @@ verified against current code before fixing.
 | B20 | S | AccountManager/AccountVault | Env proxy creds plaintext in accounts.json | (vault) | vaultHardening.test.ts (round-trip) | PROVEN |
 | B44 | N | TradeService.batchOfferAction | No inter-action pacing (Error-15) | (breaker) | moneyBreakerPacing.test.ts | PROVEN |
 | B45 | N | MarketService | itemDelayMs:0 removes all pacing | (breaker) | — | PROVEN |
+| B21 | S | vaultBoot | Plaintext token/key files kept after migration | (quar) | plaintextQuarantine.test.ts | PROVEN |
+| B26 | S | server/capability | Local API unauthenticated to local processes | (cap) | capabilityToken.test.ts | PROVEN |
+| P4/G5 | D | singleInstance | TOCTOU + fail-open double-run → store races | (lock) | singleInstanceLock.test.ts | PROVEN |
+| B43 | N | SessionManager | ERROR session keeps polling on dead cookies | (sess) | — | PROVEN |
+| B46 | C | SessionManager | MAX_LIVE ceiling TOCTOU overshoot | (sess) | — (race-free by construction) | PROVEN |
+| B47 | C | server.hostnameOnly | IPv6 loopback Host 403'd a legit ::1 bind | (sess) | hostGuard.test.ts | PROVEN |
+| B42 | N | AccountVault/PATCH | Token-only account proxy silently dropped | (proxy) | vaultHardening.test.ts | PROVEN |
+| B31 | D | InventoryService.doRefreshOne | TF2/forceRefresh empty read wiped cache | (b31) | refreshEmptyReadGuard.test.ts | PROVEN |
 
 ## OPEN — ordered by severity
 
