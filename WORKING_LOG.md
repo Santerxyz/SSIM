@@ -161,3 +161,33 @@ inject) exit 0. `npm run build:protected` + `npm run release` running/next.
 **Known test flake:** test/updaterEacces.test.ts pipeToFile stall-guard (~63ms timer) fails
 intermittently only under heavy concurrent full-suite load; passes in isolation and on re-run
 (150/150). To stabilise (raise the timer / serialise) — not a code defect.
+
+---
+
+## 2026-07-02 — Second audit wave + FINAL build/soak (GO)
+
+Re-ran the 6 remaining subsystem audits (frontend/licensing/boot/pricing/csfloat/ledger).
+Surfaced + fixed a batch including a **critical regression I'd introduced**: the atomic
+single-instance lock threw ENOENT on a fresh install (data/ absent) and the fail-safe refused
+to start → first-launch brick (AF1). Plus heartbeat-403-as-revocation (AF2), updater self-test
+budget < build budget (AF3), reconciler fetched-reset (AF4), single-trade no re-pull (AF5),
+csfloat corrupt-store mass re-delivery (AF6), csfloat icon allow-list bypass (AF7), publish.js
+served-signature gate (AF8), breaker-blind-to-rejections (AF9). Suite 155/155.
+
+**Ledger re-triage:** AUDIT_LEDGER.md 75 items — ~49 FIXED, #6 WONT-FIX (hardened), #22
+documented, rest deferred/cosmetic; ~45 NEW blockers fixed this pass (BETA_BLOCKERS.md).
+
+**FINAL GATES (all green):**
+- `npm run build` (tsc) exit 0; `cargo check` exit 0; `npm test` 155/155.
+- `npm run build:protected` → `SSIM_SELFTEST_OK v1.3.3 deps=all-loaded` → ssim-backend.exe.
+- `npm run release` → `release-tauri/SSIM/SSIM.exe` (185MB) + `release/SSIM-1.3.3.zip` (clean);
+  consolidated-exe self-test [5/5] `SSIM_SELFTEST_OK`. (One transient rustc-linker 0xc0000409
+  during release link; retry succeeded — toolchain, not SSIM.)
+- **Teardown soak** (real SessionManager, 180s ECONNRESET storm, ~80 logins + 25 fetchers):
+  `SOAK_OK` — 0 native aborts, 6767 teardowns, forced=0 (no busy-agent destroy), pending=0,
+  jsErr=0.
+
+**Verdict: GO for open beta.** 20 atomic commits on hardening/open-beta. Parked (owner/real-
+account): publish-update, license-server dual-sign rollout confirmation, real-fleet live
+regression, B14 op-journal, B41 refcount, #22 server-side pepper salt. See
+docs/RELEASE_READINESS_OPENBETA.md.

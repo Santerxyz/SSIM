@@ -36,8 +36,24 @@ without external systems or real Steam accounts.
 - `npm run build` (tsc) — exit 0.
 - `cargo check` (src-tauri, incl. capability injection) — exit 0.
 - `npm run build:protected` (SSIM_BUILD_SIDECAR=1, owner secrets loaded) — `SSIM_SELFTEST_OK v1.3.3 public/index.html=113267B deps=all-loaded(GC+steam stack)` → `ssim-backend.exe`.
-- `npm run release` — produced `release-tauri/SSIM/SSIM.exe` (~185 MB), make-tauri self-tests the consolidated exe as its final gate. (A retry was needed once: the Rust MSVC linker itself crashed transiently — `rustc` 0xc0000409 during release-profile link, unrelated to SSIM code, which `cargo check` compiles cleanly.)
-- `npm test` — 155/155 green. Known flake: `test/updaterEacces.test.ts` pipeToFile stall-guard (~63ms timer) under heavy concurrent load; passes in isolation and on re-run — recommend raising the timer / serialising.
+- `npm run release` — produced `release-tauri/SSIM/SSIM.exe` (185 MB) + clean `release/SSIM-1.3.3.zip`
+  (57.5 MB, "no secrets/user-data found"). The final gate — step [5/5] self-testing the CONSOLIDATED
+  SSIM.exe (extract + boot + deps load) — printed `SSIM_SELFTEST_OK v1.3.3 deps=all-loaded(GC+steam
+  stack)`. NOT published. (A retry was needed once: the Rust MSVC linker itself crashed transiently —
+  `rustc` 0xc0000409 during release-profile link, unrelated to SSIM code, which `cargo check` compiles
+  cleanly; the retry succeeded.)
+- **Synthetic teardown-under-storm soak** (`_crashrepro/storm2.js`, drives the REAL compiled
+  SessionManager.destroySession under a continuous local ECONNRESET-storm proxy at ~80 concurrent
+  logins + 25 in-flight fetchers, 180s): **`SOAK_OK`** — survived 180s, **zero native aborts**,
+  55,759 login teardowns + 13,454 fetches + 6,767 session teardowns, `jsErr=0`, and
+  `retire{retired=6579 idle=6579 forced=0 pending=0}` → **no agent was EVER destroyed with in-flight
+  work (forced=0)** and no agent leaked (pending=0). Residual: the storm can't reach the vendor
+  `_sendLogOn` zombie path without a real CM handshake, so the zombie-resurrection fix itself is
+  validated at the UNIT level (`neutralizeSteamClient` tests); the soak validates teardown-under-churn
+  stability + the agent-quiescence invariant. A full real-proxy soak is parked (needs real accounts).
+- `npm test` — 155/155 green. Known flake: `test/updaterEacces.test.ts` pipeToFile stall-guard (~63ms
+  timer) under heavy concurrent load; passes in isolation and on re-run — recommend raising the timer
+  / serialising.
 
 ## The native-crash class (highest-priority hotspot) — resolution
 Field 0xC0000409 during a 537-account refresh under a proxy ECONNRESET storm. ROOT (proven from
