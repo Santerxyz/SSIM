@@ -33,6 +33,21 @@ test('vault: create → save → reopen round-trips accounts, tokens, env proxie
   assert.equal(v2.getEnvProxy('env-1'), 'http://eu:ep@9.9.9.9:3128');
 });
 
+// ─── B42: a token-only account's per-account proxy round-trips in the vault ─────
+test('B42: setAccountProxy/getAccountProxy persist for an account with no full record', () => {
+  const { file, bak } = tmpVault();
+  const v1 = new AccountVaultImpl(file, bak);
+  v1.unlockOrCreate('pw');
+  assert.equal(v1.getAccountProxy('limitedbot'), undefined, 'none initially');
+  v1.setAccountProxy('LimitedBot', 'http://u:p@5.5.5.5:9000');
+  v1.flush();
+  const v2 = new AccountVaultImpl(file, bak);
+  v2.unlockOrCreate('pw');
+  assert.equal(v2.getAccountProxy('limitedbot'), 'http://u:p@5.5.5.5:9000', 'survives reopen, case-insensitive');
+  v2.setAccountProxy('limitedbot', undefined); // clear
+  assert.equal(v2.getAccountProxy('limitedbot'), undefined);
+});
+
 test('vault: wrong master password is rejected (GCM auth), right one works', () => {
   const { file, bak } = tmpVault();
   new AccountVaultImpl(file, bak).unlockOrCreate('correct-horse');

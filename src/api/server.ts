@@ -922,6 +922,15 @@ export function createApp(deps: ApiDeps): Express {
         AccountVault.upsertAccount(v);
       }
       if (proxyChanged) {
+        // For a token-only / LIMITED account there is no full VaultAccount to hold the proxy, so
+        // a supplied proxy would otherwise be SILENTLY DROPPED → the account logs in over the
+        // wrong egress IP (ban risk, B42). Persist it in the vault's per-account proxy map instead.
+        if (!v) {
+          const val = (typeof proxy === 'string' && proxy.trim()) ? normalizeProxy(proxy.trim()) : undefined;
+          AccountVault.setAccountProxy(account.username, val); // undefined (null/'') clears it
+        } else {
+          AccountVault.setAccountProxy(account.username, undefined); // full record now owns it; drop any stray map entry
+        }
         // a proxy string lives in the vault; a forced-local ('') override is a non-secret
         // bind kept in accounts.json; null/string clear the org override.
         const forcedLocal = typeof proxy === 'string' && !proxy.trim();
@@ -968,7 +977,9 @@ export function createApp(deps: ApiDeps): Express {
     if (AccountVault.isEnabled()) {
       // The per-account proxy override lives in the VAULT; a forced-local bind may remain
       // in accounts.json. (Reading networkOverride here would misreport — it's blanked.)
-      const vp = AccountVault.getAccount(account.username)?.proxy?.trim() ?? '';
+      // Include a token-only account's per-account map entry (B42) so the edit dialog shows it.
+      const vp = (AccountVault.getAccount(account.username)?.proxy?.trim()
+        ?? AccountVault.getAccountProxy(account.username)) ?? '';
       const forcedLocal = account.networkOverride?.type === 'localip';
       ownProxy = vp;
       hasOverride = !!vp || forcedLocal;

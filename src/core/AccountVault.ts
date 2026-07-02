@@ -53,6 +53,10 @@ interface VaultPayload {
   /** Environment-level proxy URLs (may carry credentials), key: environmentId. Kept in the
    *  ENCRYPTED vault so fleet-wide proxy creds never sit plaintext in accounts.json (B20). */
   envProxies:  Record<string, string>;
+  /** Per-account proxy overrides for accounts WITHOUT a full VaultAccount record (token-only /
+   *  LIMITED QR imports), key: username.toLowerCase(). Lets such an account carry a dedicated
+   *  proxy encrypted instead of the update being silently dropped (B42). */
+  accountProxies: Record<string, string>;
   /** Unknown/newer top-level sections are PRESERVED verbatim (downgrade-safe, B30). */
   [extra: string]: unknown;
 }
@@ -171,7 +175,7 @@ export class AccountVaultImpl {
     const salt = crypto.randomBytes(16);
     this.salt = salt;
     this.key = this.deriveKey(password, salt);
-    this.payload = { version: VAULT_VERSION, accounts: {}, tokens: {}, csfloatKeys: {}, envProxies: {} };
+    this.payload = { version: VAULT_VERSION, accounts: {}, tokens: {}, csfloatKeys: {}, envProxies: {}, accountProxies: {} };
     this.save();
     logger.info('[vault] new vault created + unlocked');
     return { created: true };
@@ -292,10 +296,11 @@ export class AccountVaultImpl {
   removeAccount(username: string): void {
     if (!this.payload) return;
     const k = username.toLowerCase();
-    if (this.payload.accounts[k] || this.payload.tokens[k] || this.payload.csfloatKeys[k]) {
+    if (this.payload.accounts[k] || this.payload.tokens[k] || this.payload.csfloatKeys[k] || this.payload.accountProxies[k]) {
       delete this.payload.accounts[k];
       delete this.payload.tokens[k];
       delete this.payload.csfloatKeys[k];
+      delete this.payload.accountProxies[k];
       this.save();
     }
   }
@@ -354,6 +359,20 @@ export class AccountVaultImpl {
     if (!this.payload) return;
     if (this.payload.envProxies[environmentId]) { delete this.payload.envProxies[environmentId]; this.save(); }
   }
+
+  // ── Per-account proxy for token-only accounts (no full VaultAccount record) — B42 ──
+  getAccountProxy(username: string): string | undefined {
+    const v = this.payload?.accountProxies[username.toLowerCase()];
+    return v && v.trim() ? v : undefined;
+  }
+  setAccountProxy(username: string, proxy: string | undefined): void {
+    if (!this.payload) throw new Error('vault not unlocked');
+    const k = username.toLowerCase();
+    const val = (proxy ?? '').trim();
+    if (val) this.payload.accountProxies[k] = val;
+    else delete this.payload.accountProxies[k];
+    this.save();
+  }
 }
 
 /** Defensive shape normalization for a decrypted payload (corrupt/older file safety).
@@ -370,6 +389,7 @@ function normalizePayload(p: unknown): VaultPayload {
     tokens:      (obj.tokens && typeof obj.tokens === 'object') ? obj.tokens as Record<string, string> : {},
     csfloatKeys: (obj.csfloatKeys && typeof obj.csfloatKeys === 'object') ? obj.csfloatKeys as Record<string, string> : {},
     envProxies:  (obj.envProxies && typeof obj.envProxies === 'object') ? obj.envProxies as Record<string, string> : {},
+    accountProxies: (obj.accountProxies && typeof obj.accountProxies === 'object') ? obj.accountProxies as Record<string, string> : {},
   };
 }
 

@@ -184,7 +184,9 @@ export class AccountManager {
    *  (encrypted); a non-secret local-IP bind may still live in accounts.json. */
   resolveNetwork(account: AccountConfig): NetworkConfig {
     if (AccountVault.isEnabled()) {
-      const vaultProxy = AccountVault.getAccount(account.username)?.proxy?.trim();
+      // A full VaultAccount's proxy, else a token-only account's per-account proxy (B42).
+      const vaultProxy = AccountVault.getAccount(account.username)?.proxy?.trim()
+        ?? AccountVault.getAccountProxy(account.username);
       if (vaultProxy) return { type: 'proxy', value: vaultProxy };
       if (account.networkOverride?.type === 'localip') return account.networkOverride;
       // Env proxy: the VAULT is authoritative in vault mode (B20 — accounts.json's copy is
