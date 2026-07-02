@@ -1679,6 +1679,12 @@ export function createApp(deps: ApiDeps): Express {
       if (/not found|no sessionid|no steamloginsecure|no identity_secret|wallet currency|exceeds|invalid/i.test(msg)) {
         return res.status(400).json({ error: msg });
       }
+      // A create whose outcome is UNKNOWN (network error before the order state was
+      // learned) carries verifyBeforeRetry so the UI tells the operator to check open
+      // orders instead of blindly re-buying (a blind retry could double-spend).
+      if ((err as { verifyBeforeRetry?: boolean }).verifyBeforeRetry) {
+        return res.status(502).json({ error: msg, verifyBeforeRetry: true });
+      }
       res.status(502).json({ error: msg });
     }
   }));

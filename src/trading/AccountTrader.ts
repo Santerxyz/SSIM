@@ -785,8 +785,43 @@ export class AccountTrader {
       }).then((r) => ({ status: r.status, data: r.data }));
     };
 
-    // 1) Initial create (confirmation=0).
-    let { status, data } = await post('0');
+    // Phantom-order recovery: on a NETWORK error we cannot know whether the create
+    // reached Steam. Probe the account's resting buy orders for one matching THIS exact
+    // request (game+item+price); a match means the create landed → report it placed so
+    // no blind retry ever doubles the order. Best-effort (a failed probe returns none).
+    const probeResting = async (): Promise<BuyOrderResult | undefined> => {
+      try {
+        const orders = await this.getMarketOrders();
+        const match = matchRestingBuyOrder(orders.buyOrders, {
+          appId: p.appId, marketHashName: p.marketHashName, perItemMinor: perItem,
+        });
+        if (match) {
+          logger.warn(`[${this.username}] createbuyorder network error, but a matching resting buy order ${match.buyOrderId} EXISTS – reporting placed (NOT retryable) to prevent a duplicate order`);
+          return { placed: true, confirmed: true, needsConfirmation: false, buyOrderId: match.buyOrderId, raw: { recovered: true } };
+        }
+      } catch (e) {
+        logger.warn(`[${this.username}] phantom buy-order probe failed: ${(e as Error).message}`);
+      }
+      return undefined;
+    };
+
+    // 1) Initial create (confirmation=0). validateStatus:() => true means axios only
+    //    throws on a NETWORK/timeout error here — an HTTP rejection returns a status.
+    let status: number, data: any;
+    try {
+      ({ status, data } = await post('0'));
+    } catch (err) {
+      // Network/timeout before we learned the outcome: the order MIGHT exist. Probe;
+      // if found, report placed. Otherwise surface an EXPLICIT verify-before-retry
+      // signal (never a bare retryable fault) so the operator confirms before re-buying.
+      const recovered = await probeResting();
+      if (recovered) return recovered;
+      const e = Object.assign(
+        new Error(`createbuyorder network error – order state UNKNOWN, verify open orders before retrying (${(err as Error).message})`),
+        { verifyBeforeRetry: true },
+      );
+      throw e;
+    }
     logger.info(`[${this.username}] createbuyorder ${p.marketHashName} x${qty} total=${priceTotal} cur=${p.currency} → HTTP ${status} success=${data?.success}`);
 
     // Active immediately (no confirmation required).
@@ -835,7 +870,18 @@ export class AccountTrader {
         // verification as backstops.
         if (p.retryAfterConfirm) {
           logger.info(`[${this.username}] re-POST createbuyorder with confirmation=${creator} (opt-in spec step)…`);
-          const re = await post(creator);
+          // The order was CREATED by POST '0' (success:22) and its mobile confirmation
+          // was ACCEPTED above, so it is already placed+confirmed. The re-POST is only
+          // an activation nudge (success:22 → success:1). A NETWORK failure here must
+          // NEVER rethrow: that would escape buy()'s never-throw-after-placed barrier
+          // and get the run classified as a retryable 502 → a duplicate-order retry.
+          let re: { status: number; data: any };
+          try {
+            re = await post(creator);
+          } catch (err) {
+            logger.warn(`[${this.username}] finalize re-POST network error after the order was created+confirmed (${(err as Error).message}) – reporting placed+confirmed, NOT re-created`);
+            return { placed: true, confirmed: true, needsConfirmation: false, buyOrderId: creator, raw: { finalizeRepostFailed: true } };
+          }
           logger.info(`[${this.username}] createbuyorder re-POST → HTTP ${re.status} success=${re.data?.success}`);
           if (re.status === 200 && re.data?.success === 1) {
             return { placed: true, confirmed: true, needsConfirmation: false,
@@ -1200,6 +1246,23 @@ function toSellOrder(l: MarketListing): ActiveSellOrder {
     currency:          l.currency,
     quantity:          l.quantity,
   };
+}
+
+/**
+ * Finds a resting buy order that matches a createbuyorder request EXACTLY (same game,
+ * item, and per-item price in minor units). Used to recover from a network error on
+ * the create POST: if a matching order already rests, the create landed and must NOT
+ * be retried (that would double-order). Price match is what makes a stale pre-existing
+ * order at a DIFFERENT price not count as "this create landed".
+ */
+export function matchRestingBuyOrder(
+  buyOrders: ActiveBuyOrder[],
+  req: { appId: number; marketHashName: string; perItemMinor: number },
+): ActiveBuyOrder | undefined {
+  return buyOrders.find(o =>
+    o.appId === req.appId &&
+    o.marketHashName === req.marketHashName &&
+    o.pricePerItemMinor === req.perItemMinor);
 }
 
 /** Parses resting BUY orders out of a market/mylistings payload into `out` (deduped by id). */
