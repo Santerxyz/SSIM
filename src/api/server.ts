@@ -205,7 +205,7 @@ export function createApp(deps: ApiDeps): Express {
   const LOOPBACK_BOUND = boundHost === '127.0.0.1' || boundHost === 'localhost' || boundHost === '::1';
   if (LOOPBACK_BOUND) {
     app.use((req: Request, res: Response, next: NextFunction) => {
-      const host = (req.headers.host ?? '').split(':')[0].toLowerCase();
+      const host = hostnameOnly(req.headers.host ?? '');
       if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') return next();
       logger.warn(`blocked request with foreign Host header "${req.headers.host}" (possible DNS rebinding)`);
       res.status(403).json({ error: 'Forbidden' });
@@ -2172,6 +2172,17 @@ function sanitizeEnvironment(env: Environment): Record<string, unknown> {
     proxy:    redactProxyCredentials(env.proxy),
     hasProxy: !!env.proxy.trim(),
   };
+}
+
+/**
+ * The hostname portion of a Host header, correctly handling a bracketed IPv6 literal (B47).
+ * `[::1]:3000` → `[::1]` (the old `.split(':')[0]` yielded `[`, 403-ing a legit ::1 bind and
+ * disagreeing with originGuard). `localhost:3000` → `localhost`; `127.0.0.1:3000` → `127.0.0.1`.
+ */
+export function hostnameOnly(hostHeader: string): string {
+  const h = hostHeader.trim().toLowerCase();
+  if (h.startsWith('[')) { const end = h.indexOf(']'); return end >= 0 ? h.slice(0, end + 1) : h; }
+  return h.split(':')[0];
 }
 
 /** "http://user:pass@host:3128" → "http://***:***@host:3128" (local IPs untouched). */

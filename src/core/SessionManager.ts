@@ -340,6 +340,23 @@ export class SessionManager extends EventEmitter {
       loginAttempts: 0,
     };
 
+    // Resident-ceiling re-check AT the insertion point (B46). The check in loginAccount runs
+    // BEFORE acquireLoginSlot and the entry is inserted here, up to a full backoff later — so a
+    // burst admitted while the map was momentarily small could overshoot the budget. This
+    // re-check is SYNCHRONOUS with the set() below (no await between), so it is race-free: once
+    // the map is at the cap, a NEW account's insertion is refused (transient/retryable). A
+    // re-login of an already-resident account is exempt (it replaces, never grows). We must
+    // tear the freshly-built client down so it doesn't leak a CM/proxy socket.
+    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.sessions.size >= MAX_LIVE_SESSIONS) {
+      try { client.on('error', () => { /* discarded */ }); client.logOff(); } catch { /* noop */ }
+      neutralizeSteamClient(client);
+      AgentFactory.destroyIfDisposable(httpsAgent);
+      throw Object.assign(
+        new Error(`live-session ceiling ${MAX_LIVE_SESSIONS} reached at insertion – ${account.username} skipped; retry shortly`),
+        { loginErrorKind: 'connection' as LoginErrorKind },
+      );
+    }
+
     this.sessions.set(key, session);
     this.transition(session, SessionState.DISCONNECTED, SessionState.CONNECTING);
 
@@ -483,6 +500,16 @@ export class SessionManager extends EventEmitter {
         session.lastError = err.message;
         this.transition(session, prev, SessionState.ERROR);
         this.emit('disconnected', account.username, `fatal: ${err.message}`);
+        // B43: a post-settle fatal (e.g. LoggedInElsewhere) previously left the session RESIDENT
+        // in ERROR state — its TradeOfferManager kept polling every 20s on now-dead cookies
+        // forever (bulk release skips it: isLive is false for ERROR), a steady background
+        // request storm + pinned memory. Tear it down so 'sessionDestroyed' fires and the trader
+        // poller/GC handle/agent are released. Guard against destroying a REPLACEMENT session: a
+        // re-login may have already swapped a fresh session into this key, so only destroy if the
+        // map still holds THIS exact instance. Deferred a tick so we never destroy mid-emit.
+        setTimeout(() => {
+          if (this.sessions.get(key) === session) void this.destroySession(key);
+        }, 0).unref?.();
       });
 
       // ── disconnected ───────────────────────────────────────────────────

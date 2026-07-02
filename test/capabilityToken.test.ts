@@ -17,7 +17,8 @@ test('verifyCapability: constant-time exact match only', () => {
   const t = getCapabilityToken();
   assert.equal(verifyCapability(t), true);
   assert.equal(verifyCapability(t + 'x'), false, 'length mismatch rejected');
-  assert.equal(verifyCapability(t.slice(0, -1) + '0'), false, 'one char off rejected');
+  const flipped = t.slice(0, -1) + (t.endsWith('0') ? '1' : '0'); // guaranteed one char off
+  assert.equal(verifyCapability(flipped), false, 'one char off rejected');
   assert.equal(verifyCapability(''), false);
   assert.equal(verifyCapability(undefined), false);
   assert.equal(verifyCapability(123 as unknown as string), false);
