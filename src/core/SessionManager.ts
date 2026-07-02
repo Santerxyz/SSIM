@@ -612,20 +612,26 @@ export class SessionManager extends EventEmitter {
       clearTimeout(existing.cookieRefreshTimer);
       existing.cookieRefreshTimer = undefined;
     }
+    // 2) Teardown listener discipline: an unhandled 'error' event throws, so a live
+    //    'error' handler must exist at EVERY instant of teardown. Attach a no-op
+    //    BEFORE logOff (belt: covers a client whose real handlers were never wired),
+    //    and RE-attach it in its own try after the listener sweep — if the sweep
+    //    throws, the earlier catch must not also swallow the re-attach.
+    const noopError = (): void => { /* session already torn down */ };
+    try { existing.client.on('error', noopError); } catch { /* noop */ }
     try { existing.client.logOff(); } catch { /* already gone */ }
-    // 2) Drop ALL listeners (they capture the session in their closures), but
-    //    keep a no-op 'error' handler: steam-user can still emit async errors
-    //    after logOff, and an unhandled 'error' event would crash the process.
-    try {
-      existing.client.removeAllListeners();
-      existing.client.on('error', () => { /* session already torn down */ });
-    } catch { /* noop */ }
-    // 3) Close the per-account proxy agent's pooled sockets. A fresh proxy agent is
-    //    built on every login (AgentFactory.fromProxy, never reused), so without this
-    //    each of the many re-logins a flaky-proxy fleet performs would orphan an agent +
-    //    its sockets → OS handle/memory leak. The SHARED local-IP pool agent is skipped.
+    // 3) Drop ALL listeners (they capture the session in their closures)…
+    try { existing.client.removeAllListeners(); } catch { /* noop */ }
+    // …then restore the no-op 'error' handler: steam-user can still emit async
+    // errors after logOff, and an unhandled 'error' event would crash the process.
+    try { existing.client.on('error', noopError); } catch { /* noop */ }
+    // 4) Retire the per-account proxy agent. A fresh proxy agent is built on every
+    //    login (AgentFactory.fromProxy, never reused), so it must be released here —
+    //    but NEVER destroyed while it still owns in-flight sockets/requests (the
+    //    teardown-quiescence invariant; see AgentFactory.destroyIfDisposable). The
+    //    SHARED local-IP pool agent is skipped inside.
     AgentFactory.destroyIfDisposable(existing.httpsAgent);
-    // 4) Release credential-bearing references (cookies) eagerly.
+    // 5) Release credential-bearing references (cookies) eagerly.
     existing.webSession = undefined;
     existing.state = SessionState.DISCONNECTED;
     this.sessions.delete(key);

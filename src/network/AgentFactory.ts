@@ -49,6 +49,40 @@ export interface CreateOptions {
   pooled?: boolean;
 }
 
+/**
+ * Minimal structural view of a Node http(s) Agent for teardown purposes. Native
+ * `https.Agent` fills `sockets` (in-use) and `requests` (queued); the agent-base@6
+ * proxy agents (https-proxy-agent@5 / socks-proxy-agent@6) keep both permanently
+ * empty because they never pool (every request is forced `Connection: close` and
+ * `freeSocket()` destroys the socket) — and their `destroy()` is a NO-OP.
+ */
+interface DestroyableAgent {
+  destroy?: () => void;
+  sockets?: Record<string, unknown[]>;
+  requests?: Record<string, unknown[]>;
+}
+
+/** In-flight work an agent still owns: in-use sockets + queued requests. */
+function agentBusyCount(agent: DestroyableAgent): number {
+  const sum = (m?: Record<string, unknown[]>): number => {
+    if (!m || typeof m !== 'object') return 0;
+    let n = 0;
+    for (const arr of Object.values(m)) if (Array.isArray(arr)) n += arr.length;
+    return n;
+  };
+  return sum(agent.sockets) + sum(agent.requests);
+}
+
+/** How often the retire reaper re-checks a still-busy agent. */
+const RETIRE_POLL_MS = 1_000;
+/**
+ * Hard deadline after which a still-busy retired agent is destroyed anyway. Every
+ * consumer of a session agent runs with a request timeout (≤15s), so a healthy
+ * agent quiesces long before this; hitting it means a request leaked its socket,
+ * and an unbounded leak is then the greater evil.
+ */
+export const RETIRE_FORCE_AFTER_MS = 120_000;
+
 export class AgentFactory {
   /**
    * Process-lifetime cache of local-IP keepAlive agents, keyed by bound localAddress
@@ -57,6 +91,11 @@ export class AgentFactory {
    */
   private static readonly localIpPool = new Map<string, https.Agent>();
 
+  /** Agents retired while still owning in-flight work: agent → retiredAt (epoch ms). */
+  private static readonly retiring = new Map<DestroyableAgent, number>();
+  private static retireTimer: NodeJS.Timeout | undefined;
+  private static readonly stats = { retired: 0, destroyedIdle: 0, destroyedForced: 0 };
+
   static create(network: NetworkConfig, opts?: CreateOptions): AgentBundle {
     return network.type === 'localip'
       ? AgentFactory.fromLocalIp(network.value, opts?.pooled ?? true)
@@ -64,22 +103,72 @@ export class AgentFactory {
   }
 
   /**
-   * Closes an agent's pooled sockets IF it is a disposable per-account agent.
+   * Retires a disposable per-account agent — destroying it only once QUIESCENT.
    *
-   * Per-account PROXY agents (HttpsProxyAgent / SocksProxyAgent) are created fresh
-   * on every login and never reused, so on logout/re-login they must be `.destroy()`ed
-   * — otherwise each of the (hundreds of) proxy re-logins a flaky fleet performs orphans
-   * an agent plus its keepAlive sockets, leaking OS handles + memory until the process is
-   * reclaimed. The SHARED local-IP keepAlive agents (localIpPool) back EVERY live proxyless
-   * session at once, so those are skipped here. Safe to call on any agent (no-op when the
-   * agent is the shared pool or has no destroy()).
+   * THE TEARDOWN-QUIESCENCE INVARIANT (native-crash class): an agent is NEVER
+   * `.destroy()`ed while it still owns in-use sockets or queued requests. Destroying
+   * live sockets yanks native TLS/TCP handles out from under in-flight writes — the
+   * exact use-after-teardown churn implicated in the 0xC0000409 fast-fail class.
+   * Instead the agent is parked in a reaper that destroys it the moment its socket
+   * and request maps drain (all consumers run ≤15s request timeouts), with a hard
+   * 120s force-destroy so a leaked socket can't pin agents forever.
+   *
+   * Reality note (verified against node_modules): the agent-base@6 proxy agents pool
+   * NOTHING (`Connection: close` per request) and their `destroy()` is a no-op, so
+   * for them this whole path is belt-and-suspenders. It matters for any native
+   * `https.Agent` (non-pooled local-IP) and future-proofs a proxy-agent upgrade to
+   * versions whose destroy() is real. The SHARED local-IP pool agents back every
+   * live proxyless session at once and are never torn down here.
    */
   static destroyIfDisposable(agent: unknown): void {
     if (!agent) return;
     for (const pooled of AgentFactory.localIpPool.values()) {
       if (pooled === agent) return; // shared local-IP agent → never tear down
     }
-    try { (agent as { destroy?: () => void }).destroy?.(); } catch { /* best-effort */ }
+    AgentFactory.retire(agent as DestroyableAgent);
+  }
+
+  private static retire(agent: DestroyableAgent): void {
+    AgentFactory.stats.retired++;
+    if (agentBusyCount(agent) === 0) {
+      try { agent.destroy?.(); } catch { /* best-effort */ }
+      AgentFactory.stats.destroyedIdle++;
+      return;
+    }
+    if (!AgentFactory.retiring.has(agent)) AgentFactory.retiring.set(agent, Date.now());
+    AgentFactory.ensureReaper();
+  }
+
+  private static ensureReaper(): void {
+    if (AgentFactory.retireTimer) return;
+    AgentFactory.retireTimer = setInterval(() => AgentFactory.sweepRetiring(), RETIRE_POLL_MS);
+    AgentFactory.retireTimer.unref?.();
+  }
+
+  /** One reaper pass (exposed for tests — `now` is injectable). */
+  static sweepRetiring(now: number = Date.now()): void {
+    for (const [agent, since] of AgentFactory.retiring) {
+      const busy = agentBusyCount(agent);
+      if (busy === 0) {
+        try { agent.destroy?.(); } catch { /* best-effort */ }
+        AgentFactory.stats.destroyedIdle++;
+        AgentFactory.retiring.delete(agent);
+      } else if (now - since >= RETIRE_FORCE_AFTER_MS) {
+        logger.warn(`[network] retired agent still busy (${busy} socket(s)/request(s)) after ${Math.round(RETIRE_FORCE_AFTER_MS / 1000)}s – forcing destroy (a request leaked its socket)`);
+        try { agent.destroy?.(); } catch { /* best-effort */ }
+        AgentFactory.stats.destroyedForced++;
+        AgentFactory.retiring.delete(agent);
+      }
+    }
+    if (AgentFactory.retiring.size === 0 && AgentFactory.retireTimer) {
+      clearInterval(AgentFactory.retireTimer);
+      AgentFactory.retireTimer = undefined;
+    }
+  }
+
+  /** Teardown instrumentation: proves "no agent destroyed with work in flight" in soaks/tests. */
+  static teardownStats(): { retired: number; destroyedIdle: number; destroyedForced: number; pendingRetire: number } {
+    return { ...AgentFactory.stats, pendingRetire: AgentFactory.retiring.size };
   }
 
   // ── Local-IP binding ───────────────────────────────────────────────────────

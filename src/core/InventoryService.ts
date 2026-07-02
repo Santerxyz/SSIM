@@ -686,11 +686,57 @@ export class InventoryService {
   /**
    * Fire-and-forget refresh used after a trade so the sender loses and the
    * receiver gains the moved items in the cache (post-trade cache fix).
+   *
+   * SAME discipline as the bulk refresh — this must never be the one fleet path
+   * that bypasses the safety rails (however many targets a future caller passes):
+   *   • BOUNDED: a scaleConcurrency-sized worker pool, never one task per target
+   *     (an unbounded fan-out is the login/socket storm that kills the process).
+   *   • THROTTLED: routes through refreshMaybeThrottled so no-proxy accounts go
+   *     through the shared LocalIpThrottle instead of hammering Steam from one IP.
+   *   • RELEASING: a session THIS refresh created is logged back out after its
+   *     inventory is cached (explicit ownership via createdSession, exactly like
+   *     runRefresh) — a session another op owns (e.g. the trade's sender, still
+   *     live) is reused and never torn down. (C17 / INV-A6.)
+   * Returns the completion promise (callers may ignore it; nothing rejects).
    */
-  refreshAfterTrade(usernames: Array<string | undefined>): void {
-    const targets = usernames.filter((u): u is string => !!u);
-    if (targets.length === 0) return;
-    void Promise.allSettled(targets.map(u => this.refreshOne(u)))
+  refreshAfterTrade(usernames: Array<string | undefined>): Promise<void> {
+    const targets: string[] = [];
+    const seen = new Set<string>();
+    for (const u of usernames) {
+      if (!u) continue;
+      const k = u.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      targets.push(u);
+    }
+    if (targets.length === 0) return Promise.resolve();
+
+    const queue = [...targets];
+    const workers = Math.max(1, Math.min(scaleConcurrency(queue.length), queue.length));
+    const worker = async (): Promise<void> => {
+      while (queue.length > 0) {
+        const username = queue.shift()!;
+        const key = username.toLowerCase();
+        this.createdSession.delete(key); // clear any stale ownership marker
+        try {
+          await this.refreshMaybeThrottled(username, 'cs2');
+        } catch (err) {
+          logger.warn(`[${username}] post-trade refresh failed: ${(err as Error).message}`);
+        } finally {
+          const createdByUs = this.createdSession.get(key) === true;
+          this.createdSession.delete(key);
+          if (REFRESH_RELEASE_SESSIONS && createdByUs) {
+            try {
+              if (this.sessions.isLive(username)) await this.sessions.logoutAccount(username);
+            } catch (err) {
+              logger.warn(`[${username}] post-trade session release failed: ${(err as Error).message}`);
+            }
+          }
+        }
+      }
+    };
+
+    return Promise.all(Array.from({ length: workers }, () => worker()))
       .then(() => {
         logger.info(`Post-trade inventory refresh done: ${targets.join(', ')}`);
         try { this.onCompleteCb?.('post-trade', 'cs2'); } catch { /* history is best-effort */ }
