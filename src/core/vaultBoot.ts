@@ -5,7 +5,27 @@ import type { MaFile } from '../types/account';
 import { AccountVault } from './AccountVault';
 import { loadMaFileFromDisk, readCredentialsFile, listDropZoneMaFiles, parseAccountsCsv } from './maFiles';
 import { logger } from '../utils/logger';
-import { dataDir } from '../utils/paths';
+import { dataDir, vaultDir } from '../utils/paths';
+
+/**
+ * True when accounts.json holds accounts whose passwords are BLANK — the signature of a prior
+ * VAULT-MODE install (enterVaultMode blanked them) — while vault.enc is ABSENT. Creating a fresh
+ * empty vault in that state would leave the registered accounts with NO credentials and give the
+ * operator no signal that the real vault.enc is merely missing (mis-set SSIM_HOME / partial
+ * restore / unmounted drive). B36. Best-effort; any read error returns false (don't block boot).
+ */
+export function looksLikeOrphanedVaultInstall(): boolean {
+  try {
+    const dbPath = vaultDir('accounts.json');
+    if (!fsExtra.existsSync(dbPath)) return false;
+    const db = fsExtra.readJsonSync(dbPath) as { accounts?: Array<{ password?: string }> };
+    const accts = Array.isArray(db?.accounts) ? db.accounts : [];
+    if (accts.length === 0) return false;
+    // A prior vault-mode install has blanked passwords; a genuine fresh/plaintext install would
+    // carry real passwords (or no accounts at all).
+    return accts.some(a => a && (a.password === '' || a.password == null));
+  } catch { return false; }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Vault boot: the CLI master-password prompt + the non-destructive import/merge.
@@ -69,6 +89,13 @@ export async function unlockVault(): Promise<void> {
     const envPw = process.env.SSIM_VAULT_PASSWORD?.trim() || headlessPwCache;
     if (!envPw) {
       logger.error('[vault] no interactive terminal and no SSIM_VAULT_PASSWORD set – a Master Password is required');
+      process.exit(1);
+    }
+    // B36: refuse to CREATE a fresh empty vault over an existing farm whose vault.enc is merely
+    // missing (mis-set SSIM_HOME / partial restore) — that would orphan every account. Require an
+    // explicit opt-in to start anew.
+    if (!existing && looksLikeOrphanedVaultInstall() && process.env.SSIM_VAULT_CREATE !== '1') {
+      logger.error('[vault] accounts.json holds registered accounts but vault.enc is MISSING – refusing to create a new empty vault (their credentials would be lost). Restore vault.enc, or set SSIM_VAULT_CREATE=1 to start a NEW empty vault.');
       process.exit(1);
     }
     try {
@@ -428,6 +455,20 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
     } else {
       skipped++;
     }
+  }
+  // Token-only (LIMITED / QR-imported) accounts exist in the source vault ONLY as a payload.tokens
+  // entry with no accounts record, so the loop above never sees them and they were silently dropped
+  // — the merge looked complete while a farm's QR accounts went missing (B35). Carry them over: a
+  // registered org record (limited tier) + the refresh token (its sole credential).
+  for (const [k, tok] of Object.entries(ext.tokens)) {
+    if (typeof tok !== 'string' || !tok) continue;
+    if (ext.accounts[k]) continue;                                   // already handled above
+    if (AccountVault.getToken(k) || accounts.existsRaw(k)) { skipped++; continue; } // already local
+    const folderNamePath = folderPaths?.get(k);
+    const folderId = explicitFolder ?? ((folderNamePath && folderNamePath.length) ? accounts.ensureFolderPath(env, folderNamePath) : null);
+    accounts.addImportedAccount({ username: k, maFilePath: '', environmentId: env, folderId });
+    AccountVault.setToken(k, tok);
+    imported++;
   }
   if (imported) {
     AccountVault.save();

@@ -33,6 +33,17 @@ test('vault: create → save → reopen round-trips accounts, tokens, env proxie
   assert.equal(v2.getEnvProxy('env-1'), 'http://eu:ep@9.9.9.9:3128');
 });
 
+// ─── B32: a FIRST token mint is persisted synchronously (survives a kill) ──────
+test('B32: setToken persists a first-mint token immediately (no flush needed)', () => {
+  const { file, bak } = tmpVault();
+  const v1 = new AccountVaultImpl(file, bak);
+  v1.unlockOrCreate('pw');
+  v1.setToken('limited', 'sole-credential-token'); // first mint → synchronous save, NO flush
+  const v2 = new AccountVaultImpl(file, bak);       // simulate a kill + restart
+  v2.unlockOrCreate('pw');
+  assert.equal(v2.getToken('limited'), 'sole-credential-token', 'a first token survives without an explicit flush');
+});
+
 // ─── B42: a token-only account's per-account proxy round-trips in the vault ─────
 test('B42: setAccountProxy/getAccountProxy persist for an account with no full record', () => {
   const { file, bak } = tmpVault();

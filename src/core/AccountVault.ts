@@ -310,8 +310,14 @@ export class AccountVaultImpl {
   getToken(username: string): string | undefined { return this.payload?.tokens[username.toLowerCase()]; }
   setToken(username: string, token: string): void {
     if (!this.payload) return;
-    this.payload.tokens[username.toLowerCase()] = token;
-    this.scheduleSave();
+    const k = username.toLowerCase();
+    // First-mint (B32): a just-imported token-only LIMITED account has the refresh token as its
+    // SOLE credential. The 1.5s debounced+unref'd save could be lost to a kill/power-loss in the
+    // window, stranding a registered account with no login path. Persist a FIRST token
+    // SYNCHRONOUSLY; keep the debounce only for token ROTATION churn (an existing token updating).
+    const firstMint = !this.payload.tokens[k];
+    this.payload.tokens[k] = token;
+    if (firstMint) this.save(); else this.scheduleSave();
   }
   deleteToken(username: string): void {
     if (!this.payload) return;

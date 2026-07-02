@@ -133,7 +133,15 @@ export class AccountManager {
               ? { ...e, proxy: '' }
               : e) }
       : this.db;
-    writeJsonAtomic(DB_PATH, toWrite, { spaces: 2, backup: !vault });
+    // Backup policy (B34): a .bak protects the whole fleet's org structure (env/folder/tier/
+    // steamId/tradeUrl) from a bad write or hand-edit. In plaintext mode we always back up. In
+    // vault mode we must NOT let the .bak retain PRE-blank plaintext — but that only happens on
+    // the TRANSITION write (a vaulted account still carries an in-memory password). Once blanked
+    // (steady state) the on-disk file is already secret-free, so a .bak of it leaks nothing new.
+    // `secretFree` detects the steady state without a disk read: no vaulted account holds a
+    // password in memory. (An unmigrated account's plaintext is already in accounts.json anyway.)
+    const secretFree = !this.db.accounts.some(a => a.password && AccountVault.hasAccount(a.username));
+    writeJsonAtomic(DB_PATH, toWrite, { spaces: 2, backup: vault ? secretFree : true });
     logger.debug('accounts.json saved');
   }
 
