@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'events';
-import { SessionManager } from '../src/core/SessionManager';
+import { SessionManager, neutralizeSteamClient } from '../src/core/SessionManager';
 import { InventoryService } from '../src/core/InventoryService';
 import { SessionState } from '../src/types/session';
 import { MAX_CONCURRENCY } from '../src/utils/concurrency';
@@ -54,6 +54,59 @@ test('destroySession: survives a vendor removeAllListeners throw with a live err
   assert.ok(swept, 'the throwing sweep ran');
   assert.ok(client.listenerCount('error') >= 1, 'error listener must exist even when the sweep throws');
   client.emit('error', new Error('late CM error after a failed sweep'));
+});
+
+// ─── Zombie resurrection: a destroyed steam-user client can never reconnect ────
+// steam-user's logOff() leaves _logonMsgTimeout armed; left alone it fires
+// _enqueueLogonAttempt() -> logOn(true) and resurrects a discarded client outside
+// every login cap (the leading native-crash / login-storm mechanism).
+
+test('neutralizeSteamClient: clears the armed logon-message timeout (no self-relog)', async () => {
+  let resurrected = false;
+  const client: Record<string, unknown> = {};
+  // Mimic steam-user post-_sendLogOn: a live 5s timer that would relog.
+  client._logonMsgTimeout = setTimeout(() => { resurrected = true; (client.logOn as () => void)(); }, 20);
+  client.logOn = () => { resurrected = true; };
+
+  neutralizeSteamClient(client);
+
+  await sleep(60);
+  assert.equal(resurrected, false, 'the resurrection timer must be cleared');
+});
+
+test('neutralizeSteamClient: logOn is inert after teardown even if a backoff promise resolves later', () => {
+  let reconnected = false;
+  const client: Record<string, unknown> = { logOn: () => { reconnected = true; } };
+  neutralizeSteamClient(client);
+  // Simulate _enqueueLogonAttempt's already-pending backoff firing post-teardown:
+  (client.logOn as (r: boolean) => void)(true);
+  assert.equal(reconnected, false, 'a torn-down client must never log on again');
+});
+
+test('neutralizeSteamClient: cancels reconnect timers, marks closed, never throws on odd input', () => {
+  let cancelled = false;
+  const client: Record<string, unknown> = { _cancelReconnectTimers: () => { cancelled = true; } };
+  neutralizeSteamClient(client);
+  assert.equal(cancelled, true, 'reconnect/backoff timers cancelled');
+  assert.equal(client._connectionClosed, true, 'connection marked closed');
+  // Must be a safe no-op on non-clients:
+  neutralizeSteamClient(undefined);
+  neutralizeSteamClient(null);
+  neutralizeSteamClient(42);
+});
+
+test('destroySession neutralizes the client so its armed logon timer cannot relog', async () => {
+  const sm = new SessionManager();
+  const client = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  let relogged = false;
+  client.logOff = () => { /* noop */ };
+  client.logOn = () => { relogged = true; };
+  client._logonMsgTimeout = setTimeout(() => { relogged = true; (client.logOn as () => void)(); }, 20);
+  (sm as unknown as { sessions: Map<string, unknown> }).sessions.set('bot1', fakeSession(client as never));
+
+  await (sm as unknown as { destroySession: (k: string) => Promise<void> }).destroySession('bot1');
+  await sleep(60);
+  assert.equal(relogged, false, 'a destroyed session client must not resurrect via its logon timer');
 });
 
 // ─── refreshAfterTrade: bounded + throttle-routed + session-releasing ──────────

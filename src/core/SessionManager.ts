@@ -620,6 +620,18 @@ export class SessionManager extends EventEmitter {
     const noopError = (): void => { /* session already torn down */ };
     try { existing.client.on('error', noopError); } catch { /* noop */ }
     try { existing.client.logOff(); } catch { /* already gone */ }
+    // 2b) Neutralize the discarded client so it can NEVER resurrect itself. This is
+    //    the core of the native-crash / login-storm class: steam-user's logOff() does
+    //    NOT clear _logonMsgTimeout — a teardown landing while a ClientLogon is in
+    //    flight (the exact 15s-timeout / connection-retry teardown a proxy ECONNRESET
+    //    storm triggers hundreds of times) leaves that 5s timer alive; it fires
+    //    _disconnect()+_enqueueLogonAttempt() → logOn(true), fully reconnecting a
+    //    client SSIM already deleted from the map — an invisible CM session +
+    //    heartbeat + login retries counted by NOTHING (outside MAX_CONCURRENT_LOGINS /
+    //    MAX_LIVE_SESSIONS), and later a LoggedInElsewhere kick of the account's real
+    //    login. steam-user exposes no destroy(), so we defensively silence the exact
+    //    reconnect machinery (all guarded; unknown-field access is a safe no-op).
+    neutralizeSteamClient(existing.client);
     // 3) Drop ALL listeners (they capture the session in their closures)…
     try { existing.client.removeAllListeners(); } catch { /* noop */ }
     // …then restore the no-op 'error' handler: steam-user can still emit async
@@ -671,6 +683,40 @@ export class SessionManager extends EventEmitter {
 }
 
 // ─── Standalone helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Defensively prevents a discarded steam-user client from resurrecting itself after
+ * teardown. steam-user offers no public destroy(), and its logOff() leaves reconnect
+ * machinery armed (notably _logonMsgTimeout, which is NOT cleared by
+ * _cleanupClosedConnection — verified in node_modules/steam-user 5.x). Left alone,
+ * that timer fires _enqueueLogonAttempt() → logOn(true) and brings a client SSIM has
+ * already deleted from its map back to life: an uncapped CM login-retry storm that is
+ * the leading suspect for the field 0xC0000409 fast-fail under a proxy ECONNRESET
+ * storm at fleet scale.
+ *
+ * We reach into documented-stable 5.x internals, every access guarded so a future
+ * rename simply degrades to a partial no-op (never a throw): clear the logon-message
+ * timeout, cancel reconnect/backoff timers, mark the connection closed, and finally
+ * REPLACE logOn with an inert stub so even an already-resolved backoff promise's
+ * `this.logOn(true)` cannot reconnect. Idempotent and safe on any object.
+ */
+export function neutralizeSteamClient(client: unknown): void {
+  if (!client || typeof client !== 'object') return;
+  const c = client as Record<string, unknown> & {
+    _logonMsgTimeout?: NodeJS.Timeout;
+    _heartbeatInterval?: NodeJS.Timeout;
+    _cancelReconnectTimers?: (dontClearBackoffTime?: boolean) => void;
+    logOn?: (...a: unknown[]) => unknown;
+  };
+  try { if (c._logonMsgTimeout) clearTimeout(c._logonMsgTimeout); } catch { /* noop */ }
+  try { if (c._heartbeatInterval) clearInterval(c._heartbeatInterval); } catch { /* noop */ }
+  try { c._cancelReconnectTimers?.(); } catch { /* noop */ }
+  try { c._connectionClosed = true; } catch { /* noop */ }
+  // The ultimate backstop: a torn-down client must never log on again, whatever
+  // internal timer/promise tries to. A no-op logOn makes resurrection impossible.
+  try { c.logOn = (): void => { /* client torn down — no resurrection */ }; } catch { /* noop */ }
+}
+
 
 /**
  * Triggers client.webLogOn() on an existing, logged-in SteamUser instance and
