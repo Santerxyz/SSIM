@@ -1,7 +1,7 @@
 import type { TradeService } from './TradeService';
 import type { InventoryService } from '../core/InventoryService';
 import type { MarketOrders } from './AccountTrader';
-import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, type SellStrategy } from '../pricing/MarketPricing';
+import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, EUR_CURRENCY, type SellStrategy } from '../pricing/MarketPricing';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
@@ -19,6 +19,20 @@ const PREFLIGHT_RETRIES  = 2;                       // connectivity-probe retrie
 const PREFLIGHT_BACKOFF_MS = 8_000;
 const CONFIRM_RETRIES    = 3;                       // 2FA-confirmation retries (Steam's confirm servers 500 a lot)
 const CONFIRM_BACKOFF_MS = 18_000;                  // pause between confirmation retries
+
+/**
+ * Money-safety gate (B11): every price SSIM computes is EUR seller-net cents, but
+ * Steam's market/sellitem interprets the `price` field in the SELLER's OWN wallet
+ * currency's minor units. Listing an EUR-cents number on a non-EUR wallet lists the
+ * item ~99% underpriced (10.00€ → ~10 RUB) and it sells instantly = silent real-money
+ * loss. So a sell is only safe when the wallet is EUR. We fail CLOSED for a KNOWN
+ * non-EUR wallet (never convert-and-guess); an UNKNOWN wallet keeps the EUR common
+ * path (a non-EUR wallet is reported by the login 'wallet' event, so the dangerous
+ * case is knowable — proceeding-on-unknown never underprices a wallet we've seen).
+ */
+export function sellWalletBlocked(walletCurrency: number | undefined): boolean {
+  return walletCurrency != null && walletCurrency !== EUR_CURRENCY;
+}
 
 /** Classifies a Steam/network error as transient (retry) vs. hard (give up). */
 function isTransient(err: unknown): boolean {
@@ -338,6 +352,20 @@ export class MarketService {
     } catch (err) {
       logger.warn(`[mass-sell] ${user}: login/connection failed (${(err as Error).message}) – ${N} item(s) deferred`);
       this.deferAll(group, group.items, `Login/connection failed: ${(err as Error).message}`);
+      return;
+    }
+
+    // MONEY SAFETY (B11): refuse to list on a KNOWN non-EUR wallet — the price is EUR
+    // cents and Steam would read it as wallet-currency minor units (~99% underprice).
+    // These are BLOCKED (operator must fix the wallet/feature), not deferred (retrying
+    // wouldn't help). An unknown wallet keeps the EUR path (see sellWalletBlocked).
+    if (sellWalletBlocked(trader.walletCurrency)) {
+      const wc = trader.walletCurrency;
+      logger.error(`[mass-sell] ${user}: wallet currency ${wc} is not EUR (${EUR_CURRENCY}) – prices are EUR-denominated; listing would underprice ~99%. BLOCKING this bot to protect real money.`);
+      for (const item of group.items) {
+        this.job.blocked.push({ username: user, assetId: item.assetId, error: `wallet currency ${wc} is not EUR – EUR-only pricing; not listed (would underprice ~99%)` });
+        this.job.done++;
+      }
       return;
     }
 

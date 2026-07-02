@@ -3,7 +3,10 @@ import { logger } from '../utils/logger';
 import { parseSteamMoney } from './currencies';
 
 const APPID_CS2     = 730;
-const EUR_CURRENCY  = 3;   // Steam currency code for EUR (matches the bot wallets)
+/** Steam currency code for EUR. ALL market prices SSIM computes are EUR seller-net
+ *  cents (this module hardcodes it), so a sell is only money-safe on an EUR wallet —
+ *  see MarketService's wallet-currency guard (B11). Exported as the single source. */
+export const EUR_CURRENCY  = 3;
 const COUNTRY       = 'DE';
 
 // Distinct User-Agents per cascade step – varying the UA (plus a fresh proxy IP
