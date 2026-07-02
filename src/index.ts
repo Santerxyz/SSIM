@@ -5,6 +5,7 @@ import { execFileSync } from 'child_process';
 import type { Server } from 'http';
 import { createApp, createDeps } from './api/server';
 import { getCapabilityToken } from './api/capability';
+import { acquireInstanceLock, releaseInstanceLock } from './core/singleInstance';
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
@@ -33,61 +34,10 @@ let deps: ReturnType<typeof createDeps> | undefined;
 let server: Server | undefined;
 let activePort = PORT; // the actually-bound port (PORT, or the next free one)
 
-// ── Single-instance lock ──────────────────────────────────────────────────────
-const LOCK_FILE = dataDir('ssim.lock');
+// ── Single-instance lock (extracted to core/singleInstance.ts for testability) ──
+// See that module: an ATOMIC (fs.open 'wx'), FAIL-SAFE guard that makes a double-run —
+// and the vault/accounts/token store races it causes — structurally impossible (INV-G5).
 
-/** True if a process with this PID is currently running. */
-function isProcessAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } // exists, no perm
-}
-/**
- * The image/command name (lower-cased, e.g. "ssim-backend.exe") of a live PID, or '' if it
- * can't be determined. Used ONLY to disambiguate a RECYCLED PID: a hard-killed SSIM (an uncatchable
- * TerminateProcess/SIGKILL leaves no lock release — e.g. the update swap bat taskkills the backend)
- * can have its PID reused by an unrelated program, which the old PID-liveness-only guard then mistook
- * for "SSIM already running" and refused to boot. Cross-platform (POSIX via `ps`) so the
- * recycled-PID reclaim works off Windows too, not just on win32. (INV-G5 / G-4.) Cheap; runs only
- * on the rare lock-conflict path.
- */
-function processImageName(pid: number): string {
-  try {
-    if (process.platform === 'win32') {
-      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
-        { encoding: 'utf8', windowsHide: true, timeout: 4000 });
-      return (out.match(/^"([^"]+)"/)?.[1] ?? '').toLowerCase(); // first CSV column = image name
-    }
-    // POSIX: the command name of the live PID (basename of comm).
-    const out = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8', timeout: 4000 });
-    return (out.trim().split(/[\\/]/).pop() ?? '').toLowerCase();
-  } catch { return ''; }
-}
-/** Single-instance guard: false when ANOTHER live SSIM already holds the lock. */
-function acquireInstanceLock(): boolean {
-  try {
-    if (fs.existsSync(LOCK_FILE)) {
-      const pid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
-      if (Number.isFinite(pid) && pid !== process.pid && isProcessAlive(pid)) {
-        // PID is alive — but confirm it's really OUR binary before refusing to start. A recycled
-        // PID (different image) means the real SSIM is gone and the lock is stale → reclaim it.
-        // This only ever ADDS safety: it never steals the lock from a genuine second SSIM.
-        const ours = (process.execPath.split(/[\\/]/).pop() ?? '').toLowerCase();
-        const holder = processImageName(pid);
-        if (holder === '' || holder === ours) return false; // another instance (or undeterminable → keep the safe old behavior)
-        logger.warn(`single-instance lock held by recycled PID ${pid} (${holder} ≠ ${ours}) – reclaiming stale lock`);
-      }
-    }
-    fs.writeFileSync(LOCK_FILE, String(process.pid)); // claim (overwrites a stale lock)
-    return true;
-  } catch { return true; } // never block boot on a lockfile IO error
-}
-function releaseInstanceLock(): void {
-  try {
-    if (fs.existsSync(LOCK_FILE) && parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10) === process.pid) {
-      fs.unlinkSync(LOCK_FILE);
-    }
-  } catch { /* best-effort */ }
-}
 /** First free TCP port at/after `start` – handles a NON-SSIM app holding the port. */
 function findFreePort(start: number, host: string, tries = 20): Promise<number> {
   return new Promise((resolve, reject) => {
