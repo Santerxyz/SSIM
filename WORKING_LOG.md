@@ -86,3 +86,39 @@ destroys, TLS handshake storms. Exact native trigger remains HYPOTHESIS (no dump
 
 **Next:** repro harness v2 driving the REAL compiled SessionManager/InventoryManager
 against a local RST-storm proxy at concurrency 25–40, sustained soak; then P2 sweeps.
+
+---
+
+## 2026-07-02 — Parallel subsystem audit returned; native-crash root + money blockers
+
+**Audit:** 11 subagents; 5 returned before a session-usage limit (session-teardown,
+inventory-refresh, trading-money, secrets-vault, api-surface); 6 parked to re-run after
+1pm Berlin reset (frontend, licensing-updater, boot-lifecycle, pricing-fx,
+csfloat-cleanbrowser, ledger-parse). All findings captured in BETA_BLOCKERS.md (B01–B48),
+verified against current code before any fix.
+
+**Native-crash ROOT identified + fixed (B04):** the session-teardown auditor traced
+0xC0000409 to a **zombie steam-user resurrection** — logOff() doesn't clear
+_logonMsgTimeout, so a teardown mid-handshake (the 15s-timeout / retry teardown a storm
+fires hundreds of times) leaves a 5s timer that fires logOn(true) and revives a discarded
+client: an uncapped CM login storm outside MAX_CONCURRENT_LOGINS / MAX_LIVE_SESSIONS. Also
+confirmed the feared "socket-write-into-destroyed-agent" is NOT reachable today
+(agent-base@6 destroy() is a no-op, proxy agents pool nothing) — my quiescent-retire is
+belt-and-suspenders + future-proofing, and the ZOMBIE is the real killer. Fixed with
+neutralizeSteamClient() in destroySession.
+
+**Money-path W-blockers fixed (red→green each):**
+- B10/B12 (commit): createbuyorder network errors made money-safe — re-POST throw after
+  confirm → report placed+confirmed (never rethrow past the barrier); POST'0' throw →
+  probe getMarketOrders for a matching resting order (placed) else verifyBeforeRetry.
+  Owner-protected re-POST shape unchanged (one POST'0', at most one re-POST=creator).
+- B11 (commit): sell fails closed on a KNOWN non-EUR wallet (prices are EUR cents; Steam
+  reads them as wallet-currency → ~99% underprice). Unknown wallet keeps the EUR path.
+- B13/B17/B44/B45 (commit): MONEY_OP breaker now covers CSFloat cash ops + confirmations/
+  respond (extracted+tested MONEY_OP_ROUTE); csfloat create-listing price floor ≥1;
+  batchOfferAction now paced by a shared jittered dispatch throttle (Error-15 guard);
+  mass-sell itemDelayMs floored ≥500ms (a client 0 removed all pacing).
+
+**Still open (this queue):** B14 op-journal (assess scope), B15 partial-baseline, B16 sell
+appId, B18 0-decimal wallets (hypothesis), B19 confirmed-on-phone; then secrets (B20–B26),
+data/brick (B30–B36), ban/crash (B40–B47).

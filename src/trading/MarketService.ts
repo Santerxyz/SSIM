@@ -10,6 +10,7 @@ import { logger } from '../utils/logger';
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
 // ceiling 25). Per-bot anti-spam pacing (item/bot delays) still applies inside each worker.
 const DEFAULT_ITEM_DELAY  = 1_200; // pause between a bot's individual listings
+const MIN_ITEM_DELAY       = 500;  // hard floor: a client can raise the pause, never remove it (B45 anti-storm)
 const DEFAULT_BOT_DELAY    = 3_000; // pause between bots per worker
 
 // ── Stability tuning (Rules 1-3) ──────────────────────────────────────────────
@@ -258,7 +259,12 @@ export class MarketService {
     // /api/market/sell body) is honoured but CLAMPED to the 25 ceiling — proxy/socket stability
     // is non-negotiable, so a client value can never raise it above the intentional cap.
     const concurrency = clampConcurrency(opts?.concurrency, scaleConcurrency(groups.length));
-    const itemDelay   = opts?.itemDelayMs ?? DEFAULT_ITEM_DELAY;
+    // Floor the per-listing pause (B45): a client itemDelayMs:0 (careless user or a
+    // forged-origin local request) would remove ALL inter-listing pacing for every bot
+    // — a per-account request storm (Steam rate-limit / ban risk). The caller may RAISE
+    // the delay, never drop it below the floor. `?? default` then `Math.max`, because
+    // 0 ?? 1200 === 0 would otherwise keep the zero.
+    const itemDelay   = Math.max(MIN_ITEM_DELAY, opts?.itemDelayMs ?? DEFAULT_ITEM_DELAY);
     const customNet   = strategy === 'custom' ? Math.max(1, Math.round(opts?.customCents ?? 0)) : null;
     const netCache = new Map<string, number | null>(); // marketHashName → seller net cents
     const queue = [...groups];

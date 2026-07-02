@@ -16,6 +16,40 @@ import { parseSteamTradeError } from '../utils/steamTradeError';
 // reasoning as mass-send. The batch ceiling is a HARD 2 (an explicit value may lower it).
 const OFFERS_READ_CONCURRENCY = 4;   // parallel account reads (login-bound, not Steam-write)
 const OFFER_ACTION_CONCURRENCY = 2;  // HARD ceiling for batch accept/decline/cancel
+// Batch accept/decline/cancel are per-account Steam WRITES (+ 2FA confirms on accept), so a
+// burst trips Error 15 / rate limits exactly like mass-send. Pace every dispatched action
+// with a jittered global gap, not just cap parallelism (B44). Shorter than the send floor —
+// these are lighter calls — but never zero. Shared across workers via createDispatchThrottle.
+const OFFER_ACTION_MIN_DELAY_MS = 600;
+const OFFER_ACTION_MAX_DELAY_MS = 1_200;
+
+/**
+ * A global dispatch throttle: reserve time slots ≥ a jittered [minGap,maxGap] apart so the gap
+ * is between ANY two dispatches across ALL callers/workers, not just two by one worker. Returns
+ * an async `pace()` to await BEFORE each dispatch. (Factored out of runMassSend's inline
+ * throttle; exported for unit testing the reservation math without real timers.)
+ */
+export function createDispatchThrottle(
+  minGap: number,
+  maxGap: number,
+  now: () => number = Date.now,
+  rand: () => number = Math.random,
+): { reserveWaitMs: () => number; pace: () => Promise<void> } {
+  const lo = Math.max(0, minGap);
+  const hi = Math.max(lo, maxGap);
+  let nextSlotAt = 0;
+  const reserveWaitMs = (): number => {
+    const gap = lo + Math.floor(rand() * (hi - lo + 1));
+    const t = now();
+    const wait = Math.max(0, nextSlotAt - t);
+    nextSlotAt = Math.max(t, nextSlotAt) + gap;
+    return wait;
+  };
+  return {
+    reserveWaitMs,
+    pace: async (): Promise<void> => { const w = reserveWaitMs(); if (w > 0) await sleep(w); },
+  };
+}
 
 /** A trade offer action the operator can take on a single offer. */
 export type OfferAction = 'accept' | 'decline' | 'cancel';
@@ -314,10 +348,16 @@ export class TradeService {
     const concurrency = Math.min(OFFER_ACTION_CONCURRENCY, Math.max(1, opts?.concurrency ?? OFFER_ACTION_CONCURRENCY));
     const results: OfferActionResult[] = [];
     const queue = [...targets];
+    // Global dispatch pacing (B44): a jittered gap between ANY two actions across both
+    // workers, so a large batch of accepts/declines/cancels never bursts a single
+    // account's Steam write endpoints (Error-15 / rate-limit guard) — the same reasoning
+    // as mass-send, which this previously lacked entirely.
+    const throttle = createDispatchThrottle(OFFER_ACTION_MIN_DELAY_MS, OFFER_ACTION_MAX_DELAY_MS);
 
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const t = queue.shift()!;
+        await throttle.pace(); // space this action from every other in-flight one
         try {
           await this.offerAction(t.username, t.offerId, t.action);
           results.push({ ...t, ok: true });

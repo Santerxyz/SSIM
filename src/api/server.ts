@@ -48,6 +48,18 @@ const MAFILES_DIR = maFilesDir();
 const POST_TRADE_REFRESH_MS = 8_000; // wait for Steam to actually move the items before refetching
 const LOG_TAIL_BYTES = 512 * 1024;   // per-account logs modal reads only the tail (non-blocking)
 
+// ── Money-operation route matcher (circuit-breaker gate, #16 / B13) ────────────
+// Every POST that spends money, moves an asset, or approves a pending confirmation
+// must be refused while ProcessHealth has money ops quarantined (possibly-corrupt
+// in-memory state). Case-insensitive (Express routing is); the (\/|$) anchor keeps
+// read-ish siblings (buy-price / search / *-status / listings/:id edits) OUT. Exported
+// so the route-set is unit-testable (a new money route must be added here too).
+//   • Steam market/trade: trade send/mass-send/offer-action/offers-batch, market
+//     buy/sell/cancel-listing/cancel-buy-order/folder-buy, tradeup/execute, casket/move.
+//   • CSFloat REAL-CASH ops: csfloat/<user>/{buy, listings (create), buy-orders (create)}.
+//   • Mobile confirmation approval: accounts/<user>/confirmations/respond (finalizes trades).
+export const MONEY_OP_ROUTE = /^\/api\/(?:(?:trade\/(?:send|mass-send|offer-action|offers-batch)|market\/(?:buy|sell|cancel-listing|cancel-buy-order|folder-buy)|tradeup\/execute|casket\/move)(?:\/|$)|(?:csfloat\/[^/]+\/(?:buy|listings|buy-orders)|accounts\/[^/]+\/confirmations\/respond)$)/i;
+
 // ════════════════════════════════════════════════════════════════════════════
 //  Dependency wiring
 // ════════════════════════════════════════════════════════════════════════════
@@ -299,12 +311,11 @@ export function createApp(deps: ApiDeps): Express {
   //    after an internal error burst, refuse NEW money POSTs (buy/sell/trade) with an
   //    actionable 503 instead of acting on possibly-corrupt in-memory state. Reads and
   //    existing sessions stay up; the operator restarts to recover.
-  // `i` flag: Express routing is case-insensitive by default, so POST /api/market/BUY
-  // reaches the buy handler; the guard must match it too (the (\/|$) anchor still keeps
-  // /api/market/buy-price and /api/market/search OUT).
-  const MONEY_OP = /^\/api\/(trade\/(send|mass-send|offer-action|offers-batch)|market\/(buy|sell|cancel-listing|cancel-buy-order|folder-buy)|tradeup\/execute|casket\/move)(\/|$)/i;
+  // The route-set lives in the exported MONEY_OP_ROUTE (unit-tested); it now also
+  // covers the CSFloat real-cash ops and the mobile-confirmation approval that the
+  // original regex missed (B13).
   app.use((req: Request, res: Response, next: NextFunction) => {
-    if (req.method === 'POST' && ProcessHealth.moneyOpsBlocked() && MONEY_OP.test(req.path)) {
+    if (req.method === 'POST' && ProcessHealth.moneyOpsBlocked() && MONEY_OP_ROUTE.test(req.path)) {
       return res.status(503).json({
         error: `Money operations are paused: ${ProcessHealth.blockReason()}. Restart SSIM and verify state before retrying.`,
         quarantined: true,
@@ -739,11 +750,18 @@ export function createApp(deps: ApiDeps): Express {
     if (!csAccount(req, res)) return;
     const { asset_id, price, type, description } = req.body ?? {};
     if (typeof asset_id !== 'string' || !asset_id) return res.status(400).json({ error: 'asset_id is required' });
+    // Price floor (B13/B17): a create-listing price must be ≥ 1 cent and within a sane
+    // ceiling — the same validation the PATCH edit-price route already enforces. Without
+    // it a fat-fingered/forged 0 or negative price would be forwarded to CSFloat verbatim.
+    const priceCents = Math.round(Number(price));
+    if (!Number.isFinite(priceCents) || priceCents < 1 || priceCents > 100_000_000) {
+      return res.status(400).json({ error: 'price (cents) must be an integer between 1 and 100000000' });
+    }
     try {
       res.status(201).json(await csfloat.createListing(req.params.username, {
         asset_id,
         type: type === 'auction' ? 'auction' : 'buy_now',
-        price: Number.isFinite(Number(price)) ? Math.round(Number(price)) : undefined,
+        price: priceCents,
         description: typeof description === 'string' ? description : undefined,
       }));
     } catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
