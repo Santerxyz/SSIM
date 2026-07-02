@@ -224,6 +224,23 @@ export class AccountVaultImpl {
     this.save();
   }
 
+  /**
+   * PROVES the current payload is persisted + decryptable from disk: re-reads vault.enc and
+   * decrypts it with the in-memory key. Used as a hard gate before deleting any plaintext
+   * secret source (B21) — we never remove the last copy of a secret on an unverified vault.
+   */
+  verifyDiskRoundTrip(): boolean {
+    if (!this.key) return false;
+    try {
+      const file = fsExtra.readJsonSync(this.vaultFile) as VaultFileFormat;
+      if (!file || file.magic !== MAGIC || !file.iv || !file.tag || !file.ct) return false;
+      const decipher = crypto.createDecipheriv('aes-256-gcm', this.key, Buffer.from(file.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
+      const plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+      return !!JSON.parse(plain) && typeof JSON.parse(plain) === 'object';
+    } catch { return false; }
+  }
+
   /** Decrypts an EXTERNAL vault.enc (from another device) with the given password, WITHOUT
    *  touching this process's own vault. Returns its accounts+tokens, or null on wrong
    *  password / corrupt file. Used by "Import SSIM Vault" to merge another farm. */

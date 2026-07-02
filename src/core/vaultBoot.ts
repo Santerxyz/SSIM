@@ -201,11 +201,74 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
   // Hydrate in-memory env proxies from the vault so every reader (list/edit/resolveNetwork)
   // sees the effective value on THIS and every SUBSEQUENT boot (when the disk copy is blank). B20.
   accounts.hydrateEnvProxies();
+  // Quarantine the now-dead plaintext token/key files (B21). In vault mode TokenStore /
+  // CsFloatKeyStore read ONLY the vault, so any entry provably in the vault is dead cleartext.
+  quarantineMigratedPlaintext();
 
   if (migrated > 0) {
     logger.warn(`[vault] migrated ${migrated} pre-existing account(s) into the encrypted vault`);
   }
   return { migrated };
+}
+
+/**
+ * Removes plaintext secrets from data/refresh_tokens.json + data/csfloat_keys.json (and their
+ * .bak siblings) ONCE they are provably in the encrypted vault (B21 / INV-A3). In vault mode
+ * those stores read only the vault, so a vaulted entry left in the plaintext file is a pure
+ * at-rest leak that a backup would carry. SAFETY: gated on verifyDiskRoundTrip() (never delete
+ * the last copy of a secret on an unverified vault), and an entry whose plaintext value is NOT
+ * byte-equal to the vault copy is LEFT UNTOUCHED (recoverable). A file emptied of all migrated
+ * entries — and its .bak — is deleted.
+ */
+export function quarantineMigratedPlaintext(): void {
+  if (!AccountVault.isEnabled()) return;
+  AccountVault.flush();
+  if (!AccountVault.verifyDiskRoundTrip()) {
+    logger.warn('[vault] plaintext quarantine skipped — vault.enc did not verify from disk');
+    return;
+  }
+  quarantinePlaintextFile(
+    dataDir('refresh_tokens.json'), 'tokens', 'refresh token',
+    (u) => AccountVault.getToken(u),
+  );
+  quarantinePlaintextFile(
+    dataDir('csfloat_keys.json'), 'keys', 'CSFloat key',
+    (u) => AccountVault.getCsFloatKey(u),
+  );
+}
+
+/** Rewrites a `{ [section]: Record<user,secret> }` plaintext file, dropping every entry whose
+ *  value byte-equals the vault copy; deletes the file + .bak when nothing recoverable remains.
+ *  Exported for isolated testing (no vault singleton needed). */
+export function quarantinePlaintextFile(
+  file: string,
+  section: 'tokens' | 'keys',
+  label: string,
+  vaultGet: (username: string) => string | undefined,
+): void {
+  try {
+    if (!fsExtra.existsSync(file)) return;
+    const parsed = fsExtra.readJsonSync(file) as Record<string, unknown>;
+    const map = (parsed?.[section] && typeof parsed[section] === 'object')
+      ? parsed[section] as Record<string, string> : {};
+    let removed = 0;
+    const kept: Record<string, string> = {};
+    for (const [u, v] of Object.entries(map)) {
+      if (typeof v === 'string' && v && vaultGet(u) === v) removed++;   // safely vaulted → drop plaintext
+      else if (typeof v === 'string' && v) kept[u] = v;                 // differs / not vaulted → keep (recoverable)
+    }
+    if (removed === 0) return;
+    if (Object.keys(kept).length === 0) {
+      fsExtra.removeSync(file);
+      try { fsExtra.removeSync(`${file}.bak`); } catch { /* best-effort */ }
+      logger.warn(`[vault] quarantined ${removed} plaintext ${label}(s): deleted ${path.basename(file)} (+ .bak) — all copies are now in the encrypted vault`);
+    } else {
+      fsExtra.writeJsonSync(file, { ...parsed, [section]: kept }, { spaces: 2 });
+      logger.warn(`[vault] quarantined ${removed} plaintext ${label}(s) from ${path.basename(file)}; kept ${Object.keys(kept).length} not-yet-vaulted entry/entries`);
+    }
+  } catch (e) {
+    logger.warn(`[vault] plaintext ${label} quarantine skipped: ${(e as Error).message}`);
+  }
 }
 
 /**
