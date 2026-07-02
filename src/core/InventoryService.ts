@@ -540,10 +540,12 @@ export class InventoryService {
     const existing = this.sessions.getSession(username);
     if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession) {
       this.createdSession.set(key, false); // reused a live session — not ours to release
+      this.sessions.markUsed(username);    // genuine use → keep it out of the idle reaper (B40)
       return existing;
     }
     const { session, createdByCall } = await this.sessions.loginAccountOwned(account);
     this.createdSession.set(key, createdByCall);
+    this.sessions.markUsed(username);
     return session;
   }
 

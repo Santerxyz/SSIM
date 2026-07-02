@@ -108,6 +108,7 @@ test('INTEGRATION: refresh→bucket and getMarketOrders agree; field bug cannot 
       loginAccount: async () => session,
       loginAccountOwned: async () => ({ session, createdByCall: false }),
       logoutAccount: async () => undefined,
+      markUsed: () => undefined,
     };
     const mockAccounts: any = { get: (u: string) => ({ username: u, network: { type: 'localip' } }) };
 

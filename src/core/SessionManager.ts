@@ -55,6 +55,21 @@ const MAX_LIVE_SESSIONS = (() => {
   return Number.isFinite(raw) && raw >= 25 ? Math.floor(raw) : 150;
 })();
 
+// ─── Idle-session reaper (anti-accumulation for SINGLE-account ops) ─────────────
+// Bulk ops release the sessions they create, but SINGLE-account paths (single send /
+// getTradeUrl / manual per-account refresh / post-trade refresh) leave a session resident
+// with no release. Touch >150 distinct accounts via single ops in one run and the resident
+// count reaches MAX_LIVE_SESSIONS → every NEW-account login is then refused (B40). A periodic
+// reaper logs out sessions that have gone IDLE (no genuine op used them within the TTL), so a
+// one-shot op's leftover session is reclaimed instead of accumulating. A session in active use
+// is touched (markUsed) on every op entry, so its lastActivityAt stays fresh and it is never
+// reaped mid-use; the proactive cookie refresh is maintenance and deliberately does NOT count.
+const IDLE_SESSION_TTL_MS = (() => {
+  const raw = Number(process.env.SSIM_IDLE_SESSION_TTL_MS);
+  return Number.isFinite(raw) && raw >= 60_000 ? Math.floor(raw) : 30 * 60_000; // default 30 min
+})();
+const REAPER_INTERVAL_MS = 5 * 60_000;
+
 // ─── Retry strategy (Problem 1: transient NoConnection / proxy failures) ──────
 // Steam logins over slow or rotating residential proxies frequently fail with
 // TRANSIENT errors – most commonly EResult 3 (NoConnection), proxy CONNECT
@@ -111,6 +126,45 @@ export class SessionManager extends EventEmitter {
   // handed a slot the instant one frees. This is the ONLY gate on simultaneous logins.
   private loginSlots = MAX_CONCURRENT_LOGINS;
   private readonly loginWaiters: Array<() => void> = [];
+
+  /** Idle-session reaper handle (B40). Unref'd so it never keeps the process alive. */
+  private readonly reaperTimer?: NodeJS.Timeout;
+
+  constructor() {
+    super();
+    if (IDLE_SESSION_TTL_MS > 0) {
+      this.reaperTimer = setInterval(() => { void this.reapIdleSessions(); }, REAPER_INTERVAL_MS);
+      this.reaperTimer.unref?.();
+    }
+  }
+
+  /** Marks a session as actively USED right now (called at every genuine op entry) so the idle
+   *  reaper never logs out a session an operation is currently using. (B40) */
+  markUsed(username: string): void {
+    const s = this.sessions.get(username.toLowerCase());
+    if (s) s.lastActivityAt = new Date();
+  }
+
+  /** Logs out LOGGED_IN sessions untouched for longer than the idle TTL, freeing resident slots.
+   *  Skips any account with an in-flight login. Serialized-ish (best-effort; failures ignored). */
+  private async reapIdleSessions(now: number = Date.now()): Promise<void> {
+    const victims: string[] = [];
+    for (const [key, s] of this.sessions) {
+      if (this.loginsInFlight.has(key)) continue;               // a login is mid-flight → leave it
+      if (s.state !== SessionState.LOGGED_IN) continue;         // only reap settled live sessions
+      const last = s.lastActivityAt?.getTime() ?? s.loggedInAt?.getTime() ?? 0;
+      if (now - last >= IDLE_SESSION_TTL_MS) victims.push(s.account.username);
+    }
+    for (const username of victims) {
+      try { await this.logoutAccount(username); logger.info(`[${username}] idle session reaped (>${Math.round(IDLE_SESSION_TTL_MS / 60000)}min unused) – slot freed`); }
+      catch (err) { logger.warn(`[${username}] idle-session reap failed: ${(err as Error).message}`); }
+    }
+  }
+
+  /** Stops the reaper (call on teardown/re-license so a discarded manager leaves no timer). */
+  shutdown(): void {
+    if (this.reaperTimer) clearInterval(this.reaperTimer);
+  }
 
   /** Acquire one login slot, awaiting (FIFO) if all are in use. */
   private acquireLoginSlot(): Promise<void> {
@@ -338,6 +392,7 @@ export class SessionManager extends EventEmitter {
       maFile,
       state:         SessionState.CONNECTING,
       loginAttempts: 0,
+      lastActivityAt: new Date(), // a fresh login counts as activity (reaper grace)
     };
 
     // Resident-ceiling re-check AT the insertion point (B46). The check in loginAccount runs

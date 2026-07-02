@@ -42,6 +42,10 @@ export interface ManagedSession {
   lastError?:    string;
   connectedAt?:  Date;
   loggedInAt?:   Date;
+  /** Last time a GENUINE operation used this session (markUsed). Drives the idle-session
+   *  reaper (B40): a session untouched for the TTL is logged out to free the resident slot.
+   *  Maintenance (the proactive cookie refresh) deliberately does NOT update this. */
+  lastActivityAt?: Date;
   /**
    * Handle of the scheduled proactive web-cookie refresh. Owned by
    * SessionManager; MUST be cleared in destroySession, otherwise the timer

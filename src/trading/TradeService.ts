@@ -228,6 +228,7 @@ export class TradeService {
   /** Returns a ready trader, logging the account in / attaching as needed. */
   async getTrader(username: string): Promise<AccountTrader> {
     const key = username.toLowerCase();
+    this.sessions.markUsed(username); // genuine use → keep out of the idle reaper (B40)
     const existing = this.traders.get(key);
     if (existing?.ready) return existing;
 
@@ -255,6 +256,7 @@ export class TradeService {
   async ensureWebSession(username: string): Promise<AccountTrader> {
     const account = this.accounts.get(username);
     if (!account) throw new Error(`Account "${username}" not found`);
+    this.sessions.markUsed(username); // genuine money-op use → keep out of the idle reaper (B40)
 
     let session = this.sessions.getSession(username);
     // No live login at all → full login (also establishes a fresh web session).
