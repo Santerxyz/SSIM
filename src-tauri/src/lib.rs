@@ -42,6 +42,10 @@ struct AppState {
     /// True once the backend signaled `SSIM_UPDATING` on stdout → the next backend exit is an
     /// auto-update (swap both exes), so the shell must quit cleanly (free SSIM.exe), NOT crash-screen.
     updating: AtomicBool,
+    /// The per-run capability token the backend prints as `SSIM_CAP=<token>`. Injected into the
+    /// dashboard webview (window.__SSIM_CAP__) so the dashboard can authenticate its money/vault
+    /// calls to the backend — delivered ONLY over this stdout pipe, never over HTTP (B26/P5).
+    capability: Mutex<Option<String>>,
 }
 
 /// Append a timestamped line to <ssim_home>/logs/shell.log. This is the SHELL-side death record:
@@ -68,6 +72,20 @@ fn parse_port(chunk: &str) -> Option<u16> {
             .strip_prefix("SSIM_PORT=")
             .and_then(|p| p.trim().parse::<u16>().ok())
     })
+}
+
+/// Pull the capability token out of a `SSIM_CAP=<token>` stdout line (B26/P5).
+fn parse_capability(chunk: &str) -> Option<String> {
+    chunk.lines().find_map(|l| {
+        l.trim().strip_prefix("SSIM_CAP=").map(|t| t.trim().to_string())
+    })
+}
+
+/// The JS that seeds the dashboard's capability token. The token is our own hex; JSON-ish
+/// quoting is still applied so an unexpected value can't break out of the string literal.
+fn capability_inject_js(token: &str) -> String {
+    let safe: String = token.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    format!("window.__SSIM_CAP__='{safe}';")
 }
 
 /// Block until 127.0.0.1:<port> accepts a TCP connection (the server is listening) or time out.
@@ -279,6 +297,13 @@ fn spawn_backend(handle: tauri::AppHandle) {
                     if chunk.contains("SSIM_OPEN_LOGS") {
                         open_logs_window(&handle);
                     }
+                    // Capture the capability token the instant the backend prints it, so it is
+                    // ready to inject the moment we open/point the window at the dashboard (B26/P5).
+                    if let Some(cap) = parse_capability(&chunk) {
+                        if !cap.is_empty() {
+                            *handle.state::<AppState>().capability.lock().unwrap() = Some(cap);
+                        }
+                    }
                     // Auto-update lifecycle. The whole update (download → verify → install) runs BEFORE
                     // the backend's server/port exists, so without narration the splash looks frozen for
                     // minutes. Parse per-line so we can read the download percentage and reflect each
@@ -346,23 +371,47 @@ fn spawn_backend(handle: tauri::AppHandle) {
                             }
                             h2.state::<AppState>().port.store(port, Ordering::SeqCst);
                             let url = format!("http://127.0.0.1:{port}");
+                            // The capability token to seed into the dashboard (B26/P5). It arrived on
+                            // stdout at/just before the port; poll briefly in the rare race where the
+                            // port line was read first, so window.__SSIM_CAP__ is set before the user
+                            // can trigger a money/vault action.
+                            let cap = {
+                                let mut c = h2.state::<AppState>().capability.lock().unwrap().clone();
+                                let mut tries = 0;
+                                while c.is_none() && tries < 40 {
+                                    std::thread::sleep(Duration::from_millis(25));
+                                    c = h2.state::<AppState>().capability.lock().unwrap().clone();
+                                    tries += 1;
+                                }
+                                c
+                            };
+                            let inject = cap.as_deref().map(capability_inject_js);
                             if let Some(w) = h2.get_webview_window("main") {
                                 // Existing window already present → point it at the backend URL.
                                 if let Ok(u) = url.parse() {
                                     let _ = w.navigate(u);
                                 }
+                                // Seed the token once navigated. eval lands within ms; the dashboard
+                                // reads window.__SSIM_CAP__ at call time (not load time), and reads are
+                                // unprotected, so no first-load call can be starved.
+                                if let Some(js) = &inject {
+                                    let _ = w.eval(js);
+                                }
                                 let _ = w.show();
                                 let _ = w.set_focus();
                             } else if let Ok(u) = url.parse() {
-                                // First start: build the window.
-                                if let Err(e) = WebviewWindowBuilder::new(&h2, "main", WebviewUrl::External(u))
+                                // First start: build the window with the token as an initialization
+                                // script so it is present BEFORE the dashboard's own scripts run.
+                                let mut builder = WebviewWindowBuilder::new(&h2, "main", WebviewUrl::External(u))
                                     .title("SSIM")
                                     .inner_size(1280.0, 860.0)
                                     .min_inner_size(1024.0, 700.0)
                                     .center()
-                                    .resizable(true)
-                                    .build()
-                                {
+                                    .resizable(true);
+                                if let Some(js) = &inject {
+                                    builder = builder.initialization_script(js);
+                                }
+                                if let Err(e) = builder.build() {
                                     eprintln!("[ssim] failed to open window: {e}");
                                     std::process::exit(1);
                                 }
@@ -447,6 +496,7 @@ pub fn run() {
             port: AtomicU16::new(0),
             quitting: AtomicBool::new(false),
             updating: AtomicBool::new(false),
+            capability: Mutex::new(None),
         })
         .setup(|app| {
             // Show a window IMMEDIATELY with a loading splash. The backend's boot + any 163 MB

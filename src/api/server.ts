@@ -39,6 +39,7 @@ import type { AccountInventory } from '../types/inventory';
 import { logger, LOG_FILE, redactSecrets, recentLogLines, liveLogBus, type LiveLogLine } from '../utils/logger';
 import { maFilesDir, publicDir, IS_SIDECAR_MODE } from '../utils/paths';
 import { sameOriginGuard } from './originGuard';
+import { capabilityGuard, injectCapabilityIntoHtml } from './capability';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../../package.json') as { version: string };
 
@@ -239,6 +240,25 @@ export function createApp(deps: ApiDeps): Express {
   // so it covers the page load and every /api route: a malicious web page the operator visits
   // cannot drive state-changing money calls (trade/buy/sell) against the localhost API.
   app.use(sameOriginGuard);
+  // SECURITY (B26/P5): the capability-token guard authenticates the dashboard to the
+  // backend so a random LOCAL process cannot drive money/vault ops even by forging Origin.
+  // Mounted after the origin guard, before the routes.
+  app.use(capabilityGuard);
+
+  // Serve index.html with the capability bootstrap injected in dev / Edge (no shell). In
+  // sidecar (Tauri) mode the shell injects window.__SSIM_CAP__ out-of-band, so index.html
+  // is served CLEAN (a scraping GET / must not reveal the token). Placed BEFORE static.
+  const serveIndex = (_req: Request, res: Response): void => {
+    try {
+      const file = path.join(publicDir(), 'index.html');
+      let html = fs.readFileSync(file, 'utf8');
+      if (!IS_SIDECAR_MODE) html = injectCapabilityIntoHtml(html);
+      res.type('html').send(html);
+    } catch { res.status(500).send('index.html not found'); }
+  };
+  app.get('/', serveIndex);
+  app.get('/index.html', serveIndex);
+
   app.use(express.static(publicDir()));
 
   // Legacy heartbeat endpoint — the bundled dashboard still pings it; now a harmless no-op

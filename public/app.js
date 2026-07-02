@@ -403,12 +403,36 @@ function compareItems(a, b, key) {
 //  API
 // ════════════════════════════════════════════════════════════════════════════
 
+// ── Boot capability token (B26/P5) ───────────────────────────────────────────
+// The backend authenticates the dashboard with a per-run secret so a random local
+// process can't drive money/vault ops. The Tauri shell injects it as window.__SSIM_CAP__
+// out-of-band; the dev/Edge build injects it into index.html. We send it on EVERY call
+// (harmless on open reads) and, for MUTATING calls, briefly wait for it if the shell's
+// injection hasn't landed yet (reads never wait, so the initial load is never blocked).
+function capToken() { return (typeof window !== 'undefined' && window.__SSIM_CAP__) || ''; }
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+async function awaitCap(timeoutMs = 3000) {
+  if (capToken()) return capToken();
+  const started = Date.now();
+  while (!capToken() && Date.now() - started < timeoutMs) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  return capToken();
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const method = (opts.method || 'GET').toUpperCase();
+  // A protected (mutating) call needs the token; wait briefly if the shell hasn't injected
+  // it yet. Reads proceed immediately (they still send whatever token is available).
+  if (MUTATING_METHODS.has(method)) await awaitCap();
+  const cap = capToken();
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (cap) headers['X-SSIM-Cap'] = cap;
+  const res = await fetch(API + path, { ...opts, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const e = new Error(data.error || `HTTP ${res.status}`);
-    e.data = data; e.status = res.status; // expose flags like verifyBeforeRetry / quarantined to callers
+    e.data = data; e.status = res.status; // expose flags like verifyBeforeRetry / quarantined / capabilityRequired
     throw e;
   }
   return data;

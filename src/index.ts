@@ -4,6 +4,7 @@ import net from 'net';
 import { execFileSync } from 'child_process';
 import type { Server } from 'http';
 import { createApp, createDeps } from './api/server';
+import { getCapabilityToken } from './api/capability';
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
@@ -129,6 +130,10 @@ let relicensing = false; // guard against concurrent re-activation triggers
  *  channel (the shell reads our stdout live); data/ssim.port is a fallback it can poll. */
 function publishPort(port: number): void {
   if (!IS_SIDECAR_MODE) return;
+  // Emit the capability token BEFORE the port so the shell has it ready to inject into the
+  // webview the instant it opens onto the dashboard (B26/P5). Delivered ONLY over the
+  // stdout pipe the shell reads — never served over HTTP, so a local process can't scrape it.
+  try { process.stdout.write(`SSIM_CAP=${getCapabilityToken()}\n`); } catch { /* stdout may be closed */ }
   try { fs.writeFileSync(dataDir('ssim.port'), String(port)); } catch { /* best-effort */ }
   try { process.stdout.write(`SSIM_PORT=${port}\n`); } catch { /* stdout may be closed */ }
 }

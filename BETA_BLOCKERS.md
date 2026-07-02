@@ -93,9 +93,13 @@ verified against current code before fixing.
 - **B25 · S · minor · server.ts:1307** — money-route error handlers echo raw err.message without
   redactSecrets (only proxy-check route redacts). HYPOTHESIS (depends on message containing proxy
   URL). Fix: route client-facing/logged errors on proxied paths through redactSecrets.
-- **B26 · S · info · server.ts:206 (P5)** — local API unauthenticated to other local processes;
-  GET secret routes need no Origin, mutations drivable by forging Origin. Fix: boot capability
-  token (the P5 task). PROVEN (documented #26).
+- **B26 · S · info · server.ts:206 (P5)** — FIXED (commit cap). Boot capability token: backend
+  generates a per-run secret (src/api/capability.ts), emits SSIM_CAP on stdout (sidecar) →
+  Tauri shell injects window.__SSIM_CAP__ out-of-band (curl can't read the pipe/webview); dev/
+  Edge injects into index.html. capabilityGuard 401s every mutation + secret GET without a valid
+  token; app.js api() attaches X-SSIM-Cap and awaits it for mutations. Tests:
+  capabilityToken.test.ts (guard blocks forged-origin, exact-match, ?cap= query, open reads).
+  NOTE: dev/Edge HTML-injection is the weaker documented path (scrapeable); Tauri is robust.
 
 ### D (data loss) / B (brick)
 - **B30 · D · major · AccountVault.ts:242** — no vault version validation: newer-format vault.enc
