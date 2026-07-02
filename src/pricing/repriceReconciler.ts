@@ -44,6 +44,28 @@ export interface RepriceDecision {
  *   • else if no progress for NO_PROGRESS_TIMEOUT_MS → stop (wedged backend safety).
  * Pure: same inputs → same decision; the caller owns the timing loop.
  */
+/** Visible state of the "Fetching prices… (N left / X done)" dashboard indicator. */
+export interface PriceFillIndicator {
+  /** Show the indicator (a fill is running or names are still queued); hide once drained. */
+  show: boolean;
+  /** Names still to fetch (queued/in-flight). */
+  left: number;
+  /** Names fetched in the current run. */
+  done: number;
+}
+
+/**
+ * Derives the price-fill indicator state from a `/api/pricing/status` snapshot. Visible while the
+ * backend fill is running OR anything is queued; hidden (`show:false`) the moment the queue drains,
+ * so the indicator dismisses itself on completion. Pure — the UI just renders this.
+ */
+export function priceFillIndicator(status: PricingStatus | null | undefined): PriceFillIndicator {
+  const left = Math.max(0, Number(status?.queued) || 0);
+  const done = Math.max(0, Number(status?.fetched) || 0);
+  const show = !!(status && (status.running || left > 0));
+  return { show, left, done };
+}
+
 export function repriceDecision(state: RepriceState, status: PricingStatus | null | undefined, now: number): RepriceDecision {
   const fetched = Number(status?.fetched) || 0;
   const busy = !!(status && (status.running || (Number(status.queued) || 0) > 0));

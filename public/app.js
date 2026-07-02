@@ -733,18 +733,48 @@ async function setPriceSource(src) {
 // window) always reaches the UI — no displayed total stays stale-as-if-live after prices have
 // actually been fetched (INV-E1). A single no-progress safety stop bounds a wedged backend.
 const REPRICE_NO_PROGRESS_MS = 15 * 60_000;
+
+// Mirrors src/pricing/repriceReconciler.ts (priceFillIndicator) — keep in sync. Visible while the
+// backend fill runs or names are queued; hidden the moment the queue drains (dismiss-on-complete).
+function priceFillIndicator(status) {
+  const left = Math.max(0, (status && Number(status.queued)) || 0);
+  const done = Math.max(0, (status && Number(status.fetched)) || 0);
+  const show = !!(status && (status.running || left > 0));
+  return { show, left, done };
+}
+/** Renders the floating "Fetching prices…" badge from a /api/pricing/status snapshot; hides it on
+ *  completion. Additive: a self-created fixed element, no dependency on the frozen DOM contract. */
+function renderPriceFillIndicator(status) {
+  const { show, left, done } = priceFillIndicator(status);
+  let node = document.getElementById('price-fill-indicator');
+  if (!show) { if (node) node.classList.add('hidden'); return; }
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'price-fill-indicator';
+    node.className = 'fixed bottom-4 right-4 z-40 flex items-center gap-2 px-3.5 py-2 rounded-full '
+      + 'bg-slate-900/95 border border-slate-700 shadow-lg text-xs text-slate-200 backdrop-blur-sm';
+    document.body.appendChild(node);
+  }
+  node.classList.remove('hidden');
+  node.innerHTML = `<i class="fa-solid fa-tag text-brand cs2-spin"></i>`
+    + `<span>Fetching prices… <b class="text-white">${left}</b> left · <b class="text-white">${done}</b> done</span>`;
+}
+
 async function watchPriceFill(repull) {
   const token = (state.repriceToken = (state.repriceToken || 0) + 1);
   let baseline = 0;
-  try { const s0 = await api('/api/pricing/status'); if (state.repriceToken !== token) return; baseline = s0 ? (s0.fetched || 0) : 0; }
+  let s0;
+  try { s0 = await api('/api/pricing/status'); if (state.repriceToken !== token) return; baseline = s0 ? (s0.fetched || 0) : 0; }
   catch { /* status unavailable → nothing to watch */ return; }
+  renderPriceFillIndicator(s0); // reflect the current fill state immediately
   let lastPulled = baseline;
   let lastProgressAt = Date.now();
   while (true) {
     await new Promise((r) => setTimeout(r, 2500));
-    if (state.repriceToken !== token) return;                    // superseded by a newer refresh/switch
+    if (state.repriceToken !== token) return;                    // superseded by a newer watcher (it owns the indicator now)
     let st; try { st = await api('/api/pricing/status'); } catch { continue; } // transient status error → retry, don't abandon
     if (state.repriceToken !== token) return;
+    renderPriceFillIndicator(st);                                // live "N left / X done"; auto-hides when drained
     const fetched = st ? (st.fetched || 0) : 0;
     const busy = !!(st && (st.running || (st.queued || 0) > 0));
     let repullNow = false, stop = false;
@@ -755,7 +785,7 @@ async function watchPriceFill(repull) {
     if (!busy) { repullNow = true; stop = true; }                // queue drained → final re-pull, then stop
     else if (Date.now() - lastProgressAt > REPRICE_NO_PROGRESS_MS) { stop = true; console.warn('[reprice] no pricing progress for 15 min – stopping the watch'); }
     if (repullNow) { try { await repull(); } catch { /* keep the current view on a transient fetch error */ } }
-    if (stop) return;
+    if (stop) { renderPriceFillIndicator(null); return; }        // dismiss the indicator on completion
   }
 }
 
@@ -6364,6 +6394,12 @@ async function init() {
     showScreen('dashboard'); renderDashboardSkeleton();   // FB-03: skeleton tiles while the first load runs
     await reloadAll();
     showDashboard();
+    // The initial /api/inventory load enriches from cache and kicks off a background price fill for
+    // any missing/stale prices (server.ts ensureFilled). NONE of the refresh/source-switch paths ran
+    // here, so that boot fill was previously never watched — priceless items only appeared after a
+    // restart. Watch it now (once; the repriceToken makes it non-overlapping) so prices + the
+    // indicator live-update with no reload. (PRICE-BOOT-FILL)
+    void watchPriceFill(refreshActiveViewFromCache);
   } catch (err) {
     toast(`Could not load data: ${err.message}`, 'error');
   }
