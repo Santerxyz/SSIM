@@ -18,6 +18,11 @@ const MAX_IDS = 5000;
 export class CsFloatDeliveredStore {
   private ids: string[] = [];
   private readonly set = new Set<string>();
+  /** True when the file EXISTS but could not be read/parsed → the delivered-id memory is LOST.
+   *  Auto-delivery MUST NOT proceed in this state or every currently-pending sale would be
+   *  re-delivered (a second real Steam offer per sale). A MISSING file (fresh install) is NOT
+   *  degraded — nothing has been delivered yet. */
+  private degraded = false;
 
   constructor(private readonly path: string = DEFAULT_PATH) {
     this.load();
@@ -25,17 +30,23 @@ export class CsFloatDeliveredStore {
 
   private load(): void {
     try {
-      if (fsExtra.existsSync(this.path)) {
-        const parsed = fsExtra.readJsonSync(this.path) as { ids?: unknown } | null;
-        if (parsed && Array.isArray(parsed.ids)) {
-          this.ids = parsed.ids.map(String);
-          for (const id of this.ids) this.set.add(id);
-        }
+      if (!fsExtra.existsSync(this.path)) return; // fresh install → empty is correct, not degraded
+      const parsed = fsExtra.readJsonSync(this.path) as { ids?: unknown } | null;
+      if (parsed && Array.isArray(parsed.ids)) {
+        this.ids = parsed.ids.map(String);
+        for (const id of this.ids) this.set.add(id);
+      } else {
+        this.degraded = true; // present but wrong shape → dedup memory is untrustworthy
+        logger.error(`${this.path} is present but malformed – CSFloat auto-delivery DISABLED to avoid re-delivering already-sent sales. Fix or remove the file, then restart.`);
       }
     } catch (err) {
-      logger.warn(`${this.path} unreadable, starting fresh: ${(err as Error).message}`);
+      this.degraded = true; // present but unreadable/corrupt → we lost the dedup memory
+      logger.error(`${this.path} unreadable – CSFloat auto-delivery DISABLED to avoid re-delivering already-sent sales. Fix or remove the file, then restart. (${(err as Error).message})`);
     }
   }
+
+  /** True when the dedup memory could not be loaded → callers must NOT auto-deliver. */
+  isDegraded(): boolean { return this.degraded; }
 
   has(id: string): boolean {
     return this.set.has(id);

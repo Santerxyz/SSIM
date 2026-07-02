@@ -80,6 +80,13 @@ export class CsFloatAutoAcceptWorker {
     }
     if (!this.csfloat.hasKey(username)) return;
 
+    // If the delivered-id memory could not be loaded (corrupt file), auto-delivery MUST NOT run:
+    // every currently-pending sale would look undelivered and get a SECOND real Steam offer.
+    if (this.delivered.isDegraded()) {
+      logger.error(`[csfloat-auto-accept] delivered-id store is unreadable – auto-delivery is DISABLED (would re-deliver already-sent sales). Fix/remove csfloat_delivered.json and restart.`);
+      return;
+    }
+
     const res = await this.csfloat.trades(username, { state: 'pending' });
     const trades = extractTrades(res);
     if (trades.length === 0) return;
@@ -106,8 +113,15 @@ export class CsFloatAutoAcceptWorker {
         partnerSteamId: d.partnerSteamId,
         myItems: [{ assetId: d.assetId }],
       });
+      // Mark delivered regardless of confirm status: the offer EXISTS on Steam now, so a
+      // re-attempt would create a SECOND real offer for the same sale. An unconfirmed one needs
+      // MANUAL 2FA confirmation (surfaced loudly), never an automatic resend.
       this.delivered.add(id);
-      logger.info(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} (${sent.status})`);
+      if (sent.status === 'unconfirmed') {
+        logger.warn(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} SENT but NOT 2FA-confirmed – confirm it manually in Steam; it will NOT be auto-resent (avoids a duplicate offer).`);
+      } else {
+        logger.info(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} (${sent.status})`);
+      }
     }
   }
 }

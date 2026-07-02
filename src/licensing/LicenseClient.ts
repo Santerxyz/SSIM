@@ -292,8 +292,17 @@ async function heartbeat(hwid: string): Promise<void> {
   if (!token) return;
   try {
     const res = await http.post('/heartbeat', { hwid, token });
-    if (res.status === 403 || res.data?.status === 'revoked') {
+    // Revocation is signalled ONLY by the server's authoritative body marker
+    // (contract: 403 `{status:'revoked'}`). A BARE 403 with no such body is almost always an
+    // intermediary — a WAF, captive portal, or auth proxy — NOT the license server; treating it
+    // as a revocation tore down every live session, cleared the token, and forced re-activation
+    // on a transient network condition. Require the body marker; ride the offline grace otherwise.
+    if (res.data?.status === 'revoked') {
       void handleRevoked('This license has been deactivated by the server.');
+      return;
+    }
+    if (res.status === 403) {
+      logger.warn('[license] heartbeat got a bare HTTP 403 with no revoked marker – treating as a transient intermediary block (NOT revoking); riding offline grace');
       return;
     }
     if (res.status === 200) {

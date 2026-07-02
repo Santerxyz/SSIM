@@ -49,6 +49,11 @@ export function repriceDecision(state: RepriceState, status: PricingStatus | nul
   const busy = !!(status && (status.running || (Number(status.queued) || 0) > 0));
   let { lastPulled, lastProgressAt } = state;
   let repull = false;
+  // PricingService.status().fetched RESETS to 0 at the start of each run(), so a new fill
+  // generation makes `fetched` DROP below what we already pulled. Detect that (fetched <
+  // lastPulled) as a fresh generation and re-baseline, so the new generation's prices are
+  // re-pulled instead of being ignored until they exceed the previous run's high-water mark.
+  if (fetched < lastPulled) { lastPulled = 0; }
   if (fetched > lastPulled) { lastPulled = fetched; lastProgressAt = now; repull = true; }
   let stop = false;
   if (!busy) { repull = true; stop = true; }                                   // drained → final pull, then stop

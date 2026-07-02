@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { execFileSync } from 'child_process';
 import { dataDir } from '../utils/paths';
 import { logger } from '../utils/logger';
@@ -68,6 +69,10 @@ function readLockPid(): number | null {
  *     binary; that is reclaimed. A live SSIM (or an undeterminable holder) is never stolen.
  */
 export function acquireInstanceLock(): boolean {
+  // FRESH INSTALL: on first run data/ does not exist yet, so fs.open(lock,'wx') would throw
+  // ENOENT — which the fail-safe path below would misread as a lock IO error and REFUSE to
+  // start, bricking every first launch. Ensure the lock's directory exists first.
+  try { fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true }); } catch { /* best-effort; open() reports the real problem */ }
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       lockFd = fs.openSync(LOCK_FILE, 'wx');       // atomic exclusive create — EEXIST if held

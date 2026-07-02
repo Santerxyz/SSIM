@@ -748,6 +748,9 @@ async function watchPriceFill(repull) {
     const fetched = st ? (st.fetched || 0) : 0;
     const busy = !!(st && (st.running || (st.queued || 0) > 0));
     let repullNow = false, stop = false;
+    // The backend resets `fetched` to 0 at the start of each fill generation → a DROP means a new
+    // generation; re-baseline so its prices are re-pulled, not ignored until they pass the old high.
+    if (fetched < lastPulled) lastPulled = 0;
     if (fetched > lastPulled) { lastPulled = fetched; lastProgressAt = Date.now(); repullNow = true; }
     if (!busy) { repullNow = true; stop = true; }                // queue drained → final re-pull, then stop
     else if (Date.now() - lastProgressAt > REPRICE_NO_PROGRESS_MS) { stop = true; console.warn('[reprice] no pricing progress for 15 min – stopping the watch'); }
@@ -3569,7 +3572,14 @@ async function submitAttach(ev) {
 const CSF = { username: null, tab: 'dashboard', experimental: false, key: { configured: false }, market: { cursor: null, items: [], query: {}, loading: false } };
 const csfUsd = (cents) => '$' + (Number(cents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function csfApi(path, opts) { return api('/api/csfloat/' + encodeURIComponent(CSF.username) + path, opts); }
-function csfImg(hash) { return !hash ? '' : (/^https?:/.test(hash) ? hash : 'https://community.akamai.steamstatic.com/economy/image/' + hash); }
+// CSFloat item images: build the Steam economy URL from a hash, or accept a full URL — but ALWAYS
+// pass the result through the icon-host allow-list (#29), so a drifted/hostile CSFloat icon_url
+// can't point <img src> at an attacker host and beacon the operator's real/proxy IP.
+function csfImg(hash) {
+  if (!hash) return '';
+  const url = /^https?:/.test(hash) ? hash : 'https://community.akamai.steamstatic.com/economy/image/' + hash;
+  return safeIconUrl(url);
+}
 function csfSkeleton(rows = 5) { return `<div class="space-y-2">${Array.from({ length: rows }, () => '<div class="h-14 rounded-lg bg-slate-800/50 animate-pulse"></div>').join('')}</div>`; }
 function csfError(msg) { return `<div class="empty"><div class="empty-icon text-warn"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="empty-title">${escapeHtml(msg)}</div><button data-csf="retry" class="btn btn-secondary btn-sm mt-4"><i class="fa-solid fa-rotate-right"></i>Retry</button></div>`; }
 function csfEmpty(icon, msg) { return `<div class="empty"><div class="empty-icon"><i class="fa-solid ${icon}"></i></div><div class="empty-title">${escapeHtml(msg)}</div></div>`; }
@@ -4579,6 +4589,12 @@ async function submitTrade(ev) {
       toast(`Trade #${res.offerId} ${label} → ${res.to}`, 'success');
     }
     renderMain();
+    // The sent items must stop showing as owned/tradable/sellable, or the operator could
+    // re-send/re-sell them (W). Steam needs a few seconds to actually move them (the backend's
+    // own post-trade refresh waits ~8s too), so re-pull the affected accounts after that window
+    // to reflect the new truth without a manual refresh. (INV-E1.)
+    const affected = target.toUsername ? [from, target.toUsername] : [from];
+    setTimeout(() => { try { startInventoryRefresh({ usernames: affected }); } catch (_) { /* best-effort */ } }, 9000);
   } catch (err) {
     // Money-safety (#28): a send that failed AFTER dispatch may still have placed an
     // offer. If the backend flagged verifyBeforeRetry, refresh the sender and warn

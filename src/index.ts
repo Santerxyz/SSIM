@@ -296,6 +296,10 @@ async function bootstrap(): Promise<void> {
 process.on('unhandledRejection', (reason) => {
   writeCrash('UNHANDLED REJECTION', reason); // sync sink first – survives an immediate exit
   logger.error(`UNHANDLED REJECTION: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
+  // Feed the money-ops breaker too: an async rejection burst signals the same possibly-corrupt
+  // in-memory state as an uncaught throw, and much of the money path is async (a rejected
+  // promise, not a sync throw). Without this the breaker was blind to that whole class.
+  ProcessHealth.recordUncaught(reason instanceof Error ? reason.message : String(reason));
 });
 process.on('uncaughtException', (err) => {
   writeCrash('UNCAUGHT EXCEPTION (server kept alive)', err); // sync sink first; winston is async

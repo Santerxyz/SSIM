@@ -392,7 +392,10 @@ function runSelfTestOnce(file: string): SelfTestOutcome {
     // yields empty stdout and we fall back to the file report. execFileSync throws on a non-zero exit.
     const stdout = (execFileSync(file, [], {
       env: { ...process.env, SSIM_SELFTEST: '1', SSIM_HOME: home },
-      timeout: 120_000, windowsHide: true, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+      // Budget MUST be >= the build/publish self-test budget (~180-200s): a slow or AV-heavy
+      // machine that self-tested fine at build time would otherwise TIME OUT here and reject
+      // every valid update forever (a permanent can't-update brick). 240s gives headroom.
+      timeout: 240_000, windowsHide: true, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
     }) || '').toString();
     let report = '';
     try { report = fs.readFileSync(path.join(home, '.ssim-selftest.out'), 'utf8'); } catch { /* no file report */ }
