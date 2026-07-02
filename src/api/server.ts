@@ -29,7 +29,7 @@ import { CasketService } from '../trading/CasketService';
 import { GcActionLayer } from '../trading/GcActionLayer';
 import { cs2Schema } from '../core/Cs2SchemaService';
 import type { SellStrategy } from '../pricing/MarketPricing';
-import { AgentFactory, normalizeProxy } from '../network/AgentFactory';
+import { AgentFactory, normalizeProxy, parseProxy } from '../network/AgentFactory';
 import { PricingService } from '../pricing/PricingService';
 import { currencyInfo } from '../pricing/currencies';
 import { ExchangeRateService } from '../pricing/ExchangeRateService';
@@ -236,6 +236,20 @@ export function createApp(deps: ApiDeps): Express {
   // 3) JSON body limit raised: mass-send/mass-sell payloads with thousands of
   //    asset ids exceed express' 100kb default (→ silent HTTP 413 failures).
   app.use(express.json({ limit: '5mb' }));
+  // SECURITY (B25): redact secrets from EVERY JSON error string in one place. Many money/route
+  // handlers return `(err as Error).message` verbatim; a proxied axios/steamcommunity failure can
+  // embed the account's proxy URL (user:pass@host) in that message. Wrapping res.json here masks
+  // it on all ~20 error sites at once (and any future one) without touching each handler.
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    const orig = res.json.bind(res);
+    res.json = (body: unknown) => {
+      if (body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string') {
+        (body as { error: string }).error = redactSecrets((body as { error: string }).error);
+      }
+      return orig(body);
+    };
+    next();
+  });
   // SECURITY: same-origin / anti-CSRF + DNS-rebind guard (see originGuard.ts). Mounted FIRST
   // so it covers the page load and every /api route: a malicious web page the operator visits
   // cannot drive state-changing money calls (trade/buy/sell) against the localhost API.
@@ -2196,9 +2210,15 @@ export function hostnameOnly(hostHeader: string): string {
   return h.split(':')[0];
 }
 
-/** "http://user:pass@host:3128" → "http://***:***@host:3128" (local IPs untouched). */
-function redactProxyCredentials(value: string): string {
-  return value.replace(/\/\/[^@/]+@/, '//***:***@');
+/** Redacts proxy credentials for display. Handles the URL form directly AND the legacy
+ *  non-URL formats (host:port:user:pass etc.) via parseProxy, so a value stored by a
+ *  pre-normalizeProxy version can never surface its user:pass in the env/account list (B24). */
+export function redactProxyCredentials(value: string): string {
+  const urlMasked = value.replace(/\/\/[^@/]+@/, '//***:***@');
+  if (urlMasked !== value) return urlMasked;              // URL form → already masked
+  const p = parseProxy(value);                            // legacy form → mask if it carries creds
+  if (p && p.username) return `${p.scheme}://***:***@${p.host}:${p.port}`;
+  return value;
 }
 
 /**
