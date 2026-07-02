@@ -312,6 +312,27 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
       if (live.latest !== VERSION) issues.push(`/version advertises v${live.latest}, not v${VERSION}`);
       if (primarySha && live.sha256 !== primarySha) issues.push(`/version sha256 ≠ the staged ${PRIMARY}`);
       if (!live.url) issues.push('/version has no download url');
+      // SIGNATURE gate: verify the served manifest carries a VALID kind-aware signature the
+      // client will actually accept. A server signing-key mismatch would otherwise ship an
+      // update that passes every OTHER gate here but that EVERY kind-aware client REJECTS
+      // (verifyUpdateSignature fails) → a fleet-wide can't-install with no rollback path. This
+      // mirrors build/verify-version-signatures.js so publish.js fails BEFORE going broad.
+      const pubPem = (process.env.LICENSE_PUBLIC_KEY || '').replace(/\\n/g, '\n');
+      if (!pubPem) {
+        console.log('  ⚠ LICENSE_PUBLIC_KEY not set — skipping the served-signature verification (run build/verify-version-signatures.js manually before broad rollout)');
+      } else if (!live.sigKind) {
+        issues.push('/version has no sigKind — the kind-aware client cannot verify/install this update');
+      } else {
+        const kindTag = live.kind || 'backend';
+        const payload = `${live.latest}:${live.sha256}:${kindTag}`;
+        let sigOk = false;
+        try {
+          const pub = crypto.createPublicKey(pubPem);
+          sigOk = crypto.verify(null, Buffer.from(payload), pub, Buffer.from(live.sigKind, 'base64url'));
+        } catch (e) { issues.push(`could not verify served sigKind: ${e.message}`); }
+        if (!sigOk) issues.push(`served sigKind does NOT verify against LICENSE_PUBLIC_KEY over "${payload}" — every kind-aware client will REJECT this update (signing-key mismatch). NOT shipping.`);
+        else console.log('  • verified: served sigKind is valid for the production public key (clients will accept it)');
+      }
       if (MIGRATE && live.kind !== 'single-exe') issues.push("/version is missing kind:'single-exe' — the server is NOT echoing `kind`, so the dual updater will do an in-place backend swap instead of migrating. Fix the server's release/finalize to persist `kind`.");
       if (process.argv.includes('--verify-download') && live.url && !issues.length) {
         console.log('  • re-downloading the SERVED artifact to confirm byte-for-byte identity…');
