@@ -88,18 +88,61 @@ fn capability_inject_js(token: &str) -> String {
     format!("window.__SSIM_CAP__='{safe}';")
 }
 
-/// Block until 127.0.0.1:<port> accepts a TCP connection (the server is listening) or time out.
-fn wait_for_port(port: u16, timeout: Duration) -> bool {
+/// The unauthenticated marker every SSIM server (dashboard + activation/unlock portals) serves at
+/// GET /__ssim/health. The shell requires this in the response body before it adopts a port, so it
+/// never navigates onto a DIFFERENT app that merely accepts TCP on the desired port. (BUG 2.)
+const SSIM_HEALTH_PATH: &str = "/__ssim/health";
+const SSIM_HEALTH_MARKER: &str = "SSIM-DASHBOARD-OK";
+
+/// One HTTP/1.0 GET of the SSIM health marker over 127.0.0.1:<port>. Returns true ONLY if the
+/// responder answers 200 AND the body contains the SSIM marker — a foreign app on the port fails.
+fn probe_ssim_once(port: u16) -> bool {
+    use std::io::{Read, Write};
     let sockaddr = match format!("127.0.0.1:{port}").parse() {
         Ok(s) => s,
         Err(_) => return false,
     };
+    let mut stream = match std::net::TcpStream::connect_timeout(&sockaddr, Duration::from_millis(500)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
+    let req = format!(
+        "GET {SSIM_HEALTH_PATH} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut resp = String::new();
+    // Cap the read so a chatty/foreign responder can't stream forever.
+    let mut buf = [0u8; 4096];
+    let mut total = 0usize;
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+                total += n;
+                if total >= 64 * 1024 { break; }
+            }
+            Err(_) => break,
+        }
+    }
+    // Require a 200 status line AND the marker in the body — both must be SSIM's.
+    let ok_status = resp.lines().next().map(|l| l.contains(" 200 ")).unwrap_or(false);
+    ok_status && resp.contains(SSIM_HEALTH_MARKER)
+}
+
+/// Block until the port answers as SSIM (health marker verified), or time out. A bare TCP accept is
+/// NOT enough — the responder must prove it is SSIM before the shell navigates to it. (BUG 2.)
+fn wait_for_ssim(port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if std::net::TcpStream::connect_timeout(&sockaddr, Duration::from_millis(500)).is_ok() {
+        if probe_ssim_once(port) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(200));
     }
     false
 }
@@ -360,14 +403,16 @@ fn spawn_backend(handle: tauri::AppHandle) {
                         // freeze together). Never let window setup hold up the drain.
                         let h2 = handle.clone();
                         tauri::async_runtime::spawn(async move {
+                            // Verify the responder is SSIM (health marker), not just "something accepts
+                            // TCP" — never navigate onto a foreign app holding the port. (BUG 2.)
                             let ready = tauri::async_runtime::spawn_blocking(move || {
-                                wait_for_port(port, Duration::from_secs(40))
+                                wait_for_ssim(port, Duration::from_secs(40))
                             })
                             .await
                             .unwrap_or(false);
                             if !ready {
-                                eprintln!("[ssim] backend never opened port {port}");
-                                return; // a never-listening backend will hit Terminated → crash notice
+                                eprintln!("[ssim] port {port} did not answer as SSIM (health marker) – not navigating");
+                                return; // a never-listening / non-SSIM backend will hit Terminated → crash notice
                             }
                             h2.state::<AppState>().port.store(port, Ordering::SeqCst);
                             let url = format!("http://127.0.0.1:{port}");

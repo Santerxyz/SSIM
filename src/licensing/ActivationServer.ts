@@ -1,10 +1,12 @@
 import fs from 'fs';
+import http from 'http';
 import express from 'express';
 import { LicenseClient } from './LicenseClient';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
 import { openUiWindow } from '../appWindow';
 import { printLockScreen } from './lockscreen';
+import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  ActivationServer – the friendly front door when SSIM is not yet licensed.
@@ -42,6 +44,10 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
       if (fs.existsSync(ico)) return res.sendFile(ico);
       res.status(204).end();
     });
+
+    // SSIM identity marker so the Tauri shell confirms THIS portal is SSIM (not a foreign app on
+    // the port) before navigating. Registered before the license.html catch-all. (BUG 2.)
+    app.get(SSIM_HEALTH_PATH, (_req, res) => { res.type('text/plain').send(SSIM_HEALTH_MARKER); });
 
     // Current activation state (the page polls this on load).
     app.get('/api/license/state', (_req, res) => {
@@ -93,28 +99,28 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
       res.type('html').send(FALLBACK_HTML);
     });
 
-    const server = app.listen(port, host, () => {
+    // BIND FIRST, then announce the ACTUAL bound port (walking EADDRINUSE). The port is emitted to
+    // the shell only after this portal actually binds it, so the shell never adopts a foreign app
+    // holding the desired port. (BUG 2.)
+    const server = http.createServer(app);
+    listenAndAnnounce(server, host, port).then((bound) => {
       // eslint-disable-next-line no-console
       console.log(
         `\n  \x1b[35m\x1b[1m◆ SSIM\x1b[0m\x1b[2m  ·  License required\x1b[0m\n` +
         `  \x1b[2m────────────────────────────────────────────────\x1b[0m\n` +
-        `   Open \x1b[1mhttp://localhost:${port}\x1b[0m and enter your\n` +
+        `   Open \x1b[1mhttp://localhost:${bound}\x1b[0m and enter your\n` +
         `   license key to activate SSIM.\n` +
         `  \x1b[2m────────────────────────────────────────────────\x1b[0m\n`,
       );
-      logger.info(`license activation portal listening on ${host}:${port}`);
-      openUiWindow(`http://localhost:${port}`);
-    });
-
-    // A busy port (a second SSIM copy already running) would otherwise throw an
-    // unhandled 'error' and crash the window instantly. Fail with a clear notice.
-    server.on('error', (err: NodeJS.ErrnoException) => {
+      logger.info(`license activation portal listening on ${host}:${bound}`);
+      openUiWindow(`http://localhost:${bound}`);
+    }).catch((err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         printLockScreen(
           `Port ${port} is already in use.`,
           'Is SSIM already running? Close the other instance, or set PORT=<free> and restart.',
         );
-        logger.error(`activation portal cannot bind ${host}:${port} – EADDRINUSE`);
+        logger.error(`activation portal cannot bind ${host}:${port} – EADDRINUSE (walk exhausted)`);
       } else {
         printLockScreen('The activation server failed to start.', err.message);
         logger.error(`activation portal listen error: ${err.message}`);

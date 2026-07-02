@@ -40,6 +40,7 @@ import { logger, LOG_FILE, redactSecrets, recentLogLines, liveLogBus, type LiveL
 import { maFilesDir, publicDir, IS_SIDECAR_MODE } from '../utils/paths';
 import { sameOriginGuard } from './originGuard';
 import { capabilityGuard, injectCapabilityIntoHtml } from './capability';
+import { SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../../package.json') as { version: string };
 
@@ -258,6 +259,10 @@ export function createApp(deps: ApiDeps): Express {
   // backend so a random LOCAL process cannot drive money/vault ops even by forging Origin.
   // Mounted after the origin guard, before the routes.
   app.use(capabilityGuard);
+
+  // SSIM identity marker (unauthenticated GET): lets the Tauri shell confirm the responder on the
+  // UI port is SSIM — not a foreign app that merely accepts TCP — before it navigates. (BUG 2.)
+  app.get(SSIM_HEALTH_PATH, (_req: Request, res: Response) => { res.type('text/plain').send(SSIM_HEALTH_MARKER); });
 
   // Serve index.html with the capability bootstrap injected in dev / Edge (no shell). In
   // sidecar (Tauri) mode the shell injects window.__SSIM_CAP__ out-of-band, so index.html

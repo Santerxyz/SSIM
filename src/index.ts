@@ -1,11 +1,9 @@
 import './bootflags'; // MUST be first – sets process flags before deps load
 import fs from 'fs';
-import net from 'net';
-import { execFileSync } from 'child_process';
-import type { Server } from 'http';
+import http, { type Server } from 'http';
 import { createApp, createDeps } from './api/server';
-import { getCapabilityToken } from './api/capability';
 import { acquireInstanceLock, releaseInstanceLock } from './core/singleInstance';
+import { listenAndAnnounce, clearStalePortFile } from './utils/serverPort';
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
@@ -14,7 +12,7 @@ import { LicenseClient } from './licensing/LicenseClient';
 import { Updater } from './licensing/Updater';
 import { runActivationPortal } from './licensing/ActivationServer';
 import { printLockScreen } from './licensing/lockscreen';
-import { IS_PACKAGED, IS_SIDECAR_MODE, dataDir, publicDir, migrateVaultDir } from './utils/paths';
+import { IS_PACKAGED, IS_SIDECAR_MODE, publicDir, migrateVaultDir } from './utils/paths';
 import { openUiWindow } from './appWindow';
 import { runUnlockPortal } from './core/unlockPortal';
 import { ProcessHealth } from './core/ProcessHealth';
@@ -38,23 +36,9 @@ let activePort = PORT; // the actually-bound port (PORT, or the next free one)
 // See that module: an ATOMIC (fs.open 'wx'), FAIL-SAFE guard that makes a double-run —
 // and the vault/accounts/token store races it causes — structurally impossible (INV-G5).
 
-/** First free TCP port at/after `start` – handles a NON-SSIM app holding the port. */
-function findFreePort(start: number, host: string, tries = 20): Promise<number> {
-  return new Promise((resolve, reject) => {
-    let port = start;
-    const tryPort = (): void => {
-      const tester = net.createServer();
-      tester.once('error', (err: NodeJS.ErrnoException) => {
-        tester.close();
-        if (err.code === 'EADDRINUSE' && port < start + tries) { port++; tryPort(); }
-        else reject(err);
-      });
-      tester.once('listening', () => tester.close(() => resolve(port)));
-      tester.listen(port, host);
-    };
-    tryPort();
-  });
-}
+// Port selection + announcement moved to utils/serverPort.ts (listenAndAnnounce): the port is
+// now chosen by the ACTUAL server bind (walking EADDRINUSE) and announced only after a successful
+// bind, so SSIM never emits SSIM_PORT for a port it didn't bind. (BUG 2.)
 
 /** Prints a compact "server monitor" banner to the console on boot. */
 function printBanner(): void {
@@ -76,18 +60,6 @@ function printBanner(): void {
 let licenseHwid = '';
 let relicensing = false; // guard against concurrent re-activation triggers
 
-/** Sidecar mode: announce the UI port to the Tauri shell. The stdout line is the primary
- *  channel (the shell reads our stdout live); data/ssim.port is a fallback it can poll. */
-function publishPort(port: number): void {
-  if (!IS_SIDECAR_MODE) return;
-  // Emit the capability token BEFORE the port so the shell has it ready to inject into the
-  // webview the instant it opens onto the dashboard (B26/P5). Delivered ONLY over the
-  // stdout pipe the shell reads — never served over HTTP, so a local process can't scrape it.
-  try { process.stdout.write(`SSIM_CAP=${getCapabilityToken()}\n`); } catch { /* stdout may be closed */ }
-  try { fs.writeFileSync(dataDir('ssim.port'), String(port)); } catch { /* best-effort */ }
-  try { process.stdout.write(`SSIM_PORT=${port}\n`); } catch { /* stdout may be closed */ }
-}
-
 /** Sidecar mode: the Tauri shell writes "quit" to our stdin when its window closes, so we
  *  shut down gracefully (clean Steam logout) instead of being force-killed. */
 function listenForShellQuit(): void {
@@ -101,7 +73,7 @@ function listenForShellQuit(): void {
 }
 
 /** Builds the real app and starts listening. Called ONLY once licensed. */
-function startFullApp(): void {
+async function startFullApp(): Promise<void> {
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && HOST !== '::1') {
     logger.warn(
       `SECURITY: SSIM is binding to ${HOST} – the API (credentials, trading, ` +
@@ -128,23 +100,34 @@ function startFullApp(): void {
     traders:  deps?.trades.traderCount ?? 0,
   }));
   const app = createApp(deps);
-  server = app.listen(activePort, HOST, () => {
-    if (!IS_SIDECAR_MODE) printBanner();
-    logger.info(`SSIM server started on ${HOST}:${activePort} (pid ${process.pid})`);
-    openUiWindow(`http://localhost:${activePort}`);
-  });
-  // A busy port (a second SSIM copy) would otherwise throw an unhandled 'error'
-  // and crash the window. Surface a clear notice instead.
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    writeCrash('SERVER LISTEN ERROR', err); // 250ms exit can outrun winston's async file write
-    if (err.code === 'EADDRINUSE') {
+  // BIND FIRST, then announce: listenAndAnnounce binds the REAL server (walking EADDRINUSE to the
+  // next free port) and emits SSIM_PORT / writes data/ssim.port ONLY from the successful bind, with
+  // the ACTUAL bound port — so SSIM can never announce a port it didn't bind and the shell can never
+  // adopt a foreign app on the desired port. (BUG 2.)
+  const srv = http.createServer(app);
+  server = srv;
+  try {
+    activePort = await listenAndAnnounce(srv, HOST, activePort);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    writeCrash('SERVER LISTEN ERROR', e); // 250ms exit can outrun winston's async file write
+    if (e.code === 'EADDRINUSE') {
       printLockScreen(`Port ${activePort} is already in use.`, 'Is SSIM already running? Close the other instance, or set PORT=<free>.');
-      logger.error(`server cannot bind ${HOST}:${activePort} – EADDRINUSE`);
+      logger.error(`server cannot bind ${HOST}:${activePort} – EADDRINUSE (walk exhausted)`);
     } else {
-      printLockScreen('The server failed to start.', err.message);
-      logger.error(`server listen error: ${err.message}`);
+      printLockScreen('The server failed to start.', e.message);
+      logger.error(`server listen error: ${e.message}`);
     }
     setTimeout(() => process.exit(1), 250);
+    return;
+  }
+  if (!IS_SIDECAR_MODE) printBanner();
+  logger.info(`SSIM server started on ${HOST}:${activePort} (pid ${process.pid})`);
+  openUiWindow(`http://localhost:${activePort}`);
+  // Runtime errors AFTER a successful bind (not a bind failure) — log, don't treat as EADDRINUSE.
+  srv.on('error', (err: NodeJS.ErrnoException) => {
+    writeCrash('SERVER RUNTIME ERROR', err);
+    logger.error(`server runtime error: ${err.message}`);
   });
 }
 
@@ -229,7 +212,7 @@ async function gateAndRun(): Promise<void> {
   } else {
     await unlockVault();
   }
-  startFullApp();
+  await startFullApp();
   LicenseClient.startHeartbeat(licenseHwid);
 }
 
@@ -273,14 +256,12 @@ async function bootstrap(): Promise<void> {
     setTimeout(() => process.exit(1), 250);
     return;
   }
-  // Dynamic port: if PORT is held by ANOTHER program, take the next free one
-  // instead of crashing. (A second SSIM was already blocked above.)
-  try {
-    activePort = await findFreePort(PORT, HOST);
-    if (activePort !== PORT) logger.warn(`port ${PORT} is busy – using free port ${activePort} instead`);
-  } catch { activePort = PORT; /* fall back; startFullApp's error handler covers it */ }
-  // Sidecar mode: announce the UI port to the Tauri shell + accept its graceful-quit signal.
-  publishPort(activePort);
+  // Remove a stale data/ssim.port from a prior run so it can never point the shell at a foreign
+  // port before this process binds + announces the real one. (BUG 2.)
+  clearStalePortFile();
+  // Sidecar mode: accept the shell's graceful-quit signal. The port is NOT announced here anymore —
+  // it is announced ONLY when a real server (activation portal / unlock portal / full app) actually
+  // binds it, from inside listenAndAnnounce, with the actual bound port. (BUG 2.)
   if (IS_SIDECAR_MODE) listenForShellQuit();
   licenseHwid = HwidService.getHwid();
   logger.info(`license gate: validating seat for hwid ${licenseHwid.slice(0, 12)}…`);
@@ -313,6 +294,7 @@ process.on('uncaughtException', (err) => {
 async function shutdown(signal: string): Promise<void> {
   logger.info(`${signal} received – shutting down…`);
   releaseInstanceLock();
+  clearStalePortFile(); // don't leave data/ssim.port pointing at a now-dead port (BUG 2)
   LicenseClient.stopHeartbeat();
   stopMemHeartbeat();
   if (deps) {
@@ -356,6 +338,7 @@ process.on('exit', (code) => {
   // investigation has been missing — synchronous, so it survives an immediate exit.
   try { writeExit(code); } catch { /* best-effort */ }
   try { releaseInstanceLock(); } catch { /* best-effort */ }
+  try { clearStalePortFile(); } catch { /* best-effort */ } // never leave a stale ssim.port (BUG 2)
 });
 
 // ── Build-time packaged-VFS self-test ─────────────────────────────────────────

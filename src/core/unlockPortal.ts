@@ -1,10 +1,12 @@
 import fs from 'fs';
+import http from 'http';
 import express from 'express';
 import { AccountVault } from './AccountVault';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
 import { openUiWindow } from '../appWindow';
 import { printLockScreen } from '../licensing/lockscreen';
+import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  unlockPortal.ts — the APP-WINDOW equivalent of the CLI Master-Password prompt.
@@ -44,6 +46,9 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
     // Legacy heartbeat endpoint (kept BEFORE the /api/* lock-out so the page ping never 404s);
     // now a harmless no-op — the Tauri shell owns lifecycle.
     app.get('/api/app/ping', (_req, res) => { res.status(204).end(); });
+
+    // SSIM identity marker so the shell confirms this portal is SSIM before navigating. (BUG 2.)
+    app.get(SSIM_HEALTH_PATH, (_req, res) => { res.type('text/plain').send(SSIM_HEALTH_MARKER); });
 
     // The page asks this on load to choose "set a new password" vs "unlock".
     app.get('/api/vault/state', (_req, res) => {
@@ -98,12 +103,13 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
       res.type('html').send(FALLBACK_HTML);
     });
 
-    const server = app.listen(port, host, () => {
-      logger.info(`vault unlock portal listening on ${host}:${port}`);
-      openUiWindow(`http://localhost:${port}`);
-    });
-
-    server.on('error', (err: NodeJS.ErrnoException) => {
+    // BIND FIRST, then announce the ACTUAL bound port (walking EADDRINUSE) — never a port this
+    // portal didn't bind, so the shell can't adopt a foreign app on the desired port. (BUG 2.)
+    const server = http.createServer(app);
+    listenAndAnnounce(server, host, port).then((bound) => {
+      logger.info(`vault unlock portal listening on ${host}:${bound}`);
+      openUiWindow(`http://localhost:${bound}`);
+    }).catch((err: NodeJS.ErrnoException) => {
       printLockScreen('The unlock server failed to start.', err.message);
       logger.error(`unlock portal listen error: ${err.message}`);
       setTimeout(() => process.exit(1), 250);
