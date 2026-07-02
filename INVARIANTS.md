@@ -1,5 +1,25 @@
 # SSIM — INVARIANT LEDGER
 
+> ## ⟳ Open-beta hardening pass (2026-07-02) — new invariants enforced this session
+> The Phase-3 rows below still hold. This pass added/strengthened (all test-covered — see
+> `BETA_BLOCKERS.md` + `docs/RELEASE_READINESS_OPENBETA.md`):
+> - **Teardown quiescence** — no agent is destroyed with in-flight work; a discarded steam-user
+>   client can never resurrect (`neutralizeSteamClient`); a live 'error' listener at every instant.
+> - **Money-safety at the network boundary** — a createbuyorder network error never surfaces as a
+>   clean retryable failure (probe/placed/verifyBeforeRetry); a sell is refused on a known non-EUR
+>   wallet (prices are EUR); the money-ops breaker covers CSFloat cash + confirmations + async
+>   rejections.
+> - **Secrets at rest** — env proxies + per-account (token-only) proxies live encrypted in the vault;
+>   plaintext token/key files are quarantined after a VERIFIED migration; the boot capability token
+>   gates every mutation + secret GET.
+> - **Store integrity** — the vault refuses a newer-version file and preserves unknown sections
+>   (downgrade-safe), recovers from `.bak` on corruption; single-instance is an atomic, fail-safe
+>   OS-level lock; a first-mint token persists synchronously.
+> - **Freshness reaches the UI** — the reprice reconciler is durable (no time cap) and generation-
+>   reset aware; a completed trade re-pulls the affected accounts.
+
+---
+
 > The statements that must be true **at all times** for SSIM to be logically sound.
 > Each invariant has: a plain-language statement, the code-level condition, the
 > single source it should derive from, and current status:

@@ -37,6 +37,21 @@ verified against current code before fixing.
 | B47 | C | server.hostnameOnly | IPv6 loopback Host 403'd a legit ::1 bind | (sess) | hostGuard.test.ts | PROVEN |
 | B42 | N | AccountVault/PATCH | Token-only account proxy silently dropped | (proxy) | vaultHardening.test.ts | PROVEN |
 | B31 | D | InventoryService.doRefreshOne | TF2/forceRefresh empty read wiped cache | (b31) | refreshEmptyReadGuard.test.ts | PROVEN |
+| B40 | N | SessionManager idle reaper | Single-op sessions accumulate to 150 ceiling | (reaper) | idleReaper.test.ts | PROVEN |
+| P6 | E | app.js/repriceReconciler | 90s cap → long price fill never reaches UI | (reprice) | repriceReconciler.test.ts | PROVEN |
+| B24/B25 | S | server redaction | Error/legacy-format proxy creds leak | (redact) | proxyRedaction.test.ts | PROVEN |
+| B32/34/35/36 | D/B | vault/vaultBoot | token sync-save/backup/ext-import/orphan-vault | (vault2) | vaultHardening,orphanVaultGuard | PROVEN |
+
+### SECOND-WAVE (audit round 2: licensing/boot/pricing/csfloat/frontend) — FIXED
+| AF1 | B | singleInstance:73 | **Fresh-install brick** (ENOENT + fail-safe refuse) — REGRESSION from P4 | (audit) | auditFollowups.test.ts | PROVEN |
+| AF2 | B | LicenseClient heartbeat | Bare 403 (WAF/portal) = revocation → license torn down | (audit) | — (contract-verified) | PROVEN |
+| AF3 | B | Updater self-test 120s | < build budget 180-200s → slow machine can't-update brick | (audit) | — | PROVEN |
+| AF4 | E | repriceReconciler | fetched-reset broke the reconciler → new fill ignored | (audit) | auditFollowups.test.ts | PROVEN |
+| AF5 | W | app.js submitTrade | Single send never re-pulled → sent items shown owned | (audit) | — | PROVEN |
+| AF6 | W | CsFloatDeliveredStore | Corrupt file → mass re-delivery (2nd offer per sale) | (audit) | auditFollowups.test.ts | PROVEN |
+| AF7 | S | app.js csfImg | CSFloat icon bypassed host allow-list (IP beacon) | (audit) | — | PROVEN |
+| AF8 | B | build/publish.js | Post-publish never verified served manifest sig | (pubsig) | — (owner-run) | PROVEN |
+| AF9 | W | index unhandledRejection | Money breaker blind to async rejection bursts | (audit) | — | PROVEN |
 
 ## OPEN — ordered by severity
 
@@ -171,6 +186,31 @@ verified against current code before fixing.
   docstring claims a nonexistent test + 20/50 comment drift.
 
 ---
+
+## PARKED (needs external human/server action or real Steam accounts)
+- **B14 · W · money-op restart journal** — a process KILL between a money POST and its local
+  verify/log, followed by a manual re-run of the SAME op, can double-act. The network-error
+  variant is already closed (B10/B12: probe/verifyBeforeRetry, never a blind retry). The full fix
+  (persist op-intent before commit + boot-reconcile against Steam's open orders / sent offers)
+  needs REAL Steam accounts to verify the reconcile. PARKED. *Human verification:* on restart after
+  a killed mass-buy/send, confirm SSIM surfaces the interrupted op and does not silently re-run it.
+- **B41 · W · session refcount** — a bulk/mass release can log out a session a concurrently-started
+  money op borrowed. Harm (mid-buy teardown → duplicate on retry) is mitigated by B10/B12
+  (network-error-safe) + B40 markUsed (an in-use session isn't reaped). Full acquire/release
+  refcount DEFERRED (higher regression risk than residual value now the money path is safe).
+- **#22 HWID pepper** — shared per-binary secret; a true fix is a server-side per-seat salt
+  (license-server change). Client-side confirmed: never in logs/responses. Residual risk stated.
+- **CSFloat live §8 / license-server dual-sign rollout / real-account regression** — owner-gated
+  (deploy + credentialed live checks). See RELEASE_READINESS_OPENBETA.md "Human steps left".
+
+## NON-GATING (logged, not beta-blockers)
+Second-wave minors kept but not gating: licensing #migration-relaunch (existing two-file fleet only,
+not new single-exe installs) + tmpdir cross-volume swap (unproven); boot writeCrash sync-write on
+death (unproven) + shell 40s wait_for_port (unproven); csfloat delivered-id persisted-after-send
+(single-sale race; mass case fixed by AF6) + clean-browser teardown-under-live-window (unproven);
+frontend modal onModalClose leak / buy-modal per-keystroke wallet fetch / poller-abort-on-transient
+/ casket panel staleness (UX); csfloat key-store mode-switch key visibility (F-4, VIOLABLE; cleartext
+file leak fixed by B21). Ledger tail #31,36,41–43,45,47,49–51,58–60,62,64,67,71–73,75 (UX/build/cosmetic).
 
 ## Guard test-coverage gaps to close (load-bearing, currently untested)
 buy-order finalize re-POST (createBuyOrder — ZERO coverage), strict buy-confirmation match,

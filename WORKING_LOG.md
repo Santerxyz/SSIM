@@ -122,3 +122,42 @@ neutralizeSteamClient() in destroySession.
 **Still open (this queue):** B14 op-journal (assess scope), B15 partial-baseline, B16 sell
 appId, B18 0-decimal wallets (hypothesis), B19 confirmed-on-phone; then secrets (B20–B26),
 data/brick (B30–B36), ban/crash (B40–B47).
+
+---
+
+## 2026-07-02 — Blocker sweep complete (23 commits); build gates
+
+Fixed + red→green tested, one atomic commit each (suite grew 79→150):
+- **Money/W:** B10/B12 buy network-error safety (probe + placed, no blind retry; owner
+  re-POST shape untouched), B11 sell non-EUR fail-closed, B13 breaker covers CSFloat+confirm,
+  B15 partial-baseline unverified, B17 csfloat price floor, B44/B45 pacing floors.
+- **Secrets/S:** B20 env proxy → vault, B21 plaintext token/key quarantine (verify-gated),
+  B23 maFile path containment, B24/B25 error+legacy-format redaction, B26/P5 capability token
+  (backend guard + stdout→shell inject + app.js header).
+- **Data/Brick/D,B:** B30 vault version refusal + preserve-unknown, B33 .bak recovery, B31
+  doRefreshOne empty-read guard, B32 first-mint token sync-save, B34 org backup, B35 external
+  token-only import, B36 headless orphan-vault refusal, P4 atomic fail-safe single-instance.
+- **Crash/Ban/C,N:** B01–B04 teardown quiescence + zombie-resurrection (native-crash ROOT) +
+  bounded post-trade refresh, B40 idle reaper, B42 token-only proxy, B43 destroy ERROR
+  sessions, B46 MAX_LIVE re-check, B47 IPv6 Host.
+- **Frontend/E:** P6 durable price reconciler (no 90s cap → long fills reach the UI).
+
+**Non-blockers documented (not gating):** B16 (sell CS2-only by construction), B18 (0-decimal
+wallet, hypothesis — needs live check), B19 (confirmed-on-phone status lie, no dup action),
+B22 (mafiles manual-delete notice = the warned opt-in; auto-quarantine risks LoginFlow disk
+fallback for non-vaulted accounts).
+
+**Parked:** B14 (money-op journal for restart-mid-op double-run) — the network-error variant is
+already closed by B10/B12; the full fix (persist intent + boot reconcile against Steam's open
+orders/sent offers) needs REAL Steam accounts to verify, so it's parked with the design below.
+B41 (session refcount vs release) — its double-order harm is mitigated by B10/B12 (a torn-down
+buy's network error → verifyBeforeRetry/probe, never a blind retry); the idle reaper (B40) +
+markUsed keep an in-use session from being reaped. Full refcount deferred (higher risk than
+its residual value now that the money path is network-error-safe).
+
+**Build gates:** `npm run build` (tsc) exit 0; `cargo check` (Rust shell incl. capability
+inject) exit 0. `npm run build:protected` + `npm run release` running/next.
+
+**Known test flake:** test/updaterEacces.test.ts pipeToFile stall-guard (~63ms timer) fails
+intermittently only under heavy concurrent full-suite load; passes in isolation and on re-run
+(150/150). To stabilise (raise the timer / serialise) — not a code defect.
