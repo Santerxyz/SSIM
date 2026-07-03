@@ -1,5 +1,4 @@
-+ New: <headline feature — what the user can now DO, in their words>
-+ New: <another notable addition>
-+ Improved: <what got noticeably better>
-- Fixed: <what was broken, described the way a user would notice it>
+- Fixed: open in Browser only Supporting the Steam Community market. now it support the normal steam Store too.
+- Fixed: An Issue where the Backend Price fetcher didnt Update the Prices after finishing the Fetch process.
+- Fixed: SSIM not using another port if an Applince already running on it.
 - Backend Fixes
