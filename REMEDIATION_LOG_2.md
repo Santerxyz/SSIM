@@ -459,3 +459,16 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   void launches finalize); `test/updateScheduler.test.ts` (installNow catches a runUpdate throw → resolves
   a failure, never rejects). AccountTrader untouched.
 - **Status:** FIXED. build clean · 271 tests (+3).
+
+### S22 — three undismissed error toasts permanently mute all later toasts (unbounded queue) — **FIXED**
+- **What:** Error toasts now auto-dismiss after a LONG `ERROR_TOAST_TTL_MS` (20s) instead of never;
+  duplicate toasts collapse (an `activeToastKeys` de-dup set keyed by `type|message`); the pending queue
+  is capped (`TOAST_QUEUE_CAP=50`, drop-oldest). The routine post-op 409 downgrade is subsumed — a 409
+  error now auto-clears + de-dups rather than sticking.
+- **Why:** errors never auto-dismissed, so three unread ones filled all 3 visible slots forever and every
+  later toast (buy/sell/trade confirmations) queued invisibly in an unbounded `toastQueue` → the operator
+  lost all op feedback + slow memory growth.
+- **Files:** `public/app.js` (`toast`, `drainToasts`, `showOneToast`).
+- **Tests:** `test/toastQueue.test.ts` — identical toasts collapse to one; a flood behind 3 stuck errors
+  is queued+capped (not unbounded); errors use the long TTL (source-presence, never-dismiss path gone).
+- **Status:** FIXED. build clean · 274 tests (+3).

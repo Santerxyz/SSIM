@@ -5821,19 +5821,33 @@ function renderFolderBuyResults(job) {
 // dismissed, everything else auto-dismisses. Optional inline Undo via opts.undo. The old
 // (message, type) signature is unchanged, so every existing call site keeps working. ──
 const TOAST_MAX = 3;
+const TOAST_QUEUE_CAP = 50;        // S22: never let the pending queue grow without bound
+const ERROR_TOAST_TTL_MS = 20000;  // S22: errors auto-dismiss after a LONG ttl (not never) so 3 stuck
+                                   // error toasts can no longer permanently mute every later notification
 const toastQueue = [];
 let toastShown = 0;
+const activeToastKeys = new Set();  // S22: de-dup — "type|message" currently queued or visible
 function toast(message, type = 'info', opts = {}) {
-  toastQueue.push({ message, type, opts });
+  const key = `${type}|${message}`;
+  // S22: collapse duplicates — an error burst must not fill all 3 slots (and the queue) with the same
+  // message. A currently-queued/visible identical toast is not re-added (it reappears once it clears).
+  if (activeToastKeys.has(key)) return;
+  // S22: cap the pending queue so a flood can't grow it unbounded → drop the OLDEST pending toast.
+  while (toastQueue.length >= TOAST_QUEUE_CAP) {
+    const dropped = toastQueue.shift();
+    if (dropped) activeToastKeys.delete(`${dropped.type}|${dropped.message}`);
+  }
+  activeToastKeys.add(key);
+  toastQueue.push({ message, type, opts, key });
   drainToasts();
 }
 function drainToasts() {
   while (toastShown < TOAST_MAX && toastQueue.length) {
-    const { message, type, opts } = toastQueue.shift();
-    showOneToast(message, type, opts);
+    const { message, type, opts, key } = toastQueue.shift();
+    showOneToast(message, type, opts, key);
   }
 }
-function showOneToast(message, type, opts) {
+function showOneToast(message, type, opts, key) {
   toastShown++;
   const tone = { success: 'bg-emerald-600', error: 'bg-rose-600', warn: 'bg-amber-500', info: 'bg-slate-700' }[type] || 'bg-slate-700';
   const icon = { success: 'fa-circle-check', error: 'fa-circle-exclamation', warn: 'fa-triangle-exclamation', info: 'fa-circle-info' }[type] || 'fa-circle-info';
@@ -5844,12 +5858,14 @@ function showOneToast(message, type, opts) {
     ? `<button data-toast-undo class="ml-1 shrink-0 px-2 py-0.5 rounded bg-white/20 hover:bg-white/30 text-white text-xs font-bold transition">Undo</button>` : '';
   t.innerHTML = `<i class="fa-solid ${icon} shrink-0"></i><span class="flex-1 min-w-0 break-words">${escapeHtml(message)}</span>${undoBtn}<button data-toast-close aria-label="Dismiss" class="shrink-0 text-white/70 hover:text-white transition px-1"><i class="fa-solid fa-xmark"></i></button>`;
   let closed = false, timer = null;
-  const close = () => { if (closed) return; closed = true; if (timer) clearTimeout(timer); t.remove(); toastShown--; drainToasts(); };
+  const close = () => { if (closed) return; closed = true; if (timer) clearTimeout(timer); t.remove(); toastShown--; if (key) activeToastKeys.delete(key); drainToasts(); };
   t.querySelector('[data-toast-close]').addEventListener('click', close);
   const undoEl = t.querySelector('[data-toast-undo]');
   if (undoEl) undoEl.addEventListener('click', () => { try { opts.undo(); } catch { /* undo failed */ } close(); });
   el.toastStack.appendChild(t);
-  if (type !== 'error') timer = setTimeout(close, opts.duration || 4000);   // errors persist until dismissed
+  // S22: errors now auto-dismiss after a LONG ttl instead of never — so three unread error toasts can't
+  // permanently occupy all slots and silently mute every later (buy/sell/trade) notification.
+  timer = setTimeout(close, opts.duration || (type === 'error' ? ERROR_TOAST_TTL_MS : 4000));
 }
 
 function escapeHtml(s) {
