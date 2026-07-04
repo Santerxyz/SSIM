@@ -383,7 +383,7 @@ function rarityWeight(r) { return RARITY_WEIGHT[r] ?? 0; }
 function statusGroup(item) { return item.tradeLockExpiry ? 2 : (item.tradable ? 1 : 0); }
 function compareItems(a, b, key) {
   switch (key) {
-    case 'name':     return a.name.localeCompare(b.name);
+    case 'name':     return (a.name || '').localeCompare(b.name || ''); // coerce: a malformed cached row has no name (S30)
     case 'quantity': return (a.quantity || 1) - (b.quantity || 1);
     case 'rarity':   return rarityWeight(a.rarity) - rarityWeight(b.rarity);
     case 'value':    return stackValueCents(a) - stackValueCents(b);
@@ -454,6 +454,35 @@ async function api(path, opts = {}) {
     throw e;
   }
   return data;
+}
+
+// ── Global error visibility (S30) ─────────────────────────────────────────────
+// WebView2 has NO visible console and there were no global handlers, so an uncaught error in a
+// render/filter/sort path (e.g. a malformed cached row) escaped the DOM handler, left a half-rendered
+// view, and surfaced NOWHERE — and init()'s own rejection was invisible too. Catch them globally:
+// toast the operator AND ship to the backend log so the failure is visible via Live Logs / shell.log
+// on an unattended machine. The reporter must never itself throw or storm.
+let __lastUiErrorAt = 0;
+function reportUiError(kind, message, extra) {
+  try {
+    const now = Date.now();
+    if (now - __lastUiErrorAt < 1000) return; // coalesce bursts (a render loop can fire many)
+    __lastUiErrorAt = now;
+    const msg = `${kind}: ${message}`;
+    try { toast(`UI error: ${String(message).slice(0, 200)}`, 'error'); } catch (_) {}
+    const body = JSON.stringify({ message: msg.slice(0, 2000), source: (extra && extra.source) || '', stack: (extra && extra.stack) || '' });
+    // Best-effort; the endpoint is capability-exempt so it also works while the session is capless (S1).
+    fetch(API + '/api/app/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {});
+  } catch (_) { /* the reporter must never itself raise */ }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (e) => reportUiError('window.onerror',
+    (e && (e.message || (e.error && e.error.message))) || 'unknown error',
+    { source: `${(e && e.filename) || ''}:${(e && e.lineno) || ''}`, stack: e && e.error && e.error.stack }));
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e && e.reason;
+    reportUiError('unhandledrejection', (r && r.message) || String(r), { stack: r && r.stack });
+  });
 }
 
 // Inventories are cached server-side keyed by lowercase username – normalise lookup.
@@ -2906,7 +2935,9 @@ function renderTable(items, opts = {}) {
   // PERF-01: header sort is handled by ONE delegated listener (see setupDelegation), not re-bound per render.
 
   const needle = state.search.trim().toLowerCase();
-  let filtered = applyFacets(items.filter((i) => !needle || i.name.toLowerCase().includes(needle) || i.marketHashName.toLowerCase().includes(needle)));
+  // Coerce name fields: a corrupt/legacy cached row lacking name/marketHashName would otherwise
+  // throw here and break the whole table + search (the stores accept any JSON). (S30)
+  let filtered = applyFacets(items.filter((i) => !needle || (i.name || '').toLowerCase().includes(needle) || (i.marketHashName || '').toLowerCase().includes(needle)));
 
   if (state.sort) {
     const { key, dir } = state.sort;

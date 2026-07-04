@@ -50,3 +50,22 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/capabilityToken.test.ts` — open-logs is unprotected + guard nexts it tokenless;
   `check-update` and a `open-logs-evil` lookalike stay protected (exact, no prefix bypass).
 - **Status:** FIXED. build clean · 202 tests (+1) · guard behaviour otherwise unchanged.
+
+### S30 — no global error hooks + null-unsafe render → one bad row breaks the table silently — **FIXED**
+- **What:** (a) Coerced the name fields in the two crash sites — `compareItems` name sort
+  (`(a.name||'').localeCompare(b.name||'')`) and the search filter (`(i.name||'')` /
+  `(i.marketHashName||'')`). (b) Added global `window` `error` + `unhandledrejection` handlers
+  (`reportUiError`) that toast the operator AND POST to a new `/api/app/client-error` sink (bounded,
+  coalesced, never throws). (c) The sink logs via winston (`[ui] …`) so it shows in Live Logs /
+  shell.log; exempted from the capability guard so it works while the UI is broken/capless.
+- **Why:** the stores accept any JSON, so a corrupt/legacy row lacking `name`/`marketHashName` threw
+  inside filter/sort mid-`renderTable`, escaped the DOM handler, and left a half-rendered view — and
+  with no global hook (WebView2 has no visible console) the failure surfaced nowhere.
+- **Files:** `public/app.js` (coercions + `reportUiError` + handlers), `src/api/server.ts`
+  (`/api/app/client-error`), `src/api/capability.ts` (exemption).
+- **Tests:** `test/renderNullSafety.test.ts` — extracts the shipped `compareItems`, proves the name
+  sort tolerates missing names (throws on the old code) yet still orders normally;
+  `test/capabilityToken.test.ts` — client-error sink is exempt + nexted tokenless, no substring bypass.
+- **Status:** FIXED. build clean · 205 tests (+3).
+
+**Wave 0 boundary re-check:** build clean · 205 tests · cargo clean (S1). ✔

@@ -40,12 +40,13 @@ export function verifyCapability(provided: unknown): boolean {
 // carry the token too, not just mutating methods.
 const SECRET_GET = /^\/api\/(?:accounts\/[^/]+\/(?:proxy|otp)|environments\/[^/]+\/proxy)$/i;
 
-// Side-effect-trivial POSTs that must stay reachable WITHOUT the capability token. The Live
-// Logs launcher only asks the shell to open a READ-ONLY logs window (the log stream itself is
-// already public), and it is the operator's primary diagnostics surface — needed exactly during
-// incidents, when the token may be missing. It is not a money/vault/config op, so gating it behind
-// the token only broke the button (window.open is also blocked in the webview). (S20)
-const OPEN_POST_EXEMPT = /^\/api\/app\/open-logs$/i;
+// Side-effect-trivial diagnostic POSTs that must stay reachable WITHOUT the capability token —
+// they carry no money/vault/config action. `open-logs` only asks the shell to open a READ-ONLY
+// logs window (the log stream itself is already public), the operator's primary diagnostics surface
+// needed exactly during incidents when the token may be missing — gating it only broke the button
+// (window.open is also blocked in the webview). `client-error` is the frontend crash sink whose whole
+// job is to work when the UI is broken (possibly capless). (S20, S30)
+const OPEN_POST_EXEMPT = /^\/api\/app\/(?:open-logs|client-error)$/i;
 
 /**
  * Is this request one that a random local process must NOT be able to make without the

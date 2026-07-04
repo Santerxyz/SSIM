@@ -300,6 +300,22 @@ export function createApp(deps: ApiDeps): Express {
     res.status(204).end();
   });
 
+  // Frontend error sink (S30): the WebView2 renderer has no visible console, so an uncaught error /
+  // unhandled rejection in app.js otherwise vanishes. The dashboard's global handlers POST here so the
+  // failure lands in the same (rotated) log the operator reads via Live Logs / shell.log. Loopback-only,
+  // side-effect-trivial (a capped log write), and capability-exempt like open-logs so it also works
+  // while the session is capless. Every field is length-bounded and the handler never throws.
+  app.post('/api/app/client-error', (req, res) => {
+    try {
+      const b = (req.body || {}) as { message?: unknown; source?: unknown; stack?: unknown };
+      const msg = String(b.message ?? '').slice(0, 2000);
+      const where = String(b.source ?? '').slice(0, 300).replace(/[\r\n]+/g, ' ');
+      const stack = String(b.stack ?? '').slice(0, 2000);
+      logger.error(`[ui] ${msg}${where && where !== ':' ? ` @ ${where}` : ''}${stack ? `\n${stack}` : ''}`);
+    } catch { /* the error sink must never itself throw */ }
+    res.status(204).end();
+  });
+
   // Live log stream (Server-Sent Events) for the in-app "Live Logs" window: backfill the
   // recent ring buffer, then push each new (already-redacted) line as it is logged. Read-only,
   // loopback-only, and self-cleaning — the per-connection listener is removed on disconnect.

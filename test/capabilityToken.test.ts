@@ -54,6 +54,13 @@ test('S20: the Live Logs launcher POST is exempt (diagnostics without a token); 
   assert.ok(isProtectedRequest('POST', '/api/app/open-logs-evil'), 'no prefix/substring bypass');
 });
 
+test('S30: the frontend error sink POST is exempt (must work when the UI is broken/capless)', () => {
+  assert.equal(isProtectedRequest('POST', '/api/app/client-error'), false);
+  const r = runGuard('POST', '/api/app/client-error'); // capless session still reports errors
+  assert.equal(r.nexted, true, 'client-error must reach the handler without a token');
+  assert.ok(isProtectedRequest('POST', '/api/app/client-error-x'), 'no substring bypass');
+});
+
 function runGuard(method: string, urlPath: string, headers: Record<string, string> = {}, query: Record<string, string> = {}) {
   let statusCode = 0; let body: unknown; let nexted = false;
   const req = {
