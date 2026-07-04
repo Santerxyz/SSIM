@@ -269,3 +269,22 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   behavior change) and added `consultRefusal` to `buyPartialBaseline.test.ts`'s no-op journal mock.
 - **Status:** FIXED. build clean · 237 tests (+5).
 
+### S6 — no timeout on steam-totp getTimeOffset wedges all confirmation/money paths — **FIXED**
+- **What:** New `src/trading/steamTotpTimeout.ts`. `installSteamTotpTimeout()` (called first in
+  `bootstrap()`) patches `SteamTotp.getTimeOffset` PROCESS-WIDE with `makeTimeoutGetOffset`: a ~10s
+  timeout that falls back to the last-known offset (or 0 — the same fallback callers already use on
+  error) so a stalled QueryTime can't hang, plus a per-process cache of the (clock-stable) offset so
+  only the FIRST call touches the network.
+- **Why:** steam-totp's `getTimeOffset` issues a raw `https.request` with NO timeout; a stalled response
+  never settles the callback, so every confirmation entry point that awaits it (buy-order 2FA, mass-sell
+  2FA, the SDA panel, and steamcommunity's OWN trade-send confirm) hangs until restart — pinning the
+  in-flight guard + MoneyOps asset claims and latching mass-op running flags.
+- **Approach:** patched the shared module (both our 4 AccountTrader call sites AND the steamcommunity
+  vendor call site resolve `getTimeOffset` from the same cached module) rather than editing call sites —
+  so the vendor's trade-send confirm is covered too, and **`AccountTrader.ts` stays out of the diff**
+  (grep-proven). Not a band-aid: bounds an unbounded await, uses the documented fallback, no retry/restart.
+- **Files:** `src/trading/steamTotpTimeout.ts` (new), `src/index.ts` (install at boot).
+- **Tests:** `test/steamTotpTimeout.test.ts` — stall → 0 within timeout (no hang); success cached (2nd
+  call no network); error not cached (re-attempt); cache TTL expiry; sync throw degrades to 0.
+- **Status:** FIXED. build clean · 242 tests (+5).
+
