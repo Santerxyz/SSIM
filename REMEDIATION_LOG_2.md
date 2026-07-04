@@ -975,3 +975,13 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Throughput ceiling note:** the single-IP 3.5s/name throttle (~17/min) is ARCHITECTURAL — a 500+-account
   cold cache legitimately runs tens of minutes to hours. Only a proxy-routed / parallelised price fetch would
   lift it; out of scope here — flagged for later.
+
+### S68 (follow-up) — Live Logs launcher moved to bottom-LEFT (off the toast corner) — **FIXED**
+- **What:** the launcher's z-index was already dropped 99999→30 (prior S68 commit); this moves it from the
+  bottom-RIGHT (`right:18px`) to the bottom-LEFT (`left:18px`).
+- **Why:** the bottom-right corner is shared by the toast stack (`bottom-6 right-6 z-[60]`, every toast) and
+  the price-fill badge (`bottom-4 right-4`, every refresh) — frequent spatial collisions. The bottom-left
+  corner is only used by the rare/conditional update indicator + banners (all z-40), and z-30 keeps the
+  launcher correctly beneath them, so it can never obscure an alert.
+- **Files:** `public/index.html`. **Tests:** `test/liveLogsZindex.test.ts` — z-index < 40 AND anchored
+  bottom-left (`left:` present, `right:` absent). **Status:** FIXED.
