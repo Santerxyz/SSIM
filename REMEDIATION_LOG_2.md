@@ -617,3 +617,18 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** server `test/reliability.test.js` (S31 — verifyKeypair true for the matching pair; a
   mismatched pair fails the Ed25519 probe).
 - **Status:** FIXED. server `npm test` = **48 pass** (+2). Client untouched.
+
+### S34 — manual install is 202-then-silence: "installing…" forever + suppresses the badge — **FIXED**
+- **What:** `/api/system/status`'s `update` field now exposes `currentOutcome` (from the existing
+  `getUpdateOutcome`) AND `installing` (new `isUpdateOpInFlight()` on the scheduler). The dashboard's
+  `watchSystemStatus` clears `updateInstalling` (and re-shows the badge + toasts the outcome) once the
+  server reports `update.installing === false`.
+- **Why:** the endpoint 202s before download/verify/self-test start; a KEPT-CURRENT install just returned,
+  so `updateInstalling` never reset → "installing…" forever and the update badge suppressed for the
+  session (only a successful swap, which exits + reloads, cleared it). `updateStatusView` had the outcome
+  but was never wired to the route.
+- **Files:** `src/licensing/updateScheduler.ts` (`isUpdateOpInFlight`), `src/api/server.ts` (status),
+  `public/app.js` (`watchSystemStatus` reset).
+- **Tests:** `test/updateScheduler.test.ts` (S34 — `isUpdateOpInFlight` true during an install, false after
+  a kept-current one → the exact signal the dashboard uses to reset).
+- **Status:** FIXED. build clean · 293 tests (+1).

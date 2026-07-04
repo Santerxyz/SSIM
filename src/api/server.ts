@@ -21,8 +21,8 @@ import { canConfirm } from '../core/accountCapability';
 import { loadMaFile, generateTotpCode, msUntilNextTotp } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
 import { LicenseClient } from '../licensing/LicenseClient';
-import { getAvailableUpdate, getBlockedUpdate, getPriorCrash } from '../licensing/updateStatus';
-import { checkOnly, canInstallNow, installNow } from '../licensing/updateScheduler';
+import { getAvailableUpdate, getBlockedUpdate, getPriorCrash, getUpdateOutcome } from '../licensing/updateStatus';
+import { checkOnly, canInstallNow, installNow, isUpdateOpInFlight } from '../licensing/updateScheduler';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
@@ -2103,6 +2103,11 @@ export function createApp(deps: ApiDeps): Express {
         blocked: !!(availableUpdate && blockedUpdate && blockedUpdate.version === availableUpdate.version),
         blockedFailures: blockedUpdate?.failures,
         blockedKind: blockedUpdate?.kind,
+        // S34: expose the LAST update outcome + whether an update op is in flight, so the dashboard can
+        // stop showing "installing…" forever when a user-confirmed install kept-current (a swap exits the
+        // process, so a still-running backend with installing:false means the install ended → badge back).
+        currentOutcome: getUpdateOutcome(),
+        installing: isUpdateOpInFlight(),
       },
       // Prior-run crash banner (B1): the shell recorded an unexpected backend death last run. Shown
       // once so the operator knows — NOTHING was auto-restarted.

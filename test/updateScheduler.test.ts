@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  currentView, canInstallNow, startUpdateScheduler, stopUpdateScheduler, installNow,
+  currentView, canInstallNow, startUpdateScheduler, stopUpdateScheduler, installNow, isUpdateOpInFlight,
 } from '../src/licensing/updateScheduler';
 import { setAvailableUpdate, setBlockedUpdate } from '../src/licensing/updateStatus';
 import { Updater } from '../src/licensing/Updater';
@@ -58,6 +58,23 @@ test('S33: installNow CATCHES a runUpdate throw and returns a failure (never rej
     const r = await installNow(); // must RESOLVE (a failure result), not reject
     assert.equal(r.updated, false);
     assert.match(r.reason, /install failed/);
+  } finally {
+    (Updater as unknown as { runUpdate: typeof orig }).runUpdate = orig;
+    stopUpdateScheduler();
+  }
+});
+
+test('S34: isUpdateOpInFlight is true WHILE installing and clears after (dashboard resets "installing…")', async () => {
+  const orig = Updater.runUpdate;
+  let duringInstall: boolean | undefined;
+  (Updater as unknown as { runUpdate: () => Promise<{ updated: boolean; reason: string }> }).runUpdate =
+    async () => { duringInstall = isUpdateOpInFlight(); return { updated: false, reason: 'kept-current' }; };
+  startUpdateScheduler({ currentVersion: '1.3.4', isBusy: () => false }, 999_999);
+  try {
+    assert.equal(isUpdateOpInFlight(), false, 'idle before an install');
+    await installNow(); // a kept-current install (runUpdate resolves without swapping)
+    assert.equal(duringInstall, true, 'in flight WHILE the install runs → the badge stays "installing…"');
+    assert.equal(isUpdateOpInFlight(), false, 'cleared once the install returns kept-current → the dashboard re-shows the badge');
   } finally {
     (Updater as unknown as { runUpdate: typeof orig }).runUpdate = orig;
     stopUpdateScheduler();

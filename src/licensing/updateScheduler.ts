@@ -47,6 +47,10 @@ let timer: NodeJS.Timeout | undefined;
 let deps: UpdateSchedulerDeps | undefined;
 let inFlight = false; // single-flight guard across periodic/manual check + install
 
+/** S34: true while a check/install is running. The dashboard resets its "installing…" state (and re-shows
+ *  the update badge) once this is false, so a kept-current install no longer shows "installing…" forever. */
+export function isUpdateOpInFlight(): boolean { return inFlight; }
+
 /**
  * Start the periodic (6h) update-availability check. IS_PACKAGED-only (a dev run must never swap
  * node.exe). Unref'd so it never keeps the process alive on its own. Idempotent.

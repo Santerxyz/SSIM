@@ -1023,6 +1023,15 @@ async function watchSystemStatus() {
   while (true) {
     let st; try { st = await api('/api/system/status'); } catch { st = null; }
     if (st) {
+      // S34: a user-confirmed install 202s then runs async; a SUCCESS swaps + exits (this page reloads),
+      // but a KEPT-CURRENT install just returns. When the server reports no update op in flight anymore,
+      // clear the "installing…" state + re-show the badge (instead of showing "installing…" forever), and
+      // surface the outcome so the operator knows it didn't install.
+      if (updateInstalling && st.update && st.update.installing === false) {
+        updateInstalling = false;
+        const outcome = st.update.currentOutcome;
+        if (outcome && !['ok', 'up-to-date'].includes(outcome)) toast(`Update did not install (${outcome}) — you can retry from the badge.`, 'warn');
+      }
       renderUpdateIndicator(st.update);
       renderBreakerIndicator(st);
       renderTokenStoreWarning(st);
