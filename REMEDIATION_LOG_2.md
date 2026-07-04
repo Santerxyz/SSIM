@@ -713,3 +713,13 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `src/core/InventoryService.ts`. **Tests:** `test/inventoryCs2RefreshRetry.test.ts`
   (transient → retried; non-transient → fails fast). +2 tests.
 - **Status:** FIXED. A non-transient error (auth/private) still fails immediately (no wasted retries).
+
+### S41 — wallet-event race resurfaced the funded→"—" tri-state — **FIXED**
+- **What:** when `session.wallet` is absent on a pass, both refresh paths now carry the last-known wallet
+  forward (`getCached(username, game)?.wallet`) instead of writing a walletless record.
+- **Why:** a refresh whose inventory read commits before the `'wallet'` event fires replaced the record
+  without a wallet → a funded account flickered back to "—" every such pass.
+- **Files:** `src/core/InventoryService.ts` (GC path + quick/TF2 path).
+- **Tests:** `test/inventoryWalletCarryForward.test.ts` — carry-forward on no-event; live event still wins;
+  never-funded stays walletless (teeth-verified). +3 tests.
+- **Status:** FIXED.

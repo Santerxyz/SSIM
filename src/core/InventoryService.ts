@@ -344,6 +344,13 @@ export class InventoryService {
         currency: session.wallet.currency,
         balance:  session.wallet.hasWallet ? session.wallet.balance : 0,
       };
+    } else {
+      // S41: the 'wallet' event can fire AFTER this refresh commits (a login whose inventory read
+      // finishes before the wallet arrives). Writing the new record with no wallet would flip a
+      // previously-funded account back to the "—" tri-state on every such pass. Carry the last-known
+      // wallet forward instead — a real balance is only ever replaced by a newer real balance.
+      const prevWallet = this.getCached(username, 'cs2')?.wallet;
+      if (prevWallet) inv.wallet = prevWallet;
     }
 
     // #10 money-safety: a partial inventory read can return an EMPTY backpack for an account
@@ -543,6 +550,11 @@ export class InventoryService {
         currency: session.wallet.currency,
         balance:  session.wallet.hasWallet ? session.wallet.balance : 0,
       };
+    } else {
+      // S41 (parity with the GC path): don't drop a previously-known wallet when the 'wallet' event
+      // hasn't fired on this pass — carry the last-known balance forward to avoid the funded→"—" flicker.
+      const prevWallet = this.getCached(username, game)?.wallet;
+      if (prevWallet) inv.wallet = prevWallet;
     }
 
     // Empty / partial-read protection (B31 — parity with the CS2 path's #10/C12 guards, which
