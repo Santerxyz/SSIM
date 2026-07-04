@@ -780,6 +780,17 @@ async function setPriceSource(src) {
 // window) always reaches the UI — no displayed total stays stale-as-if-live after prices have
 // actually been fetched (INV-E1). A single no-progress safety stop bounds a wedged backend.
 const REPRICE_NO_PROGRESS_MS = 15 * 60_000;
+// S10: bound how often the fill-watch re-pulls the WHOLE /api/inventory (a deep-clone + enrich +
+// multi-MB stringify server-side, plus a full renderMain/renderSidebar client-side). A fill advances
+// ~1 name/3.5s, so the old "re-pull on every advance" hammered the event loop ~every 2.5s poll for the
+// whole fill. Coalesce to at most one re-pull per this interval; the final drain still pulls immediately.
+const REPRICE_MIN_REPULL_MS = 10_000;
+/** Decide whether the fill-watch should re-pull now: always on drain (queue empty), else only when the
+ *  fill advanced AND at least REPRICE_MIN_REPULL_MS has elapsed since the last re-pull. (S10) */
+function shouldRepullFill(progressed, busy, msSinceLastRepull, minRepullMs) {
+  if (!busy) return true;                                    // queue drained → final re-pull always
+  return progressed && msSinceLastRepull >= minRepullMs;     // bounded cadence during an active fill
+}
 
 // Mirrors src/pricing/repriceReconciler.ts (priceFillIndicator) — keep in sync. Visible while the
 // backend fill runs or names are queued; hidden the moment the queue drains (dismiss-on-complete).
@@ -816,6 +827,7 @@ async function watchPriceFill(repull) {
   renderPriceFillIndicator(s0); // reflect the current fill state immediately
   let lastPulled = baseline;
   let lastProgressAt = Date.now();
+  let lastRepullAt = 0; // S10: bound the whole-fleet re-pull cadence
   while (true) {
     await new Promise((r) => setTimeout(r, 2500));
     if (state.repriceToken !== token) return;                    // superseded by a newer watcher (it owns the indicator now)
@@ -824,14 +836,18 @@ async function watchPriceFill(repull) {
     renderPriceFillIndicator(st);                                // live "N left / X done"; auto-hides when drained
     const fetched = st ? (st.fetched || 0) : 0;
     const busy = !!(st && (st.running || (st.queued || 0) > 0));
-    let repullNow = false, stop = false;
     // The backend resets `fetched` to 0 at the start of each fill generation → a DROP means a new
     // generation; re-baseline so its prices are re-pulled, not ignored until they pass the old high.
     if (fetched < lastPulled) lastPulled = 0;
-    if (fetched > lastPulled) { lastPulled = fetched; lastProgressAt = Date.now(); repullNow = true; }
-    if (!busy) { repullNow = true; stop = true; }                // queue drained → final re-pull, then stop
-    else if (Date.now() - lastProgressAt > REPRICE_NO_PROGRESS_MS) { stop = true; console.warn('[reprice] no pricing progress for 15 min – stopping the watch'); }
-    if (repullNow) { try { await repull(); } catch { /* keep the current view on a transient fetch error */ } }
+    const progressed = fetched > lastPulled;
+    if (progressed) { lastPulled = fetched; lastProgressAt = Date.now(); }
+    const noProgress = busy && (Date.now() - lastProgressAt > REPRICE_NO_PROGRESS_MS);
+    if (noProgress) console.warn('[reprice] no pricing progress for 15 min – stopping the watch');
+    // S10: coalesce re-pulls to at most one per REPRICE_MIN_REPULL_MS while the fill runs (the drain
+    // always pulls immediately), instead of re-pulling+re-rendering the whole fleet on every 2.5s poll.
+    const repullNow = shouldRepullFill(progressed, busy, Date.now() - lastRepullAt, REPRICE_MIN_REPULL_MS);
+    const stop = !busy || noProgress;
+    if (repullNow) { lastRepullAt = Date.now(); try { await repull(); } catch { /* keep the current view on a transient fetch error */ } }
     if (stop) { renderPriceFillIndicator(null); return; }        // dismiss the indicator on completion
   }
 }

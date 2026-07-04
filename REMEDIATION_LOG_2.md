@@ -346,5 +346,23 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Status:** FIXED. build clean · 250 tests (+3).
 
 **Wave 2 boundary re-check:** client build clean · 250 tests · cargo clean (unchanged) · server 45. ✔
-(The recurring `updaterEacces.test.ts:51` pipeToFile flake failed once here, passed on re-run.)
+(The recurring `updaterEacces.test.ts:51` pipeToFile flake — since de-flaked in a separate commit.)
+
+---
+
+## Wave 3 — Liveness, watchers, event-loop cost
+
+### S10 — `/api/inventory` deep-clone+enrich+stringify hammered ~every 2.5s during a fill — **FIXED**
+- **What:** `watchPriceFill` now coalesces the whole-fleet re-pull to at most once per 10s
+  (`REPRICE_MIN_REPULL_MS`) via a testable `shouldRepullFill(progressed, busy, since, min)`; the final
+  drain still pulls immediately. Cuts the re-pull + full `renderMain/renderSidebar` frequency ~4×.
+- **Deviation:** did NOT add the register's ETag/304 — `/api/inventory` merges two stores and overlays
+  manual-lock/category state no store-version captures, so a version-ETag would risk serving STALE
+  trade-gating data (and can't 304 mid-fill anyway, since the payload changes each pull). The cadence
+  bound removes the hammering symptom with zero staleness risk; client-side price patching left as a
+  deeper follow-up.
+- **Files:** `public/app.js`.
+- **Tests:** `test/priceFillCadence.test.ts` — drain always pulls; mid-fill only progressed+cadence pulls;
+  3 fast advances coalesce to ≤1 pull.
+- **Status:** FIXED. build clean · 253 tests (+3).
 
