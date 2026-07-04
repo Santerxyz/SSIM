@@ -77,16 +77,27 @@ export class PriceCache {
     this.scheduleFlush();
   }
 
+  // S43: during a background fill a new price arrives about every 3.5s (PricingService.FETCH_DELAY_MS) —
+  // LONGER than the old 2s window — so each set() landed after its own window elapsed and rewrote the
+  // WHOLE prices.json (up to MAX_ENTRIES) once per fetch, for the whole fill. Coalesce with a longer
+  // max-delay window, plus a burst cap so a fast bulk warm-up still persists promptly. Prices are
+  // non-sensitive and re-fetchable, so a few tens of seconds at risk on a hard crash is acceptable.
+  private static readonly FLUSH_MAX_DELAY_MS = 30_000;
+  private static readonly FLUSH_EVERY_N      = 250;
+  private dirtyCount = 0;
+
   private scheduleFlush(): void {
     this.dirty = true;
-    if (this.flushTimer) return;
-    this.flushTimer = setTimeout(() => this.flush(), 2_000);
+    if (++this.dirtyCount >= PriceCache.FLUSH_EVERY_N) { this.flush(); return; } // burst cap → persist now
+    if (this.flushTimer) return;                                                 // else coalesce into one write
+    this.flushTimer = setTimeout(() => this.flush(), PriceCache.FLUSH_MAX_DELAY_MS);
     this.flushTimer.unref?.();
   }
 
   flush(): void {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = undefined; }
     if (!this.dirty) return;
+    this.dirtyCount = 0; // reset on every flush ATTEMPT (a failing disk must not re-trigger every set)
     try {
       const obj: Record<string, PriceEntry> = {};
       for (const [k, v] of this.map) obj[k] = v;

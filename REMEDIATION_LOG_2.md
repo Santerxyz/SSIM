@@ -723,3 +723,20 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Tests:** `test/inventoryWalletCarryForward.test.ts` — carry-forward on no-event; live event still wins;
   never-funded stays walletless (teeth-verified). +3 tests.
 - **Status:** FIXED.
+
+### S43 — PriceCache rewrote the whole prices.json every ~2s for the duration of a fill — **FIXED**
+- **What:** replaced the 2s flush window with a 30s max-delay coalescing window + a 250-set burst cap
+  (`FLUSH_MAX_DELAY_MS`/`FLUSH_EVERY_N`); the dirty counter resets on every flush attempt.
+- **Why:** the 2s window was shorter than the ~3.5s inter-fetch delay, so each fetched price landed after
+  its own window and rewrote the entire file (up to 100k entries) once per fetch.
+- **Files:** `src/pricing/PriceCache.ts`. **Tests:** `test/priceCacheFlush.test.ts` (coalesced small runs;
+  burst cap forces a synchronous flush; updates still persist). +3 tests.
+- **Status:** FIXED. Prices are non-sensitive/re-fetchable, so a few tens of seconds at risk is acceptable.
+
+### S44 — FX refresh failure not retried for 12h — **FIXED**
+- **What:** on a failed refresh, arm a bounded exponential-backoff short retry (5/10/20/40 min, MAX_RETRIES=4);
+  a 200-with-no-rate now counts as failure; a success clears the pending retry and resets the budget; the
+  12h tick resets the budget per cycle.
+- **Why:** a single provider blip left the fallback/stale rate in place for half a day.
+- **Files:** `src/pricing/ExchangeRateService.ts`. **Tests:** `test/exchangeRateRetry.test.ts` (retry armed;
+  garbage-200 retried; success clears+resets; bounded at cap). +4 tests. **Status:** FIXED (display-only).
