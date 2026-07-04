@@ -93,3 +93,27 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   for authoritative no-price, soft miss expires in minutes while an authoritative null holds 24h, soft
   flag attaches only to a null miss. Existing pricing tests unchanged (2-arg `set` still valid).
 - **Status:** FIXED. build clean · 209 tests (+4). Display-integrity only (mass-buy uses the wallet).
+
+### S4 — per-context empty-coercion commits a half-merged CS2 inventory as complete — **FIXED**
+- **What:** `InventoryManager.fetchRaw` now distinguishes an AUTHORITATIVE empty inventory (Steam
+  answered `success:1` with zero assets) from an UNUSABLE page-0 body (null / HTML error page /
+  `{success:false}` / `{success:0}` / `{}`). On page 0 an unusable body THROWS a fetch failure
+  instead of coercing to a "successful empty inventory". Later-page behaviour is unchanged (a break
+  still preserves already-fetched pages, #33).
+- **Why:** `doRefreshOneViaGc` fetches ctx2 (owned) and ctx16 (trade-locked/listed) separately; the
+  both-empty retry and rawCount reconcile only trip when BOTH are zero. A coerced-empty on ONE context
+  (while the other had items) left rawCount>0 → the merge committed as authoritative, silently dropping
+  every trade-locked/listed item — the item-state divergence, and it weakened the send-side trade-lock
+  guard. Throwing makes a per-context failure fail the whole pass (caller records it, cache preserved) —
+  strictly safer than the silent empty. This IS the "reconcile-don't-commit per context" guard: an
+  unusable context can never become a zero-length context that merges silently.
+- **Care:** touches inventory correctness feeding the send-side lock guard. Verified callers are
+  throw-aware (`job.failed.push` at the bulk level; the quick/TF2 path already handles fetchRaw throws
+  for 403/429/5xx). A legit-empty account returns `success:1` → still returns empty (no throw). A
+  private/errored context now surfaces as failed instead of silently empty — more correct.
+- **Files:** `src/core/InventoryManager.ts`.
+- **Tests:** `test/inventoryPerContextCoercion.test.ts` — unusable page-0 bodies throw; success:1+zero
+  returns authoritative empty; populated response still returns assets. Existing B31/refresh guard tests
+  (mock above fetchRaw) unaffected.
+- **Status:** FIXED. build clean · 212 tests (+3). (Build gate caught a `success===true` type error —
+  Steam's `success` is numeric — corrected to `===1`.)

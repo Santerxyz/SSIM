@@ -139,12 +139,23 @@ export class InventoryManager {
       }
 
       const body = res.data;
+
+      // S4: distinguish an AUTHORITATIVE empty inventory (Steam answered success with zero assets)
+      // from an UNUSABLE page-0 body (null / HTML error page / {success:false} / {success:0} / {}).
+      // The old code coerced BOTH into a "successful empty inventory" (success:1), so a transient bad
+      // body on ONE context (ctx2 owned vs ctx16 trade-locked/listed) silently dropped that whole
+      // context from the MERGED cache while the other context kept rawCount>0 — the item-state
+      // divergence, and a weakened send-side trade-lock guard. On page 0 an unusable body now THROWS
+      // (a per-account fetch failure the caller records, preserving the cache) instead of committing a
+      // phantom-empty context. An authoritative empty (success:1, zero assets) still returns empty.
+      const authoritative = !!body && typeof body === 'object' && body.success === 1; // Steam's empty-inventory signal
+      if (page === 0 && !authoritative) {
+        const snippet = describeBody(body);
+        logger.error(`[${username}] inventory page 0 body is NOT an authoritative Steam response (success!=1) – treating as a FETCH FAILURE, not an empty inventory  body=${snippet}`);
+        throw new Error(`[${username}] inventory page 0 unusable (not success:1): ${snippet}`);
+      }
       if (!body || body.success === 0) {
-        // Empty inventory legitimately returns no assets/descriptions.
-        if (page === 0) {
-          logger.info(`[${username}] inventory empty or inaccessible`);
-          return { assets: [], descriptions: [], total_inventory_count: 0, success: 1 };
-        }
+        // Later pages only (page 0 is handled above): a break preserves the pages already fetched (#33).
         break;
       }
 
