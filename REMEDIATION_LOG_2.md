@@ -191,3 +191,27 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/tokenStoreDegraded.test.ts` (S35a/b) — corrupt main + valid .bak recovers & repairs
   (bak intact); corrupt main + corrupt .bak degrades; vault mode masks the flag. All B2 tests still pass.
 - **Status:** FIXED. build clean · 225 tests (+3).
+
+### S7 — license-server empty/unknown store → authoritative fleet-wide revocation — **FIXED** *(server repo)*
+- **What:** *(ssim-license-server, branch `fix/reliability-remediation`, commit `3941f2e`)* `seatStatus`
+  now returns `indeterminate` for a zero-license store (misdeploy self-guard) and `not_found` for an
+  unknown key OR a missing activation record — both NON-authoritative. `/heartbeat` and `/validate` send
+  the authoritative `{status:'revoked'}` marker ONLY for a real revocation (`lic.status==='revoked'`,
+  `act.revoked`) or expiry; every non-authoritative result answers **503** with no marker.
+- **Why:** a misdeploy / detached persistent disk yields a valid-but-EMPTY `db.json` → every seat
+  `not_found` → the handlers answered `{status:'revoked'}` → the client's `handleRevoked` tore down all
+  Steam sessions + `clearToken()` **fleet-wide within one heartbeat interval**. The client already treats
+  `{status:'revoked'}` as the ONLY teardown trigger and rides the 72h offline grace on any non-200/503,
+  so a **server-only** fix suffices — NO client change (kept S7 purely server-side per its classification).
+- **Care:** cross-repo, catastrophic. Explicit admin revocation (`revokeKey`/`revokeSeat`) stays instant
+  and authoritative; only data-loss artifacts (unknown key / gone activation / empty store) became
+  non-authoritative. A deleted activation becomes a grace-window (delayed) kick rather than instant —
+  acceptable, and the explicit `revoked=true` kick remains instant.
+- **Files:** `ssim-license-server/src/licenses.js`, `src/server.js`.
+- **Tests:** `ssim-license-server/test/reliability.test.js` — S7 unit ×5 (unknown key / missing
+  activation → not_found; explicit license + machine revocation stay authoritative; empty store →
+  indeterminate) + an **e2e**: activate → empty the store → `/heartbeat` returns **503**, not 403/revoked.
+- **Status:** FIXED. server `npm test` = **45 pass / 0 fail** (+6). Client untouched.
+
+**Wave 1 boundary re-check:** client build clean · client 225 tests · cargo clean · server 45 tests. ✔
+
