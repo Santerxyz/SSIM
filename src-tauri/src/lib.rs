@@ -543,11 +543,26 @@ fn spawn_backend(handle: tauri::AppHandle) {
                                 if let Ok(u) = url.parse() {
                                     let _ = w.navigate(u);
                                 }
-                                // Seed the token once navigated. eval lands within ms; the dashboard
-                                // reads window.__SSIM_CAP__ at call time (not load time), and reads are
-                                // unprotected, so no first-load call can be starved.
+                                // Seed the token once navigated. The immediate eval can land in the
+                                // still-live splash document (pre-commit) and be discarded on navigation
+                                // — the S1b race. Re-seed a couple of times AFTER the navigation commits
+                                // so window.__SSIM_CAP__ reliably reaches the DASHBOARD document; the
+                                // dashboard persists it to sessionStorage on receipt (S1), so a single
+                                // landed eval survives every later in-webview reload for the process life.
                                 if let Some(js) = &inject {
                                     let _ = w.eval(js);
+                                    let h3 = h2.clone();
+                                    let js2 = js.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        for delay_ms in [600u64, 1800u64] {
+                                            let _ = tauri::async_runtime::spawn_blocking(move || {
+                                                std::thread::sleep(Duration::from_millis(delay_ms))
+                                            }).await;
+                                            if let Some(w2) = h3.get_webview_window("main") {
+                                                let _ = w2.eval(&js2);
+                                            }
+                                        }
+                                    });
                                 }
                                 let _ = w.show();
                                 let _ = w.set_focus();

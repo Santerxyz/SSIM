@@ -60,7 +60,7 @@ export function capabilityGuard(req: Request, res: Response, next: NextFunction)
   const provided = req.get('x-ssim-cap') ?? (typeof req.query.cap === 'string' ? req.query.cap : undefined);
   if (verifyCapability(provided)) { next(); return; }
   res.status(401).json({
-    error: 'Missing or invalid capability token. Reload SSIM from its own window.',
+    error: 'Missing or invalid capability token. Fully restart SSIM (close its window and reopen).',
     capabilityRequired: true,
   });
 }

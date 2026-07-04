@@ -409,7 +409,21 @@ function compareItems(a, b, key) {
 // out-of-band; the dev/Edge build injects it into index.html. We send it on EVERY call
 // (harmless on open reads) and, for MUTATING calls, briefly wait for it if the shell's
 // injection hasn't landed yet (reads never wait, so the initial load is never blocked).
-function capToken() { return (typeof window !== 'undefined' && window.__SSIM_CAP__) || ''; }
+function capToken() {
+  // The shell delivers the per-run token via an eval that sets window.__SSIM_CAP__ on the
+  // dashboard document. That in-memory value does NOT survive a reload (F5 / WebView2 renderer
+  // recovery / the S23 location.replace('/')), which previously 401'd every money/config/refresh
+  // op until a full app restart. Persist it to sessionStorage the first time we see it and fall
+  // back to that copy, so the token survives any in-webview reload for the life of the process.
+  // sessionStorage is per-origin (http://127.0.0.1:<port>), so a fresh process/port never inherits
+  // a stale token. (S1)
+  let t = (typeof window !== 'undefined' && window.__SSIM_CAP__) || '';
+  try {
+    if (t) sessionStorage.setItem('ssim_cap', t);
+    else t = sessionStorage.getItem('ssim_cap') || '';
+  } catch (_) { /* sessionStorage unavailable (private mode / non-browser) — fall back to window only */ }
+  return t;
+}
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 async function awaitCap(timeoutMs = 3000) {
   if (capToken()) return capToken();
@@ -433,6 +447,10 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const e = new Error(data.error || `HTTP ${res.status}`);
     e.data = data; e.status = res.status; // expose flags like verifyBeforeRetry / quarantined / capabilityRequired
+    // The session has no valid capability token (never delivered, or lost before sessionStorage
+    // could stash it). Reads still work, so the app looks alive while the whole write surface 401s.
+    // Surface a dedicated "restart required" banner instead of a bare per-action toast. (S1)
+    if (res.status === 401 && data && data.capabilityRequired) renderCapabilityBanner();
     throw e;
   }
   return data;
@@ -885,6 +903,21 @@ function renderCrashBanner(status) {
   document.body.appendChild(node);
   const x = document.getElementById('crash-banner-x');
   if (x) x.addEventListener('click', () => { crashBannerDismissed = true; node.remove(); });
+}
+
+/** The session has no valid capability token (S1). Reads keep working, so nothing else signals that
+ *  every money/config/refresh action is silently 401ing. Render a persistent, unmissable banner whose
+ *  advice is the ONLY real recovery — a full restart (a reload cannot re-mint the per-run token). */
+function renderCapabilityBanner() {
+  if (document.getElementById('capability-banner')) return; // render once
+  const node = document.createElement('div');
+  node.id = 'capability-banner';
+  node.className = 'fixed top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2 rounded-lg '
+    + 'bg-rose-950/95 border border-rose-700 shadow-lg text-xs text-rose-100 backdrop-blur-sm max-w-2xl';
+  node.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-rose-400"></i>'
+    + '<span><b>This session lost its authorization.</b> Money &amp; settings actions are disabled. '
+    + 'Fully restart SSIM — close its window and reopen it — to restore them.</span>';
+  document.body.appendChild(node);
 }
 
 /** Poll /api/system/status forever (30s) and paint the additive indicators. Self-superseding-safe:
