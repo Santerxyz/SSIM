@@ -35,3 +35,18 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   stash-on-receipt, recover-after-reload (fails against the old one-liner), empty-when-absent, and
   private-mode-no-throw. Shell re-eval is runtime-shaped → `cargo check` + reasoned argument.
 - **Status:** FIXED. build clean · 201 tests (+4) · cargo clean.
+
+### S20 — "Live Logs" button dead in the packaged shell — **FIXED**
+- **What:** Exempted the side-effect-trivial `POST /api/app/open-logs` from the capability guard
+  (`isProtectedRequest`), so the Live Logs button reaches the handler (which signals the shell to
+  open the logs window) without a token. `window.open` is blocked in the webview, so the fetch was
+  the only working path and the guard was 401ing it.
+- **Why:** the B26/P5 capability guard landed after this launcher was written; every `/api/` POST
+  became protected, so the tokenless inline fetch 401'd and was swallowed → the operator's primary
+  diagnostics surface was unreachable exactly during incidents. Exempting (vs. attaching the token)
+  is correct: the endpoint only opens a READ-ONLY logs window (the stream is already public) and
+  diagnostics must not depend on the token, which may be the thing that's missing.
+- **Files:** `src/api/capability.ts` (`OPEN_POST_EXEMPT`).
+- **Tests:** `test/capabilityToken.test.ts` — open-logs is unprotected + guard nexts it tokenless;
+  `check-update` and a `open-logs-evil` lookalike stay protected (exact, no prefix bypass).
+- **Status:** FIXED. build clean · 202 tests (+1) · guard behaviour otherwise unchanged.

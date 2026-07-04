@@ -42,6 +42,18 @@ test('isProtectedRequest: every mutation + secret GET is protected; reads are op
   assert.equal(isProtectedRequest('POST', '/not-api/x'), false, 'non-/api ignored');
 });
 
+test('S20: the Live Logs launcher POST is exempt (diagnostics without a token); siblings stay protected', () => {
+  // The exempt endpoint only opens a read-only logs window — the guard must let it through so the
+  // packaged shell's Live Logs button works (window.open is blocked in the webview).
+  assert.equal(isProtectedRequest('POST', '/api/app/open-logs'), false);
+  const r = runGuard('POST', '/api/app/open-logs'); // no token supplied
+  assert.equal(r.nexted, true, 'open-logs must reach the handler without a capability token');
+  assert.equal(r.statusCode, 0);
+  // The exemption is exact — no other /api/app POST is loosened.
+  assert.ok(isProtectedRequest('POST', '/api/app/check-update'), 'check-update stays protected');
+  assert.ok(isProtectedRequest('POST', '/api/app/open-logs-evil'), 'no prefix/substring bypass');
+});
+
 function runGuard(method: string, urlPath: string, headers: Record<string, string> = {}, query: Record<string, string> = {}) {
   let statusCode = 0; let body: unknown; let nexted = false;
   const req = {

@@ -40,6 +40,13 @@ export function verifyCapability(provided: unknown): boolean {
 // carry the token too, not just mutating methods.
 const SECRET_GET = /^\/api\/(?:accounts\/[^/]+\/(?:proxy|otp)|environments\/[^/]+\/proxy)$/i;
 
+// Side-effect-trivial POSTs that must stay reachable WITHOUT the capability token. The Live
+// Logs launcher only asks the shell to open a READ-ONLY logs window (the log stream itself is
+// already public), and it is the operator's primary diagnostics surface — needed exactly during
+// incidents, when the token may be missing. It is not a money/vault/config op, so gating it behind
+// the token only broke the button (window.open is also blocked in the webview). (S20)
+const OPEN_POST_EXEMPT = /^\/api\/app\/open-logs$/i;
+
 /**
  * Is this request one that a random local process must NOT be able to make without the
  * token? Every mutating /api call (money, vault, config) plus the secret-returning GETs.
@@ -49,6 +56,7 @@ const SECRET_GET = /^\/api\/(?:accounts\/[^/]+\/(?:proxy|otp)|environments\/[^/]
 export function isProtectedRequest(method: string, path: string): boolean {
   if (!path.startsWith('/api/')) return false;
   const m = method.toUpperCase();
+  if (m === 'POST' && OPEN_POST_EXEMPT.test(path)) return false; // diagnostics stay token-free (S20)
   if (m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE') return true;
   if (m === 'GET' && SECRET_GET.test(path)) return true;
   return false;
