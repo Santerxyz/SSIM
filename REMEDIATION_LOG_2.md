@@ -366,3 +366,17 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   3 fast advances coalesce to ≤1 pull.
 - **Status:** FIXED. build clean · 253 tests (+3).
 
+### S17 — refresh/mass/sell pollers die on the first transient error → completion never fires — **FIXED**
+- **What:** Gave `pollRefresh`/`pollMass`/`pollSell` the same bounded error-retry the `fbuy` poller has:
+  each `catch` now `if (!pollerStalled('<name>Err', 0)) { poll…(); return; }` (retry) and only gives up
+  after `POLL_STALL_MS` (3 min) of continuous errors; a successful poll `resetPoller('<name>Err')`.
+- **Why:** their `catch` just toasted + hid the progress bar with no reschedule, so one failed status GET
+  (an S10 event-loop stall, a socket blip, machine sleep) permanently stopped polling while the job kept
+  running server-side — the completion re-pull / failure panel never ran, leaving inventories/balances
+  stale + a persistent error toast.
+- **Files:** `public/app.js` (three pollers).
+- **Tests:** `test/pollerErrorRetry.test.ts` — the extracted `pollerStalled`/`resetPoller` give a bounded
+  retry-then-give-up window (clock-controlled); all three pollers wire the retry + reset (source-presence,
+  fails against the old catch).
+- **Status:** FIXED. build clean · 255 tests (+2).
+

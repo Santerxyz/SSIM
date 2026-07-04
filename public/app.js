@@ -3414,6 +3414,7 @@ function pollRefresh() {
   state.refreshTimer = setTimeout(async () => {
     try {
       const job = await api('/api/inventory/refresh-status');
+      resetPoller('refreshErr'); // S17: a good poll clears the error-retry window
       const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
       el.refreshBar.style.width = pct + '%';
       el.refreshCount.textContent = `${job.done}/${job.total}`;
@@ -3456,7 +3457,12 @@ function pollRefresh() {
       }
       setTimeout(() => el.refreshProgress.classList.add('hidden'), 2500);
     } catch (err) {
-      toast(err.message, 'error');
+      // S17: a transient status-fetch error must not permanently kill the poller while the job keeps
+      // running server-side (its completion re-pull would then never fire, leaving a stale view). Bounded
+      // retry, mirroring the fbuy poller: keep polling until POLL_STALL_MS of CONTINUOUS errors, then give up.
+      if (!pollerStalled('refreshErr', 0)) { pollRefresh(); return; }
+      resetPoller('refreshErr');
+      toast(err.message || 'Lost contact with the refresh job – stopping the live updater.', 'error');
       el.refreshProgress.classList.add('hidden');
     }
   }, 800);
@@ -4929,6 +4935,7 @@ function pollMass() {
   state.massTimer = setTimeout(async () => {
     try {
       const job = await api('/api/trade/mass-status');
+      resetPoller('massErr'); // S17: a good poll clears the error-retry window
       const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
       el.massBar.style.width = pct + '%';
       el.massCount.textContent = `${job.done}/${job.total}`;
@@ -4954,7 +4961,11 @@ function pollMass() {
       toast(`Mass trade ${verb}: ${job.confirmed} confirmed${job.failed.length ? `, ${job.failed.length} failed` : ''}`, job.failed.length ? 'warn' : 'success');
       setTimeout(() => el.massProgress.classList.add('hidden'), 3500);
     } catch (err) {
-      toast(err.message, 'error');
+      // S17: bounded error-retry — a transient status-fetch error must not kill the poller while the
+      // mass-send runs (else the completion re-pull never fires). Give up only after POLL_STALL_MS of errors.
+      if (!pollerStalled('massErr', 0)) { pollMass(); return; }
+      resetPoller('massErr');
+      toast(err.message || 'Lost contact with the mass-send job – stopping the live updater.', 'error');
       el.massProgress.classList.add('hidden');
     }
   }, 1000);
@@ -5172,6 +5183,7 @@ function pollSell() {
   state.sellTimer = setTimeout(async () => {
     try {
       const job = await api('/api/market/sell-status');
+      resetPoller('sellErr'); // S17: a good poll clears the error-retry window
       const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
       el.sellBar.style.width = pct + '%';
       el.sellCount.textContent = `${job.done}/${job.total}`;
@@ -5211,7 +5223,12 @@ function pollSell() {
       if (sellers.length) startInventoryRefresh({ usernames: sellers });
       else refreshActiveViewFromCache();
     } catch (err) {
-      toast(err.message, 'error');
+      // S17: bounded error-retry — a transient status-fetch error must not kill the poller while the
+      // mass-sell runs (else the completion re-pull / failure panel never fires). Give up only after
+      // POLL_STALL_MS of continuous errors.
+      if (!pollerStalled('sellErr', 0)) { pollSell(); return; }
+      resetPoller('sellErr');
+      toast(err.message || 'Lost contact with the mass-sell job – stopping the live updater.', 'error');
       el.sellProgress.classList.add('hidden');
     }
   }, 1000);
