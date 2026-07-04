@@ -18,8 +18,14 @@ test('lockHolderDisposition: a recycled PID (different binary) is reclaimed', ()
   assert.equal(lockHolderDisposition(true, 'chrome.exe', 'ssim-backend.exe'), 'reclaim');
 });
 
-test('lockHolderDisposition: an UNDETERMINABLE live holder fails SAFE (refuse)', () => {
-  assert.equal(lockHolderDisposition(true, '', 'ssim-backend.exe'), 'refuse');
+test('S59: an UNDETERMINABLE live holder RETRIES (not an immediate residual lockout)', () => {
+  // tasklist blocked/timeout → '' image. Old behaviour refused outright (a recycled-PID false lockout);
+  // now we retry the check first, and only fail safe after all attempts still can't determine it.
+  assert.equal(lockHolderDisposition(true, '', 'ssim-backend.exe'), 'retry');
+});
+
+test('S59: a live SSIM whose image we CAN read is still REFUSED (false-reclaim prevention intact)', () => {
+  assert.equal(lockHolderDisposition(true, 'ssim-backend.exe', 'ssim-backend.exe'), 'refuse');
 });
 
 // ─── Atomic exclusive create: two racers can't both win (the TOCTOU the old guard had) ──

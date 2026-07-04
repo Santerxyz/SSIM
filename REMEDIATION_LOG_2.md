@@ -847,3 +847,27 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   grandchild that inherited the handle — so a grandchild orphan could pin the shared self-test cache exe.
 - **Files:** `src-tauri/src/lib.rs`. **Verify:** `cargo check` green (spawn/timeout logic isn't unit-testable
   without a real child; the outer execFileSync timeout remains the primary budget). **Status:** FIXED.
+
+### S58 — heartbeat()/validate() read the token outside their try (AV-lock → unhandledRejection) — **FIXED**
+- **What:** moved the `readToken()` call inside `heartbeat()`'s try and wrapped it in `validate()`. Also
+  already subsumed by S38 (readToken is now TOTAL — swallows an unreadable/torn file, returns undefined).
+- **Why:** a throwing token read on a fire-and-forget beat became an unhandledRejection that fed the money
+  breaker with noise.
+- **Files:** `src/licensing/LicenseClient.ts`. **Tests:** `test/licenseTokenReadTotal.test.ts` — readToken
+  returns undefined (never throws) when the path is unreadable. +1 test. **Status:** FIXED.
+
+### S59 — singleInstance residual lockouts (no retry sleep; undeterminable image refused outright) — **FIXED**
+- **What:** (a) `sleepSync(300ms)` (Atomics.wait) before each non-EEXIST retry so a transient AV/handle lock
+  gets a real window (the old loop burned all 5 retries in µs); (b) new `'retry'` disposition — a live holder
+  whose image can't be read (tasklist blocked/timeout) is RETRIED across attempts, only fail-safe refusing
+  after all still can't determine it, instead of an immediate residual lockout.
+- **Files:** `src/core/singleInstance.ts`. **Tests:** `test/singleInstanceLock.test.ts` — undeterminable→retry;
+  readable-live-SSIM→refuse (false-reclaim prevention intact). **Status:** FIXED. PID-reuse false-reclaim still prevented.
+
+### S60 — server DB write amplification / lost-update risk under multi-instance — **FIXED (constraint documented)**
+- **What:** added an explicit SINGLE-INSTANCE CONSTRAINT note above `touch()` (the heartbeat hot writer):
+  every mutation is a full read-modify-write of the JSON DB, correct only for ONE server process; scaling
+  out would interleave load/save and silently lose updates — move to Postgres/Redis or a cross-process lock
+  + batching before multiplying the deploy.
+- **Files:** `ssim-license-server/src/licenses.js` (server branch). **Status:** FIXED (documentation — no
+  behavioral change; the register's ask was to note the constraint before scale-out). 50/50 server tests.

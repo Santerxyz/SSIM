@@ -44,13 +44,24 @@ export function processImageName(pid: number): string {
 
 /**
  * PURE decision for a CONTESTED lock: given the current holder PID's liveness + image name,
- * do we RECLAIM the lock (holder gone/recycled) or REFUSE to start (a genuine second SSIM, or
- * we can't tell → fail SAFE)? Never steals the lock from a live SSIM.
+ * do we RECLAIM the lock (holder gone/recycled), REFUSE to start (a genuine second SSIM), or
+ * RETRY (S59: the holder is alive but we couldn't read its image — tasklist blocked/timeout — so give it
+ * another chance before fail-safe refusing, instead of an immediate residual lockout). Never steals the
+ * lock from a live SSIM.
  */
-export function lockHolderDisposition(alive: boolean, holderImage: string, ourImage: string): 'reclaim' | 'refuse' {
-  if (!alive) return 'reclaim';                                        // dead holder → stale lock
-  if (holderImage !== '' && holderImage !== ourImage) return 'reclaim'; // recycled PID (different binary)
-  return 'refuse';                                                     // live SSIM, or undeterminable → fail safe
+export function lockHolderDisposition(alive: boolean, holderImage: string, ourImage: string): 'reclaim' | 'refuse' | 'retry' {
+  if (!alive) return 'reclaim';                          // dead holder → stale lock
+  if (holderImage === '') return 'retry';               // S59: undeterminable image → retry before refusing
+  if (holderImage !== ourImage) return 'reclaim';        // recycled PID (different binary)
+  return 'refuse';                                       // live SSIM with our image → genuine second instance
+}
+
+/** S59: a SYNCHRONOUS sleep for the boot-time lock retries (the event loop isn't serving yet). Atomics.wait
+ *  blocks the thread without a busy-wait; a real AV/handle lock lasts seconds, so the old sleep-less retry
+ *  loop (all 5 attempts in microseconds) was useless — this gives each retry a real window. */
+const LOCK_RETRY_SLEEP_MS = 300;
+function sleepSync(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB blocked → skip the wait */ }
 }
 
 const ourImageName = (): string => (process.execPath.split(/[\\/]/).pop() ?? '').toLowerCase();
@@ -83,6 +94,7 @@ export function acquireInstanceLock(): boolean {
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
         logger.warn(`single-instance lock IO error (attempt ${attempt + 1}/5): ${(e as Error).message}`);
+        sleepSync(LOCK_RETRY_SLEEP_MS);             // S59: give a transient AV/handle lock a real window
         continue;                                   // transient → retry, then fail safe below
       }
       const pid = readLockPid();
@@ -94,6 +106,12 @@ export function acquireInstanceLock(): boolean {
       const alive = isProcessAlive(pid);
       const disp = lockHolderDisposition(alive, alive ? processImageName(pid) : '', ourImageName());
       if (disp === 'refuse') return false;          // genuine second instance → do NOT start
+      if (disp === 'retry') {                       // S59: holder alive but image undeterminable (tasklist
+        // blocked/timeout) — sleep and retry the whole check instead of an immediate residual lockout; if
+        // it stays undeterminable across all attempts we still fail safe (the loop exits → refuse below).
+        sleepSync(LOCK_RETRY_SLEEP_MS);
+        continue;
+      }
       logger.warn(`reclaiming stale single-instance lock (pid ${pid}${alive ? ', recycled' : ', dead'})`);
       try { fs.unlinkSync(LOCK_FILE); } catch { /* lost the race → next wx refuses */ }
     }
