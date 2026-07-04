@@ -151,7 +151,13 @@ export class SessionManager extends EventEmitter {
     const victims: string[] = [];
     for (const [key, s] of this.sessions) {
       if (this.loginsInFlight.has(key)) continue;               // a login is mid-flight → leave it
-      if (s.state !== SessionState.LOGGED_IN) continue;         // only reap settled live sessions
+      // S11: reap SETTLED-live sessions AND settled-dead ones (DISCONNECTED/ERROR). The disconnected/error
+      // handlers already deferred-destroy such a session (B43 / S11); this is a BACKSTOP for any zombie
+      // that slipped past (e.g. one already resident before this fix, or where the replacement guard
+      // skipped the immediate destroy) — otherwise a non-LOGGED_IN session would linger forever.
+      const reapable = s.state === SessionState.LOGGED_IN
+        || s.state === SessionState.DISCONNECTED || s.state === SessionState.ERROR;
+      if (!reapable) continue;
       const last = s.lastActivityAt?.getTime() ?? s.loggedInAt?.getTime() ?? 0;
       if (now - last >= IDLE_SESSION_TTL_MS) victims.push(s.account.username);
     }
@@ -579,6 +585,16 @@ export class SessionManager extends EventEmitter {
         logger.warn(`[${account.username}] Disconnected  reason="${reason}"`);
         this.transition(session, prev, SessionState.DISCONNECTED);
         this.emit('disconnected', account.username, reason);
+        // S11: a post-settle CM drop (proxy blip → 'disconnected', no 'error'; autoRelogin:false) used to
+        // leave the session RESIDENT in DISCONNECTED — counted against MAX_LIVE_SESSIONS, holding its proxy
+        // agent + TradeOfferManager poller — and NOTHING reaped it (the error handler's B43 destroy only
+        // fires on 'error'; the idle reaper skips non-LOGGED_IN). Mirror B43 here: tear it down so
+        // 'sessionDestroyed' fires and the slot/agent/poller are released. Same replacement guard (only
+        // destroy if the map still holds THIS instance — a re-login may have swapped in a fresh one) and
+        // deferred a tick so we never destroy mid-emit.
+        setTimeout(() => {
+          if (this.sessions.get(key) === session) void this.destroySession(key);
+        }, 0).unref?.();
       });
 
       // ── Kick off login ─────────────────────────────────────────────────

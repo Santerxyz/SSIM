@@ -49,6 +49,43 @@ test('B40: a not-yet-LOGGED_IN session is never reaped', async () => {
   } finally { sm.shutdown(); }
 });
 
+// ─── S11: settled-DEAD sessions (DISCONNECTED/ERROR) must be reaped too ─────────
+// A post-login CM drop left the session resident forever (the reaper skipped non-LOGGED_IN); it held a
+// slot against MAX_LIVE_SESSIONS, its proxy agent, and its TradeOfferManager poller. The reaper is now a
+// backstop for such zombies (the disconnected/error handlers also deferred-destroy them at the event).
+
+test('S11: an idle DISCONNECTED or ERROR session is reaped (was a permanent zombie)', async () => {
+  const sm = new SessionManager();
+  try {
+    const destroyed: string[] = [];
+    sm.on('sessionDestroyed', (u: string) => destroyed.push(u.toLowerCase()));
+    put(sm, 'zombiedc', 45, SessionState.DISCONNECTED); // 45 min idle, settled-dead
+    put(sm, 'zombieerr', 45, SessionState.ERROR);
+    await (sm as unknown as { reapIdleSessions: (n?: number) => Promise<void> }).reapIdleSessions();
+    assert.ok(destroyed.includes('zombiedc'), 'a DISCONNECTED zombie is reaped, not kept forever');
+    assert.ok(destroyed.includes('zombieerr'), 'an ERROR zombie is reaped');
+    assert.equal(sm.getSession('zombiedc'), undefined);
+  } finally { sm.shutdown(); }
+});
+
+test('S11: a RECENTLY-disconnected session is NOT reaped by the backstop (idle-TTL still applies)', async () => {
+  const sm = new SessionManager();
+  try {
+    put(sm, 'freshdc', 2, SessionState.DISCONNECTED); // 2 min → within the TTL → the event-handler destroy owns it
+    await (sm as unknown as { reapIdleSessions: (n?: number) => Promise<void> }).reapIdleSessions();
+    assert.ok(sm.getSession('freshdc'), 'the backstop respects the idle-TTL (not over-aggressive)');
+  } finally { sm.shutdown(); }
+});
+
+test('S11: LOGGING_IN is still never reaped (the DISCONNECTED/ERROR addition did not widen to mid-login)', async () => {
+  const sm = new SessionManager();
+  try {
+    put(sm, 'connecting3', 45, SessionState.LOGGING_IN);
+    await (sm as unknown as { reapIdleSessions: (n?: number) => Promise<void> }).reapIdleSessions();
+    assert.ok(sm.getSession('connecting3'), 'a mid-login session is left alone');
+  } finally { sm.shutdown(); }
+});
+
 test('shutdown() stops the reaper timer (no leak on re-license)', () => {
   const sm = new SessionManager();
   assert.doesNotThrow(() => sm.shutdown());

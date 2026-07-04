@@ -472,3 +472,18 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/toastQueue.test.ts` — identical toasts collapse to one; a flood behind 3 stuck errors
   is queued+capped (not unbounded); errors use the long TTL (source-presence, never-dismiss path gone).
 - **Status:** FIXED. build clean · 274 tests (+3).
+
+### S11 — post-login DISCONNECTED sessions become permanent zombies (fill the 150 ceiling) — **FIXED**
+- **What:** Added the B43 deferred-destroy (with the `sessions.get(key)===session` replacement guard) to
+  the `disconnected` handler, mirroring the `error` handler — so a settled-then-dropped session tears
+  itself down (`sessionDestroyed` fires; slot/agent/TradeOfferManager poller released). Also made the idle
+  reaper a BACKSTOP: it now reaps `DISCONNECTED`/`ERROR` sessions on the idle-TTL too (not only
+  `LOGGED_IN`), catching any zombie that slipped past the event-time destroy.
+- **Why:** a post-settle CM drop (proxy blip → `disconnected`, no `error`; `autoRelogin:false`) left the
+  session resident in DISCONNECTED — counted against `MAX_LIVE_SESSIONS`, holding its proxy agent + a live
+  20s poller — and NOTHING reaped it (the B43 destroy fired only on `error`; the reaper skipped
+  non-LOGGED_IN). Zombies accumulated to the 150 ceiling → new logins refused until restart.
+- **Files:** `src/core/SessionManager.ts` (disconnected handler + reaper).
+- **Tests:** `test/idleReaper.test.ts` (S11) — an idle DISCONNECTED/ERROR session is reaped; a recently
+  -disconnected one is not (idle-TTL respected); LOGGING_IN is still never reaped. B40 tests still green.
+- **Status:** FIXED. build clean · 277 tests (+3).
