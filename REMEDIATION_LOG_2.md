@@ -871,3 +871,18 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   + batching before multiplying the deploy.
 - **Files:** `ssim-license-server/src/licenses.js` (server branch). **Status:** FIXED (documentation — no
   behavioral change; the register's ask was to note the constraint before scale-out). 50/50 server tests.
+
+### S61 — update badge installed-and-restarted on a single unconfirmed click — **FIXED**
+- **What:** extracted `confirmAndInstallUpdate()` which runs `ssimConfirm({title:'Install update', …})` before
+  `triggerUpdate(true)`; the badge click calls it. Honors the ssimConfirm convention every other install/
+  spend/danger action follows.
+- **Why:** a single stray click silently downloaded + restarted the app mid-session.
+- **Files:** `public/app.js`. **Tests:** `test/updateBadgeConfirm.test.ts` (confirmed→install; declined→no
+  install; already-installing→no-op). +3 tests. **Status:** FIXED.
+
+### S62 — /api/app/check-update was the only raw async route (no asyncHandler) — **FIXED**
+- **What:** wrapped the route in `asyncHandler` so a reject reaches the error middleware instead of a hanging
+  request + unhandledRejection.
+- **Why:** latent — safe today (checkOnly self-catches, installNow is void'd) but the lone unwrapped async route.
+- **Files:** `src/api/server.ts`. **Tests:** `test/serverAsyncHandler.test.ts` — source-scan regression guard:
+  zero raw `async (req` handlers remain. +1 test. **Status:** FIXED.

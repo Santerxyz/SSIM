@@ -2143,7 +2143,10 @@ export function createApp(deps: ApiDeps): Express {
   // EXPLICITLY confirmed installing now: refused while any trade/buy/refresh is in flight (a swap exits
   // the process), else fire-and-forget the full update (download → verify → self-test → swap), which
   // restarts SSIM on success. This is the ONLY mid-session swap path — never automatic. (C5.)
-  app.post('/api/app/check-update', async (req: Request, res: Response) => {
+  // S62: wrapped in asyncHandler like every other async route — a reject from checkOnly()/installNow (if
+  // either ever loses its own self-catch) is routed to the error middleware instead of becoming a hanging
+  // request + unhandledRejection.
+  app.post('/api/app/check-update', asyncHandler(async (req: Request, res: Response) => {
     const install = (req.body as { install?: unknown } | undefined)?.install === true;
     if (install) {
       const gate = canInstallNow();
@@ -2153,7 +2156,7 @@ export function createApp(deps: ApiDeps): Express {
     }
     const view = await checkOnly('manual');
     return res.json(view);
-  });
+  }));
 
   // ── 404 + error handler ────────────────────────────────────────────────────
   app.use((_req: Request, res: Response) => {
