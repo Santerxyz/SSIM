@@ -430,3 +430,18 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/ensureLicensed.test.ts` — runs the shipped functions over mocked fetch/document/window:
   licensed→proceed; licensed:false/403→redirect; unreachable/5xx→retry screen, NEVER a redirect.
 - **Status:** FIXED. build clean · 265 tests (+5).
+
+### S32 — interactive routes have no client timeout → indefinite modal spinners — **FIXED**
+- **What:** `api()` now bounds every call with `timeoutSignal(opts.timeoutMs ?? 120000)`; a timeout/abort
+  is surfaced as a clear `timedOut` error ("the backend may be busy…") instead of a silent hang. A caller
+  can override or disable (`timeoutMs: 0`) for a known-long call.
+- **Why:** interactive "live" routes (orders/confirmations/trade-up-candidates/`?refresh=1`) await a live
+  login on a FIFO semaphore shared with bulk refresh; with no client `AbortSignal` the modal spinner sat
+  for many minutes. A 2-min bound converts "indefinite" into "fails with a retry-able message".
+- **Scope:** did the PROVEN client-timeout half. The register's server-side priority lane / fast-409 for
+  interactive logins during a bulk refresh is the HYPOTHESIS-FIFO half — a larger change left as a
+  follow-up; the client timeout already removes the indefinite-spinner symptom.
+- **Files:** `public/app.js` (`api`).
+- **Tests:** `test/apiTimeout.test.ts` — a hanging fetch aborts as `timedOut`; `timeoutMs:0` disables it;
+  a fast response is unaffected. (Reuses the S23 `timeoutSignal`.)
+- **Status:** FIXED. build clean · 268 tests (+3).

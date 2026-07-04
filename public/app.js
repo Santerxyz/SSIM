@@ -442,7 +442,22 @@ async function api(path, opts = {}) {
   const cap = capToken();
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (cap) headers['X-SSIM-Cap'] = cap;
-  const res = await fetch(API + path, { ...opts, headers });
+  // S32: bound EVERY call with a client timeout so an interactive "live" request (orders / confirmations /
+  // trade-up candidates / ?refresh=1) that queues behind a fleet refresh's login semaphore can't spin an
+  // INDEFINITE modal spinner. Generous default (2 min) — longer than any legitimate call, far shorter than
+  // the "many minutes" pathological wait; a caller can override via opts.timeoutMs (0/null → no timeout).
+  const timeoutMs = ('timeoutMs' in opts) ? opts.timeoutMs : 120000;
+  const signal = opts.signal || (timeoutMs ? timeoutSignal(timeoutMs) : undefined);
+  let res;
+  try {
+    res = await fetch(API + path, { ...opts, headers, signal });
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.name === 'TimeoutError')) {
+      const te = new Error('The request timed out — the backend may be busy (e.g. a fleet refresh is running). Please try again.');
+      te.status = 0; te.timedOut = true; throw te;
+    }
+    throw e;
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const e = new Error(data.error || `HTTP ${res.status}`);
