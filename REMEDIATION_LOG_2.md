@@ -632,3 +632,20 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/updateScheduler.test.ts` (S34 — `isUpdateOpInFlight` true during an install, false after
   a kept-current one → the exact signal the dashboard uses to reset).
 - **Status:** FIXED. build clean · 293 tests (+1).
+
+### S51 — shell death orphans the backend (holds the port + single-instance lock) — **FIXED**
+- **What:** `listenForShellQuit` (sidecar-only) now treats stdin `end` (EOF) as a graceful-shutdown
+  signal — a clean logout that releases the UI port + single-instance lock — in addition to the existing
+  `data`-'quit'. `shutdown` gained a `shuttingDown` idempotency guard so the now-multiple triggers
+  (SIGINT/SIGTERM/stdin-quit/stdin-EOF) can't double-teardown.
+- **Why:** the backend reacted only to stdin `data`/`error`, never `end`; if the shell died, the hidden
+  backend kept every Steam session + the CSFloat worker running while holding the port + lock → the next
+  launch lock-screened with "already running" and nothing visible to close.
+- **Constraint:** NOT a respawn — the EOF handler exits gracefully (owner directive: no auto-restart).
+- **Files:** `src/index.ts`.
+- **Tests:** `test/shellDeathShutdown.test.ts` — EOF→shutdown wired, shutdown idempotent, EOF handler
+  doesn't respawn. (Runtime/process-lifecycle shaped — `shutdown()` schedules `process.exit` and index.ts
+  self-bootstraps, so it is untestable in-process; source-presence locks the wiring + `tsc` verifies it.)
+- **Status:** FIXED. build clean · 296 tests (+3).
+
+**Wave 4 boundary re-check:** (below)

@@ -73,6 +73,12 @@ function listenForShellQuit(): void {
       if (buf.toString().toLowerCase().includes('quit')) void shutdown('tauri shell closed');
     });
     process.stdin.on('error', () => { /* pipe closed → ignore */ });
+    // S51: the shell pipes to our stdin; if the SHELL dies, that pipe hits EOF ('end'). The backend used
+    // to keep running ORPHANED — holding every Steam session, the CSFloat worker, the UI port + the
+    // single-instance lock — so the NEXT launch lock-screened with "already running" and nothing visible
+    // to close. Treat EOF as a graceful-shutdown signal (clean logout, release the port + lock). NOT a
+    // respawn — the process exits (owner directive: no auto-restart band-aids).
+    process.stdin.on('end', () => { void shutdown('tauri shell exited (stdin EOF)'); });
   } catch { /* no stdin available → ignore */ }
 }
 
@@ -321,7 +327,10 @@ process.on('uncaughtException', (err) => {
 });
 
 // ── Graceful shutdown – release all Steam sessions cleanly ────────────────────
+let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return; // idempotent — SIGINT/SIGTERM/stdin-quit/stdin-EOF (S51) can co-fire
+  shuttingDown = true;
   logger.info(`${signal} received – shutting down…`);
   releaseInstanceLock();
   clearStalePortFile(); // don't leave data/ssim.port pointing at a now-dead port (BUG 2)
