@@ -789,6 +789,119 @@ async function watchPriceFill(repull) {
   }
 }
 
+// ── System-status surface (C3/B3/B1) ────────────────────────────────────────
+// Polls /api/system/status and surfaces three ADDITIVE, self-created elements — a brand-new id
+// appended to <body>, exactly like renderPriceFillIndicator — so the frozen DOM contract is untouched:
+//   • an "update available / ready-but-blocked-here" badge (C3/C5), clickable to install now,
+//   • a "money operations paused" banner when the breaker is tripped (B3),
+//   • a dismissible "SSIM crashed last run" banner (B1).
+let updateInstalling = false;
+let crashBannerDismissed = false;
+
+/** Manual update check (install=false) or user-confirmed install (install=true). */
+async function triggerUpdate(install) {
+  try {
+    const r = await api('/api/app/check-update', { method: 'POST', body: JSON.stringify(install ? { install: true } : {}) });
+    if (install) {
+      if (r && r.installing) { updateInstalling = true; renderUpdateIndicator(null); toast('Installing update — SSIM will restart shortly. Please don’t close it.', 'success'); }
+      else toast((r && r.error) || 'Could not start the update.', 'error');
+    } else if (r && r.available) {
+      toast(`Update v${r.latest} available${r.blocked ? ' (blocked on this machine — manual reinstall may be needed)' : ' — click the badge to install'}.`, 'info');
+    } else {
+      toast('You’re on the latest version.', 'success');
+    }
+  } catch (e) { toast(`Update check failed: ${e.message}`, 'error'); }
+}
+
+function renderUpdateIndicator(update) {
+  let node = document.getElementById('update-indicator');
+  const show = !!(update && update.available) && !updateInstalling;
+  if (!show) { if (node) node.classList.add('hidden'); return; }
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'update-indicator';
+    node.className = 'fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2 rounded-full '
+      + 'bg-slate-900/95 border border-slate-700 shadow-lg text-xs text-slate-200 backdrop-blur-sm cursor-pointer';
+    node.addEventListener('click', () => { if (!updateInstalling) void triggerUpdate(true); });
+    document.body.appendChild(node);
+  }
+  node.classList.remove('hidden');
+  if (update.blocked) {
+    node.title = `This update has failed its self-test ${update.blockedFailures || ''}× on this machine (${update.blockedKind || 'unknown'}). Click to retry, or reinstall SSIM manually.`;
+    node.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-amber-400"></i>`
+      + `<span>Update <b class="text-white">v${escapeHtml(String(update.latest || ''))}</b> ready but blocked here — <b>click to retry / reinstall</b></span>`;
+  } else {
+    node.title = 'Click to install now (SSIM will restart). Refused while a trade/buy/refresh is running.';
+    node.innerHTML = `<i class="fa-solid fa-circle-arrow-up text-brand"></i>`
+      + `<span>Update <b class="text-white">v${escapeHtml(String(update.latest || ''))}</b> available — <b>click to install</b></span>`;
+  }
+}
+
+function renderBreakerIndicator(status) {
+  let node = document.getElementById('breaker-indicator');
+  const tripped = status && status.moneyOpsStable === false;
+  if (!tripped) { if (node) node.classList.add('hidden'); return; }
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'breaker-indicator';
+    node.className = 'fixed top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2 rounded-lg '
+      + 'bg-rose-950/95 border border-rose-700 shadow-lg text-xs text-rose-100 backdrop-blur-sm max-w-2xl';
+    document.body.appendChild(node);
+  }
+  node.classList.remove('hidden');
+  node.innerHTML = `<i class="fa-solid fa-hand text-rose-400"></i>`
+    + `<span><b>Money operations paused.</b> ${escapeHtml(String(status.quarantineReason || 'internal error burst'))} — restart SSIM before more trades/buys.</span>`;
+}
+
+function renderTokenStoreWarning(status) {
+  let node = document.getElementById('tokenstore-warning');
+  const degraded = status && status.tokenStoreDegraded === true;
+  if (!degraded) { if (node) node.classList.add('hidden'); return; }
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'tokenstore-warning';
+    node.className = 'fixed bottom-16 left-4 z-40 flex items-center gap-2 px-3.5 py-2 rounded-lg max-w-md '
+      + 'bg-amber-950/95 border border-amber-700 shadow-lg text-xs text-amber-100 backdrop-blur-sm';
+    document.body.appendChild(node);
+  }
+  node.classList.remove('hidden');
+  node.innerHTML = '<i class="fa-solid fa-key text-amber-400"></i>'
+    + '<span><b>Refresh-token store is corrupt.</b> Tokens are NOT saving — restore refresh_tokens.json from its .bak and restart before a full refresh, or the fleet will re-login/2FA.</span>';
+}
+
+function renderCrashBanner(status) {
+  if (crashBannerDismissed) return;
+  if (document.getElementById('crash-banner')) return; // render once
+  if (!(status && status.priorCrash)) return;
+  const node = document.createElement('div');
+  node.id = 'crash-banner';
+  node.className = 'fixed top-3 right-3 z-50 flex items-start gap-3 max-w-sm px-4 py-3 rounded-lg '
+    + 'bg-amber-950/95 border border-amber-700 shadow-lg text-xs text-amber-100 backdrop-blur-sm';
+  const when = status.priorCrash.at ? new Date(status.priorCrash.at).toLocaleString() : 'last run';
+  const code = status.priorCrash.code != null ? `, code ${escapeHtml(String(status.priorCrash.code))}` : '';
+  node.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-amber-400 mt-0.5"></i>`
+    + `<div><b>SSIM’s backend crashed last run</b> (${escapeHtml(when)}${code}). Your saved data is safe. See the logs folder (shell.log / exit-trace.log).</div>`
+    + `<button id="crash-banner-x" class="ml-1 text-amber-300 hover:text-white" title="Dismiss">✕</button>`;
+  document.body.appendChild(node);
+  const x = document.getElementById('crash-banner-x');
+  if (x) x.addEventListener('click', () => { crashBannerDismissed = true; node.remove(); });
+}
+
+/** Poll /api/system/status forever (30s) and paint the additive indicators. Self-superseding-safe:
+ *  it is launched exactly once from init(). */
+async function watchSystemStatus() {
+  while (true) {
+    let st; try { st = await api('/api/system/status'); } catch { st = null; }
+    if (st) {
+      renderUpdateIndicator(st.update);
+      renderBreakerIndicator(st);
+      renderTokenStoreWarning(st);
+      renderCrashBanner(st);
+    }
+    await new Promise((r) => setTimeout(r, 30000));
+  }
+}
+
 /** After a source switch the new source's price cache is cold; watch the fill and live-update. */
 function pollRepricing() { return watchPriceFill(async () => { await reloadAll(); renderMain(); }); }
 /** Updates the Item value + Balance stat cards. Pass null to show "—".
@@ -6400,6 +6513,8 @@ async function init() {
     // restart. Watch it now (once; the repriceToken makes it non-overlapping) so prices + the
     // indicator live-update with no reload. (PRICE-BOOT-FILL)
     void watchPriceFill(refreshActiveViewFromCache);
+    // Poll system status for the update / breaker / prior-crash surfaces (C3/B3/B1). Additive; once.
+    void watchSystemStatus();
   } catch (err) {
     toast(`Could not load data: ${err.message}`, 'error');
   }

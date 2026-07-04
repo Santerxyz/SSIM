@@ -10,6 +10,9 @@ import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/mem
 import { HwidService } from './licensing/HwidService';
 import { LicenseClient } from './licensing/LicenseClient';
 import { Updater } from './licensing/Updater';
+import { consumeCrashMarker } from './utils/crashMarker';
+import { setLastExitClass, setPriorCrash } from './licensing/updateStatus';
+import { startUpdateScheduler, stopUpdateScheduler } from './licensing/updateScheduler';
 import { runActivationPortal } from './licensing/ActivationServer';
 import { printLockScreen } from './licensing/lockscreen';
 import { IS_PACKAGED, IS_SIDECAR_MODE, publicDir, migrateVaultDir } from './utils/paths';
@@ -134,6 +137,7 @@ async function startFullApp(): Promise<void> {
 /** Tears the running app down cleanly and frees the port (for re-activation). */
 async function teardownFullApp(): Promise<void> {
   LicenseClient.stopHeartbeat();
+  stopUpdateScheduler();
   stopMemHeartbeat();
   if (deps) {
     deps.csfloatWorker.stop();
@@ -214,6 +218,13 @@ async function gateAndRun(): Promise<void> {
   }
   await startFullApp();
   LicenseClient.startHeartbeat(licenseHwid);
+  // Periodic (6h) update-availability check + the manual "check/install now" path (C5). CHECK-ONLY on
+  // the timer; the only mid-session SWAP is a user-confirmed install, and only while no money op / refresh
+  // is in flight (isBusy). Boot-time auto-update above is unchanged.
+  startUpdateScheduler({
+    currentVersion: pkg.version,
+    isBusy: () => !!deps && (deps.trades.busy() || deps.buy.busy() || deps.inventory.busy()),
+  });
 }
 
 /**
@@ -263,6 +274,15 @@ async function bootstrap(): Promise<void> {
   // it is announced ONLY when a real server (activation portal / unlock portal / full app) actually
   // binds it, from inside listenAndAnnounce, with the actual bound port. (BUG 2.)
   if (IS_SIDECAR_MODE) listenForShellQuit();
+  // Surface the PRIOR run's crash exactly once if the shell recorded one (B1): classify it for the
+  // heartbeat telemetry (C4 lastExitClass) and hold it for the dashboard "crashed last run" banner.
+  // Consumed here → fires once. VISIBILITY ONLY — nothing is respawned (owner directive).
+  const priorCrash = consumeCrashMarker();
+  if (priorCrash) {
+    setLastExitClass(`backend-crash(code=${priorCrash.code ?? '?'}${priorCrash.signal ? `,sig=${priorCrash.signal}` : ''})`);
+    setPriorCrash({ at: priorCrash.at, code: priorCrash.code, signal: priorCrash.signal, logTail: priorCrash.logTail });
+    logger.warn(`SSIM crashed on the previous run at ${new Date(priorCrash.at).toISOString()} (code=${priorCrash.code ?? '?'}) – surfacing a banner; see logs/shell.log`);
+  }
   licenseHwid = HwidService.getHwid();
   logger.info(`license gate: validating seat for hwid ${licenseHwid.slice(0, 12)}…`);
   // Runtime revocation → re-activation flow instead of hard exit.
@@ -296,6 +316,7 @@ async function shutdown(signal: string): Promise<void> {
   releaseInstanceLock();
   clearStalePortFile(); // don't leave data/ssim.port pointing at a now-dead port (BUG 2)
   LicenseClient.stopHeartbeat();
+  stopUpdateScheduler();
   stopMemHeartbeat();
   if (deps) {
     deps.csfloatWorker.stop();

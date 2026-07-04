@@ -166,6 +166,10 @@ export class SessionManager extends EventEmitter {
     if (this.reaperTimer) clearInterval(this.reaperTimer);
   }
 
+  /** True when the refresh-token store is DEGRADED (present-but-corrupt file → not persisting). Surfaced
+   *  on the status endpoint so the operator restores it before a mass refresh re-auths the fleet. (B2.) */
+  isTokenStoreDegraded(): boolean { return this.tokenStore.isDegraded(); }
+
   /** Acquire one login slot, awaiting (FIFO) if all are in use. */
   private acquireLoginSlot(): Promise<void> {
     if (this.loginSlots > 0) { this.loginSlots--; return Promise.resolve(); }

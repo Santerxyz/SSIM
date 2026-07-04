@@ -553,6 +553,10 @@ export class InventoryService {
 
   status(): RefreshJob { return { ...this.job, failed: [...this.job.failed] }; }
 
+  /** True while any inventory refresh (single or a bulk fleet refresh) is in flight — the update
+   *  scheduler (C5) checks this so a mid-session update swap never interrupts a running refresh. */
+  busy(): boolean { return this.inFlight.size > 0 || this.job.running; }
+
   /**
    * Starts a background refresh of `usernames` with at most `concurrency`
    * simultaneous logins. Returns the initial job state immediately; poll

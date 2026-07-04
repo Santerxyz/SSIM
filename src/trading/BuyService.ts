@@ -1,6 +1,7 @@
 import type { TradeService } from './TradeService';
 import type { BuyBilling } from './AccountTrader';
 import type { InventoryService } from '../core/InventoryService';
+import { MoneyOpJournal } from '../core/MoneyOpJournal';
 import type { GameId, AccountInventory } from '../types/inventory';
 import { currencyInfo } from '../pricing/currencies';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
@@ -143,6 +144,9 @@ export class BuyService {
   constructor(
     private readonly trades: TradeService,
     private readonly inventory: InventoryService,
+    /** Cross-restart money-op journal (B4), shared with TradeService — see MoneyOpJournal. Defaults to a
+     *  no-op so direct construction in tests doesn't touch the shared journal file; createDeps wires the real one. */
+    private readonly journal: MoneyOpJournal = MoneyOpJournal.disabled(),
   ) {}
 
   async buy(p: BuyParams, opts?: { releaseSession?: boolean }): Promise<BuyResult> {
@@ -161,6 +165,15 @@ export class BuyService {
     const wasLiveBefore = this.trades.snapshotLive([p.username]);
     this.inFlight.add(guardKey);
     try {
+      // B4: cross-restart dedup. A LINGERING journal entry means an identical buy died mid-flight last
+      // run (Steam-side outcome unknown) → refuse the auto-refire ONCE; the finally consumes the entry so
+      // a deliberate retry proceeds. A cleanly-completed buy leaves no entry, so legitimate repeats are
+      // unaffected. (Checked inside the try so the finally still releases the in-flight lock + session.)
+      const priorBuy = this.journal.findUnresolved(guardKey);
+      if (priorBuy) {
+        throw new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry to proceed.`);
+      }
+      this.journal.begin(guardKey, 'buy');
       // SESSION PRE-FLIGHT: guarantee a live web session with a valid sessionid cookie BEFORE
       // committing money — otherwise the order POST fails with "no sessionid cookie". Refreshes
       // (or re-logs-in) the account if its cached cookies are missing/stale.
@@ -210,6 +223,7 @@ export class BuyService {
         billing:           p.billing,
         retryAfterConfirm: p.retryAfterConfirm,
       });
+      if (order.placed) this.journal.record(guardKey, 'placed'); // survives a post-commit crash (record never throws)
 
       // ── From here the order IS placed on Steam. NEVER throw out of buy() now —
       //    a thrown post-order error would become a 5xx and invite a duplicate retry.
@@ -279,6 +293,7 @@ export class BuyService {
       };
     } finally {
       this.inFlight.delete(guardKey);
+      this.journal.resolve(guardKey); // clean resolution (success OR the refuse-throw) → consume the entry
       // Release the session this direct buy created (mass-buy opts out — its batch releases once).
       if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
     }
@@ -290,6 +305,10 @@ export class BuyService {
   massBuyStatus(): MassBuyJob {
     return { ...this.massJob, results: this.massJob.results.map((r) => ({ ...r })) };
   }
+
+  /** True while a buy is in flight or a mass-buy job is running — the update scheduler (C5) checks this
+   *  so a mid-session update never hard-exits into a swap while real orders are being placed. */
+  busy(): boolean { return this.inFlight.size > 0 || this.massJob.running; }
 
   /**
    * Starts a folder-wide mass-buy: every account is balance-refreshed FIRST, then

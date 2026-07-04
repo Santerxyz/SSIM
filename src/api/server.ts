@@ -13,6 +13,7 @@ import { AppSettings } from '../core/AppSettings';
 import { InventoryService } from '../core/InventoryService';
 import { ValueHistoryService, GLOBAL_SERIES } from '../core/ValueHistoryService';
 import { ProcessHealth } from '../core/ProcessHealth';
+import { MoneyOpJournal } from '../core/MoneyOpJournal';
 import { AccountVault } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk } from '../core/maFiles';
@@ -20,6 +21,8 @@ import { canConfirm } from '../core/accountCapability';
 import { loadMaFile, generateTotpCode, msUntilNextTotp } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
 import { LicenseClient } from '../licensing/LicenseClient';
+import { getAvailableUpdate, getBlockedUpdate, getPriorCrash } from '../licensing/updateStatus';
+import { checkOnly, canInstallNow, installNow } from '../licensing/updateScheduler';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
@@ -90,13 +93,16 @@ export function createDeps(): ApiDeps {
   const accounts  = new AccountManager();
   const sessions  = new SessionManager();
   const inventory = new InventoryService(sessions, accounts);
+  // One shared money-op journal (B4): a crash mid buy/send can't be double-fired by a user retry after
+  // restart. Shared so buy and send op-hashes live in one file.
+  const moneyJournal = new MoneyOpJournal();
   // Trades gets the inventory cache so the send path can refuse trade-locked / non-tradable
   // assets before an offer is created (INV-D1 / C3).
-  const trades    = new TradeService(sessions, accounts, inventory);
+  const trades    = new TradeService(sessions, accounts, inventory, moneyJournal);
   // Market gets the inventory cache so a completed mass-sell moves the just-listed assets
   // Owned→Listed immediately (optimistic), rather than waiting on a follow-up refresh.
   const market    = new MarketService(trades, inventory);
-  const buy       = new BuyService(trades, inventory);
+  const buy       = new BuyService(trades, inventory, moneyJournal);
   const bans      = new BanService(accounts, sessions, trades);
   // Feature 2 "CSFloat": per-account marketplace control. Built BEFORE pricing so the
   // CSFloat price source (Feature 3) can reuse it.
@@ -2056,7 +2062,33 @@ export function createApp(deps: ApiDeps): Express {
   // last-known revoked flag), not a hardcoded true, so a runtime revocation is visible to
   // the dashboard even in the brief window before the server is torn down. (INV-G1/G-1.)
   app.get('/api/system/status', (_req: Request, res: Response) => {
-    res.json({ licensed: !LicenseClient.isRevoked(), version: pkg.version });
+    const availableUpdate = getAvailableUpdate();
+    const blockedUpdate = getBlockedUpdate();
+    const priorCrash = getPriorCrash();
+    res.json({
+      licensed: !LicenseClient.isRevoked(),
+      version: pkg.version,
+      // Money-ops breaker (B3): mirror /api/health's stable/quarantineReason onto the endpoint the
+      // dashboard already polls, so the operator SEES a tripped breaker (latch semantics unchanged).
+      moneyOpsStable: !ProcessHealth.moneyOpsBlocked(),
+      ...(ProcessHealth.moneyOpsBlocked() ? { quarantineReason: ProcessHealth.blockReason() } : {}),
+      // Refresh-token store DEGRADED (B2): the file is present-but-corrupt and NOT persisting → the
+      // operator must restore it before a mass refresh re-auths the fleet.
+      ...(sessions.isTokenStoreDegraded() ? { tokenStoreDegraded: true } : {}),
+      // Update availability + per-machine block (C3): "update available", and "ready but blocked on
+      // this machine — manual install" when the artifact has failed its self-test ≥N times here.
+      update: {
+        available: !!availableUpdate,
+        latest: availableUpdate?.version,
+        notes: availableUpdate?.notes,
+        blocked: !!(availableUpdate && blockedUpdate && blockedUpdate.version === availableUpdate.version),
+        blockedFailures: blockedUpdate?.failures,
+        blockedKind: blockedUpdate?.kind,
+      },
+      // Prior-run crash banner (B1): the shell recorded an unexpected backend death last run. Shown
+      // once so the operator knows — NOTHING was auto-restarted.
+      ...(priorCrash ? { priorCrash: { at: priorCrash.at, code: priorCrash.code ?? null, signal: priorCrash.signal ?? null } } : {}),
+    });
   });
 
   // ── Health check ───────────────────────────────────────────────────────────
@@ -2079,6 +2111,24 @@ export function createApp(deps: ApiDeps): Express {
   // maFile, proxy, refresh token) lives in the portable, encrypted vault.enc.
   app.get('/api/vault/status', (_req: Request, res: Response) => {
     res.json({ enabled: AccountVault.isEnabled(), accounts: AccountVault.accountCount() });
+  });
+
+  // ── Manual update check / install (C5) ─────────────────────────────────────
+  // POST under /api/ → automatically capability- AND CSRF-guarded (no extra wiring). Default = a
+  // CHECK-ONLY network probe that refreshes "update available". With { install:true } the user has
+  // EXPLICITLY confirmed installing now: refused while any trade/buy/refresh is in flight (a swap exits
+  // the process), else fire-and-forget the full update (download → verify → self-test → swap), which
+  // restarts SSIM on success. This is the ONLY mid-session swap path — never automatic. (C5.)
+  app.post('/api/app/check-update', async (req: Request, res: Response) => {
+    const install = (req.body as { install?: unknown } | undefined)?.install === true;
+    if (install) {
+      const gate = canInstallNow();
+      if (!gate.ok) return res.status(409).json({ installing: false, error: gate.reason });
+      void installNow(); // swaps + exits on success; if it returns, it kept the current version
+      return res.status(202).json({ installing: true, version: getAvailableUpdate()?.version ?? null });
+    }
+    const view = await checkOnly('manual');
+    return res.json(view);
   });
 
   // ── 404 + error handler ────────────────────────────────────────────────────

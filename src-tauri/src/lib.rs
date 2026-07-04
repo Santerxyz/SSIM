@@ -65,6 +65,72 @@ fn log_shell(msg: &str) {
     }
 }
 
+/// Read the last `max_bytes` of logs/shell.log (the backend's captured stderr / last words) for the
+/// crash marker banner + the optional webhook. Best-effort; returns "" on any error.
+fn shell_log_tail(max_bytes: usize) -> String {
+    let f = ssim_home().join("logs").join("shell.log");
+    match std::fs::read(&f) {
+        Ok(data) => {
+            let start = data.len().saturating_sub(max_bytes);
+            String::from_utf8_lossy(&data[start..]).to_string()
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// B1: record an UNEXPECTED backend death to logs/last-crash.json so the NEXT launch can classify the
+/// prior exit (C4 telemetry) and show a dismissible "SSIM crashed last run" banner. VISIBILITY ONLY —
+/// the shell NEVER respawns (owner directive: a crash must be fixed, not hidden). Best-effort; no panic.
+fn write_crash_marker(version: &str, code: Option<i32>, signal: Option<i32>, log_tail: &str) {
+    let dir = ssim_home().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    let at_ms: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let marker = serde_json::json!({
+        "at": at_ms,
+        "code": code,
+        "signal": signal,
+        "version": version,
+        "logTail": log_tail,
+    });
+    let _ = std::fs::write(dir.join("last-crash.json"), marker.to_string());
+}
+
+/// B1 (optional): if SSIM_CRASH_WEBHOOK is set, POST a minimal crash notice so an UNATTENDED operator
+/// machine can phone home instead of silently sitting on a crash screen (BACKEND_RELIABILITY.md F2). OFF
+/// by default. Fired via the built-in curl.exe (Win10+/11 — no new crate); the body is written to a temp
+/// file so the log tail is never shell-escaped. Detached + best-effort: a webhook failure never blocks
+/// the crash UI, and this NEVER respawns anything — it only notifies (owner directive).
+fn maybe_post_crash_webhook(version: &str, code: Option<i32>, log_tail: &str) {
+    let url = match std::env::var("SSIM_CRASH_WEBHOOK") {
+        Ok(u) if !u.is_empty() => u,
+        _ => return,
+    };
+    // Keep the notice short (Discord-compatible `content`); the full tail stays in logs/shell.log.
+    let short: String = {
+        let s: Vec<char> = log_tail.chars().collect();
+        let start = s.len().saturating_sub(1500);
+        s[start..].iter().collect()
+    };
+    let content = format!(
+        "\u{26a0}\u{fe0f} SSIM backend crashed (v{version}, exit code {}). Machine stayed DOWN — no auto-restart. Last shell.log:\n```\n{short}\n```",
+        code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+    );
+    let body = serde_json::json!({ "content": content }).to_string();
+    let tmp = std::env::temp_dir().join(format!("ssim-crash-webhook-{}.json", std::process::id()));
+    if std::fs::write(&tmp, body).is_err() {
+        return;
+    }
+    let _ = std::process::Command::new("curl")
+        .args(["-s", "-m", "10", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary"])
+        .arg(format!("@{}", tmp.display()))
+        .arg(&url)
+        .spawn();
+    log_shell("posted crash webhook (SSIM_CRASH_WEBHOOK set)");
+}
+
 /// Pull the port out of a `SSIM_PORT=<n>` stdout line (ignores all other backend log lines).
 fn parse_port(chunk: &str) -> Option<u16> {
     chunk.lines().find_map(|l| {
@@ -175,20 +241,18 @@ static BACKEND_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ssim-bac
 /// the 171 MB backend only when this changed (post-update) or the file is missing — never otherwise.
 const BACKEND_STAMP: &str = env!("SSIM_BACKEND_STAMP");
 
-/// Extract the embedded backend to <ssim_home>/runtime/ssim-backend.exe — the SAME writable base
-/// data/ already uses, so storage stays ONE location and the install stays fully portable (the
-/// runtime/ copy regenerates from the exe on any machine). Marker-guarded + atomic (temp + rename):
-/// a normal launch returns near-instantly; only a changed backend triggers the one-time write. A
-/// failure is a HARD error reported to the caller — never silently retried (owner directive: no band-aids).
-fn ensure_backend_extracted() -> std::io::Result<std::path::PathBuf> {
+/// Marker-guarded + atomic (temp + rename) extraction of the embedded backend into `dir`. A normal
+/// launch returns near-instantly; only a CHANGED backend (new stamp) or a missing file triggers the
+/// one-time 171 MB write. A failure is a HARD error reported to the caller — never silently retried
+/// (owner directive: no band-aids). The target base varies by caller (see the two wrappers below).
+fn ensure_backend_extracted_to(dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     if BACKEND_BYTES.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "this SSIM.exe was built with NO embedded backend — rebuild via build/make-tauri.js",
         ));
     }
-    let dir = ssim_home().join("runtime");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(dir)?;
     let target = dir.join("ssim-backend.exe");
     let marker = dir.join(".backend-stamp");
     let current = std::fs::read_to_string(&marker).unwrap_or_default();
@@ -204,6 +268,24 @@ fn ensure_backend_extracted() -> std::io::Result<std::path::PathBuf> {
     std::fs::write(&marker, BACKEND_STAMP)?;
     log_shell(&format!("extracted embedded backend → {} (stamp {})", target.display(), BACKEND_STAMP));
     Ok(target)
+}
+
+/// The RUNTIME extraction: to <ssim_home>/runtime/ssim-backend.exe — the SAME writable base data/ uses,
+/// so storage stays ONE location and the install stays fully portable (the runtime/ copy regenerates
+/// from the exe on any machine).
+fn ensure_backend_extracted() -> std::io::Result<std::path::PathBuf> {
+    ensure_backend_extracted_to(&ssim_home().join("runtime"))
+}
+
+/// A STABLE cache dir for the SELF-TEST's extracted backend (C6). The updater runs the self-test with a
+/// throwaway per-invocation SSIM_HOME (data isolation), so if the backend extracted THERE it would be
+/// re-written 171 MB EVERY self-test and land on a fresh path AV has never scanned — a large part of why
+/// a slow/AV-heavy machine blew its self-test budget (UPDATE_RELIABILITY.md §3.3). Extracting the exe to
+/// ONE stable path instead means a repeated self-test (the C2 timeout escalation, the C1 cross-boot
+/// reuse, the C3 per-boot re-check) SKIPS re-extraction and reuses AV's already-warm scan of that path.
+/// Only the exe is shared (content-addressed by stamp); the child's DATA still uses the isolated SSIM_HOME.
+fn selftest_runtime_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("ssim-selftest-runtime")
 }
 
 /// Remove a stray ssim-backend.exe sitting NEXT TO SSIM.exe — a leftover from the old two-file
@@ -241,10 +323,16 @@ fn show_fatal(handle: &tauri::AppHandle, title: &str, detail: &str) {
 /// backend's report is also persisted to <home>/.ssim-selftest.out so the build/updater can read it
 /// reliably even if a GUI-subsystem exe's inherited stdout doesn't survive the pipe.
 fn run_backend_selftest() -> i32 {
-    let path = match ensure_backend_extracted() {
+    use std::io::Write;
+    let t0 = Instant::now();
+    // C6: extract to a STABLE cache (not the throwaway SSIM_HOME) so a repeated self-test skips the
+    // 171 MB re-extraction and reuses AV's already-warm scan of that path.
+    let path = match ensure_backend_extracted_to(&selftest_runtime_dir()) {
         Ok(p) => p,
         Err(e) => { eprintln!("SSIM_SELFTEST_FAIL extract: {e}"); return 2; }
     };
+    let extract_ms = t0.elapsed().as_millis();
+    let t1 = Instant::now();
     match std::process::Command::new(&path)
         .env("SSIM_SIDECAR", "1")
         .env("SSIM_HOME", ssim_home().to_string_lossy().to_string())
@@ -252,9 +340,28 @@ fn run_backend_selftest() -> i32 {
         .output()
     {
         Ok(o) => {
-            let _ = std::fs::write(ssim_home().join(".ssim-selftest.out"), &o.stdout);
-            use std::io::Write;
+            let boot_ms = t1.elapsed().as_millis();
+            // C6 PROFILE: the extract-vs-boot split, so a slow/AV-heavy machine's budget can be reasoned
+            // about from REAL numbers rather than guessed. Emitted to shell.log + the file report + stdout.
+            let profile = format!(
+                "SSIM_SELFTEST_PROFILE extract={extract_ms}ms boot={boot_ms}ms total={}ms path={}",
+                t0.elapsed().as_millis(), path.display()
+            );
+            log_shell(&profile);
+            // Persist the backend's report AND the profile to <home>/.ssim-selftest.out (the file channel
+            // the ≥1.2.4 updater reads).
+            let mut report = o.stdout.clone();
+            report.extend_from_slice(format!("\n{profile}\n").as_bytes());
+            let _ = std::fs::write(ssim_home().join(".ssim-selftest.out"), &report);
+            // C7: ALSO write the backend's stdout (which carries SSIM_SELFTEST_OK) to OUR inherited stdout
+            // handle. A GUI-subsystem process CAN write to a parent-provided pipe handle — the Windows
+            // subsystem controls console ALLOCATION, not std-handle inheritance, so when the updater's
+            // execFileSync provides a stdout pipe, GetStdHandle returns it and this write reaches the
+            // parent. That means a v1.2.0–1.2.2 stdout-ONLY updater CAN see the marker here — provided it
+            // (a) completed the all-or-nothing download and (b) the boot fits its 60 s budget (which the
+            // C6 stable-cache path widens). Confirmed by Windows handle semantics; see REMEDIATION_LOG.
             let _ = std::io::stdout().write_all(&o.stdout);
+            let _ = std::io::stdout().write_all(format!("\n{profile}\n").as_bytes());
             let _ = std::io::stdout().flush();
             o.status.code().unwrap_or(2)
         }
@@ -496,6 +603,13 @@ fn spawn_backend(handle: tauri::AppHandle) {
                         "BACKEND CRASH — terminated unexpectedly: code={:?} signal={:?} (auto-restart removed; no respawn)",
                         payload.code, payload.signal
                     ));
+                    // B1: persist a crash marker so the NEXT launch shows a "crashed last run" banner +
+                    // telemetry (C4), and — if SSIM_CRASH_WEBHOOK is configured — phone home so an
+                    // unattended machine isn't silently down. NOTHING is respawned (owner directive).
+                    let tail = shell_log_tail(4096);
+                    let version = handle.package_info().version.to_string();
+                    write_crash_marker(&version, payload.code, payload.signal, &tail);
+                    maybe_post_crash_webhook(&version, payload.code, &tail);
                     if let Some(w) = handle.get_webview_window("main") {
                         let _ = w.eval(&format!(
                             "document.documentElement.innerHTML='<div style=\"font:15px system-ui;color:#e5e7eb;background:#0a0a0f;height:100vh;margin:0;display:flex;flex-direction:column;gap:.6rem;align-items:center;justify-content:center;text-align:center;padding:2rem\"><div style=\"font-size:18px;font-weight:600\">SSIM backend crashed (exit code {:?}).</div><div style=\"opacity:.75\">Your saved data is safe. Please relaunch SSIM.</div><div style=\"opacity:.5;font-size:12px;margin-top:.6rem\">Crash details saved to the logs folder (exit-trace.log / stderr-trace.log / shell.log).</div></div>';",

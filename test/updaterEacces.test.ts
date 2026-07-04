@@ -115,8 +115,18 @@ test('classifySpawnError: a non-zero EXIT (self-test FAIL=2) is a crash — NOT 
   assert.equal(r.kind, 'crash', 'a real boot failure must not be classified as a retryable lock');
 });
 
-test('classifySpawnError: a hang/timeout (signal kill, no status) is a crash', () => {
-  const err = Object.assign(new Error('spawnSync ETIMEDOUT'), { signal: 'SIGTERM', killed: true });
+test('classifySpawnError: a budget timeout (WE killed it, no status) is its OWN retryable kind [C2]', () => {
+  // execFileSync killed the child at `timeout`: killed=true + a kill signal, no numeric status.
+  const bySignal = Object.assign(new Error('spawnSync ETIMEDOUT'), { signal: 'SIGTERM', killed: true });
+  assert.equal(classifySpawnError(bySignal).kind, 'timeout', 'a timeout is escalated, not hard-crashed');
+  // Some Node versions surface it as code ETIMEDOUT instead — also a timeout.
+  const byCode = Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
+  assert.equal(classifySpawnError(byCode).kind, 'timeout');
+});
+
+test('classifySpawnError: a SELF-inflicted fatal signal (killed=false) is still a crash, not a timeout', () => {
+  // The child died on its OWN signal (segfault/abort) — we did NOT kill it → a real failure, keep current.
+  const err = Object.assign(new Error('spawnSync SIGSEGV'), { signal: 'SIGSEGV', killed: false });
   assert.equal(classifySpawnError(err).kind, 'crash');
 });
 
@@ -139,37 +149,37 @@ const ok = (): SelfTestOutcome => ({ ok: true });
 test('selfTestNewExe: a transient EACCES lock is RETRIED and then passes', async () => {
   let calls = 0;
   const runner = (): SelfTestOutcome => (++calls <= 2 ? lock() : ok()); // lock twice, then ok
-  const passed = await selfTestNewExe('C:/nope/fake.exe', runner, FAST);
-  assert.equal(passed, true, 'a legit exe behind a transient lock eventually self-tests OK');
+  const result = await selfTestNewExe('C:/nope/fake.exe', runner, FAST);
+  assert.equal(result.ok, true, 'a legit exe behind a transient lock eventually self-tests OK');
   assert.equal(calls, 3, 'it retried past the two locks');
 });
 
 test('selfTestNewExe: a genuinely broken exe (exit 2) is REJECTED and NOT retried (guard intact)', async () => {
   let calls = 0;
   const runner = (): SelfTestOutcome => { calls++; return crash(); };
-  const passed = await selfTestNewExe('C:/nope/fake.exe', runner, FAST);
-  assert.equal(passed, false, 'a real boot failure keeps the current version');
+  const result = await selfTestNewExe('C:/nope/fake.exe', runner, FAST);
+  assert.equal(result.ok, false, 'a real boot failure keeps the current version');
   assert.equal(calls, 1, 'a crash is NOT retried — fail fast, keep current');
 });
 
 test('selfTestNewExe: exit 0 but no OK marker is REJECTED and NOT retried', async () => {
   let calls = 0;
   const runner = (): SelfTestOutcome => { calls++; return noMarker(); };
-  assert.equal(await selfTestNewExe('C:/nope/fake.exe', runner, FAST), false);
+  assert.equal((await selfTestNewExe('C:/nope/fake.exe', runner, FAST)).ok, false);
   assert.equal(calls, 1, 'a no-marker boot is a real failure, not a lock');
 });
 
 test('selfTestNewExe: a PERSISTENT lock still keeps the current version after exhausting retries', async () => {
   let calls = 0;
   const runner = (): SelfTestOutcome => { calls++; return lock(); };
-  const passed = await selfTestNewExe('C:/nope/fake.exe', runner, FAST);
-  assert.equal(passed, false, 'never swap if the lock never clears — guard not weakened');
+  const result = await selfTestNewExe('C:/nope/fake.exe', runner, FAST);
+  assert.equal(result.ok, false, 'never swap if the lock never clears — guard not weakened');
   assert.equal(calls, FAST.length + 1, 'one initial attempt + N bounded retries, then give up');
 });
 
 test('selfTestNewExe: a lock that later reveals a real crash stops retrying immediately', async () => {
   let calls = 0;
   const runner = (): SelfTestOutcome => (++calls === 1 ? lock() : crash());
-  assert.equal(await selfTestNewExe('C:/nope/fake.exe', runner, FAST), false);
+  assert.equal((await selfTestNewExe('C:/nope/fake.exe', runner, FAST)).ok, false);
   assert.equal(calls, 2, 'retried the lock once, hit a crash, then stopped — kept current');
 });

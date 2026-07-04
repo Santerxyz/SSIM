@@ -5,6 +5,8 @@ import axios from 'axios';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { dataDir } from '../utils/paths';
+import { ProcessHealth } from '../core/ProcessHealth';
+import { getUpdateOutcome, getLastExitClass } from './updateStatus';
 import { nextClockMeta, offlineGraceDecision } from './licenseClock';
 import {
   LICENSE_API_URL,
@@ -29,6 +31,35 @@ import {
 // ════════════════════════════════════════════════════════════════════════════
 
 const DATA_DIR = dataDir();
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const CLIENT_VERSION: string = (require('../../package.json') as { version: string }).version;
+
+/**
+ * The health/update telemetry rider (C4). Carried on the heartbeat (and the boot-time /validate
+ * recheck, so the server learns the version at boot rather than one 45-min beat later). Purely
+ * ADDITIVE: the server destructures only { hwid, token } today and ignores the rest (verified), and
+ * this client never reads it back, so it is backward-compatible in BOTH directions. Only defined fields
+ * are sent (undefined ones are omitted) so the wire carries no nulls. It lets the server size the
+ * stranded fleet by version + failure class (UPDATE_RELIABILITY.md §6.6 / BACKEND_RELIABILITY.md F10).
+ */
+interface HeartbeatTelemetry {
+  clientVersion: string;
+  moneyOpsBreakerTripped: boolean;
+  lastUpdateOutcome?: string;
+  lastExitClass?: string;
+}
+export function telemetryRider(): HeartbeatTelemetry {
+  const rider: HeartbeatTelemetry = {
+    clientVersion: CLIENT_VERSION,
+    moneyOpsBreakerTripped: ProcessHealth.moneyOpsBlocked(),
+  };
+  const outcome = getUpdateOutcome();
+  if (outcome) rider.lastUpdateOutcome = outcome;
+  const exitClass = getLastExitClass();
+  if (exitClass) rider.lastExitClass = exitClass;
+  return rider;
+}
 
 export interface LicensePayload {
   hwid: string;
@@ -255,7 +286,8 @@ export async function validate(hwid: string): Promise<ValidateResult> {
 /** Best-effort: ask the backend whether this seat is still live. */
 async function onlineRecheck(hwid: string, token: string): Promise<void> {
   try {
-    const res = await http.post('/validate', { hwid, token });
+    // Rider (C4) so the server learns clientVersion/last-outcome at BOOT, not one 45-min beat later.
+    const res = await http.post('/validate', { hwid, token, ...telemetryRider() });
     if (res.status === 200) {
       if (res.data?.status === 'revoked') {
         logger.error('LICENSE REVOKED by backend.');
@@ -291,7 +323,8 @@ async function heartbeat(hwid: string): Promise<void> {
   const token = readToken();
   if (!token) return;
   try {
-    const res = await http.post('/heartbeat', { hwid, token });
+    // Health/update telemetry rider (C4) — additive; the server ignores unknown keys.
+    const res = await http.post('/heartbeat', { hwid, token, ...telemetryRider() });
     // Revocation is signalled ONLY by the server's authoritative body marker
     // (contract: 403 `{status:'revoked'}`). A BARE 403 with no such body is almost always an
     // intermediary — a WAF, captive portal, or auth proxy — NOT the license server; treating it

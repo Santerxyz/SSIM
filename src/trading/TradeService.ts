@@ -1,6 +1,7 @@
 import { type SessionManager, refreshWebSession } from '../core/SessionManager';
 import type { AccountManager } from '../core/AccountManager';
 import type { InventoryService } from '../core/InventoryService';
+import { MoneyOpJournal } from '../core/MoneyOpJournal';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { SessionState, type ManagedSession } from '../types/session';
@@ -169,6 +170,10 @@ export class TradeService {
     /** Optional: lets the send path reject trade-locked / non-tradable assets from
      *  the cached inventory before an offer is created (INV-D1 / C3). */
     private readonly inventory?: InventoryService,
+    /** Cross-restart money-op journal (B4). Shared with BuyService so a crash mid-send can't be
+     *  double-fired by a user retry after restart. Defaults to a no-op (no disk) so direct construction
+     *  in tests never contends on the shared journal file; production wires the real one via createDeps. */
+    private readonly journal: MoneyOpJournal = MoneyOpJournal.disabled(),
   ) {
     // Whenever an account (re)gains web cookies, (re)wire its trader.
     this.sessions.on('webSession', (username: string) => {
@@ -479,10 +484,24 @@ export class TradeService {
       throw new Error('An asset in this trade is already in another money operation (sell/buy) – try again shortly');
     }
     moneyKeys.forEach((k) => MoneyOps.claim(k));
+    // B4: cross-restart dedup. A LINGERING journal entry means an identical send died mid-flight last run
+    // and its Steam-side outcome is unknown → refuse the auto-refire ONCE (consume it so a deliberate
+    // retry proceeds) rather than risk a duplicate offer. A cleanly-completed send leaves no entry, so a
+    // legitimate sequential repeat is never affected.
+    const priorSend = this.journal.findUnresolved(guardKey);
+    if (priorSend) {
+      this.inFlight.delete(guardKey);
+      moneyKeys.forEach((k) => MoneyOps.release(k));
+      this.journal.resolve(guardKey);
+      throw new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry to proceed.`);
+    }
+    this.journal.begin(guardKey, 'send');
     try {
       const trader = await this.getTrader(fromUsername);
       try {
-        return await trader.sendTrade(params);
+        const result = await trader.sendTrade(params);
+        this.journal.record(guardKey, 'sent'); // the offer now exists on Steam (survives a post-commit crash)
+        return result;
       } catch (err) {
         // Bubble Steam's ACTUAL reason up cleanly (eresult / cause / full-inventory text),
         // reading only what Steam returned — never a follow-up inventory fetch. The parsed
@@ -497,6 +516,7 @@ export class TradeService {
     } finally {
       this.inFlight.delete(guardKey);
       moneyKeys.forEach((k) => MoneyOps.release(k));
+      this.journal.resolve(guardKey); // clean resolution (success OR caught failure) → no lingering entry
     }
   }
 
@@ -654,6 +674,10 @@ export class TradeService {
 
   setAutoAccept(on: boolean): void { this.autoAcceptInternal = on; }
   isAutoAccept(): boolean          { return this.autoAcceptInternal; }
+
+  /** True while a send is in flight or a mass-send job is running — the update scheduler (C5) checks
+   *  this so a mid-session update never hard-exits into a swap while real trades are being dispatched. */
+  busy(): boolean { return this.inFlight.size > 0 || this.massJob.running; }
 
   /** Number of live AccountTrader instances (each owns a polling TradeOfferManager).
    *  Surfaced for the memory heartbeat so RSS can be correlated with fleet size. */

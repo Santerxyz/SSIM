@@ -1,4 +1,9 @@
-- Fixed: open in Browser only Supporting the Steam Community market. now it support the normal steam Store too.
-- Fixed: An Issue where the Backend Price fetcher didnt Update the Prices after finishing the Fetch process.
-- Fixed: SSIM not using another port if an Applince already running on it.
-- Backend Fixes
+- New: Updates that get stuck are now shown ("Update ready but blocked here — click to retry / reinstall") instead of silently keeping the old version. One click retries; a 2-min manual reinstall always fixes it.
+- Fixed: Slow / antivirus-heavy machines can finally update — the pre-install check retries with more time instead of giving up, and is much faster on repeat tries.
+- Fixed: No more re-downloading the same ~170 MB on every launch — a verified update is kept and reused.
+- New: "Check for updates" button + background checks. A mid-session update NEVER interrupts a trade/buy/refresh — it only installs when you confirm and nothing is running.
+- New: Crash visibility — if the backend ever dies, the next launch shows a "SSIM crashed last run" banner (your data is safe) pointing at the logs. Optional crash webhook for unattended machines.
+- New: "Money operations paused" is now shown on screen if the safety breaker trips (restart before more trades/buys) — no more silent failures.
+- Fixed: A damaged login-token file is now caught and preserved (warned, not overwritten) instead of dropping every saved login and forcing a re-login/2FA on the whole fleet.
+- Fixed: A crash mid buy/send can no longer be accidentally double-fired — a retry is stopped once with a "verify on Steam first" note.
+- Backend + license-server hardening (update telemetry, safer publish/rollback, key-mismatch guard).
