@@ -41,12 +41,17 @@ function isTransient(err: unknown): boolean {
   return /timeout|timed out|econnreset|esockettimedout|socket hang up|econnrefused|enetunreach|ehostunreach|etimedout|network|noconnection|eresult 3|429|too many|rate.?limit|http( error)? 5\d\d|error 50\d|bad gateway|gateway time-?out|service unavailable|temporarily|tunnel|proxy|aborted/.test(m);
 }
 
-/** A "the listing already exists" style rejection → the item IS listed (phantom). */
-function isAlreadyListed(err: unknown): boolean {
+/** A "the listing already exists" style rejection → the item IS listed (phantom). Exported for tests. */
+export function isAlreadyListed(err: unknown): boolean {
   const m = ((err as Error)?.message ?? '').toLowerCase();
-  // Steam localizes this error to the bot account's display language, so the German
-  // variants (bereits/vorhanden/aktiv) are matched on purpose — do NOT remove them.
-  return /already|pending listing|bereits|vorhanden|aktiv|listed/.test(m);
+  // S63: require a COMPOUND match — a market/listing NOUN and an "already/exists" QUALIFIER must BOTH be
+  // present. The old bare tokens (`already`, `listed`, `aktiv`, `vorhanden`, `bereits`) were far too broad:
+  // a single one fires on unrelated localized errors (e.g. "already rate-limited", "listed as untradable"),
+  // mis-bucketing an Owned item as Listed. Steam localizes to the bot's display language, so the German
+  // listing nouns (Angebot/Inserat) + qualifiers (bereits/vorhanden/aktiv/existiert) are matched on purpose.
+  const listingNoun = /listing|listed|angebot|verkaufsangebot|inserat/;
+  const alreadyQual = /already|pending|bereits|vorhanden|aktiv|existiert|besteht/;
+  return listingNoun.test(m) && alreadyQual.test(m);
 }
 
 /**
