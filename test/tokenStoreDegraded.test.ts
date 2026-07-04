@@ -83,6 +83,22 @@ test('S35a: a corrupt main AND a corrupt .bak → DEGRADED (no valid backup to r
   assert.equal(new TokenStore(p).isDegraded(), true);
 });
 
+test('S24: a throwing vault setToken does NOT escape TokenStore.set (no uncaughtException burst)', () => {
+  const s = new TokenStore(mk(undefined)); // fresh install → not degraded
+  const origEnabled = AccountVault.isEnabled;
+  const origSet = AccountVault.setToken;
+  try {
+    (AccountVault as unknown as { isEnabled: () => boolean }).isEnabled = () => true;                 // vault mode
+    (AccountVault as unknown as { setToken: () => void }).setToken = () => { throw new Error('EACCES: disk locked'); };
+    // In the OLD code this threw INSIDE steam-user's refreshToken emit → a global uncaughtException →
+    // ProcessHealth.recordUncaught → the money breaker latched after a burst during a mass first-login.
+    assert.doesNotThrow(() => s.set('bot1', 'tok-x'), 'a vault persist failure degrades to warn, never throws');
+  } finally {
+    (AccountVault as unknown as { isEnabled: typeof origEnabled }).isEnabled = origEnabled;
+    (AccountVault as unknown as { setToken: typeof origSet }).setToken = origSet;
+  }
+});
+
 test('S35b: in VAULT MODE a corrupt leftover plaintext file does NOT raise a false DEGRADED alarm', () => {
   const p = mk('{ corrupt and no bak');
   const s = new TokenStore(p); // degraded internally (no .bak to recover)

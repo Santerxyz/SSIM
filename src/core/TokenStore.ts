@@ -133,7 +133,16 @@ export class TokenStore {
 
   set(username: string, token: string): void {
     if (AccountVault.isEnabled()) {
-      AccountVault.setToken(username, token);
+      // S24: the vault's setToken → synchronous save() → writeJsonAtomic can THROW (disk full / EACCES /
+      // AV lock). This runs INSIDE steam-user's `refreshToken` emit, so an escaping throw becomes a global
+      // uncaughtException → ProcessHealth.recordUncaught; during a mass first-login (fresh vault) with a
+      // disk problem, ≥3 in 60s LATCH the money breaker until restart. Degrade to the plaintext path's
+      // warn-and-continue contract: the token is live for THIS session, just not persisted this attempt.
+      try {
+        AccountVault.setToken(username, token);
+      } catch (err) {
+        logger.warn(`[${username}] could not persist refresh token to the vault (token live this session only): ${(err as Error).message}`);
+      }
     } else {
       this.file.tokens[this.key(username)] = token; // in-memory for THIS run
       this.save();                                  // no-op while degraded (see save())

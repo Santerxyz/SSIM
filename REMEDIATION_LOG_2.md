@@ -487,3 +487,16 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/idleReaper.test.ts` (S11) — an idle DISCONNECTED/ERROR session is reaped; a recently
   -disconnected one is not (idle-TTL respected); LOGGING_IN is still never reaped. B40 tests still green.
 - **Status:** FIXED. build clean · 277 tests (+3).
+
+### S24 — vault token persist can throw inside steam-user's refreshToken emit → breaker trip — **FIXED**
+- **What:** Wrapped the vault branch of `TokenStore.set` (`AccountVault.setToken`) in try/catch,
+  degrading a persist failure to a warn-and-continue (token live this session, not persisted this
+  attempt) — matching the plaintext path's contract.
+- **Why:** the vault `setToken → synchronous save() → writeJsonAtomic` can throw (disk full/EACCES/AV
+  lock); it runs INSIDE steam-user's `refreshToken` emit, so an escaping throw became a global
+  uncaughtException → `ProcessHealth.recordUncaught`; during a mass first-login (fresh vault) with a disk
+  problem, ≥3 in 60s latched the money breaker until restart. Scoped to the token path (not
+  `AccountVault.save()`) so account writes still surface their errors.
+- **Files:** `src/core/TokenStore.ts`.
+- **Tests:** `test/tokenStoreDegraded.test.ts` (S24) — a throwing vault `setToken` does not escape `set`.
+- **Status:** FIXED. build clean · 278 tests (+1).
