@@ -942,3 +942,15 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `public/index.html`. **Tests:** `test/liveLogsZindex.test.ts` — source guard: the launcher
   z-index is < 40. +1 test. **Status:** FIXED (cosmetic; kept bottom-right to avoid colliding with the
   bottom-left update indicator).
+
+### S18 — orphaned-vault guard existed only on the headless path; the sidecar portal creates an empty vault over an orphaned farm — **FIXED**
+- **What:** the app-window unlock portal (`/api/vault/unlock`, the PRIMARY windowed path) now refuses to
+  create a fresh vault when `vault.enc` is missing but `accounts.json` holds registered accounts
+  (`shouldRefuseEmptyVaultCreate` → `looksLikeOrphanedVaultInstall`), returning a 409 that surfaces the
+  orphan and asks the operator to restore `vault.enc` or explicitly `createEmptyAnyway`.
+- **Why:** the B36 guard was only in vaultBoot's headless `!isTTY` branch; the packaged sidecar portal
+  silently created an empty vault over an orphaned install (partial restore / AV quarantine of vault.enc),
+  leaving the whole farm credential-less with no signal.
+- **Files:** `src/core/unlockPortal.ts`. **Tests:** `test/orphanVaultGuard.test.ts` — portal refuses on
+  orphan; allows on fresh install / explicit confirm. +2 tests. **Status:** FIXED (plaintext never destroyed;
+  restoring vault.enc still recovers).

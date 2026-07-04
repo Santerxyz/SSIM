@@ -2,6 +2,7 @@ import fs from 'fs';
 import http from 'http';
 import express from 'express';
 import { AccountVault } from './AccountVault';
+import { looksLikeOrphanedVaultInstall } from './vaultBoot';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
 import { openUiWindow } from '../appWindow';
@@ -20,6 +21,14 @@ import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../util
 // ════════════════════════════════════════════════════════════════════════════
 
 const PAGE = publicDir('unlock.html');
+
+/** S18: should the unlock portal REFUSE to create a fresh vault right now? True when there is no vault.enc,
+ *  the operator hasn't explicitly confirmed an empty create, AND accounts.json looks orphaned (registered
+ *  accounts but a missing vault.enc — partial restore / AV quarantine / unmounted drive). This hoists the
+ *  headless-path B36 guard onto the PRIMARY windowed path. Exported for tests. */
+export function shouldRefuseEmptyVaultCreate(vaultExists: boolean, createEmptyAnyway: boolean): boolean {
+  return !vaultExists && !createEmptyAnyway && looksLikeOrphanedVaultInstall();
+}
 
 function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -61,12 +70,25 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
     });
 
     app.post('/api/vault/unlock', async (req, res) => {
-      const body = (req.body ?? {}) as { password?: unknown; confirm?: unknown };
+      const body = (req.body ?? {}) as { password?: unknown; confirm?: unknown; createEmptyAnyway?: unknown };
       const password = typeof body.password === 'string' ? body.password : '';
       const confirm  = typeof body.confirm === 'string' ? body.confirm : undefined;
       const exists = AccountVault.exists();
 
       if (!password) return res.status(400).json({ ok: false, error: 'A Master Password is required.' });
+      // S18: the headless CLI path refuses to create a fresh empty vault when accounts.json survives but
+      // vault.enc is MISSING (an orphaned farm — partial restore, AV quarantine of vault.enc, unmounted
+      // drive). The sidecar unlock portal is the PRIMARY (windowed) path and lacked that guard — it would
+      // silently create an empty vault OVER the orphan, leaving every account credential-less with no signal.
+      // Surface the orphan and require an EXPLICIT acknowledgement before creating. (plaintext is never
+      // destroyed, so restoring vault.enc over the empty one still recovers.)
+      if (shouldRefuseEmptyVaultCreate(exists, body.createEmptyAnyway === true)) {
+        logger.error('[vault] unlock portal: vault.enc is MISSING but accounts.json holds registered accounts – refusing to silently create an empty vault (orphaned install). Restore vault.enc or confirm creating a new empty vault.');
+        return res.status(409).json({
+          ok: false, orphaned: true,
+          error: 'Registered accounts exist but the vault file (vault.enc) is missing — likely a partial restore, an antivirus quarantine, or an unmounted drive. Creating a new vault now would leave every account credential-less. Restore vault.enc (or fix SSIM_HOME) and reopen SSIM, or explicitly confirm creating a new empty vault.',
+        });
+      }
       if (!exists && confirm !== undefined && confirm !== password) {
         return res.status(400).json({ ok: false, error: 'The passwords do not match.' });
       }
