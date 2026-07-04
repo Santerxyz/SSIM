@@ -241,6 +241,20 @@ static BACKEND_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ssim-bac
 /// the 171 MB backend only when this changed (post-update) or the file is missing — never otherwise.
 const BACKEND_STAMP: &str = env!("SSIM_BACKEND_STAMP");
 
+/// S57: best-effort removal of stale `ssim-backend.exe.tmp*` fragments — a prior extraction that died
+/// between the write and the rename left a ~171 MB file. Never fails the caller (cleanup is advisory).
+fn sweep_stale_backend_tmp(dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("ssim-backend.exe.tmp") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
 /// Marker-guarded + atomic (temp + rename) extraction of the embedded backend into `dir`. A normal
 /// launch returns near-instantly; only a CHANGED backend (new stamp) or a missing file triggers the
 /// one-time 171 MB write. A failure is a HARD error reported to the caller — never silently retried
@@ -259,12 +273,21 @@ fn ensure_backend_extracted_to(dir: &std::path::Path) -> std::io::Result<std::pa
     if target.exists() && current == BACKEND_STAMP {
         return Ok(target); // this exact backend is already extracted
     }
+    // S57: sweep any stale `ssim-backend.exe.tmp*` fragments a prior extraction left behind (each is ~171 MB)
+    // before writing a fresh one, so a failed rename can't let them accumulate. Best-effort.
+    sweep_stale_backend_tmp(dir);
     // Write to a temp file in the same dir, then atomically rename over the target. (The backend is
     // never running at this point — the shell always extracts BEFORE it spawns the child.)
     let tmp = dir.join(format!("ssim-backend.exe.tmp{}", std::process::id()));
-    std::fs::write(&tmp, BACKEND_BYTES)?;
+    if let Err(e) = std::fs::write(&tmp, BACKEND_BYTES) {
+        let _ = std::fs::remove_file(&tmp); // S57: don't strand a partial 171 MB fragment
+        return Err(e);
+    }
     let _ = std::fs::remove_file(&target);
-    std::fs::rename(&tmp, &target)?;
+    if let Err(e) = std::fs::rename(&tmp, &target) {
+        let _ = std::fs::remove_file(&tmp); // S57: rename failed → sweep our own tmp, never strand 171 MB
+        return Err(e);
+    }
     std::fs::write(&marker, BACKEND_STAMP)?;
     log_shell(&format!("extracted embedded backend → {} (stamp {})", target.display(), BACKEND_STAMP));
     Ok(target)
@@ -750,4 +773,39 @@ pub fn run() {
                 api.prevent_exit();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // S57: the sweep removes ONLY stale `ssim-backend.exe.tmp*` fragments (a ~171 MB leftover from an
+    // extraction that died before the rename), never the real backend or unrelated files.
+    #[test]
+    fn sweep_removes_only_backend_tmp_fragments() {
+        let dir = std::env::temp_dir().join(format!("ssim-sweep-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ssim-backend.exe.tmp123"), b"stale").unwrap();
+        std::fs::write(dir.join("ssim-backend.exe.tmp456"), b"stale").unwrap();
+        std::fs::write(dir.join("ssim-backend.exe"), b"real backend").unwrap();
+        std::fs::write(dir.join("keep.txt"), b"unrelated").unwrap();
+
+        sweep_stale_backend_tmp(&dir);
+
+        assert!(!dir.join("ssim-backend.exe.tmp123").exists(), "a stale tmp fragment is swept");
+        assert!(!dir.join("ssim-backend.exe.tmp456").exists(), "ALL stale tmp fragments are swept");
+        assert!(dir.join("ssim-backend.exe").exists(), "the real extracted backend is kept");
+        assert!(dir.join("keep.txt").exists(), "unrelated files are kept");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Sweeping a non-existent dir must never panic (best-effort).
+    #[test]
+    fn sweep_missing_dir_is_noop() {
+        let dir = std::env::temp_dir().join(format!("ssim-sweep-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        sweep_stale_backend_tmp(&dir); // must not panic
+    }
 }

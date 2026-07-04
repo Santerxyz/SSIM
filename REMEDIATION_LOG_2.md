@@ -830,3 +830,11 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   The worst-case delay is the anti-brick self-test budget + one escalation; C1 preserves progress across boots
   so it never repeats work. Reducing it would mean weakening the self-test budget — the exact anti-brick guard
   the owner constraints forbid weakening. No code defect; left as-is with progress-preserving C1 intact.
+
+### S57 — leftover 171 MB `.tmp` on a failed extraction rename not swept — **FIXED** (Rust)
+- **What:** `ensure_backend_extracted_to` now sweeps stale `ssim-backend.exe.tmp*` fragments before writing
+  (new `sweep_stale_backend_tmp`), and removes its own tmp on a failed write OR rename.
+- **Why:** a failed rename (or a crash between write and rename) left a ~171 MB fragment that accumulated
+  across boots.
+- **Files:** `src-tauri/src/lib.rs`. **Tests:** `#[cfg(test)] mod tests` (sweep removes only tmp*, keeps the
+  real backend + unrelated files; missing dir is a no-op) — `cargo test` 2/2. **Status:** FIXED. `cargo check` green.
