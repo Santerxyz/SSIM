@@ -587,3 +587,21 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   latter locks out a corrected clock, the former does not); server `test/reliability.test.js` (the three
   responses carry `serverTime`). `nextClockMeta`/`offlineGraceDecision` are already pure-tested.
 - **Status:** FIXED. client build clean · 289 tests (+1) · server 46 (+1). Client change is old-server-safe.
+
+### S27 — HWID drift via firstMac() enumeration order → seat lockout — **FIXED**
+- **What:** `getHwid()` now PINS its result to `data/hwid.pin` on first computation and reads that pin
+  on every later boot. Only a HEALTHY fingerprint (real machineId AND MAC) is pinned, so a transient
+  failure never pins a bad id (a later good boot pins the correct one).
+- **Why:** the hwid drifted whenever `firstMac()` changed (a VPN/hotspot/virtual adapter appears, NIC
+  order shifts) or `machineIdSync` transiently failed → the stored token went invalid → re-activation
+  hit `seat_limit` (409) needing the OWNER to delete the stale seat.
+- **DEVIATION from fix direction (justified):** the register suggested hashing the sorted MAC set /
+  dropping MAC (client) or a server seat-move flow. But ANY change to the hwid COMPUTATION changes it for
+  EVERY deployed machine → a mass `seat_limit` lockout the moment they update. Pinning the FIRST computed
+  value is byte-identical to the legacy hwid, so deployed seats are untouched, and it stops all future
+  drift with NO server change and NO fleet break. A `data/` wipe (which also loses the token → forces
+  re-activation anyway) recomputes. The server seat-move flow remains a possible future enhancement.
+- **Files:** `src/licensing/HwidService.ts`.
+- **Tests:** `test/hwidPin.test.ts` — getHwid returns 64-hex + pins it; a pinned id wins even when live
+  factors would differ (drift-proof); a missing/malformed pin is rejected (recompute, never a false id).
+- **Status:** FIXED. build clean · 292 tests (+3).
