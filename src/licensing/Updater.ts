@@ -2,7 +2,8 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { spawn, execFileSync } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
 import fsExtra from 'fs-extra';
 import axios from 'axios';
 import { logger } from '../utils/logger';
@@ -210,10 +211,19 @@ export function stagedArtifactPath(dir: string, sha256: string): string {
   return path.join(dir, `ssim_update_${sha256.toLowerCase()}.exe`);
 }
 
-/** sha256 (hex, lowercase) of a file on disk, or '' if it can't be read. */
-export function sha256File(file: string): string {
-  try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
-  catch { return ''; }
+/** sha256 (hex, lowercase) of a file on disk, or '' if it can't be read. S8: STREAMS the file so a
+ *  ~185 MB artifact is not slurped into memory with a synchronous readFileSync — which stalled the event
+ *  loop (and dropped the resident fleet) when this runs in a live, session-carrying process. */
+export function sha256File(file: string): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const h = crypto.createHash('sha256');
+      const s = fs.createReadStream(file);
+      s.on('data', (chunk) => h.update(chunk));
+      s.on('end', () => resolve(h.digest('hex')));
+      s.on('error', () => resolve('')); // unreadable → '' (never a false match), matching the old catch→''
+    } catch { resolve(''); }
+  });
 }
 
 /**
@@ -252,7 +262,7 @@ async function download(info: VersionInfo): Promise<string> {
   // C1: if a COMPLETE, byte-intact artifact for this sha is already staged from a prior boot, REUSE it —
   // skip the ~185 MB re-download entirely. verify() re-hashes as the authoritative gate; this cheap
   // pre-check just avoids touching the network when we already hold the exact bytes.
-  if (fs.existsSync(tmp) && sha256File(tmp) === info.sha256.toLowerCase()) {
+  if (fs.existsSync(tmp) && (await sha256File(tmp)) === info.sha256.toLowerCase()) {
     logger.info(`update artifact already staged + sha-intact – skipping download: ${tmp}`);
     return tmp;
   }
@@ -349,8 +359,8 @@ export function verifyUpdateSignature(
 }
 
 /** 3. Integrity (sha256) + authenticity (Ed25519 over latest:sha256:kind) gate before we trust the file. */
-function verify(file: string, info: VersionInfo): boolean {
-  const digest = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+async function verify(file: string, info: VersionInfo): Promise<boolean> {
+  const digest = await sha256File(file); // S8: streaming hash — no 185 MB sync read that freezes the loop
   if (digest !== info.sha256) {
     logger.error('update sha256 mismatch – discarding download');
     return false;
@@ -390,17 +400,21 @@ export type SelfTestOutcome =
  * Pure + exported so the keep-current-on-real-failure property is unit-testable without a real exe.
  */
 export function classifySpawnError(err: unknown): Extract<SelfTestOutcome, { ok: false }> {
-  const e = (err ?? {}) as NodeJS.ErrnoException & { status?: number | null; signal?: string | null; killed?: boolean };
-  // A numeric exit status means the image LOADED and ran, then self-reported failure → real, not a lock.
-  if (typeof e.status === 'number') return { ok: false, kind: 'crash', detail: `exit ${e.status}` };
-  const errno = e.code;
-  // A budget timeout: execFileSync killed the child (no status). `killed:true` means WE killed it (the
-  // timeout), which is distinct from a child that died on its OWN fatal signal (killed:false → 'crash').
+  const e = (err ?? {}) as NodeJS.ErrnoException & { status?: number | null; code?: string | number | null; signal?: string | null; killed?: boolean };
+  // Exit code: SYNC execFileSync puts it on `.status`; ASYNC execFile puts it on `.code` (as a NUMBER).
+  // Either way, a non-zero exit means the image LOADED and ran, then self-reported failure → real
+  // 'crash', not a lock. This is what preserves the keep-current guard (S8 made the spawn async).
+  const exitCode = typeof e.status === 'number' ? e.status : (typeof e.code === 'number' ? e.code : undefined);
+  if (exitCode != null) return { ok: false, kind: 'crash', detail: `exit ${exitCode}` };
+  // Only a STRING `.code` is a spawn errno (EACCES/ETIMEDOUT/…); a numeric one was the exit code above.
+  const errno = typeof e.code === 'string' ? e.code : undefined;
+  // A budget timeout: we killed the child (no exit status). `killed:true` means WE killed it (the
+  // timeout), distinct from a child that died on its OWN fatal signal (killed:false → 'crash').
   if (errno === 'ETIMEDOUT' || e.killed === true) {
     return { ok: false, kind: 'timeout', errno: errno ?? undefined, detail: `self-test exceeded its time budget (${errno || e.signal || 'ETIMEDOUT'})` };
   }
   if (errno && ['EACCES', 'EBUSY', 'EPERM', 'ETXTBSY', 'UNKNOWN'].includes(errno)) {
-    return { ok: false, kind: 'lock', errno, detail: `${e.syscall || 'spawnSync'} ${errno}` };
+    return { ok: false, kind: 'lock', errno, detail: `${e.syscall || 'spawn'} ${errno}` };
   }
   return { ok: false, kind: 'crash', errno, detail: `${errno || e.signal || 'spawn-error'}: ${String(e.message || '').slice(0, 160)}` };
 }
@@ -437,20 +451,25 @@ const SELFTEST_TIMEOUT_ESCALATION = 2; // one retry at 2× budget on a timeout (
  *   • the GUI SSIM.exe (single-exe artifact) has no usable stdout, so its shell passthrough writes the
  *     report to <home>/.ssim-selftest.out.
  */
-function runSelfTestOnce(file: string, timeoutMs: number = SELFTEST_BUDGET_MS): SelfTestOutcome {
+const execFileAsync = promisify(execFile);
+
+async function runSelfTestOnce(file: string, timeoutMs: number = SELFTEST_BUDGET_MS): Promise<SelfTestOutcome> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim_selftest_'));
   try {
-    // Capture stdout (NOT 'ignore') so a console artifact's marker is visible; a GUI artifact simply
-    // yields empty stdout and we fall back to the file report. execFileSync throws on a non-zero exit
-    // or when it kills the child at `timeout` (→ classifySpawnError → 'timeout').
-    const stdout = (execFileSync(file, [], {
+    // S8: ASYNC execFile (not execFileSync) so the ~240–480s self-test NEVER freezes the event loop of a
+    // LIVE, session-carrying process (C5's mid-session "Install now") — a sync spawn stalled every HTTP
+    // request, Steam CM keepalive and confirmation poll for minutes, dropping the resident fleet. Capture
+    // stdout (NOT 'ignore') so a console artifact's marker is visible; a GUI artifact yields empty stdout
+    // and we fall back to the file report. execFile throws on a non-zero exit or a `timeout` kill
+    // (→ classifySpawnError → 'crash'/'timeout'). The keep-current guard is unchanged (still per-outcome).
+    const { stdout } = await execFileAsync(file, [], {
       env: { ...process.env, SSIM_SELFTEST: '1', SSIM_HOME: home },
       timeout: timeoutMs, windowsHide: true, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
-    }) || '').toString();
+    });
     let report = '';
     try { report = fs.readFileSync(path.join(home, '.ssim-selftest.out'), 'utf8'); } catch { /* no file report */ }
-    if (/SSIM_SELFTEST_OK/.test(stdout) || /SSIM_SELFTEST_OK/.test(report)) return { ok: true };
-    return { ok: false, kind: 'no-marker', detail: (stdout || report).trim().slice(0, 300) };
+    if (/SSIM_SELFTEST_OK/.test(String(stdout || '')) || /SSIM_SELFTEST_OK/.test(report)) return { ok: true };
+    return { ok: false, kind: 'no-marker', detail: (String(stdout || '') || report).trim().slice(0, 300) };
   } catch (err) {
     return classifySpawnError(err);
   } finally {
@@ -479,7 +498,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  */
 export async function selfTestNewExe(
   file: string,
-  runOnce: (f: string, timeoutMs: number) => SelfTestOutcome = runSelfTestOnce,
+  runOnce: (f: string, timeoutMs: number) => SelfTestOutcome | Promise<SelfTestOutcome> = runSelfTestOnce,
   backoffMs: readonly number[] = SELFTEST_BACKOFF_MS,
   baseBudgetMs: number = SELFTEST_BUDGET_MS,
 ): Promise<SelfTestOutcome> {
@@ -488,7 +507,7 @@ export async function selfTestNewExe(
   let timeoutEscalated = false;
   let lockAttempt = 0;
   for (;;) {
-    const r = runOnce(file, budget);
+    const r = await runOnce(file, budget); // S8: runOnce is now async (execFile); a sync test fake awaits fine
     if (r.ok) {
       logger.info(`update self-test passed – new artifact boots + loads its deps${lockAttempt ? ` (after ${lockAttempt} retr${lockAttempt === 1 ? 'y' : 'ies'})` : ''}`);
       return r;
@@ -777,7 +796,7 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   // Verify (sha256, fast) + anti-brick self-test (boots the new exe, can take up to ~2 min). Both
   // are silent on disk, so flag the phase or the splash looks stuck on "Downloading" the whole time.
   emitUpdate('SSIM_UPDATE_VERIFYING');
-  if (!verify(file, info)) {
+  if (!(await verify(file, info))) {
     setUpdateOutcome('sig-fail');
     fsExtra.removeSync(file); // a corrupt/tampered artifact is worth re-fetching; only self-test KEEPS it
     return { updated: false, reason: 'verification failed' };

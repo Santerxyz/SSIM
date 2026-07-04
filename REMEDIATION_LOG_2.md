@@ -517,3 +517,27 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Status:** FIXED. build clean · 280 tests (+2 net; +2 new − 0, teardown test updated in place).
 
 **Wave 3 boundary re-check:** client build clean · 280 tests · cargo clean (unchanged) · server 45. ✔
+
+---
+
+## Wave 4 — Updater / boot / license resilience
+
+### S8 — mid-session install freezes the event loop 240–480s (sync self-test + 185 MB hashes) — **FIXED**
+- **What:** Made the anti-brick self-test ASYNC — `runSelfTestOnce` uses `execFile` (promisified) instead
+  of `execFileSync`; `selfTestNewExe` `await`s the (now async-or-sync) `runOnce`. Made the sha256 hashes
+  streaming/async — `sha256File` streams the file (not a 185 MB `readFileSync`) and returns a Promise;
+  `verify` is async and awaits it; `download`'s reuse pre-check + `runUpdate`'s verify call await.
+  `classifySpawnError` normalized to handle BOTH error shapes (sync exit on `.status`, async exit on
+  `.code`-as-number) → identical crash/timeout/lock classification.
+- **Why:** C5's `installNow` runs the full `runUpdate` in the LIVE, session-carrying process; the sync
+  self-test (240s + a 480s C2 escalation, re-run per retry) plus two 185 MB `readFileSync` hashes froze
+  the event loop for minutes → every HTTP request, Steam CM keepalive and confirmation poll stalled →
+  the resident fleet (~150 sessions) dropped.
+- **Constraint:** keep-current guard intact — `swapAndRelaunch` still has ONE call site, still reached
+  only after `selfTest.ok` (the async change is `await`, not a new path). Classification outcomes are
+  byte-identical for the existing sync error shapes.
+- **Files:** `src/licensing/Updater.ts`.
+- **Tests:** `test/updaterEacces.test.ts` (S8: classifier handles the async error shape + sync unchanged;
+  `selfTestNewExe` awaits an async `runOnce`); `test/updaterReliability.test.ts` (sha256File awaited).
+  All existing selfTest/classify/keep-current property tests still green.
+- **Status:** FIXED. build clean · 282 tests (+2).

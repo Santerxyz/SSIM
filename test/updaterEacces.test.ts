@@ -188,3 +188,26 @@ test('selfTestNewExe: a lock that later reveals a real crash stops retrying imme
   assert.equal((await selfTestNewExe('C:/nope/fake.exe', runner, FAST)).ok, false);
   assert.equal(calls, 2, 'retried the lock once, hit a crash, then stopped — kept current');
 });
+
+// ─── S8: the self-test spawn is now ASYNC execFile (was execFileSync, freezing the
+//        event loop 240–480s mid-session and dropping the resident fleet). ─────────
+test('S8: classifySpawnError handles the ASYNC execFile error shape (exit code on .code)', () => {
+  // async execFile reports a non-zero exit as .code (a NUMBER), not .status → still a crash (keep-current).
+  const crash = classifySpawnError({ code: 2, killed: false } as unknown);
+  assert.equal(crash.ok, false);
+  assert.equal(crash.kind, 'crash', 'a non-zero exit is a real failure regardless of sync/async shape');
+  // a budget-timeout kill (killed:true, no numeric exit) → timeout (retryable escalation), same as sync.
+  assert.equal(classifySpawnError({ killed: true, signal: 'SIGTERM' } as unknown).kind, 'timeout');
+  // a spawn errno STRING on .code → lock (retryable), unchanged.
+  assert.equal(classifySpawnError({ code: 'EACCES' } as unknown).kind, 'lock');
+  // the SYNC shape still classifies identically (.status numeric → crash).
+  assert.equal(classifySpawnError({ status: 2 } as unknown).kind, 'crash');
+});
+
+test('S8: selfTestNewExe awaits an ASYNC runOnce (the real self-test is now non-blocking execFile)', async () => {
+  let ran = false;
+  const asyncOk = async (): Promise<SelfTestOutcome> => { await new Promise((r) => setImmediate(r)); ran = true; return { ok: true }; };
+  const r = await selfTestNewExe('x.exe', asyncOk);
+  assert.equal(ran, true);
+  assert.equal(r.ok, true, 'an async self-test outcome is awaited, not treated as a truthy Promise');
+});

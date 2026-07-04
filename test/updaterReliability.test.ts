@@ -32,17 +32,17 @@ test('C1: stagedArtifactPath is DETERMINISTIC per sha (resume/reuse across boots
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('C1: sha256File matches the manifest sha (the cheap "already complete?" pre-check download() uses)', () => {
+test('C1: sha256File matches the manifest sha (the cheap "already complete?" pre-check download() uses)', async () => {
   const dir = mkdir();
   const payload = Buffer.from('MZ fake exe bytes for the reuse check');
   const digest = sha256(payload);
   const staged = stagedArtifactPath(dir, digest);
   fs.writeFileSync(staged, payload);
-  assert.equal(sha256File(staged), digest, 'a byte-intact staged artifact is recognised → download is skipped');
+  assert.equal(await sha256File(staged), digest, 'a byte-intact staged artifact is recognised → download is skipped');
   // A corrupt/partial file at the same path hashes differently → NOT reused (verify would also reject it).
   fs.writeFileSync(staged, Buffer.concat([payload, Buffer.from('tampered')]));
-  assert.notEqual(sha256File(staged), digest);
-  assert.equal(sha256File(path.join(dir, 'nope.exe')), '', 'a missing file hashes to empty, never a false match');
+  assert.notEqual(await sha256File(staged), digest);
+  assert.equal(await sha256File(path.join(dir, 'nope.exe')), '', 'a missing file hashes to empty, never a false match');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
