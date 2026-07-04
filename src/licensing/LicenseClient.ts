@@ -85,16 +85,35 @@ function readKey(): string | undefined {
   return fsExtra.existsSync(f) ? fsExtra.readFileSync(f, 'utf8').trim() : undefined;
 }
 
-function readToken(): string | undefined {
+export function readToken(): string | undefined {
   const f = fileIn(LICENSE_TOKEN_FILE);
-  return fsExtra.existsSync(f) ? fsExtra.readFileSync(f, 'utf8').trim() : undefined;
+  try {
+    if (fsExtra.existsSync(f)) { const t = fsExtra.readFileSync(f, 'utf8').trim(); if (t) return t; }
+  } catch { /* fall through to the sidecar */ }
+  // S38: fall back to the ATOMIC .json sidecar if the main file is missing/empty/torn (e.g. a power-cut
+  // before this fix left a zero-length license.token).
+  try {
+    const sidecar = fsExtra.readJsonSync(`${f}.json`) as { token?: unknown };
+    return (typeof sidecar?.token === 'string' && sidecar.token.trim()) ? sidecar.token.trim() : undefined;
+  } catch { return undefined; }
 }
 
-function storeToken(token: string): void {
+export function storeToken(token: string): void {
   fsExtra.ensureDirSync(DATA_DIR);
   // plain text file (already a signed artifact), but lock down perms like tokens
   writeJsonAtomic(fileIn(LICENSE_TOKEN_FILE) + '.json', { token }, { mode: 0o600 });
-  fsExtra.writeFileSync(fileIn(LICENSE_TOKEN_FILE), token, { mode: 0o600 });
+  // S38: write the MAIN token file ATOMICALLY (temp→rename) too — a power-cut during a heartbeat token
+  // refresh used to leave a TORN license.token → the next OFFLINE boot was locked out. (The .json sidecar
+  // above is already atomic; readToken now also falls back to it.)
+  const main = fileIn(LICENSE_TOKEN_FILE);
+  const tmp = `${main}.${process.pid}.tmp`;
+  try {
+    fsExtra.writeFileSync(tmp, token, { mode: 0o600 });
+    fsExtra.renameSync(tmp, main); // atomic on the same volume
+  } catch (err) {
+    try { fsExtra.removeSync(tmp); } catch { /* best-effort */ }
+    throw err;
+  }
 }
 
 /** Persist the license key the user typed, so future starts can re-activate. */

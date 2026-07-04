@@ -666,3 +666,20 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Tests:** `test/pricingErrorMiss.test.ts` (S13 — a job de-queues its enqueue key even when activeSource
   differs at dequeue).
 - **Status:** FIXED. build clean · 297 tests (+1).
+
+### S37 — quarantinePlaintextFile rewrites the kept-secrets file non-atomically — **FIXED**
+- **What:** `vaultBoot.quarantinePlaintextFile` now uses `writeJsonAtomic` (temp→fsync→rename, mode 600)
+  instead of `fsExtra.writeJsonSync`.
+- **Why:** the module's contract is "never delete the last copy"; a non-atomic rewrite could tear the
+  kept-secrets file on a power-cut.
+- **Files:** `src/core/vaultBoot.ts`. **Tests:** build-verified (mechanical swap to the tested `writeJsonAtomic`).
+- **Status:** FIXED. build clean · 299 tests.
+
+### S38 — license.token written non-atomically → power-cut torn token → offline lockout — **FIXED**
+- **What:** `storeToken` writes the MAIN `license.token` via temp→rename (atomic) too (the `.json` sidecar
+  was already atomic); `readToken` falls back to the atomic sidecar for a pre-existing torn/empty main file.
+- **Why:** a power-cut during a heartbeat token refresh left a torn `license.token` → the next OFFLINE boot
+  was locked out.
+- **Files:** `src/licensing/LicenseClient.ts`.
+- **Tests:** `test/tokenAtomicWrite.test.ts` — round-trips main+sidecar; recovers from a torn main via the sidecar.
+- **Status:** FIXED. build clean · 299 tests (+2).
