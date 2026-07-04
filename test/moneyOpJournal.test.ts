@@ -67,6 +67,43 @@ test('B4: distinct op-hashes (a buy and a send) never collide', () => {
   assert.ok(j.findUnresolved('sender|url|x'), 'resolving one leaves the other intact');
 });
 
+// ─── S15: consultRefusal enforces a pause so a double-click can't defeat refuse-once ───
+test('S15: the FIRST refusal KEEPS the entry (a rapid re-fire is refused too, not consumed)', () => {
+  let clock = 1_000_000;
+  const j = new MoneyOpJournal(jpath(), 60_000, () => clock);
+  j.begin('op', 'buy');
+  // Click 1 (a crash-restart double-click): refused, entry kept + stamped.
+  assert.ok(j.consultRefusal('op'), 'first click is refused');
+  assert.ok(j.findUnresolved('op'), 'the entry is KEPT (not consumed) so click 2 is also refused');
+  // Click 2, 200ms later (the second half of a double-click): still refused, still kept.
+  clock += 200;
+  assert.ok(j.consultRefusal('op'), 'a rapid re-fire is refused again');
+  assert.ok(j.findUnresolved('op'), 'still kept');
+});
+
+test('S15: a DELIBERATE retry after the min-age pause is ALLOWED and consumes the entry', () => {
+  let clock = 1_000_000;
+  const j = new MoneyOpJournal(jpath(), 60_000, () => clock);
+  j.begin('op', 'buy');
+  assert.ok(j.consultRefusal('op'), 'refused first (stamps refusedAt)');
+  clock += 9_000; // > the 8s min-age → the operator has had time to check Steam
+  assert.equal(j.consultRefusal('op'), undefined, 'a paused, deliberate retry is allowed');
+  assert.equal(j.findUnresolved('op'), undefined, 'and the entry is now consumed so the retry proceeds');
+});
+
+test('S15: force=true allows immediately (consumes the entry without waiting)', () => {
+  let clock = 1_000_000;
+  const j = new MoneyOpJournal(jpath(), 60_000, () => clock);
+  j.begin('op', 'buy');
+  assert.equal(j.consultRefusal('op', { force: true }), undefined, 'force bypasses the pause');
+  assert.equal(j.findUnresolved('op'), undefined, 'consumed');
+});
+
+test('S15: consultRefusal with NO lingering entry allows (undefined) — legit ops are unaffected', () => {
+  const j = new MoneyOpJournal(jpath());
+  assert.equal(j.consultRefusal('fresh-op'), undefined);
+});
+
 test('B4: the journal never throws on a corrupt file (degrades to today’s behaviour, not a hazard)', () => {
   const p = jpath();
   fs.writeFileSync(p, '{ not valid json');

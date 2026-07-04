@@ -247,3 +247,25 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   entry, verifyBeforeRetry keeps it, a definite eresult rejection resolves it).
 - **Status:** FIXED. build clean · 232 tests (+7).
 
+### S15 — refuse-once consumed synchronously → a double-click after crash-restart double-fires — **FIXED**
+- **What:** New `MoneyOpJournal.consultRefusal(op, {force?, minRefuseMs?})` replaces the refusal-path
+  `findUnresolved`+`resolve`. It REFUSES a lingering entry and KEEPS it (stamping `refusedAt` on the
+  first refusal); a re-fire within an 8 s min-age (a double-click) is refused AGAIN; a deliberate retry
+  after the pause — or `force` — is allowed and consumes the entry. `BuyService` sets a `refused` flag
+  so its `finally` doesn't resolve the kept entry; `TradeService` (refusal is pre-try) just drops its
+  synchronous `resolve`.
+- **Why:** the refusal path consumed the journal entry synchronously before throwing, so the 2nd request
+  of a double-click (50–300 ms later, after a crash-restart) found no entry and committed the possibly
+  -duplicate op. Refuse-once only blocked a *deliberate sequential* retry, not the double-click it was
+  built to stop.
+- **Constraint:** `AccountTrader.ts` NOT in the diff (grep-proven). Composes with S3: `finally` resolves
+  only when `!commitMayHaveLanded && !refused`.
+- **Files:** `src/core/MoneyOpJournal.ts` (`consultRefusal`, `refusedAt`), `src/trading/BuyService.ts`,
+  `src/trading/TradeService.ts`.
+- **Tests:** `test/moneyOpJournal.test.ts` (S15 unit: first refusal keeps+stamps, rapid re-fire refused
+  again, paused retry consumes, force consumes, no-entry allows); `test/moneyOpJournalWiring.test.ts`
+  (S15 wiring: double-click refused + entry kept; deliberate retry after the pause reaches the commit
+  path). **Updated** the B4 wiring test (entry is now KEPT not consumed on refusal — documented
+  behavior change) and added `consultRefusal` to `buyPartialBaseline.test.ts`'s no-op journal mock.
+- **Status:** FIXED. build clean · 237 tests (+5).
+

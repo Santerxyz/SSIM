@@ -168,14 +168,18 @@ export class BuyService {
     // S3: set when the commit fails TRANSPORT-AMBIGUOUSLY (the order may already be on Steam). The finally
     // then SKIPS journal.resolve so a retry hits the refuse-once gate instead of double-spending.
     let commitMayHaveLanded = false;
+    // S15: set when this call was REFUSED (a lingering entry). The finally must NOT resolve the entry it
+    // just kept, or a double-click's 2nd click would find nothing and fire the possibly-duplicate op.
+    let refused = false;
     try {
-      // B4: cross-restart dedup. A LINGERING journal entry means an identical buy died mid-flight last
-      // run (Steam-side outcome unknown) → refuse the auto-refire ONCE; the finally consumes the entry so
-      // a deliberate retry proceeds. A cleanly-completed buy leaves no entry, so legitimate repeats are
-      // unaffected. (Checked inside the try so the finally still releases the in-flight lock + session.)
-      const priorBuy = this.journal.findUnresolved(guardKey);
+      // B4/S15: cross-restart dedup. A LINGERING journal entry means an identical buy died mid-flight
+      // last run (Steam-side outcome unknown). consultRefusal REFUSES it (KEEPING the entry, so a rapid
+      // double-click is refused too) until a deliberate-pause min-age elapses, then ALLOWS + consumes it.
+      // A cleanly-completed buy leaves no entry, so legitimate repeats are unaffected.
+      const priorBuy = this.journal.consultRefusal(guardKey);
       if (priorBuy) {
-        throw new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry to proceed.`);
+        refused = true;
+        throw new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry in a few seconds to proceed.`);
       }
       this.journal.begin(guardKey, 'buy');
       // SESSION PRE-FLIGHT: guarantee a live web session with a valid sessionid cookie BEFORE
@@ -303,9 +307,9 @@ export class BuyService {
       };
     } finally {
       this.inFlight.delete(guardKey);
-      // S3: consume the entry on a clean resolution (success OR a definite/pre-commit failure), but KEEP
-      // it when the commit failed transport-ambiguously — so the next attempt is refused once.
-      if (!commitMayHaveLanded) this.journal.resolve(guardKey);
+      // S3/S15: consume the entry on a clean resolution (success OR a definite/pre-commit failure), but
+      // KEEP it when the commit failed transport-ambiguously (S3) or when THIS call was a refusal (S15).
+      if (!commitMayHaveLanded && !refused) this.journal.resolve(guardKey);
       // Release the session this direct buy created (mass-buy opts out — its batch releases once).
       if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
     }

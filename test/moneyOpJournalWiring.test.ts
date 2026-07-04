@@ -16,16 +16,15 @@ import { MoneyOpJournal } from '../src/core/MoneyOpJournal';
 const P = { username: 'buybot', marketHashName: 'AK-47 | Redline', appId: 730, pricePerItemMinor: 1000, quantity: 1 };
 const GUARD_KEY = `${P.username.toLowerCase()}|${P.appId}|${P.marketHashName}`;
 
+// ensureWebSession throws a SENTINEL so a test can tell "refused (never reached)" from "allowed
+// through (reached the commit path)". A refusal rejects with /interrupted/; an allowed retry with it.
 function makeBuyServiceWithJournal(journal: MoneyOpJournal): BuyService {
   const svc = Object.create(BuyService.prototype) as BuyService;
-  const trader = { walletCurrency: 3 } as Record<string, unknown>;
-  trader.createBuyOrder = async () => { throw new Error('createBuyOrder must NOT be reached when the op is refused'); };
   Object.assign(svc, {
     inFlight: new Set<string>(),
     journal,
     trades: {
-      // If the refuse guard let us through, this would run — the test asserts we DON'T reach it.
-      ensureWebSession: async () => { throw new Error('ensureWebSession must NOT be reached when the op is refused'); },
+      ensureWebSession: async () => { throw new Error('REACHED_COMMIT_PATH'); },
       snapshotLive: () => new Set<string>(),
       releaseCreatedSessions: async () => {},
     },
@@ -34,9 +33,9 @@ function makeBuyServiceWithJournal(journal: MoneyOpJournal): BuyService {
   return svc;
 }
 
-test('B4 wiring: a buy matching a LINGERING journal entry is REFUSED before committing, then the entry is consumed', async () => {
+test('B4/S15 wiring: a buy matching a LINGERING entry is REFUSED before committing, and the entry is KEPT', async () => {
   const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-mojw-')), 'money-op-journal.json');
-  const journal = new MoneyOpJournal(p); // enabled
+  const journal = new MoneyOpJournal(p); // enabled, real clock
   journal.begin(GUARD_KEY, 'buy'); // simulate a prior run that crashed mid-buy (never resolved)
 
   const svc = makeBuyServiceWithJournal(journal);
@@ -45,8 +44,22 @@ test('B4 wiring: a buy matching a LINGERING journal entry is REFUSED before comm
     /interrupted before it finished/,
     'a crash-interrupted buy is not silently re-fired',
   );
-  // The finally consumed the lingering entry → a DELIBERATE second attempt is no longer blocked.
-  assert.equal(journal.findUnresolved(GUARD_KEY), undefined, 'the entry was consumed so a deliberate retry proceeds');
+  // S15: the entry is KEPT (not consumed) so an immediate double-click is ALSO refused.
+  assert.ok(journal.findUnresolved(GUARD_KEY), 'the refusal keeps the entry (double-click safe)');
+  await assert.rejects(svc.buy(P, { releaseSession: false }), /interrupted before it finished/, 'the 2nd click is refused too');
+});
+
+test('S15 wiring: a DELIBERATE retry after the min-age pause is ALLOWED through to the commit path', async () => {
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-mojw2-')), 'money-op-journal.json');
+  let clock = 2_000_000;
+  const journal = new MoneyOpJournal(p, 60 * 60 * 1000, () => clock);
+  journal.begin(GUARD_KEY, 'buy');
+  const svc = makeBuyServiceWithJournal(journal);
+
+  await assert.rejects(svc.buy(P, { releaseSession: false }), /interrupted before it finished/, 'first click refused');
+  clock += 9_000; // > 8s min-age → a deliberate, paused retry
+  await assert.rejects(svc.buy(P, { releaseSession: false }), /REACHED_COMMIT_PATH/,
+    'after the pause the buy is allowed past the refusal (reaches the commit path)');
 });
 
 // ─── S3: a commit that fails must only CONSUME the journal entry when it is safe ───

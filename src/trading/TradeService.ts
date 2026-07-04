@@ -485,16 +485,16 @@ export class TradeService {
       throw new Error('An asset in this trade is already in another money operation (sell/buy) – try again shortly');
     }
     moneyKeys.forEach((k) => MoneyOps.claim(k));
-    // B4: cross-restart dedup. A LINGERING journal entry means an identical send died mid-flight last run
-    // and its Steam-side outcome is unknown → refuse the auto-refire ONCE (consume it so a deliberate
-    // retry proceeds) rather than risk a duplicate offer. A cleanly-completed send leaves no entry, so a
-    // legitimate sequential repeat is never affected.
-    const priorSend = this.journal.findUnresolved(guardKey);
+    // B4/S15: cross-restart dedup. A LINGERING journal entry means an identical send died mid-flight
+    // last run (Steam-side outcome unknown). consultRefusal REFUSES it (KEEPING the entry, so a rapid
+    // double-click is refused too) until a deliberate-pause min-age elapses, then ALLOWS + consumes it.
+    // A cleanly-completed send leaves no entry, so a legitimate sequential repeat is never affected.
+    const priorSend = this.journal.consultRefusal(guardKey);
     if (priorSend) {
       this.inFlight.delete(guardKey);
       moneyKeys.forEach((k) => MoneyOps.release(k));
-      this.journal.resolve(guardKey);
-      throw new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry to proceed.`);
+      // S15: do NOT resolve here — consultRefusal KEEPS the entry so a rapid re-fire is refused too.
+      throw new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry in a few seconds to proceed.`);
     }
     this.journal.begin(guardKey, 'send');
     // S3: set when offer.send fails TRANSPORT-AMBIGUOUSLY (the offer may already exist on Steam). The

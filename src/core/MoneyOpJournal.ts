@@ -35,9 +35,14 @@ export interface MoneyOpEntry {
   phase: MoneyOpPhase;
   at: number;        // epoch ms of begin()/record()
   detail?: string;
+  /** S15: epoch ms this lingering entry was FIRST refused this run. Set on the first refusal so a rapid
+   *  re-fire (double-click after a crash-restart) is refused AGAIN until a deliberate-pause min-age
+   *  elapses — a synchronous consume-on-refuse could not enforce that pause. */
+  refusedAt?: number;
 }
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000; // ~1h
+const DEFAULT_MIN_REFUSE_MS = 8_000;   // S15: a lingering op is refused for ≥8s before a deliberate retry is allowed
 
 export class MoneyOpJournal {
   constructor(
@@ -122,6 +127,35 @@ export class MoneyOpJournal {
       return map[opHash];
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * S15: decide REFUSE vs ALLOW for a lingering entry, enforcing a "check on Steam, then retry" PAUSE
+   * that a synchronous consume-on-refuse could not. Returns the entry to REFUSE (and KEEPS it on disk),
+   * or undefined to ALLOW (consuming the entry). The FIRST encounter is refused and stamped `refusedAt`;
+   * a re-attempt within `minRefuseMs` (a double-click / rapid re-fire) is refused AGAIN and the entry is
+   * NOT consumed; a DELIBERATE re-attempt after `minRefuseMs` — or `force` — is allowed and consumes the
+   * entry so the caller proceeds. Best-effort; a journal error degrades to ALLOW (today's no-dedup).
+   */
+  consultRefusal(opHash: string, opts?: { force?: boolean; minRefuseMs?: number }): MoneyOpEntry | undefined {
+    if (!this.enabled) return undefined;
+    try {
+      const map = this.sweep(this.read());
+      const entry = map[opHash];
+      if (!entry) { this.write(map); return undefined; } // no lingering op → allow (persist the sweep)
+      const minAge = opts?.minRefuseMs ?? DEFAULT_MIN_REFUSE_MS;
+      const paused = typeof entry.refusedAt === 'number' && this.now() - entry.refusedAt >= minAge;
+      if (opts?.force === true || paused) {
+        delete map[opHash]; // deliberate retry (paused long enough) or force → consume + allow
+        this.write(map);
+        return undefined;
+      }
+      if (typeof entry.refusedAt !== 'number') entry.refusedAt = this.now(); // stamp the FIRST refusal
+      this.write(map); // keep the entry so a rapid re-fire is refused too
+      return entry;
+    } catch {
+      return undefined; // never throw — degrade to allow
     }
   }
 }

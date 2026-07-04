@@ -16,7 +16,7 @@ function makeBuyService(beforeInv: Record<string, unknown>, afterInv: Record<str
     inFlight: new Set<string>(),
     // No-op money-op journal (B4): this fixture bypasses the constructor (Object.create), so it must
     // supply the journal dependency buy() now uses. A no-op keeps this test focused on the fill logic.
-    journal: { findUnresolved: () => undefined, begin: () => {}, record: () => {}, resolve: () => {} },
+    journal: { findUnresolved: () => undefined, consultRefusal: () => undefined, begin: () => {}, record: () => {}, resolve: () => {} },
     trades: {
       ensureWebSession: async () => trader,
       snapshotLive: () => new Set<string>(),
