@@ -24,6 +24,8 @@ const MAX_POINTS_PER_SERIES = 2000;
  * two accounts within seconds should not produce two near-identical points.
  */
 const MIN_INTERVAL_MS = 60_000;
+/** S67: how often to re-check whether a deferred snapshot's price fill has drained. */
+const FILL_WATCH_INTERVAL_MS = 3_000;
 
 /** Series id of the all-environments aggregate. */
 export const GLOBAL_SERIES = 'global';
@@ -58,6 +60,10 @@ export class ValueHistoryService {
   private data: HistoryFile;
   private dirty = false;
   private flushTimer?: NodeJS.Timeout;
+  // S67: a snapshot requested WHILE a price fill is draining is deferred (the item totals would be
+  // undercounted). `pending` remembers the request; `fillWatch` polls until the fill drains, then records it.
+  private pending?: { reason: string; game?: GameId };
+  private fillWatch?: NodeJS.Timeout;
 
   constructor(
     private readonly accounts: AccountManager,
@@ -157,6 +163,24 @@ export class ValueHistoryService {
    * aggregate. Cheap – memory only – so it is safe to call after every refresh.
    */
   snapshotAll(reason: string, game?: GameId): void {
+    // S67: a snapshot taken mid price-fill permanently captures UNDERCOUNTED item totals — enrich() sums the
+    // cache, and most items have no price yet until the throttled background fill drains. DEFER while a fill
+    // is in progress: remember the request and re-snapshot once it drains, so the point reflects the fully-
+    // priced inventory. Coalesced — one pending request + one watcher regardless of how many refreshes fire;
+    // if two different games defer, we snapshot BOTH on drain (game=undefined) so neither is lost.
+    const st = this.pricing.status();
+    if (st.running || st.queued > 0) {
+      this.pending = (this.pending && this.pending.game !== game)
+        ? { reason: 'fill-drain', game: undefined }
+        : { reason, game };
+      this.armFillWatch();
+      logger.debug(`[history] snapshot deferred until the price fill drains (${reason}${game ? `, ${game}` : ''})`);
+      return;
+    }
+    this.doSnapshot(reason, game);
+  }
+
+  private doSnapshot(reason: string, game?: GameId): void {
     const now = Date.now();
     // Snapshot ONLY the game(s) that actually refreshed. Snapshotting BOTH on every call
     // let a TF2 refresh rewrite a recent CS2 point (and vice-versa) via burst-coalescing in
@@ -167,6 +191,21 @@ export class ValueHistoryService {
     if (which.tf2) this.snapshotGame(now, this.tf2Store, 'tf2:'); // TF2 → 'tf2:<id>' / 'tf2:global'
     this.scheduleFlush();
     logger.debug(`[history] snapshot taken (${reason}${game ? `, ${game}` : ''})`);
+  }
+
+  /** S67: while a fill is draining, poll on an interval; take the deferred snapshot once it drains. */
+  private armFillWatch(): void {
+    if (this.fillWatch) return; // one watcher at a time
+    this.fillWatch = setInterval(() => this.checkFillDrained(), FILL_WATCH_INTERVAL_MS);
+    this.fillWatch.unref?.();
+  }
+
+  private checkFillDrained(): void {
+    const st = this.pricing.status();
+    if (st.running || st.queued > 0) return; // still filling → wait
+    if (this.fillWatch) { clearInterval(this.fillWatch); this.fillWatch = undefined; }
+    const pend = this.pending; this.pending = undefined;
+    if (pend) this.doSnapshot(pend.reason, pend.game);
   }
 
   /** Snapshots ONE game's cache into '<prefix><envId>' + '<prefix>global' series. */

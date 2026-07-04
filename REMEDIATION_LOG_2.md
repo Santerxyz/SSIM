@@ -913,3 +913,12 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Why:** a non-EUR/USD-region fleet's wallet total plotted too low but looked exact.
 - **Files:** `src/core/ValueHistoryService.ts`. **Tests:** `test/valueHistoryPartial.test.ts` (non-USD/EUR→
   partial; USD/EUR→exact). +3 tests. **Status:** FIXED (display trend; flag is honest — no fabricated rates).
+
+### S67 — worth-curve points recorded mid price-fill permanently capture undercounted totals — **FIXED**
+- **What:** `snapshotAll` now DEFERS when `pricing.status()` reports a fill running/queued — remembers the
+  request (`pending`) and a `fillWatch` interval re-snapshots once the fill drains (`checkFillDrained`).
+  Coalesced (one pending + one watcher); two differing games defer to a both-games snapshot so neither is lost.
+- **Why:** the snapshot summed cache-only prices before the throttled background fill drained → a too-low
+  item total captured permanently on the curve.
+- **Files:** `src/core/ValueHistoryService.ts`. **Tests:** `test/valueHistoryFillDefer.test.ts` (defer while
+  filling; record on drain; immediate when idle). +3 tests. **Status:** FIXED.
