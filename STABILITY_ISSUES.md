@@ -8,6 +8,19 @@ Scope on the known 0xC0000409 native fast-fail: nothing new was found that could
 
 ---
 
+## FIELD CONFIRMATIONS — v1.3.4 live (2026-07-04)
+
+Four symptoms reported from a running **shipped 1.3.4** build (commit `2fa570d`). Note: the shipped 1.3.4 predates the S1/S20 fix commits (`f5b5359`, `ef4ed78`), so those fixes exist in git but are **not in the running build** — they need a 1.3.5 release to reach the field.
+
+- **"Open in Browser" → red toast "Missing or invalid capability token. Reload SSIM from its own window."** = **S1**, live-confirmed. `POST /api/accounts/<user>/open-browser` (`public/app.js:3947`) is a protected mutating call; in 1.3.4 the per-run token was delivered once and lost on any reload/renderer-recovery (and could miss first paint via the S1b race), so it 401s. **Fixed on branch** (sessionStorage stash + 3× post-navigate re-seed) — ship it. The advice in the toast ("Reload SSIM") is itself wrong — a reload cannot re-mint the token; only a full restart could, pre-fix.
+- **"Live Logs doesn't work anymore"** = **S20**, live-confirmed. The launcher POSTs `/api/app/open-logs` with no token (`public/index.html:1538`); every `/api/` POST was capability-guarded → silent 401 → the shell never gets `SSIM_OPEN_LOGS`. **Fixed on branch** (exempt that read-only endpoint) — ship it.
+- **"Price fetch loads 30 min without finishing"** = throttle-bound, **not a hang** — with residual defects **S2 / S13 / S19** making it worse. The background fill is single-IP, single-threaded at `FETCH_DELAY_MS = 3500` (≈17 names/min, `PricingService.ts:11`); a 500+-account cold cache with thousands of unique `market_hash_name`s legitimately takes **tens of minutes to hours**, and Steam 429s re-queue each name up to 6× at 60–80 s (`PricingService.ts:147-155`), stretching it further. The badge faithfully shows "Fetching prices…" the whole time (`app.js:786-808`) with no ETA, so *slow* reads as *stuck*. **Not yet fixed** (Wave 1/5). Real levers: fix S2 so transient errors don't burn names into 24 h `null`s; surface an ETA/"large inventory — this can take a while"; longer-term, route Steam price fetches through the per-account proxies to lift the single-IP ceiling.
+- **"Things showing behind the live logs"** = **S68 (NEW)**, live-confirmed by the screenshot. The floating "Live Logs" button is `position:fixed; right:18px; bottom:18px; z-index:99999` (`public/index.html:1523-1524`); the toast stack is `fixed bottom-6 right-6 z-[60]` (`:1505`). Both occupy the bottom-right corner, and the button's absurd `z-index:99999` sits **above every toast, modal (z-30), the capability banner (z-50), and the update badge** — so toasts and any bottom-right panel render *under* the always-on-top button (exactly the overlap in the screenshot). **PROVEN, MEDIUM (cosmetic-but-obscures-alerts).** Fix direction: move the button to the bottom-**left**, and/or drop its z-index below the toast/modal layer (~z-40) and offset the toast stack clear of it. **Not yet fixed.**
+
+**Status of the four:** S1 ✅ fixed-on-branch · S20 ✅ fixed-on-branch · pricing ⏳ unfixed (S2/S13/S19 + throughput) · S68 ⏳ new/unfixed. The two ✅ only help once a **1.3.5** is built and released; the running 1.3.4 keeps exhibiting all four until then.
+
+---
+
 ## EXECUTIVE SUMMARY
 
 ### The systemic patterns (each recurs across ≥3 subsystems — fix the pattern, not just the instance)
