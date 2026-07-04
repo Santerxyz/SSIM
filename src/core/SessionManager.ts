@@ -120,6 +120,10 @@ export class SessionManager extends EventEmitter {
   // concurrent callers share ONE login instead of destroying each other's
   // mid-handshake session. Cleared in finally when the login settles.
   private readonly loginsInFlight = new Map<string, Promise<ManagedSession>>();
+  // S48: set by logoutAll() so an in-flight login can't insert a fresh session into a manager that has
+  // already been torn down (a late success would park an unmanaged live CM session + agent). Checked in
+  // loginAccount / performLogin; reset by loginAll() when a deliberate new cycle starts.
+  private shuttingDown = false;
 
   // ── Global login concurrency semaphore (see MAX_CONCURRENT_LOGINS) ──────────
   // `loginSlots` = free slots; when 0, callers park in `loginWaiters` (FIFO) and are
@@ -212,6 +216,13 @@ export class SessionManager extends EventEmitter {
     const key = account.username.toLowerCase();
     const inFlight = this.loginsInFlight.get(key);
     if (inFlight) return inFlight;   // dedup: share the running login, no slot consumed
+    // S48: refuse a NEW login once teardown has begun — never build a session in a manager being discarded.
+    if (this.shuttingDown) {
+      return Promise.reject(Object.assign(
+        new Error(`${account.username}: login refused – session manager is shutting down`),
+        { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true },
+      ));
+    }
     // ── Hard resident-session ceiling ────────────────────────────────────────
     // Refuse a NEW account's login (fast, before consuming a slot) once the live-session
     // population is at the cap, so no caller can ever drive resident sockets past a safe budget.
@@ -432,6 +443,19 @@ export class SessionManager extends EventEmitter {
       );
     }
 
+    // S48: teardown began while this login was handshaking — abort at the insertion point (SYNCHRONOUS with
+    // the set() below, so race-free) rather than parking a fresh session in a manager being discarded. Tear
+    // the freshly-built client down so it doesn't leak a CM/proxy socket.
+    if (this.shuttingDown) {
+      try { client.on('error', () => { /* discarded */ }); client.logOff(); } catch { /* noop */ }
+      neutralizeSteamClient(client);
+      AgentFactory.destroyIfDisposable(httpsAgent);
+      throw Object.assign(
+        new Error(`${account.username}: login aborted at insertion – session manager is shutting down`),
+        { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true },
+      );
+    }
+
     this.sessions.set(key, session);
     this.transition(session, SessionState.DISCONNECTED, SessionState.CONNECTING);
 
@@ -629,6 +653,7 @@ export class SessionManager extends EventEmitter {
     accounts:  AccountConfig[],
     delayMs:   number = INTER_LOGIN_DELAY_MS,
   ): Promise<{ ok: ManagedSession[]; failed: Array<{ username: string; error: string }> }> {
+    this.shuttingDown = false; // S48: a deliberate new login cycle clears any prior teardown latch
     const ok:     ManagedSession[]                              = [];
     const failed: Array<{ username: string; error: string }>   = [];
 
@@ -670,6 +695,13 @@ export class SessionManager extends EventEmitter {
   }
 
   async logoutAll(): Promise<void> {
+    // S48: latch shutdown FIRST so no new login is admitted and any login mid-handshake aborts at its
+    // insertion point, THEN drain the logins already in flight so a late success can't insert a fresh
+    // session AFTER we tear down (which would strand an unmanaged live CM session + agent). Only then
+    // destroy the resident sessions.
+    this.shuttingDown = true;
+    const inFlight = [...this.loginsInFlight.values()];
+    if (inFlight.length) await Promise.allSettled(inFlight);
     for (const key of this.sessions.keys()) {
       await this.destroySession(key);
     }

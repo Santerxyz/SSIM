@@ -779,3 +779,13 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   refusal calls performLogin once (not 5×). +1 test.
 - **Status:** FIXED. Still classified 'connection' so the bulk orchestrators record it and carry on; token
   never deleted.
+
+### S48 — re-license teardown didn't await in-flight logins (late success parks an unmanaged session) — **FIXED**
+- **What:** `logoutAll()` latches a `shuttingDown` flag, drains `loginsInFlight` (Promise.allSettled), then
+  destroys sessions. `loginAccount` refuses new logins while shutting down; `performLogin` aborts at the
+  insertion point (race-free with the `set()`); `loginAll` resets the flag for a deliberate new cycle.
+  (Reuses S49's `ceilingRefusal` → the abort is non-retryable in attemptLogin.)
+- **Why:** an in-flight login could complete AFTER teardown and insert a fresh session into the discarded
+  manager → an unmanaged live CM session + agent.
+- **Files:** `src/core/SessionManager.ts`. **Tests:** `test/sessionShutdownGuard.test.ts` — refuse after
+  teardown; latch reset by loginAll; logoutAll awaits in-flight. +3 tests. **Status:** FIXED.
