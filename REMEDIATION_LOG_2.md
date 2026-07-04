@@ -117,3 +117,21 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   (mock above fetchRaw) unaffected.
 - **Status:** FIXED. build clean · 212 tests (+3). (Build gate caught a `success===true` type error —
   Steam's `success` is numeric — corrected to `===1`.)
+
+### S5 — vault .bak recovery clobbers the good backup with the corrupt main → total credential loss — **FIXED**
+- **What:** `save()` gained an optional `{ backup?: boolean }` (default true, all existing callers
+  unchanged). The B33 recovery branch now calls `this.save({ backup: false })`, so it writes the
+  recovered healthy `vault.enc` atomically WITHOUT first copying the still-corrupt `vault.enc` over the
+  proven-good `vault.enc.bak`.
+- **Why:** the default `backup:true` copies the CURRENT on-disk file (still corrupt during recovery)
+  over `.bak` before the temp→rename; a crash / power-loss / AV-block in that window left BOTH files
+  corrupt → next boot both fail GCM → `WRONG_PASSWORD` → the whole farm's passwords + maFiles + tokens
+  gone (vault has no recovery by design). With `backup:false` the good `.bak` is untouched: a crash
+  mid-recovery leaves `vault.enc` corrupt but `.bak` good → the next boot re-recovers. No window.
+- **Care:** irreversible-loss path — verified the fix by reintroducing the bug (`backup:true`) and
+  confirming the new S5 test FAILS, then restored. All other `save()` calls keep the one-generation
+  backup.
+- **Files:** `src/core/AccountVault.ts`.
+- **Tests:** `test/vaultHardening.test.ts` (S5) — after recovering from `.bak`, the `.bak` still
+  decrypts to the good credentials (reads it as a primary vault); fails against the old `backup:true`.
+- **Status:** FIXED. build clean · 213 tests (+1).

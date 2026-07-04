@@ -121,6 +121,33 @@ test('B33: a corrupt vault.enc with a healthy .bak recovers using the correct pa
   assert.equal(v2.getAccount('bot1')?.password, 'pw123', 'recovered the account from the backup');
 });
 
+// ─── S5: recovery must NOT clobber the good .bak with the corrupt main file ─────────
+test('S5: after recovering from .bak, the .bak still holds the good backup (not clobbered)', () => {
+  const { file, bak } = tmpVault();
+  const v1 = new AccountVaultImpl(file, bak);
+  v1.unlockOrCreate('pw');
+  v1.upsertAccount(ACCT);
+  v1.setToken('bot1', 'tok-1');   // .bak now holds the account
+  v1.flush();
+  assert.ok(fs.existsSync(bak), 'a .bak exists after multiple saves');
+
+  // Corrupt the MAIN file, leave the .bak intact — the S5 window.
+  const main = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const ctBuf = Buffer.from(main.ct, 'base64'); ctBuf[0] ^= 0xff; main.ct = ctBuf.toString('base64');
+  fs.writeFileSync(file, JSON.stringify(main));
+
+  // Recover. The OLD code saved with backup:true → it copied the corrupt main OVER the good .bak
+  // before the atomic write, destroying the only good copy in the crash window.
+  const v2 = new AccountVaultImpl(file, bak);
+  v2.unlockOrCreate('pw');
+  assert.equal(v2.getAccount('bot1')?.password, 'pw123', 'recovered the account');
+
+  // The .bak must STILL be the good backup — read it as a primary vault and confirm it decrypts.
+  const bakCheck = new AccountVaultImpl(bak, bak + '.none');
+  assert.doesNotThrow(() => bakCheck.unlockOrCreate('pw'), '.bak must not have been clobbered by the corrupt main');
+  assert.equal(bakCheck.getAccount('bot1')?.password, 'pw123', '.bak still holds the good credentials');
+});
+
 test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   const { file, bak } = tmpVault();
   const v1 = new AccountVaultImpl(file, bak);

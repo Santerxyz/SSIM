@@ -161,7 +161,12 @@ export class AccountVaultImpl {
         if (!rec) throw err; // both main and .bak fail the same password → wrong password
         logger.error('[vault] vault.enc failed to decrypt but vault.enc.bak did — the main file is CORRUPT (password is correct). Recovering from the backup.');
         this.payload = rec.payload; this.key = rec.key; this.salt = rec.salt;
-        this.save(); // rewrite a healthy vault.enc from the recovered payload
+        // S5: rewrite a healthy vault.enc WITHOUT a backup pass. The default backup:true would first
+        // copy the still-corrupt vault.enc OVER the just-proven-good vault.enc.bak, and a crash/AV-lock
+        // between that copy and the rename would leave BOTH files corrupt → total, unrecoverable farm
+        // credential loss. Writing atomically without touching .bak keeps the good backup intact: a
+        // crash mid-recovery leaves vault.enc corrupt but .bak good, so the next boot re-recovers.
+        this.save({ backup: false });
         logger.info(`[vault] recovered from backup + rewrote vault.enc (${this.accountCount()} account(s))`);
         return { created: false };
       }
@@ -200,8 +205,10 @@ export class AccountVaultImpl {
     } catch { return null; }
   }
 
-  /** Encrypt the in-memory payload and atomically (re)write vault.enc with a fresh IV. */
-  save(): void {
+  /** Encrypt the in-memory payload and atomically (re)write vault.enc with a fresh IV.
+   *  `backup` defaults true (keep a one-generation vault.enc.bak of the prior good state); the
+   *  recovery path passes false so it never copies a corrupt main over a proven-good .bak (S5). */
+  save(opts?: { backup?: boolean }): void {
     if (!this.key || !this.salt || !this.payload) return;
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', this.key, iv);
@@ -212,7 +219,7 @@ export class AccountVaultImpl {
       kdf: { algo: 'scrypt', N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, salt: this.salt.toString('base64') },
       cipher: 'aes-256-gcm', iv: iv.toString('base64'), tag: tag.toString('base64'), ct: ct.toString('base64'),
     };
-    writeJsonAtomic(this.vaultFile, file, { spaces: 0, mode: 0o600, backup: true });
+    writeJsonAtomic(this.vaultFile, file, { spaces: 0, mode: 0o600, backup: opts?.backup ?? true });
   }
 
   /** Debounced save for high-frequency writes (token churn during mass login). */
