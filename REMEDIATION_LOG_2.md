@@ -173,3 +173,21 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/csfloatDelivery.test.ts` (S39) — 3 consecutive failures latch degraded; a mid-streak
   success resets it and persists the buffered ids.
 - **Status:** FIXED. build clean · 222 tests (+2).
+
+### S35 — TokenStore degraded-mode residuals (no .bak recovery / false vault-mode DEGRADED / dev loss) — **FIXED**
+- **What:** (a) `load()` now attempts a read of `refresh_tokens.json.bak` before degrading — if the
+  backup is a valid token file it recovers those tokens AND repairs the corrupt main from it, writing
+  with `backup:false` so the corrupt main is never copied over the good `.bak` (reusing the S5 lesson).
+  Only a missing/invalid `.bak` (or a failed repair write) degrades. (b) `isDegraded()` is masked in
+  vault mode (`&& !AccountVault.isEnabled()`), killing the false DEGRADED warning from a corrupt leftover
+  plaintext file (and silencing BanService's 2nd instance).
+- **Why:** the degraded store never read the `.bak` sitting right next to the corrupt file (manual
+  recovery for something the vault auto-recovers in B33); and it raised a permanent DEGRADED alarm in
+  vault mode where persistence actually works via the vault.
+- **Scoped out (optional):** residual (c) — side-writing new tokens to a recovery file during degraded
+  PLAINTEXT mode so a token-only import isn't lost on restart. The register marks it optional and it is
+  dev/plaintext-only (production is mandatory-vault). Left as a noted, low-value follow-up.
+- **Files:** `src/core/TokenStore.ts`.
+- **Tests:** `test/tokenStoreDegraded.test.ts` (S35a/b) — corrupt main + valid .bak recovers & repairs
+  (bak intact); corrupt main + corrupt .bak degrades; vault mode masks the flag. All B2 tests still pass.
+- **Status:** FIXED. build clean · 225 tests (+3).

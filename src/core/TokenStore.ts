@@ -41,8 +41,10 @@ export class TokenStore {
     this.file = this.load();
   }
 
-  /** True when the file is present-but-unreadable → callers must treat persistence as unavailable. */
-  isDegraded(): boolean { return this.degraded; }
+  /** True when the file is present-but-unreadable AND we are in plaintext mode → persistence is
+   *  unavailable. In VAULT MODE tokens live in the vault, so a corrupt leftover plaintext file is
+   *  irrelevant and must NOT raise a false DEGRADED alarm (S35b, also silences BanService's 2nd instance). */
+  isDegraded(): boolean { return this.degraded && !AccountVault.isEnabled(); }
 
   private load(): TokenFile {
     if (!fsExtra.existsSync(this.filePath)) {
@@ -50,26 +52,55 @@ export class TokenStore {
       return { ...EMPTY }; // fresh install → empty is correct, NOT degraded
     }
     try {
-      const parsed = fsExtra.readJsonSync(this.filePath) as Partial<TokenFile> | null;
-      if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null) {
-        // Present but wrong SHAPE → the whole-file token memory is untrustworthy. DEGRADE (don't silently
-        // reset to empty, which would drop every token) and keep the file untouched for recovery.
-        this.degraded = true;
-        logger.error(`${this.filePath} is present but malformed – refusing to overwrite it. Refresh tokens will NOT persist; restore it from ${path.basename(this.filePath)}.bak (or delete it) and restart.`);
-        return { ...EMPTY };
-      }
-      // #37: keep only string→non-empty-string entries; a per-entry glitch is not whole-file corruption.
-      const tokens: Record<string, string> = {};
-      for (const [k, v] of Object.entries(parsed.tokens)) {
-        if (typeof v === 'string' && v) tokens[k] = v;
-      }
-      return { version: 1, tokens };
+      const tokens = TokenStore.readTokens(fsExtra.readJsonSync(this.filePath) as Partial<TokenFile> | null);
+      if (tokens) return { version: 1, tokens };
+      // Present but wrong SHAPE → try the .bak before degrading (S35a).
+      return this.recoverFromBakOrDegrade('is present but malformed');
     } catch (err) {
-      // Present but unreadable/corrupt → we lost the token memory. DEGRADE, never silently reset.
-      this.degraded = true;
-      logger.error(`${this.filePath} unreadable – refusing to overwrite it (${(err as Error).message}). Refresh tokens will NOT persist; restore it from ${path.basename(this.filePath)}.bak (or delete it) and restart.`);
-      return { ...EMPTY };
+      // Present but unreadable/corrupt → try the .bak before degrading (S35a).
+      return this.recoverFromBakOrDegrade(`unreadable (${(err as Error).message})`);
     }
+  }
+
+  /** Parse the tokens map out of a loaded file object, or null when the shape is untrustworthy.
+   *  #37: keep only string→non-empty-string entries; a per-entry glitch is not whole-file corruption. */
+  private static readTokens(parsed: Partial<TokenFile> | null): Record<string, string> | null {
+    if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null) return null;
+    const tokens: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed.tokens)) if (typeof v === 'string' && v) tokens[k] = v;
+    return tokens;
+  }
+
+  /**
+   * S35a: before declaring the store degraded, try the sibling .bak (the vault does this in B33). If the
+   * backup is a valid token file, recover its tokens AND repair the corrupt main from it — writing with
+   * backup:false so the corrupt main is never copied over the good .bak (the S5 clobber). Only when the
+   * .bak is missing/invalid (or the repair write itself fails) do we degrade.
+   */
+  private recoverFromBakOrDegrade(reason: string): TokenFile {
+    const bakPath = `${this.filePath}.bak`;
+    const base = path.basename(this.filePath);
+    try {
+      if (fsExtra.existsSync(bakPath)) {
+        const tokens = TokenStore.readTokens(fsExtra.readJsonSync(bakPath) as Partial<TokenFile> | null);
+        if (tokens) {
+          const recovered: TokenFile = { version: 1, tokens };
+          try {
+            // backup:false — NEVER copy the corrupt main over the good .bak (the S5 clobber lesson).
+            writeJsonAtomic(this.filePath, recovered, { spaces: 2, mode: 0o600, backup: false });
+            logger.warn(`${this.filePath} ${reason} but ${base}.bak is valid – recovered ${Object.keys(tokens).length} token(s) from the backup and repaired the main file (no fleet re-auth).`);
+            return recovered; // healthy again
+          } catch (writeErr) {
+            this.degraded = true; // couldn't repair main; use recovered tokens in-memory but never clobber
+            logger.error(`${this.filePath} ${reason}; recovered tokens from ${base}.bak in-memory but could NOT repair the main file (${(writeErr as Error).message}). Persistence disabled until you restore ${base} and restart.`);
+            return recovered;
+          }
+        }
+      }
+    } catch { /* .bak also unreadable → degrade below */ }
+    this.degraded = true;
+    logger.error(`${this.filePath} ${reason} and no valid ${base}.bak – refusing to overwrite it. Refresh tokens will NOT persist; restore it from ${base}.bak (or delete it) and restart.`);
+    return { ...EMPTY };
   }
 
   private save(): void {

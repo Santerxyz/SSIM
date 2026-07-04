@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TokenStore } from '../src/core/TokenStore';
+import { AccountVault } from '../src/core/AccountVault';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  B2 — a PRESENT-but-corrupt refresh_tokens.json must mark the store DEGRADED
@@ -62,4 +63,35 @@ test('B2: a healthy store persists a token to disk (baseline — degraded is the
   s.set('dave', 'tok-d');
   const onDisk = JSON.parse(fs.readFileSync(p, 'utf8'));
   assert.equal(onDisk.tokens.dave, 'tok-d', 'a non-degraded store still persists normally');
+});
+
+// ─── S35: three degraded-mode residuals ────────────────────────────────────────
+test('S35a: a corrupt main with a VALID .bak recovers from the backup (no degrade) + repairs main', () => {
+  const p = mk('{ corrupt main');
+  fs.writeFileSync(`${p}.bak`, JSON.stringify({ version: 1, tokens: { alice: 'tok-a', bob: 'tok-b' } }));
+  const s = new TokenStore(p);
+  assert.equal(s.isDegraded(), false, 'a valid .bak means the store is NOT degraded');
+  assert.equal(s.get('alice'), 'tok-a', 'tokens recovered from the backup (no fleet re-auth)');
+  // main was repaired from the .bak, and the .bak was NOT clobbered (backup:false — the S5 lesson).
+  assert.deepEqual(JSON.parse(fs.readFileSync(p, 'utf8')).tokens, { alice: 'tok-a', bob: 'tok-b' }, 'main repaired');
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${p}.bak`, 'utf8')).tokens, { alice: 'tok-a', bob: 'tok-b' }, '.bak intact');
+});
+
+test('S35a: a corrupt main AND a corrupt .bak → DEGRADED (no valid backup to recover)', () => {
+  const p = mk('{ corrupt main');
+  fs.writeFileSync(`${p}.bak`, '{ also corrupt');
+  assert.equal(new TokenStore(p).isDegraded(), true);
+});
+
+test('S35b: in VAULT MODE a corrupt leftover plaintext file does NOT raise a false DEGRADED alarm', () => {
+  const p = mk('{ corrupt and no bak');
+  const s = new TokenStore(p); // degraded internally (no .bak to recover)
+  const orig = AccountVault.isEnabled;
+  try {
+    (AccountVault as unknown as { isEnabled: () => boolean }).isEnabled = () => true; // simulate vault mode
+    assert.equal(s.isDegraded(), false, 'vault mode masks the plaintext-file degraded flag');
+  } finally {
+    (AccountVault as unknown as { isEnabled: () => boolean }).isEnabled = orig;
+  }
+  assert.equal(s.isDegraded(), true, 'and it is reported again once back in plaintext mode');
 });
