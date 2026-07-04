@@ -23,7 +23,9 @@ const POLL_INTERVAL_MS = 45_000;
 
 export class CsFloatAutoAcceptWorker {
   private timer?: NodeJS.Timeout;
+  private bootTimer?: NodeJS.Timeout; // S46: the 5s first-pass tick, tracked so stop() can cancel it
   private running = false;
+  private stopped = false;            // S46: set by stop() → an in-flight pass stops launching deliveries
   /** DURABLE dedup of delivered CSFloat trade ids — survives restarts so a sale is
    *  never delivered twice across a process bounce (C6 / INV-F1). */
   private readonly delivered = new CsFloatDeliveredStore();
@@ -38,17 +40,25 @@ export class CsFloatAutoAcceptWorker {
    *  auto-accept enabled, so a restart transparently resumes the persisted toggles. */
   start(): void {
     if (this.timer) return;
+    this.stopped = false;
     const tick = (): void => { void this.runOnce(); };
     this.timer = setInterval(tick, POLL_INTERVAL_MS);
     this.timer.unref?.();
-    setTimeout(tick, 5_000).unref?.(); // first pass shortly after boot (non-blocking)
+    this.bootTimer = setTimeout(tick, 5_000); // first pass shortly after boot (non-blocking)
+    this.bootTimer.unref?.();
     logger.info('[csfloat-auto-accept] worker started (polls enabled Full accounts every 45s)');
   }
 
-  stop(): void { if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
+  stop(): void {
+    // S46: signal an in-flight pass to stop launching new deliveries, and cancel BOTH timers — the boot
+    // tick used to survive stop() and could fire a pass 5s into teardown (an unwatched send during shutdown).
+    this.stopped = true;
+    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    if (this.bootTimer) { clearTimeout(this.bootTimer); this.bootTimer = undefined; }
+  }
 
   private async runOnce(): Promise<void> {
-    if (this.running) return; // never overlap passes
+    if (this.running || this.stopped) return; // never overlap passes; never start one after stop() (S46)
     // Experimental kill-switch: turning the flag off must STOP auto-delivery, even for
     // accounts whose per-account toggle is still persisted (C15 / INV-F2).
     if (!AppSettings.isCsfloatExperimental()) return;
@@ -62,6 +72,7 @@ export class CsFloatAutoAcceptWorker {
       let i = 0;
       const worker = async (): Promise<void> => {
         while (i < enabled.length) {
+          if (this.stopped) return; // S46: teardown began mid-pass → stop launching new deliveries
           const acc = enabled[i++];
           try { await this.deliverFor(acc.username); }
           catch (err) { logger.error(`[csfloat-auto-accept] ${acc.username}: ${(err as Error).message}`); }

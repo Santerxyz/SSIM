@@ -740,3 +740,21 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Why:** a single provider blip left the fallback/stale rate in place for half a day.
 - **Files:** `src/pricing/ExchangeRateService.ts`. **Tests:** `test/exchangeRateRetry.test.ts` (retry armed;
   garbage-200 retried; success clears+resets; bounded at cap). +4 tests. **Status:** FIXED (display-only).
+
+### S45 — CsFloatClient 429 retries held the per-key single-flight slot — **FIXED**
+- **What:** on a 429 the scheduled task now throws an internal `RateLimitRetry` sentinel (resolving the task
+  → freeing the slot); the backoff `delay()` + re-schedule happen in a `.catch` OUTSIDE the limiter slot.
+- **Why:** the backoff ran inside `limiter.schedule` (maxConcurrent=1), so a background pricing 429 storm
+  held the slot and interactive requests couldn't preempt.
+- **Files:** `src/csfloat/CsFloatClient.ts`. **Tests:** `test/csfloatRateLimitSlot.test.ts` — an interactive
+  request completes DURING a background 429 backoff (teeth-verified: fails with the in-slot hold). +1 test.
+- **Status:** FIXED. Retry count/limit (≤3, 1/2/3s) and error surfacing preserved.
+
+### S46 — CsFloatAutoAcceptWorker.stop() left the boot tick armed + couldn't halt an in-flight pass — **FIXED**
+- **What:** track the 5s boot `setTimeout` in `bootTimer` and clear it in `stop()`; add a `stopped` flag
+  set by `stop()` that `runOnce()` checks up front and the per-account loop checks before each delivery.
+- **Why:** the boot tick could fire a pass 5s into teardown (an unwatched send during shutdown), and a
+  running pass had no stop signal.
+- **Files:** `src/csfloat/CsFloatAutoAcceptWorker.ts`. **Tests:** `test/csfloatAutoAcceptStop.test.ts`
+  (stop cancels both timers; runOnce no-ops when stopped; in-flight pass halts after the first delivery). +3.
+- **Status:** FIXED. Dedup/idempotency unchanged (a send already in flight completes; new ones don't start).
