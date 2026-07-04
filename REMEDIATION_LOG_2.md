@@ -768,3 +768,14 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `src/utils/rollLog.ts` (new), `src/utils/crashlog.ts`, `src/bootflags.ts`.
 - **Tests:** `test/rollLog.test.ts` — roll/no-roll/absent + writeCrash rolls at the cap. +4 tests.
 - **Status:** FIXED. One generation of history (`.1`) — enough for a diagnostic, still bounded.
+
+### S49 — B46 insertion-ceiling refusal retried 5× inside attemptLogin (starvation amplifier) — **FIXED**
+- **What:** ceiling-refusal errors now carry `ceilingRefusal: true`; `attemptLogin` bubbles them up on the
+  FIRST attempt instead of retrying MAX_CONNECTION_ATTEMPTS times (~60s of backoff, rebuilding/tearing a
+  client each time, holding a login slot).
+- **Why:** the refusal was classified 'connection' (retryable), so it amplified starvation exactly when the
+  resident-session ceiling was saturated (compounds S11).
+- **Files:** `src/core/SessionManager.ts`. **Tests:** `test/sessionCeilingNoRetry.test.ts` — a ceiling
+  refusal calls performLogin once (not 5×). +1 test.
+- **Status:** FIXED. Still classified 'connection' so the bulk orchestrators record it and carry on; token
+  never deleted.

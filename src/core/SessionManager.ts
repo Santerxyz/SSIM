@@ -99,7 +99,7 @@ const BACKOFF_MAX_MS          = 45_000;
 const AUTH_FAILURE_ERESULTS = new Set<number>([5, 15, 18, 65]);
 
 type LoginErrorKind = 'auth' | 'connection';
-type LoginError = Error & { eresult?: number; authFailure?: boolean; loginErrorKind?: LoginErrorKind };
+type LoginError = Error & { eresult?: number; authFailure?: boolean; loginErrorKind?: LoginErrorKind; ceilingRefusal?: boolean };
 
 /**
  * Classifies a login failure. 'auth' → credentials/token are bad (abort, and for
@@ -221,7 +221,7 @@ export class SessionManager extends EventEmitter {
     if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.sessions.size >= MAX_LIVE_SESSIONS) {
       return Promise.reject(Object.assign(
         new Error(`live-session ceiling ${MAX_LIVE_SESSIONS} reached – ${account.username} skipped (a bulk op may not be releasing sessions); retry shortly`),
-        { loginErrorKind: 'connection' as LoginErrorKind },
+        { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true },
       ));
     }
     // Wrap the real login in the global concurrency slot. A queued caller holds NO
@@ -330,6 +330,16 @@ export class SessionManager extends EventEmitter {
         const kind = classifyLoginError(lastErr);
         lastErr.loginErrorKind = kind;
 
+        // S49: a resident-ceiling insertion refusal (B46) — and an S48 shutdown abort — must NOT be retried
+        // in-slot. Retrying holds a login slot through ~60s of backoff and rebuilds/tears down a client each
+        // time: a starvation amplifier exactly when the ceiling is saturated. The client was already torn
+        // down in performLogin; bubble straight up so the caller retries the whole account later (a slot may
+        // have freed by then). classified 'connection' → the bulk orchestrators record it and carry on.
+        if (lastErr.ceilingRefusal) {
+          logger.warn(`[${account.username}] ${pathLabel} login: ${lastErr.message} – not retrying in-slot`);
+          throw lastErr;
+        }
+
         // Auth failure → no point retrying; bubble up so loginAccount can react.
         if (kind === 'auth') {
           logger.warn(`[${account.username}] ${pathLabel} login: authentication failed (EResult=${lastErr.eresult ?? 'n/a'}) – not retrying`);
@@ -418,7 +428,7 @@ export class SessionManager extends EventEmitter {
       AgentFactory.destroyIfDisposable(httpsAgent);
       throw Object.assign(
         new Error(`live-session ceiling ${MAX_LIVE_SESSIONS} reached at insertion – ${account.username} skipped; retry shortly`),
-        { loginErrorKind: 'connection' as LoginErrorKind },
+        { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true }, // S49: non-retryable in-slot
       );
     }
 
