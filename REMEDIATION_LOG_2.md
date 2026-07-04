@@ -934,3 +934,11 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   lived; these caps bound the residual local-trust exposure.
 - **Files:** `src/trading/cleanBrowser.ts`. **Tests:** `test/proxyRelayGuard.test.ts` (idle-drop, conn cap,
   loopback bind). +3 tests. **Status:** FIXED (bounded); a native peer-cred pin is the only hard close, parked.
+
+### S68 — floating Live Logs button z-index:99999 obscures toasts/modals/banners — **FIXED**
+- **What:** dropped the launcher's `z-index:99999` → `z-index:30` (above normal content, BELOW modals z-40,
+  banners/menus z-50, toasts z-60, splash z-70).
+- **Why:** the button rendered above every overlay, hiding alerts/modals/toasts/the capability banner.
+- **Files:** `public/index.html`. **Tests:** `test/liveLogsZindex.test.ts` — source guard: the launcher
+  z-index is < 40. +1 test. **Status:** FIXED (cosmetic; kept bottom-right to avoid colliding with the
+  bottom-left update indicator).
