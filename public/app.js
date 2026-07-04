@@ -912,6 +912,21 @@ async function triggerUpdate(install) {
   } catch (e) { toast(`Update check failed: ${e.message}`, 'error'); }
 }
 
+/** S61: the update badge used to install-and-restart on a SINGLE unconfirmed click. Every other
+ *  install/spend/danger action goes through ssimConfirm first; this now does too, so a stray click can't
+ *  silently download + restart the app mid-session. Extracted (not inline) so it's unit-testable. */
+async function confirmAndInstallUpdate() {
+  if (updateInstalling) return;
+  if (!(await ssimConfirm({
+    title: 'Install update',
+    body: 'SSIM will download, verify, and <b>restart</b> to apply the update. It won’t interrupt a trade, buy, or refresh in progress.',
+    tone: 'brand',
+    confirmLabel: 'Install & restart',
+    confirmIcon: 'fa-circle-arrow-up',
+  }))) return;
+  void triggerUpdate(true);
+}
+
 function renderUpdateIndicator(update) {
   let node = document.getElementById('update-indicator');
   const show = !!(update && update.available) && !updateInstalling;
@@ -921,7 +936,7 @@ function renderUpdateIndicator(update) {
     node.id = 'update-indicator';
     node.className = 'fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2 rounded-full '
       + 'bg-slate-900/95 border border-slate-700 shadow-lg text-xs text-slate-200 backdrop-blur-sm cursor-pointer';
-    node.addEventListener('click', () => { if (!updateInstalling) void triggerUpdate(true); });
+    node.addEventListener('click', () => { void confirmAndInstallUpdate(); }); // S61: confirm before install+restart
     document.body.appendChild(node);
   }
   node.classList.remove('hidden');
