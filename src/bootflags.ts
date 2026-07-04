@@ -10,6 +10,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 import fs from 'fs';
 import { logsDir } from './utils/paths';
+import { SINK_MAX_BYTES } from './utils/rollLog';
 
 process.noDeprecation = true;
 
@@ -68,6 +69,11 @@ try {
   const orig = process.stderr.write.bind(process.stderr) as (...a: unknown[]) => boolean;
   const mask = (s: string): string =>
     s.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@'); // scrub proxy creds
+  // S47: cap this append-only sink. It's written on EVERY stderr write (a spewing vendor library could
+  // flood it), so track bytes IN-PROCESS — no statSync per write — and roll to .1 once past the cap. The
+  // counter is seeded from the current on-disk size so a pre-existing large file still rolls.
+  let written = 0;
+  try { written = fs.statSync(stderrTrace).size; } catch { /* no file yet */ }
   (process.stderr as unknown as { write: (...a: unknown[]) => boolean }).write = (
     chunk: unknown,
     ...rest: unknown[]
@@ -76,7 +82,13 @@ try {
       const s = typeof chunk === 'string'
         ? chunk
         : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-      fs.appendFileSync(stderrTrace, mask(s));
+      const out = mask(s);
+      if (written > SINK_MAX_BYTES) {
+        try { fs.renameSync(stderrTrace, stderrTrace + '.1'); } catch { /* rename raced — ignore */ }
+        written = 0;
+      }
+      fs.appendFileSync(stderrTrace, out);
+      written += Buffer.byteLength(out);
     } catch { /* never break stderr */ }
     return orig(chunk, ...rest);
   };

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { logsDir, baseDir } from './paths';
 import { redactSecrets } from './logger';
+import { rollIfLarge, SINK_MAX_BYTES } from './rollLog';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  crashlog.ts – SYNCHRONOUS last-words crash sink.
@@ -47,6 +48,7 @@ export function writeCrash(label: string, detail: unknown): void {
       ? (detail.stack ?? `${detail.name}: ${detail.message}`)
       : String(detail);
     const record = `\n[${new Date().toISOString()}] ${label} (pid ${process.pid})${memTag()}\n${redactSecrets(body)}\n`;
+    rollIfLarge(CRASH_FILE, SINK_MAX_BYTES); // S47: cap the append-only crash sink
     fs.appendFileSync(CRASH_FILE, record);
   } catch { /* a crash sink must never throw */ }
 }
@@ -72,6 +74,7 @@ export const EXIT_FILE: string = (() => {
 export function writeExit(code: number | string): void {
   try {
     const rec = `[${new Date().toISOString()}] EXIT code=${code} pid=${process.pid} up=${Math.round(process.uptime())}s${memTag()}\n`;
+    rollIfLarge(EXIT_FILE, SINK_MAX_BYTES); // S47: cap the append-only exit-trace sink
     fs.appendFileSync(EXIT_FILE, rec);
   } catch { /* a crash sink must never throw */ }
 }

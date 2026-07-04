@@ -758,3 +758,13 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `src/csfloat/CsFloatAutoAcceptWorker.ts`. **Tests:** `test/csfloatAutoAcceptStop.test.ts`
   (stop cancels both timers; runOnce no-ops when stopped; in-flight pass halts after the first delivery). +3.
 - **Status:** FIXED. Dedup/idempotency unchanged (a send already in flight completes; new ones don't start).
+
+### S47 — unbounded diagnostic log sinks — **FIXED**
+- **What:** new `src/utils/rollLog.ts` (`rollIfLarge` + `SINK_MAX_BYTES=5MB`, roll-to-`.1`); wired into the
+  two rare sinks (`crash-log.txt`, `exit-trace.log`) and the hot `stderr-trace.log` tee (in-process byte
+  counter seeded from on-disk size → no statSync per write).
+- **Why:** the three raw `fs.appendFileSync` sinks were append-only with no cap (winston's own files ARE
+  capped); a spewing vendor library or a long-lived install could grow them without bound.
+- **Files:** `src/utils/rollLog.ts` (new), `src/utils/crashlog.ts`, `src/bootflags.ts`.
+- **Tests:** `test/rollLog.test.ts` — roll/no-roll/absent + writeCrash rolls at the cap. +4 tests.
+- **Status:** FIXED. One generation of history (`.1`) — enough for a diagnostic, still bounded.
