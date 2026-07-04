@@ -3,7 +3,7 @@ import fs from 'fs';
 import http, { type Server } from 'http';
 import { createApp, createDeps } from './api/server';
 import { acquireInstanceLock, releaseInstanceLock } from './core/singleInstance';
-import { listenAndAnnounce, clearStalePortFile } from './utils/serverPort';
+import { listenAndAnnounce, clearStalePortFile, clearOwnPortFile } from './utils/serverPort';
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
@@ -333,7 +333,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   logger.info(`${signal} received – shutting down…`);
   releaseInstanceLock();
-  clearStalePortFile(); // don't leave data/ssim.port pointing at a now-dead port (BUG 2)
+  clearOwnPortFile(); // S52: only remove OUR announced port file (never a refused-instance false-delete)
   LicenseClient.stopHeartbeat();
   stopUpdateScheduler();
   stopMemHeartbeat();
@@ -378,7 +378,9 @@ process.on('exit', (code) => {
   // investigation has been missing — synchronous, so it survives an immediate exit.
   try { writeExit(code); } catch { /* best-effort */ }
   try { releaseInstanceLock(); } catch { /* best-effort */ }
-  try { clearStalePortFile(); } catch { /* best-effort */ } // never leave a stale ssim.port (BUG 2)
+  // S52: clear ONLY our own announced port file — a refused second instance (which never announced) must
+  // not delete the LIVE instance's data/ssim.port on its way out.
+  try { clearOwnPortFile(); } catch { /* best-effort */ }
 });
 
 // ── Build-time packaged-VFS self-test ─────────────────────────────────────────

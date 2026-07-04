@@ -30,10 +30,23 @@ let capEmitted = false;
 /** The UI port THIS process has actually bound + announced (undefined before any bind). */
 export function boundUiPort(): number | undefined { return announcedPort; }
 
-/** Remove a stale data/ssim.port so it can never point the shell at a foreign port
- *  (call on start AND on exit). */
+/** Remove a stale data/ssim.port so it can never point the shell at a foreign port. Call ONLY at BOOT
+ *  (before we bind), and only as the sole instance — the single-instance lock guarantees any file present
+ *  is a prior run's. Do NOT call this on exit: a refused second instance would delete the LIVE instance's
+ *  file (S52) — use clearOwnPortFile() there instead. */
 export function clearStalePortFile(): void {
   try { fs.rmSync(PORT_FILE, { force: true }); } catch { /* best-effort */ }
+}
+
+/** S52: remove data/ssim.port ONLY if it still names the port THIS process announced. On exit that means a
+ *  refused second instance (which never announced) leaves the live instance's file untouched, and even the
+ *  real instance never deletes a file that has since been rewritten to another live port. */
+export function clearOwnPortFile(): void {
+  if (announcedPort === undefined) return; // we never announced → not ours to clear
+  try {
+    const cur = fs.readFileSync(PORT_FILE, 'utf8').trim();
+    if (cur === String(announcedPort)) fs.rmSync(PORT_FILE, { force: true });
+  } catch { /* no file / unreadable → nothing to clear */ }
 }
 
 /**

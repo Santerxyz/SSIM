@@ -789,3 +789,19 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   manager → an unmanaged live CM session + agent.
 - **Files:** `src/core/SessionManager.ts`. **Tests:** `test/sessionShutdownGuard.test.ts` — refuse after
   teardown; latch reset by loginAll; logoutAll awaits in-flight. +3 tests. **Status:** FIXED.
+
+### S51 — shell death orphans the backend — **FIXED** (already committed d66b760)
+- **What:** `process.stdin.on('end')` (EOF when the shell dies) triggers the graceful `shutdown()` — clean
+  Steam logout, port + single-instance lock released. NOT a respawn (owner directive honored).
+- **Files:** `src/index.ts` (listenForShellQuit). **Status:** FIXED in a prior session (commit d66b760);
+  verified present at HEAD. No re-work.
+
+### S52 — a refused second instance deleted the LIVE instance's data/ssim.port — **FIXED**
+- **What:** new `clearOwnPortFile()` removes `ssim.port` only when it names the port THIS process announced;
+  `shutdown()` and the `process.on('exit')` handler now call it instead of `clearStalePortFile()`. The
+  boot-time stale-clear (sole instance, before bind) still uses `clearStalePortFile()`.
+- **Why:** every exit ran `clearStalePortFile()`, so a second instance rejected by the single-instance lock
+  deleted the running instance's port file on its way out (the shell then couldn't find the live app).
+- **Files:** `src/utils/serverPort.ts`, `src/index.ts`.
+- **Tests:** `test/serverPortOwnClear.test.ts` — no-op when unannounced; clears own; leaves a different
+  live port. +3 tests. **Status:** FIXED.
