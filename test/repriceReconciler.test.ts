@@ -42,3 +42,21 @@ test('no-progress safety stop fires when the backend is wedged (busy but never a
   assert.equal(after.stop, true, 'wedged backend → stop after the no-progress timeout');
   assert.equal(after.repull, false, 'no phantom re-pull on the safety stop');
 });
+
+test('S19: a 429/error storm advances `processed` (not `fetched`) → progress, no false wedge-stop', () => {
+  // fetched stuck at 100 (no successes), but processed climbs as names resolve via the error path.
+  const state: RepriceState = { lastPulled: 100, lastProgressAt: 0, lastProcessed: 50 };
+  const d1 = repriceDecision(state, { fetched: 100, processed: 60, running: true, queued: 5 }, NO_PROGRESS_TIMEOUT_MS - 1);
+  assert.equal(d1.stop, false, 'processed advanced → still alive');
+  assert.equal(d1.repull, false, 'no NEW prices (fetched flat) → no needless re-pull');
+  assert.equal(d1.state.lastProgressAt, NO_PROGRESS_TIMEOUT_MS - 1, 'the liveness clock advanced on processed');
+  // Even long past the old budget, continued processed-progress keeps the watch alive.
+  const d2 = repriceDecision(d1.state, { fetched: 100, processed: 70, running: true, queued: 5 }, 30 * 60_000);
+  assert.equal(d2.stop, false, 'still alive minutes later while processing continues');
+});
+
+test('S19: a TRUE wedge (neither fetched NOR processed advances) still stops after the timeout', () => {
+  const stuck: RepriceState = { lastPulled: 100, lastProgressAt: 0, lastProcessed: 50 };
+  const d = repriceDecision(stuck, { fetched: 100, processed: 50, running: true, queued: 5 }, NO_PROGRESS_TIMEOUT_MS + 1);
+  assert.equal(d.stop, true, 'no progress on EITHER signal → the safety stop still protects against a real wedge');
+});

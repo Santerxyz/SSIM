@@ -19,7 +19,8 @@ const APPID_TF2            = 440;
 export interface PricingStatus {
   running:   boolean;
   queued:    number;
-  fetched:   number; // names fetched in the current/last run
+  fetched:   number; // names SUCCESSFULLY priced in the current/last run
+  processed: number; // names RESOLVED (success OR error/429-exhaustion) — the true liveness signal (S19)
   cacheSize: number;
   source:    PriceSourceId; // the EFFECTIVE active source (Feature 3)
 }
@@ -43,6 +44,7 @@ export class PricingService {
   private running = false;
   private stopped = false;            // set on app teardown/SIGINT → the loop exits promptly
   private fetchedThisRun = 0;
+  private processedThisRun = 0;       // S19: every name that reaches a terminal outcome (success OR error)
 
   private readonly steamSource = new SteamPriceSource();
   private readonly csfloatSource?: CsFloatPriceSource;
@@ -129,7 +131,7 @@ export class PricingService {
   }
 
   status(): PricingStatus {
-    return { running: this.running, queued: this.queue.length, fetched: this.fetchedThisRun, cacheSize: this.cache.size(), source: this.getSource() };
+    return { running: this.running, queued: this.queue.length, fetched: this.fetchedThisRun, processed: this.processedThisRun, cacheSize: this.cache.size(), source: this.getSource() };
   }
 
   flush(): void { this.cache.flush(); }
@@ -140,6 +142,7 @@ export class PricingService {
   private async run(): Promise<void> {
     this.running = true;
     this.fetchedThisRun = 0;
+    this.processedThisRun = 0;
     logger.info(`[pricing] background fill started (${this.queue.length} names queued, source=${this.getSource()})`);
     try {
       while (this.queue.length && !this.stopped) {
@@ -173,7 +176,10 @@ export class PricingService {
             this.cache.set(key, null, { soft: true });
           }
         } finally {
-          if (!requeued) { this.queued.delete(key); this.rlAttempts.delete(key); }
+          // S19: a name that reached a TERMINAL outcome (success OR error/429-exhaustion) is "processed"
+          // even though only a success bumps `fetched`. The watch's no-progress timeout keys off this, so
+          // a 429/error storm (advancing the queue but not `fetched`) is NOT mistaken for a dead fill.
+          if (!requeued) { this.queued.delete(key); this.rlAttempts.delete(key); this.processedThisRun++; }
         }
         if (requeued) continue; // already paused; skip the inter-fetch delay
         await sleep(FETCH_DELAY_MS);

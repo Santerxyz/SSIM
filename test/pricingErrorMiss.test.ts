@@ -75,6 +75,20 @@ test('S2: a soft error-miss expires in minutes; an authoritative no-price lasts 
   } finally { svc.shutdown(); }
 });
 
+test('S19: PricingService.processed counts an ERROR-resolved name (not just successes)', async () => {
+  const svc = new PricingService();
+  // Inject a source that always throws → the name resolves via the error path (advances `processed`,
+  // NOT `fetched`). We check right after it resolves, before the ~3.5s inter-fetch sleep.
+  (svc as any).steamSource = { id: 'steam', fetchPriceCents: async () => { throw new Error('FETCH_FAILED_500'); } };
+  try {
+    svc.ensureFilled([{ name: 'ErrItem', appid: 730 }]);
+    await new Promise((r) => setTimeout(r, 250));
+    const st = svc.status();
+    assert.equal(st.processed, 1, 'an error-resolved name counts as processed (liveness signal for S19)');
+    assert.equal(st.fetched, 0, 'but it is NOT a successful fetch');
+  } finally { svc.shutdown(); }
+});
+
 test('S2: the PriceCache soft flag only attaches to a null miss (a real price is authoritative)', () => {
   const svc = new PricingService();
   try {

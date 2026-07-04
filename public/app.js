@@ -826,6 +826,7 @@ async function watchPriceFill(repull) {
   catch { /* status unavailable → nothing to watch */ return; }
   renderPriceFillIndicator(s0); // reflect the current fill state immediately
   let lastPulled = baseline;
+  let lastProcessed = 0; // S19: liveness by ANY terminal resolution, not just a successful fetch
   let lastProgressAt = Date.now();
   let lastRepullAt = 0; // S10: bound the whole-fleet re-pull cadence
   while (true) {
@@ -835,12 +836,18 @@ async function watchPriceFill(repull) {
     if (state.repriceToken !== token) return;
     renderPriceFillIndicator(st);                                // live "N left / X done"; auto-hides when drained
     const fetched = st ? (st.fetched || 0) : 0;
+    const processed = st ? (st.processed || 0) : 0;
     const busy = !!(st && (st.running || (st.queued || 0) > 0));
-    // The backend resets `fetched` to 0 at the start of each fill generation → a DROP means a new
-    // generation; re-baseline so its prices are re-pulled, not ignored until they pass the old high.
+    // The backend resets `fetched`/`processed` to 0 at the start of each fill generation → a DROP means a
+    // new generation; re-baseline so its prices are re-pulled (and liveness re-anchored), not ignored.
     if (fetched < lastPulled) lastPulled = 0;
-    const progressed = fetched > lastPulled;
-    if (progressed) { lastPulled = fetched; lastProgressAt = Date.now(); }
+    if (processed < lastProcessed) lastProcessed = 0;
+    const progressed = fetched > lastPulled;                     // NEW PRICES available → drives the re-pull (S10)
+    if (progressed) lastPulled = fetched;
+    // S19: advance the no-progress clock on ANY terminal resolution (success OR error/429-exhaustion), so a
+    // sustained 429/error storm — which advances `processed` but not `fetched` — is NOT mistaken for a dead
+    // fill (which would terminally stop the watch AND hide the "Fetching prices…" badge while it runs on).
+    if (processed > lastProcessed) { lastProcessed = processed; lastProgressAt = Date.now(); }
     const noProgress = busy && (Date.now() - lastProgressAt > REPRICE_NO_PROGRESS_MS);
     if (noProgress) console.warn('[reprice] no pricing progress for 15 min – stopping the watch');
     // S10: coalesce re-pulls to at most one per REPRICE_MIN_REPULL_MS while the fill runs (the drain

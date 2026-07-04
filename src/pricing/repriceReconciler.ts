@@ -16,10 +16,13 @@ export interface RepriceState {
   lastPulled: number;
   /** Timestamp (ms) of the last observed progress — drives the no-progress stop. */
   lastProgressAt: number;
+  /** Highest `processed` count seen — liveness by ANY terminal resolution, not just a fetch (S19). */
+  lastProcessed?: number;
 }
 
 export interface PricingStatus {
   fetched?: number;
+  processed?: number; // names RESOLVED (success OR error/429-exhaustion) — the true liveness signal (S19)
   running?: boolean;
   queued?: number;
 }
@@ -68,17 +71,25 @@ export function priceFillIndicator(status: PricingStatus | null | undefined): Pr
 
 export function repriceDecision(state: RepriceState, status: PricingStatus | null | undefined, now: number): RepriceDecision {
   const fetched = Number(status?.fetched) || 0;
+  const processed = Number(status?.processed) || 0;
   const busy = !!(status && (status.running || (Number(status.queued) || 0) > 0));
   let { lastPulled, lastProgressAt } = state;
+  let lastProcessed = state.lastProcessed ?? 0;
   let repull = false;
-  // PricingService.status().fetched RESETS to 0 at the start of each run(), so a new fill
-  // generation makes `fetched` DROP below what we already pulled. Detect that (fetched <
-  // lastPulled) as a fresh generation and re-baseline, so the new generation's prices are
-  // re-pulled instead of being ignored until they exceed the previous run's high-water mark.
+  // PricingService.status().fetched/processed RESET to 0 at the start of each run(), so a new fill
+  // generation makes them DROP below what we already saw. Detect that as a fresh generation and
+  // re-baseline, so the new generation's prices are re-pulled + its liveness re-anchored.
   if (fetched < lastPulled) { lastPulled = 0; }
-  if (fetched > lastPulled) { lastPulled = fetched; lastProgressAt = now; repull = true; }
+  if (processed < lastProcessed) { lastProcessed = 0; }
+  let progressed = false;
+  if (fetched > lastPulled) { lastPulled = fetched; repull = true; progressed = true; } // NEW PRICES → re-pull
+  // S19: a name resolved via the error/429-exhaustion path advances `processed` but NOT `fetched`, so in a
+  // 429/error storm `fetched` stalls while the fill IS alive. Count `processed` as progress too, or the
+  // no-progress safety would terminally stop the watch (and hide the badge) mid-fill.
+  if (processed > lastProcessed) { lastProcessed = processed; progressed = true; }
+  if (progressed) lastProgressAt = now;
   let stop = false;
   if (!busy) { repull = true; stop = true; }                                   // drained → final pull, then stop
   else if (now - lastProgressAt > NO_PROGRESS_TIMEOUT_MS) { stop = true; }       // wedged → safety stop (no extra pull)
-  return { repull, stop, state: { lastPulled, lastProgressAt } };
+  return { repull, stop, state: { lastPulled, lastProgressAt, lastProcessed } };
 }

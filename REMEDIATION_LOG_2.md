@@ -380,3 +380,18 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   fails against the old catch).
 - **Status:** FIXED. build clean · 255 tests (+2).
 
+### S19 — reprice watch's no-progress stop is terminal + hides the indicator mid-fill — **FIXED**
+- **What:** Added a `processedThisRun` counter to `PricingService` (bumped in the run() finally on EVERY
+  terminal resolution — success OR error/429-exhaustion) and exposed it as `status().processed`. The
+  no-progress clock (frontend `watchPriceFill` + the pure `repriceDecision`) now advances on `processed`
+  progress, not just `fetched`; `fetched` still drives the re-pull (only new prices need a re-pull).
+- **Why:** progress was measured solely by `fetched`, which increments only on a SUCCESSFUL fetch. In a
+  429/error storm names resolve via the error path (advancing the queue, not `fetched`), so `fetched`
+  stalls while the fill is alive → after 15 min the watch terminally stopped AND hid the "Fetching
+  prices…" badge though the backend was still filling. A TRUE wedge (neither signal advances) still stops.
+- **Files:** `src/pricing/PricingService.ts`, `src/pricing/repriceReconciler.ts`, `public/app.js`.
+- **Tests:** `test/repriceReconciler.test.ts` (S19: processed-only progress → no false stop; true wedge →
+  still stops); `test/pricingErrorMiss.test.ts` (S19: an error-resolved name bumps `processed`, not
+  `fetched`). Existing reprice/priceFillIndicator/auditFollowups tests still green.
+- **Status:** FIXED. build clean · 258 tests (+3).
+
