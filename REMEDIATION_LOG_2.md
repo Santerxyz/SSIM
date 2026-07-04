@@ -683,3 +683,13 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `src/licensing/LicenseClient.ts`.
 - **Tests:** `test/tokenAtomicWrite.test.ts` — round-trips main+sidecar; recovers from a torn main via the sidecar.
 - **Status:** FIXED. build clean · 299 tests (+2).
+
+### S40 — server version.json published non-atomically (torn manifest strands the fleet) — **FIXED** (server repo)
+- **What:** added `writeVersionFile()` (temp→rename, like `store.js`/`writeHistory`) and routed all THREE
+  publish paths + the S2 rollback through it, replacing `fs.writeFileSync(VERSION_FILE, …)`.
+- **Why:** a crash mid-publish left a torn `version.json` → `GET /version` 500s → the whole fleet silently
+  stops updating (no client can see a new release).
+- **Files:** `ssim-license-server/src/admin.js` (server branch `fix/reliability-remediation`, commit 0d3e62f).
+- **Tests:** `ssim-license-server/test/reliability.test.js` — publish leaves no `version.json.*.tmp`
+  fragment and the manifest parses. 50/50 server tests.
+- **Status:** FIXED.
