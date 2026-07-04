@@ -69,3 +69,27 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Status:** FIXED. build clean · 205 tests (+3).
 
 **Wave 0 boundary re-check:** build clean · 205 tests · cargo clean (S1). ✔
+
+---
+
+## Wave 1 — Data integrity (never commit partial-as-truth / never clobber last-good)
+
+### S2 — transient fetch errors cached as authoritative 24h "no price" that survives restart — **FIXED**
+- **What:** Distinguished miss kinds. `SteamPriceSource` now THROWS `FETCH_FAILED_<status>` on a
+  non-200 / missing-body / `success!==true` response (it previously returned null, conflating a
+  fetch failure with an authoritative "no price"); it returns null ONLY for a genuine 200+success
+  no-price. `PricingService` caches error-misses (429-exhaustion + any thrown fetch failure) with a
+  `soft:true` flag and a short 10-min TTL (`ERROR_MISS_TTL_MS`), via a centralized `isFresh()` used
+  by both `priceCents` and `enrich`; authoritative no-prices keep the 24h TTL. `PriceEntry.soft`
+  round-trips through `prices.json`, so an old soft miss loaded after restart reads as stale → re-fetch.
+- **Why:** any proxy RST / DNS-down / Steam 5xx wrote `{cents:null}` at the 24h TTL, persisted, so the
+  item stayed unpriced and missing from totals for 24h AND across restart — the residual "v1.3.4
+  staleness fix didn't work" path. CSFloat's source already threw on transport errors, so it's fixed
+  for free by the caller change.
+- **Files:** `src/pricing/sources/SteamPriceSource.ts`, `src/pricing/sources/PriceSource.ts` (doc),
+  `src/pricing/PriceCache.ts` (`soft` field + `set` opts), `src/pricing/PricingService.ts`
+  (`ERROR_MISS_TTL_MS`, `isFresh`, soft error-misses).
+- **Tests:** `test/pricingErrorMiss.test.ts` — source throws on 5xx/success:false (was null), null only
+  for authoritative no-price, soft miss expires in minutes while an authoritative null holds 24h, soft
+  flag attaches only to a null miss. Existing pricing tests unchanged (2-arg `set` still valid).
+- **Status:** FIXED. build clean · 209 tests (+4). Display-integrity only (mass-buy uses the wallet).

@@ -19,7 +19,13 @@ export class SteamPriceSource implements PriceSource {
       validateStatus: () => true,
     });
     if (resp.status === 429) throw new Error('RATE_LIMIT');
-    if (resp.status !== 200 || !resp.data || resp.data.success !== true) return null;
+    // A non-200 (5xx/403/…) or Steam-level failure (missing body / success !== true) is NOT an
+    // authoritative "no price" — it's a transient fetch failure. THROW so PricingService caches only
+    // a short-lived miss, instead of a 24h "no price" that survives restart. Authoritative "no price"
+    // is a 200 + success:true with no lowest/median → the null returned below. (S2)
+    if (resp.status !== 200 || !resp.data || resp.data.success !== true) {
+      throw new Error(`FETCH_FAILED_${resp.status}`);
+    }
     // Take the LOWER of lowest-listing vs median-sale when both exist — a thin market's
     // lowest_price is volatile (one overpriced listing briefly inflates it); the median is
     // stable, so the min resists spikes without under-valuing liquid items.

@@ -1,4 +1,4 @@
-import { PriceCache } from './PriceCache';
+import { PriceCache, type PriceEntry } from './PriceCache';
 import type { AccountInventory } from '../types/inventory';
 import { logger } from '../utils/logger';
 import { AppSettings } from '../core/AppSettings';
@@ -8,6 +8,7 @@ import { CsFloatPriceSource } from './sources/CsFloatPriceSource';
 import type { CsFloatService } from '../csfloat/CsFloatService';
 
 const PRICE_TTL_MS         = 24 * 60 * 60 * 1000; // re-price a name at most once / 24h
+const ERROR_MISS_TTL_MS    = 10 * 60 * 1000;      // a transient error-miss expires in minutes, not 24h (S2)
 const FETCH_DELAY_MS       = 3_500;               // ~17 req/min – under Steam's per-IP limit
 const RATE_LIMIT_PAUSE_MS  = 60_000;              // back off on a 429
 const RATE_LIMIT_JITTER_MS = 20_000;              // +0..20s jitter so the fleet doesn't retry in lockstep
@@ -80,12 +81,19 @@ export class PricingService {
     return source === 'csfloat' ? `csfloat:${base}` : base;
   }
 
+  /** An entry is fresh for 24h normally, but only ERROR_MISS_TTL_MS if it is a transient error-miss
+   *  (soft) — so a network blip is retried in minutes, never served as a 24h "no price" (S2). */
+  private isFresh(e: PriceEntry): boolean {
+    const m = new Date(e.fetchedAt).getTime();
+    if (!Number.isFinite(m)) return false;
+    const ttl = e.soft ? ERROR_MISS_TTL_MS : PRICE_TTL_MS;
+    return Date.now() - m <= ttl;
+  }
+
   /** Fresh cached price (USD cents | null) or undefined when missing/stale — for the ACTIVE source. */
   priceCents(name: string, appid: number = APPID_CS2): number | null | undefined {
     const e = this.cache.get(this.cacheKey(name, appid, this.activeSource().id));
-    if (!e) return undefined;
-    const fetchedMs = new Date(e.fetchedAt).getTime();
-    if (!Number.isFinite(fetchedMs) || Date.now() - fetchedMs > PRICE_TTL_MS) return undefined;
+    if (!e || !this.isFresh(e)) return undefined;
     return e.cents;
   }
 
@@ -100,7 +108,7 @@ export class PricingService {
     let total = 0;
     for (const item of inv.items) {
       const e = this.cache.get(this.cacheKey(item.marketHashName, appid, sid));
-      const fresh = e && (() => { const m = new Date(e.fetchedAt).getTime(); return Number.isFinite(m) && Date.now() - m <= PRICE_TTL_MS; })();
+      const fresh = e && this.isFresh(e);
       if (!fresh) { item.price = undefined; missing.push({ name: item.marketHashName, appid }); }
       else { item.price = e!.cents ?? undefined; if (e!.cents) total += e!.cents * item.quantity; }
     }
@@ -154,12 +162,15 @@ export class PricingService {
               logger.warn(`[pricing] rate-limited – pausing ${Math.round(pause / 1000)}s (retry ${attempts}/${MAX_RATE_LIMIT_RETRIES})`);
               await sleep(pause);
             } else {
-              logger.warn(`[pricing] ${key}: still rate-limited after ${MAX_RATE_LIMIT_RETRIES} retries – caching a miss, moving on`);
-              this.cache.set(key, null);
+              logger.warn(`[pricing] ${key}: still rate-limited after ${MAX_RATE_LIMIT_RETRIES} retries – caching a SHORT miss, moving on`);
+              this.cache.set(key, null, { soft: true }); // error-miss: short TTL, not a 24h "no price" (S2)
             }
           } else {
+            // A thrown fetch failure (transport ECONNRESET/timeout/DNS, or a Steam 5xx/403/non-success
+            // now surfaced as FETCH_FAILED) is NOT authoritative — cache a SHORT miss so it retries in
+            // minutes and never survives restart as a fake "no price". (S2)
             logger.warn(`[pricing] ${key}: ${(err as Error).message}`);
-            this.cache.set(key, null); // cache the miss so we don't hammer it
+            this.cache.set(key, null, { soft: true });
           }
         } finally {
           if (!requeued) { this.queued.delete(key); this.rlAttempts.delete(key); }

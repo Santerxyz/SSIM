@@ -9,6 +9,10 @@ export interface PriceEntry {
   /** Lowest market price in USD cents; null = no market price found. */
   cents:     number | null;
   fetchedAt: string; // ISO
+  /** True when this null is a TRANSIENT fetch error (proxy/DNS/5xx/429-exhaustion), NOT an
+   *  authoritative "no market price". The reader gives soft misses a short TTL so a network blip
+   *  is retried in minutes instead of being cached as a 24h "no price" that survives restart (S2). */
+  soft?:     boolean;
 }
 
 /**
@@ -49,7 +53,7 @@ export class PriceCache {
    *  anything. */
   private static readonly MAX_ENTRIES = 100_000;
 
-  set(name: string, cents: number | null): void {
+  set(name: string, cents: number | null, opts?: { soft?: boolean }): void {
     // Unit guard (INV-E2 / E-1): every cached price is USD cents — a finite, non-negative
     // value, or null. A NaN / negative / non-finite value signals a parse or unit error at
     // the source (e.g. a non-USD price source); store it as a MISS rather than poisoning
@@ -65,7 +69,11 @@ export class PriceCache {
       const oldest = this.map.keys().next().value;
       if (oldest !== undefined) this.map.delete(oldest);
     }
-    this.map.set(name, { cents: v, fetchedAt: new Date().toISOString() });
+    const entry: PriceEntry = { cents: v, fetchedAt: new Date().toISOString() };
+    // A soft flag only applies to a null miss; a real price is always authoritative (and overwrites
+    // any prior soft miss for the key, so a recovered fetch clears the short-TTL marking). (S2)
+    if (v == null && opts?.soft) entry.soft = true;
+    this.map.set(name, entry);
     this.scheduleFlush();
   }
 
