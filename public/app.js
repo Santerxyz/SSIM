@@ -833,10 +833,20 @@ async function watchPriceFill(repull) {
   let lastProcessed = 0; // S19: liveness by ANY terminal resolution, not just a successful fetch
   let lastProgressAt = Date.now();
   let lastRepullAt = 0; // S10: bound the whole-fleet re-pull cadence
+  let consecErrors = 0; // S42: consecutive status-fetch failures → stop against a dead backend
+  const MAX_CONSEC_ERRORS = 24; // ~1 min at the 2.5s poll — rides out a blip, but never spins forever
   while (true) {
     await new Promise((r) => setTimeout(r, 2500));
     if (state.repriceToken !== token) return;                    // superseded by a newer watcher (it owns the indicator now)
-    let st; try { st = await api('/api/pricing/status'); } catch { continue; } // transient status error → retry, don't abandon
+    let st;
+    try { st = await api('/api/pricing/status'); consecErrors = 0; }
+    catch {
+      // S42: a DEAD backend fails EVERY poll. The old `continue` spun here forever with the "Fetching
+      // prices…" badge frozen. Count consecutive failures and STOP after a bounded streak (a transient
+      // blip resets the count on the next good poll, so a live fill is never abandoned).
+      if (++consecErrors >= MAX_CONSEC_ERRORS) { renderPriceFillIndicator(null); return; }
+      continue;
+    }
     if (state.repriceToken !== token) return;
     renderPriceFillIndicator(st);                                // live "N left / X done"; auto-hides when drained
     const fetched = st ? (st.fetched || 0) : 0;

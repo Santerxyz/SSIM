@@ -406,3 +406,13 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/tf2FillWatch.test.ts` — the shipped `setGame` first-load branch starts watchPriceFill
   (source-presence; fails against the old code). watchPriceFill itself is covered by S10/S19.
 - **Status:** FIXED. build clean · 259 tests (+1).
+
+### S42 — watchPriceFill against a dead backend polls forever with the badge frozen — **FIXED**
+- **What:** The status-fetch `catch` now counts consecutive failures and STOPS after `MAX_CONSEC_ERRORS`
+  (24 → ~1 min at the 2.5s poll), hiding the badge; a successful poll resets the streak.
+- **Why:** a dead backend fails every `/api/pricing/status` poll → the old `catch { continue }` spun
+  forever with the "Fetching prices…" badge frozen.
+- **Files:** `public/app.js` (`watchPriceFill`).
+- **Tests:** `test/priceFillDeadBackend.test.ts` — the shipped loop bounds consecutive errors + resets on
+  success (source-presence; fails against the old unbounded continue).
+- **Status:** FIXED. build clean · 260 tests (+1).
