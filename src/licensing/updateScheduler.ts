@@ -139,7 +139,9 @@ export async function installNow(): Promise<{ updated: boolean; reason: string }
   inFlight = true;
   try {
     logger.info('[update] user-confirmed install starting (force) – will restart on success');
-    return await Updater.runUpdate(deps.currentVersion, { force: true });
+    // S14: pass the live busy-check so runUpdate can RE-CHECK immediately before the swap (the endpoint's
+    // canInstallNow ran minutes ago — the download/self-test window is long enough to start a mass op).
+    return await Updater.runUpdate(deps.currentVersion, { force: true, isBusy: deps.isBusy });
   } finally {
     inFlight = false;
   }

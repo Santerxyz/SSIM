@@ -224,7 +224,13 @@ async function gateAndRun(): Promise<void> {
   // is in flight (isBusy). Boot-time auto-update above is unchanged.
   startUpdateScheduler({
     currentVersion: pkg.version,
-    isBusy: () => !!deps && (deps.trades.busy() || deps.buy.busy() || deps.inventory.busy()),
+    // S14: gate the mid-session swap on EVERY interruptible real-item op, not just trade/buy/refresh —
+    // a mass-sell, trade-up craft or casket move hard-exited by the swap loses unconfirmed listings /
+    // an irreversible craft's outcome / an in-flight move.
+    isBusy: () => !!deps && (
+      deps.trades.busy() || deps.buy.busy() || deps.inventory.busy() ||
+      deps.market.busy() || deps.tradeup.busy() || deps.casket.busy()
+    ),
   });
 }
 

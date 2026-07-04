@@ -93,6 +93,10 @@ export class TradeUpService {
 
   executeStatus(): TradeUpExecJob { return { ...this.execJob, results: this.execJob.results.map((r) => ({ ...r })) }; }
 
+  /** True while a trade-up craft job is running — gates a mid-session update swap (S14): a swap
+   *  hard-exit mid-craft leaves an irreversible 10-item craft's outcome unknown. */
+  busy(): boolean { return this.execJob.running; }
+
   /**
    * Starts executing the SELECTED contracts (each its 10 input asset ids) on `username`, one at a
    * time. When GC execution is gated off, the job completes immediately as a SAFE NO-OP (enabled:false,

@@ -288,3 +288,24 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   call no network); error not cached (re-attempt); cache TTL expiry; sync throw degrades to 0.
 - **Status:** FIXED. build clean · 242 tests (+5).
 
+### S14 — install busy-gate misses mass-sell/trade-up/casket + is check-once (TOCTOU) — **FIXED**
+- **What:** Added `busy()` to `MarketService`/`TradeUpService`/`CasketService` (each returns its job's
+  `running` flag) and OR'd them into the `isBusy` gate in `index.ts`. Added a TOCTOU RE-CHECK: `runUpdate`
+  takes an optional `isBusy` and, immediately before the swap (AFTER the `selfTest.ok` gate), defers with
+  a new `deferred-busy` outcome instead of swapping if a money/item op started during the download/self
+  -test window. `installNow` passes `deps.isBusy`.
+- **Why:** `canInstallNow` consulted only Trade/Buy/Inventory `busy()`, so a swap could hard-exit mid
+  mass-sell (unconfirmed 2FA listings), mid-craft (irreversible 10-item outcome unknown), or mid-casket
+  -move; and the gate was evaluated once, minutes before the swap.
+- **Constraint:** `AccountTrader.ts` NOT in the diff (grep-proven). Keep-current guard intact:
+  `swapAndRelaunch` still has ONE call site, still reached only after `selfTest.ok` — the busy re-check
+  is an ADDITIONAL early-return placed after that gate, never a bypass.
+- **Files:** `src/trading/{MarketService,TradeUpService,CasketService}.ts`, `src/index.ts` (isBusy),
+  `src/licensing/Updater.ts` (re-check), `src/licensing/updateScheduler.ts` (pass isBusy),
+  `src/licensing/updateStatus.ts` (`deferred-busy` outcome).
+- **Tests:** `test/updateBusyGate.test.ts` — each service's `busy()` reflects its running state (the
+  building block the gate ORs). The gate OR-ing / re-check wiring is verified by tsc + the reasoned
+  argument (the `canInstallNow` isBusy branch is unreachable in a non-packaged test build, and the
+  runUpdate re-check sits behind network+spawn — both trivial guards).
+- **Status:** FIXED. build clean · 245 tests (+3).
+

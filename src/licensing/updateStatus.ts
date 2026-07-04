@@ -34,7 +34,8 @@ export type UpdateOutcome =
   | 'sig-fail'
   | 'selftest-eacces'
   | 'selftest-timeout'
-  | 'selftest-no-marker';
+  | 'selftest-no-marker'
+  | 'deferred-busy'; // S14: verified+self-tested, but a money/item op started during the window → swap deferred
 
 /** A newer version exists but its self-test has failed enough times on THIS machine that we have
  *  surfaced it (C3). The swap is still refused (keep-current guard) — this only makes it visible. */

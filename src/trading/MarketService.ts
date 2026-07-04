@@ -130,6 +130,10 @@ export class MarketService {
     return { ...this.job, failed: [...this.job.failed], deferred: [...this.job.deferred], gone: [...this.job.gone], blocked: [...this.job.blocked] };
   }
 
+  /** True while a mass-sell is running — gates a mid-session update swap (S14): a swap hard-exits the
+   *  process and would interrupt unconfirmed 2FA listings. */
+  busy(): boolean { return this.job.running; }
+
   /**
    * Pre-list guard (INV-B2 / INV-D1 / C3): is this asset sellable per the cached
    * inventory? A trade-locked or non-tradable item must never reach `sellOnMarket` —

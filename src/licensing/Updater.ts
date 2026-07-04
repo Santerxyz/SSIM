@@ -740,7 +740,7 @@ function surfaceBlockedUpdate(info: VersionInfo, state: SelfTestState): void {
  * already failed N times on this machine on every single launch — they surface it and keep current
  * fast. A NEW published sha always resets the streak, so a genuine new release is never suppressed.
  */
-export async function runUpdate(currentVersion: string, opts?: { force?: boolean }): Promise<{ updated: boolean; reason: string }> {
+export async function runUpdate(currentVersion: string, opts?: { force?: boolean; isBusy?: () => boolean }): Promise<{ updated: boolean; reason: string }> {
   markChecked(Date.now());
   const info = await check(currentVersion);
   if (!info) {
@@ -795,6 +795,17 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   // Self-test passed → this artifact is good on this machine; clear any prior failure streak + block.
   clearSelfTestState();
   setBlockedUpdate(undefined);
+  // S14 (TOCTOU): the busy-gate was checked minutes ago at the endpoint; the download+self-test window is
+  // long enough for the operator to have STARTED a mass-sell / trade-up craft / casket move since. Re-check
+  // immediately before the swap — a swap hard-exits the process and would interrupt an in-flight real-item
+  // op. Defer instead: the verified, self-tested artifact is KEPT (C1) so the next attempt swaps without
+  // re-downloading. This is ADDED after the selfTest.ok gate — swapAndRelaunch's single call site is still
+  // reached only on a passed self-test (keep-current guard intact).
+  if (opts?.isBusy?.()) {
+    setUpdateOutcome('deferred-busy');
+    logger.warn('[update] a trade/buy/sell/craft/move started during the update window – deferring the swap (keeping current; artifact staged for the next attempt)');
+    return { updated: false, reason: 'a trade/buy/sell/craft/move started during the update — deferred; retry when idle' };
+  }
   setUpdateOutcome('ok');
   return swapAndRelaunch(file, info); // does not return on success (process exits)
 }

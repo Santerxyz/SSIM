@@ -39,6 +39,10 @@ export class CasketService {
   status(): GcStatus { return this.gc.status(); }
   moveStatus(): CasketMoveJob { return { ...this.job, failures: [...this.job.failures] }; }
 
+  /** True while a storage (casket) move is running — gates a mid-session update swap (S14): a swap
+   *  hard-exit mid-move interrupts item moves inside the confirm window. */
+  busy(): boolean { return this.job.running; }
+
   /** Lists the account's storage units (read-only). */
   listCaskets(username: string): Promise<Array<{ id: string; name: string; count: number }>> {
     return this.gc.listCaskets(username);
