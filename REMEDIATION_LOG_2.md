@@ -560,3 +560,16 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   updated-flag (and keeps it on success); marker absent when no path given; `consumeSwapFailureMarker`
   counts per-sha, resets on a new sha, survives a no-marker boot, clears. Existing buildSwapScript test green.
 - **Status:** FIXED. build clean · 285 tests (+3).
+
+### S21 — sig-fail deletes a sha-intact artifact → 185 MB re-download every boot — **FIXED**
+- **What:** `verify()` now returns `{ ok, shaOk }`; `runUpdate` deletes the staged artifact ONLY on a
+  sha MISMATCH (`!shaOk`), and KEEPS it on a signature-only failure (sha intact) — logging a warning to
+  check the server signing key / manifest.
+- **Why:** `verify` conflated a digest mismatch (corrupt → delete right) with a sigKind absence/invalidity
+  on byte-perfect bytes. Deleting a sha-intact artifact forced a fresh 185 MB download that produced the
+  identical failure → a re-download every boot forever (C3 only counts self-test failures). Keeping it lets
+  the sha-keyed pre-check reuse it → the re-verify is network-free (and `sig-fail` telemetry already surfaces it).
+- **Files:** `src/licensing/Updater.ts` (exported `verify`).
+- **Tests:** `test/updaterSigKeep.test.ts` — sha mismatch → shaOk:false (delete); sha-intact + no sigKind
+  → shaOk:true (keep); sha-intact + invalid signature → shaOk:true (keep).
+- **Status:** FIXED. build clean · 288 tests (+3).

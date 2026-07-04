@@ -358,12 +358,14 @@ export function verifyUpdateSignature(
   }
 }
 
-/** 3. Integrity (sha256) + authenticity (Ed25519 over latest:sha256:kind) gate before we trust the file. */
-async function verify(file: string, info: VersionInfo): Promise<boolean> {
+/** 3. Integrity (sha256) + authenticity (Ed25519 over latest:sha256:kind) gate before we trust the file.
+ *  Returns `shaOk` separately so the caller deletes ONLY a sha-mismatched (corrupt) artifact, never a
+ *  sha-intact-but-signature-failed one (re-download is pointless; keep it network-free). Exported for tests. */
+export async function verify(file: string, info: VersionInfo): Promise<{ ok: boolean; shaOk: boolean }> {
   const digest = await sha256File(file); // S8: streaming hash — no 185 MB sync read that freezes the loop
   if (digest !== info.sha256) {
     logger.error('update sha256 mismatch – discarding download');
-    return false;
+    return { ok: false, shaOk: false }; // S21: corrupt bytes → the caller SHOULD delete + re-download
   }
   // Authenticity gate: require the KIND-INCLUSIVE signature so a forged swap-shape `kind`
   // (the migration/delete selector) is rejected — not just the artifact bytes. An update
@@ -371,11 +373,11 @@ async function verify(file: string, info: VersionInfo): Promise<boolean> {
   // server rollout ships BEFORE this client). (C14.)
   if (!info.sigKind) {
     logger.error('update manifest has no kind-inclusive signature (sigKind) – refusing update');
-    return false;
+    return { ok: false, shaOk: true }; // S21: sha intact — a re-download yields the identical failure
   }
   const sigOk = verifyUpdateSignature(info, LICENSE_PUBLIC_KEY);
   if (!sigOk) logger.error('update signature invalid (kind-inclusive) – possible tampering, discarding');
-  return sigOk;
+  return { ok: sigOk, shaOk: true };
 }
 
 /** Outcome of one self-test spawn: OK, a retryable transient lock, a retryable-with-longer-budget
@@ -860,9 +862,15 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   // Verify (sha256, fast) + anti-brick self-test (boots the new exe, can take up to ~2 min). Both
   // are silent on disk, so flag the phase or the splash looks stuck on "Downloading" the whole time.
   emitUpdate('SSIM_UPDATE_VERIFYING');
-  if (!(await verify(file, info))) {
+  const v = await verify(file, info);
+  if (!v.ok) {
     setUpdateOutcome('sig-fail');
-    fsExtra.removeSync(file); // a corrupt/tampered artifact is worth re-fetching; only self-test KEEPS it
+    // S21: delete ONLY on a sha MISMATCH (corrupt/tampered bytes → re-fetching is worth it). A
+    // signature-only failure (sha intact — a key-divergent or unsigned manifest) KEEPS the artifact:
+    // re-downloading yields the identical bytes + the identical failure, so deleting just triggered a
+    // 185 MB re-download every boot forever. The sha-keyed pre-check reuses the kept file → network-free.
+    if (!v.shaOk) fsExtra.removeSync(file);
+    else logger.warn('update signature failed but the sha is intact – KEEPING the staged artifact (a re-download would not help; check the server signing key / manifest sigKind)');
     return { updated: false, reason: 'verification failed' };
   }
   const selfTest = await selfTestNewExe(file);
