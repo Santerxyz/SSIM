@@ -813,16 +813,34 @@ function shouldRepullFill(progressed, busy, msSinceLastRepull, minRepullMs) {
 
 // Mirrors src/pricing/repriceReconciler.ts (priceFillIndicator) — keep in sync. Visible while the
 // backend fill runs or names are queued; hidden the moment the queue drains (dismiss-on-complete).
+// Prices fill one name at a time from a SINGLE IP, throttled to match the backend's
+// PricingService.FETCH_DELAY_MS (~17 names/min). A 500+-account cold cache legitimately runs tens of
+// minutes, so the badge shows a rough ETA (and a "large inventory" hint) — slow no longer reads as frozen.
+const FILL_MS_PER_NAME = 3500;
+
+/** Rough remaining time for `left` queued names at the single-IP throttle, e.g. "~35s left" / "~6 min left"
+ *  / "~1.9 h left". Empty string when nothing is left. Pure + exported-shaped for unit tests. */
+function formatFillEta(left) {
+  const secs = Math.round(Math.max(0, Number(left) || 0) * FILL_MS_PER_NAME / 1000);
+  if (secs <= 0) return '';
+  if (secs < 90) return `~${secs}s left`;
+  const mins = Math.round(secs / 60);
+  if (mins < 90) return `~${mins} min left`;
+  return `~${Math.round(secs / 360) / 10} h left`;
+}
+
 function priceFillIndicator(status) {
   const left = Math.max(0, (status && Number(status.queued)) || 0);
   const done = Math.max(0, (status && Number(status.fetched)) || 0);
   const show = !!(status && (status.running || left > 0));
-  return { show, left, done };
+  const eta = formatFillEta(left);
+  const long = left > 200; // a large cold cache legitimately takes a while at ~17 names/min
+  return { show, left, done, eta, long };
 }
 /** Renders the floating "Fetching prices…" badge from a /api/pricing/status snapshot; hides it on
  *  completion. Additive: a self-created fixed element, no dependency on the frozen DOM contract. */
 function renderPriceFillIndicator(status) {
-  const { show, left, done } = priceFillIndicator(status);
+  const { show, left, done, eta, long } = priceFillIndicator(status);
   let node = document.getElementById('price-fill-indicator');
   if (!show) { if (node) node.classList.add('hidden'); return; }
   if (!node) {
@@ -833,8 +851,13 @@ function renderPriceFillIndicator(status) {
     document.body.appendChild(node);
   }
   node.classList.remove('hidden');
+  // Hover explains WHY a large fill is slow (single-IP throttle) so it doesn't read as a hang.
+  node.title = 'Prices load one at a time from a single IP (~17/min), so a large cold inventory can take a while. It keeps filling in the background — you can keep working.';
   node.innerHTML = `<i class="fa-solid fa-tag text-brand cs2-spin"></i>`
-    + `<span>Fetching prices… <b class="text-white">${left}</b> left · <b class="text-white">${done}</b> done</span>`;
+    + `<span>Fetching prices… <b class="text-white">${left}</b> left · <b class="text-white">${done}</b> done`
+    + (eta ? ` · <span class="text-slate-400">${eta}</span>` : '')
+    + (long ? ` <span class="text-slate-500">(large inventory)</span>` : '')
+    + `</span>`;
 }
 
 async function watchPriceFill(repull) {

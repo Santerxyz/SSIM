@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { priceFillIndicator, repriceDecision, type RepriceState, type PricingStatus } from '../src/pricing/repriceReconciler';
+import { priceFillIndicator, formatFillEta, repriceDecision, type RepriceState, type PricingStatus } from '../src/pricing/repriceReconciler';
 
 // ─── BUG 1: a boot-time price fill must live-update the UI + show/clear an indicator ──
 // The watcher (watchPriceFill) is now started right after the first inventory render on
@@ -10,14 +10,29 @@ import { priceFillIndicator, repriceDecision, type RepriceState, type PricingSta
 // on every progress step and does a final re-pull + stop when the queue drains.
 
 test('priceFillIndicator: hidden when idle, visible with counts while busy, hidden when drained', () => {
-  assert.deepEqual(priceFillIndicator(null), { show: false, left: 0, done: 0 });
-  assert.deepEqual(priceFillIndicator({ running: false, queued: 0, fetched: 0 }), { show: false, left: 0, done: 0 });
+  // Assert the core show/left/done fields (the eta/long fields are covered separately below).
+  const core = (s: PricingStatus | null) => { const { show, left, done } = priceFillIndicator(s); return { show, left, done }; };
+  assert.deepEqual(core(null), { show: false, left: 0, done: 0 });
+  assert.deepEqual(core({ running: false, queued: 0, fetched: 0 }), { show: false, left: 0, done: 0 });
   // running with a queue → visible
-  assert.deepEqual(priceFillIndicator({ running: true, queued: 5, fetched: 0 }), { show: true, left: 5, done: 0 });
+  assert.deepEqual(core({ running: true, queued: 5, fetched: 0 }), { show: true, left: 5, done: 0 });
   // queued but the run() hasn't flipped `running` yet → still visible (a fill is pending)
-  assert.deepEqual(priceFillIndicator({ running: false, queued: 3, fetched: 2 }), { show: true, left: 3, done: 2 });
+  assert.deepEqual(core({ running: false, queued: 3, fetched: 2 }), { show: true, left: 3, done: 2 });
   // drained → dismissed
-  assert.deepEqual(priceFillIndicator({ running: false, queued: 0, fetched: 5 }), { show: false, left: 0, done: 5 });
+  assert.deepEqual(core({ running: false, queued: 0, fetched: 5 }), { show: false, left: 0, done: 5 });
+});
+
+test('1c: the badge carries a rough ETA + a large-inventory hint (single-IP throttle, ~17/min)', () => {
+  assert.equal(formatFillEta(0), '', 'nothing left → no ETA');
+  assert.equal(formatFillEta(10), '~35s left', '10 names × 3.5s = 35s');
+  assert.equal(formatFillEta(100), '~6 min left', '100 × 3.5s = 350s ≈ 6 min');
+  assert.equal(formatFillEta(2000), '~1.9 h left', '2000 × 3.5s = 7000s ≈ 1.9 h');
+  const small = priceFillIndicator({ running: true, queued: 100, fetched: 0 });
+  assert.equal(small.eta, '~6 min left');
+  assert.equal(small.long, false, '100 names is not flagged "large"');
+  const big = priceFillIndicator({ running: true, queued: 500, fetched: 0 });
+  assert.equal(big.eta, '~29 min left', '500 × 3.5s = 1750s ≈ 29 min');
+  assert.equal(big.long, true, '500+ names → large-inventory hint');
 });
 
 test('BUG 1 boot scenario: missing prices → busy → progress → drained live-updates then clears', () => {

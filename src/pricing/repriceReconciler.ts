@@ -55,18 +55,39 @@ export interface PriceFillIndicator {
   left: number;
   /** Names fetched in the current run. */
   done: number;
+  /** Rough remaining time at the single-IP throttle, e.g. "~6 min left" ('' when nothing is left). */
+  eta: string;
+  /** True for a large cold fill that legitimately takes a while (surfaced as a "large inventory" hint). */
+  long: boolean;
+}
+
+// Prices fill one name at a time from a SINGLE IP, throttled to PricingService.FETCH_DELAY_MS
+// (~17 names/min). Keep this constant in sync with public/app.js (FILL_MS_PER_NAME).
+const FILL_MS_PER_NAME = 3500;
+
+/** Rough remaining time for `left` queued names at the single-IP throttle. Empty string when none left.
+ *  Mirror of public/app.js formatFillEta. */
+export function formatFillEta(left: number): string {
+  const secs = Math.round(Math.max(0, Number(left) || 0) * FILL_MS_PER_NAME / 1000);
+  if (secs <= 0) return '';
+  if (secs < 90) return `~${secs}s left`;
+  const mins = Math.round(secs / 60);
+  if (mins < 90) return `~${mins} min left`;
+  return `~${Math.round(secs / 360) / 10} h left`;
 }
 
 /**
  * Derives the price-fill indicator state from a `/api/pricing/status` snapshot. Visible while the
  * backend fill is running OR anything is queued; hidden (`show:false`) the moment the queue drains,
- * so the indicator dismisses itself on completion. Pure — the UI just renders this.
+ * so the indicator dismisses itself on completion. Carries a rough ETA + a "large inventory" hint so a
+ * legitimately-long single-IP fill doesn't read as frozen. Pure — the UI just renders this.
+ * MIRROR of public/app.js priceFillIndicator; keep the two in sync.
  */
 export function priceFillIndicator(status: PricingStatus | null | undefined): PriceFillIndicator {
   const left = Math.max(0, Number(status?.queued) || 0);
   const done = Math.max(0, Number(status?.fetched) || 0);
   const show = !!(status && (status.running || left > 0));
-  return { show, left, done };
+  return { show, left, done, eta: formatFillEta(left), long: left > 200 };
 }
 
 export function repriceDecision(state: RepriceState, status: PricingStatus | null | undefined, now: number): RepriceDecision {

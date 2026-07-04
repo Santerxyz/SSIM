@@ -954,3 +954,24 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `src/core/unlockPortal.ts`. **Tests:** `test/orphanVaultGuard.test.ts` — portal refuses on
   orphan; allows on fresh install / explicit confirm. +2 tests. **Status:** FIXED (plaintext never destroyed;
   restoring vault.enc still recovers).
+
+### Pricing fill "loads forever / never finishes" — S2 + S13 already FIXED (prior); S19 not-reproduced; 1c ETA ADDED
+- **S2 (transient errors cached as 24h no-price)** — **already FIXED** (commit 8cb34c4): `SteamPriceSource`
+  throws `FETCH_FAILED_<status>` on non-200 / `RATE_LIMIT` on 429 and returns null ONLY for a real
+  200+success no-price; `PricingService` caches error-misses `soft` with `ERROR_MISS_TTL_MS=10min` (vs the
+  24h `PRICE_TTL_MS`); `PriceCache` `soft` flag is optional so legacy `prices.json` entries load at 24h. Verified present.
+- **S13 (source-flip dedup poison)** — **already FIXED** (commit 455a7d0): each job carries its enqueue-time
+  `{key, sourceId}`; `run()` uses `job.key` for both the cache `set` and the `finally` delete, so a runtime
+  CSFloat-key flip can't strand a name in `queued`. Segmented cache keys intact. Verified present.
+- **S19 (terminal no-progress stop hides badge)** — **already FIXED / not-reproduced** (commit b1d2b60):
+  `processedThisRun` increments on EVERY terminal outcome incl. error/429-exhaustion (`PricingService.ts:189`),
+  and `repriceDecision` keys off `processed`, so a 429 storm no longer stops the watch or hides the badge.
+- **1c (UX: no ETA → slow reads as frozen)** — **FIXED (new).** `priceFillIndicator` now returns a rough
+  `eta` (`~left × 3.5s`, formatted `~35s/~6 min/~1.9 h left`) + a `long` "large inventory" hint; the badge
+  renders the ETA and a hover note explaining the single-IP throttle. Mirrored in the tested TS
+  `src/pricing/repriceReconciler.ts` and `public/app.js` (kept in sync).
+- **Files:** `public/app.js`, `src/pricing/repriceReconciler.ts`. **Tests:** `test/priceFillIndicator.test.ts`
+  (ETA formatting + long hint; existing show/left/done assertions preserved). **Status:** FIXED.
+- **Throughput ceiling note:** the single-IP 3.5s/name throttle (~17/min) is ARCHITECTURAL — a 500+-account
+  cold cache legitimately runs tens of minutes to hours. Only a proxy-routed / parallelised price fetch would
+  lift it; out of scope here — flagged for later.
