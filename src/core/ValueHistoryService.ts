@@ -35,6 +35,10 @@ export interface HistoryPoint {
   items: number;
   /** Total wallet balance in USD cents (converted like the dashboard does). */
   wallet: number;
+  /** S66: true when at least one loaded account held a wallet balance in a currency we can't convert to USD
+   *  (FX covers only USD↔EUR), so `wallet` UNDERCOUNTS the real total for this point. Lets the UI flag the
+   *  wallet series as incomplete instead of silently plotting a too-low value as if it were exact. */
+  partial?: boolean;
 }
 
 interface HistoryFile {
@@ -167,22 +171,27 @@ export class ValueHistoryService {
 
   /** Snapshots ONE game's cache into '<prefix><envId>' + '<prefix>global' series. */
   private snapshotGame(now: number, store: { get(u: string): AccountInventory | undefined }, prefix: string): void {
-    let globalItems = 0, globalWallet = 0, globalLoaded = 0;
+    let globalItems = 0, globalWallet = 0, globalLoaded = 0, globalPartial = false;
     for (const env of this.accounts.getEnvironments()) {
-      let items = 0, wallet = 0, loaded = 0;
+      let items = 0, wallet = 0, loaded = 0, partial = false;
       for (const acc of this.accounts.getByEnvironment(env.id)) {
         const inv = store.get(acc.username);
         if (!inv) continue;
         loaded++;
         this.pricing.enrich(inv); // cache-only: prices + totalValueUsd refreshed in place
         items  += inv.totalValueUsd ?? 0;
-        wallet += this.walletUsdCents(inv.wallet) ?? 0;
+        const w = inv.wallet;
+        const cents = this.walletUsdCents(w);
+        // S66: a wallet we couldn't convert (non-USD/EUR) but that HAS a real balance means `wallet` is
+        // undercounted for this point — flag it partial rather than silently plotting a too-low total.
+        if (cents == null && w && typeof w.balance === 'number' && w.balance > 0) partial = true;
+        wallet += cents ?? 0;
       }
       if (loaded === 0) continue; // nothing cached → no meaningful point
-      this.append(prefix + env.id, now, items, wallet);
-      globalItems += items; globalWallet += wallet; globalLoaded += loaded;
+      this.append(prefix + env.id, now, items, wallet, partial);
+      globalItems += items; globalWallet += wallet; globalLoaded += loaded; globalPartial = globalPartial || partial;
     }
-    if (globalLoaded > 0) this.append(prefix + GLOBAL_SERIES, now, globalItems, globalWallet);
+    if (globalLoaded > 0) this.append(prefix + GLOBAL_SERIES, now, globalItems, globalWallet, globalPartial);
   }
 
   /** Steam wallet → USD cents (USD=1 as-is, EUR=3 via live rate, else skip). */
@@ -194,14 +203,15 @@ export class ValueHistoryService {
   }
 
   /** Appends a point; bursts within MIN_INTERVAL_MS update the previous point. */
-  private append(seriesId: string, t: number, items: number, wallet: number): void {
+  private append(seriesId: string, t: number, items: number, wallet: number, partial = false): void {
     const arr = this.data.series[seriesId] ?? (this.data.series[seriesId] = []);
     const last = arr[arr.length - 1];
     if (last && t - last.t < MIN_INTERVAL_MS) {
       last.t = t; last.items = items; last.wallet = wallet;
+      if (partial) last.partial = true; else delete last.partial; // S66: keep the flag accurate on coalesce
       return;
     }
-    arr.push({ t, items, wallet });
+    arr.push(partial ? { t, items, wallet, partial: true } : { t, items, wallet });
     if (arr.length > MAX_POINTS_PER_SERIES) arr.splice(0, arr.length - MAX_POINTS_PER_SERIES);
   }
 }

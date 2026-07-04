@@ -905,3 +905,11 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Why:** a 0-decimal currency (e.g. HUF) mis-scaled a per-item price 100× → real over-spend.
 - **Files:** `src/pricing/currencies.ts`, `src/trading/BuyService.ts`. AccountTrader.ts UNTOUCHED (constraint 1);
   all guards fire BEFORE placement (constraint 3). **Tests:** `test/currencyFailClosed.test.ts`. +3 tests. **Status:** FIXED.
+
+### S66 — non-USD/EUR wallets contributed 0 to the worth curve (silently undercounted) — **FIXED**
+- **What:** added `partial?: boolean` to HistoryPoint; `snapshotGame` flags a point partial when a loaded
+  account holds a real wallet balance in a currency FX can't convert (only USD↔EUR are supported), and
+  `append` records/clears the flag (incl. on burst-coalesce).
+- **Why:** a non-EUR/USD-region fleet's wallet total plotted too low but looked exact.
+- **Files:** `src/core/ValueHistoryService.ts`. **Tests:** `test/valueHistoryPartial.test.ts` (non-USD/EUR→
+  partial; USD/EUR→exact). +3 tests. **Status:** FIXED (display trend; flag is honest — no fabricated rates).
