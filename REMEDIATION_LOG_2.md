@@ -886,3 +886,22 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Why:** latent — safe today (checkOnly self-catches, installNow is void'd) but the lone unwrapped async route.
 - **Files:** `src/api/server.ts`. **Tests:** `test/serverAsyncHandler.test.ts` — source-scan regression guard:
   zero raw `async (req` handlers remain. +1 test. **Status:** FIXED.
+
+### S63 — isAlreadyListed German/substring overbreadth mis-buckets Owned→Listed — **FIXED**
+- **What:** require a COMPOUND match — a listing NOUN (`listing|listed|angebot|verkaufsangebot|inserat`) AND
+  an "already/exists" QUALIFIER (`already|pending|bereits|vorhanden|aktiv|existiert|besteht`) must both be
+  present — instead of any bare token.
+- **Why:** a lone `already`/`listed`/`aktiv`/`vorhanden`/`bereits` fired on unrelated localized errors
+  ("already rate-limited", "listed as untradable"), classifying a non-phantom rejection as a phantom listing.
+- **Files:** `src/trading/MarketService.ts` (isAlreadyListed exported for tests).
+- **Tests:** `test/isAlreadyListedCompound.test.ts` — EN+DE phantoms still detected; unrelated errors no longer
+  match. +2 tests. **Status:** FIXED. No money movement (bucket classification only).
+
+### S64 — unknown wallet-currency code → 2-decimal fallback → 100× per-item mis-scale — **FIXED**
+- **What:** added `knownCurrencyInfo(code)` (null on unrecognised code). All THREE BuyService money-path
+  scaling sites (single-buy pricing, mass-buy wallet setup, massBuyOne per-item) now FAIL CLOSED on an unknown
+  code — throw before placement / skip the account — instead of scaling on the 2-decimal guess. Display paths
+  keep the lenient `currencyInfo` fallback.
+- **Why:** a 0-decimal currency (e.g. HUF) mis-scaled a per-item price 100× → real over-spend.
+- **Files:** `src/pricing/currencies.ts`, `src/trading/BuyService.ts`. AccountTrader.ts UNTOUCHED (constraint 1);
+  all guards fire BEFORE placement (constraint 3). **Tests:** `test/currencyFailClosed.test.ts`. +3 tests. **Status:** FIXED.

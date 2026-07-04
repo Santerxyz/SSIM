@@ -4,7 +4,7 @@ import type { InventoryService } from '../core/InventoryService';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
 import { isAmbiguousCommitFailure } from './commitAmbiguity';
 import type { GameId, AccountInventory } from '../types/inventory';
-import { currencyInfo } from '../pricing/currencies';
+import { knownCurrencyInfo } from '../pricing/currencies';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
 
@@ -207,7 +207,12 @@ export class BuyService {
       if (currency == null) {
         throw new Error(`wallet currency unknown for ${p.username} – refresh the account (await wallet event) and retry`);
       }
-      const info = currencyInfo(currency);
+      // S64: a code we don't recognise could be a 0-decimal currency; scaling with the 2-decimal fallback
+      // would mis-price the order 100×. Fail closed BEFORE placement — never guess the scale on a money path.
+      const info = knownCurrencyInfo(currency);
+      if (!info) {
+        throw new Error(`unrecognised wallet currency code ${currency} for ${p.username} – refusing to price the order (would risk a 100× mis-scale); update STEAM_CURRENCIES`);
+      }
       const iso = info.iso;
       const priceTotalMinor = perItem * qty;
 
@@ -393,12 +398,16 @@ export class BuyService {
             const inv = await this.inventory.forceRefresh(u, game);
             const currency = inv.wallet?.currency;
             const balance  = inv.wallet?.balance;
+            const cInfo = currency != null ? knownCurrencyInfo(currency) : null;
             if (currency == null || balance == null) {
               wallets.set(u, null);
               logger.warn(`[mass-buy] ${u}: wallet still unknown after refresh – skipped`);
+            } else if (!cInfo) {
+              // S64: unrecognised currency code → could be 0-decimal; skip rather than risk a 100× mis-scale.
+              wallets.set(u, null);
+              logger.warn(`[mass-buy] ${u}: unrecognised wallet currency code ${currency} – skipped for safety (S64)`);
             } else {
-              const decimals = currencyInfo(currency).decimals;
-              wallets.set(u, { currency, walletMinor: Math.round(balance * Math.pow(10, decimals)) });
+              wallets.set(u, { currency, walletMinor: Math.round(balance * Math.pow(10, cInfo.decimals)) });
             }
           } catch (err) {
             wallets.set(u, null);
@@ -462,7 +471,15 @@ export class BuyService {
       return;
     }
 
-    const info = currencyInfo(wallet.currency);
+    // S64: defence-in-depth — the wallet-setup above already nulls unrecognised codes, but never scale a
+    // real per-item price on a fallback guess. Skip if the code isn't known (a 0-decimal currency would 100×).
+    const info = knownCurrencyInfo(wallet.currency);
+    if (!info) {
+      this.massJob.skipped++;
+      push({ username, plannedQty: 0, filled: 0, placed: false, status: 'skipped',
+        message: `unrecognised wallet currency code ${wallet.currency} – skipped for safety (cannot scale price reliably)` });
+      return;
+    }
     const perItem = Math.round(p.pricePerItemMajor * Math.pow(10, info.decimals));
     const base = {
       username, currency: wallet.currency, currencyIso: info.iso,
