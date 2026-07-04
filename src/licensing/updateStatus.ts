@@ -30,6 +30,8 @@
 export type UpdateOutcome =
   | 'ok'
   | 'up-to-date'
+  | 'check-failed'   // S53: the version CHECK itself failed (network/server) — distinct from up-to-date, so
+                     // the stranded-fleet histogram counts this cohort instead of hiding it as "current"
   | 'download-fail'
   | 'sig-fail'
   | 'selftest-eacces'

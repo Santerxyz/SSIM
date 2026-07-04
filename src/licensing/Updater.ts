@@ -105,16 +105,27 @@ function isNewer(remote: string, local: string): boolean {
   return false;
 }
 
-/** 1. Ask the backend what the latest published version is. */
-async function check(currentVersion: string): Promise<VersionInfo | null> {
+/** The three outcomes of a version check, kept DISTINCT so the caller never mistakes a failed check for
+ *  "up to date" (S53) — 'current' and 'check-failed' both used to collapse to a bare `null`. */
+type CheckResult =
+  | { status: 'update'; info: VersionInfo }
+  | { status: 'current' }
+  | { status: 'check-failed'; error: string };
+
+/** 1. Ask the backend what the latest published version is. `get` is injectable for tests (matches the
+ *  file's selfTestNewExe/buildSwapScript convention). */
+async function check(
+  currentVersion: string,
+  get: (url: string) => Promise<{ status: number; data: unknown }> = (url) => http.get(url),
+): Promise<CheckResult> {
   try {
-    const res = await http.get(`${LICENSE_API_URL}/version`);
-    if (res.status !== 200) return null;
+    const res = await get(`${LICENSE_API_URL}/version`);
+    if (res.status !== 200) return { status: 'check-failed', error: `HTTP ${res.status}` };
     const info = res.data as VersionInfo;
-    return isNewer(info.latest, currentVersion) ? info : null;
+    return isNewer(info.latest, currentVersion) ? { status: 'update', info } : { status: 'current' };
   } catch (err) {
     logger.warn(`update check failed: ${(err as Error).message}`);
-    return null;
+    return { status: 'check-failed', error: (err as Error).message };
   }
 }
 
@@ -814,13 +825,21 @@ function surfaceBlockedUpdate(info: VersionInfo, state: SelfTestState): void {
  */
 export async function runUpdate(currentVersion: string, opts?: { force?: boolean; isBusy?: () => boolean }): Promise<{ updated: boolean; reason: string }> {
   markChecked(Date.now());
-  const info = await check(currentVersion);
-  if (!info) {
+  const checked = await check(currentVersion);
+  if (checked.status === 'check-failed') {
+    // S53: the CHECK itself failed (network/server) — record it distinctly so the stranded-fleet histogram
+    // counts this cohort. Do NOT clear the last-known available-update or the swap-fail streak: we learned
+    // nothing about the current published sha, so keep whatever the last successful check surfaced.
+    setUpdateOutcome('check-failed');
+    return { updated: false, reason: `update check failed: ${checked.error}` };
+  }
+  if (checked.status === 'current') {
     setUpdateOutcome('up-to-date');
     setAvailableUpdate(undefined);
     clearSwapFailState(); // S9: on the latest, drop any stale swap-fail streak for a now-superseded sha
     return { updated: false, reason: 'up-to-date' };
   }
+  const info = checked.info;
   // A newer version exists — surface it regardless of whether the swap ultimately succeeds.
   setAvailableUpdate({ version: info.latest, notes: info.notes, publishedAt: info.publishedAt });
   printUpdateBanner(currentVersion, info.latest);

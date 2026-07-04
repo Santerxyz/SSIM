@@ -3,7 +3,7 @@ import { IS_PACKAGED } from '../utils/paths';
 import { ProcessHealth } from '../core/ProcessHealth';
 import { Updater } from './Updater';
 import {
-  setAvailableUpdate, markChecked, getAvailableUpdate, getBlockedUpdate, getLastCheckedAt,
+  setAvailableUpdate, markChecked, getAvailableUpdate, getBlockedUpdate, getLastCheckedAt, setUpdateOutcome,
 } from './updateStatus';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -106,12 +106,17 @@ export async function checkOnly(source: string): Promise<UpdateCheckView> {
   inFlight = true;
   try {
     markChecked(Date.now());
-    const info = await Updater.check(current);
-    if (info) {
-      setAvailableUpdate({ version: info.latest, notes: info.notes, publishedAt: info.publishedAt });
-      logger.info(`[update] ${source} check: v${info.latest} available (current v${current})`);
-    } else {
+    const checked = await Updater.check(current);
+    if (checked.status === 'update') {
+      setAvailableUpdate({ version: checked.info.latest, notes: checked.info.notes, publishedAt: checked.info.publishedAt });
+      logger.info(`[update] ${source} check: v${checked.info.latest} available (current v${current})`);
+    } else if (checked.status === 'current') {
       setAvailableUpdate(undefined);
+    } else {
+      // S53: a failed CHECK is NOT "up to date". Keep the last-known available-update (don't clear it) and
+      // record the distinct outcome so telemetry / the stranded-fleet histogram counts this check.
+      setUpdateOutcome('check-failed');
+      logger.warn(`[update] ${source} check failed: ${checked.error}`);
     }
   } catch (err) {
     logger.warn(`[update] ${source} check failed: ${(err as Error).message}`);

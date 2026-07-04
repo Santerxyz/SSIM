@@ -805,3 +805,13 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `src/utils/serverPort.ts`, `src/index.ts`.
 - **Tests:** `test/serverPortOwnClear.test.ts` — no-op when unannounced; clears own; leaves a different
   live port. +3 tests. **Status:** FIXED.
+
+### S53 — a failed update check was reported as up-to-date (stranded-fleet histogram undercounts) — **FIXED**
+- **What:** `check()` now returns a discriminated `{ status: 'update' | 'current' | 'check-failed' }` instead
+  of a bare `null` for both "current" and "failed". `runUpdate` and `checkOnly` set a new `'check-failed'`
+  UpdateOutcome (and preserve the last-known available-update) when the check itself fails.
+- **Why:** a non-200/network failure returned `null`, which the caller recorded as `'up-to-date'` — hiding
+  exactly the stranded cohort the histogram exists to find.
+- **Files:** `src/licensing/updateStatus.ts` (new outcome), `src/licensing/Updater.ts`,
+  `src/licensing/updateScheduler.ts`. **Tests:** `test/updaterCheckOutcome.test.ts` (503/network→check-failed;
+  current; update). +4 tests. **Status:** FIXED. `check()` gained an injectable `get` (test seam).
