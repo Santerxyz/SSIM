@@ -258,7 +258,10 @@ async function activate(key: string, hwid: string): Promise<ValidateResult> {
  *   3. Otherwise → must (re)activate online with the license key.
  */
 export async function validate(hwid: string): Promise<ValidateResult> {
-  const token = readToken();
+  // S58: never let a token-read hiccup (AV-locked/torn file) reject validate — readToken() is total today
+  // (S38), but a defensive wrap keeps that guarantee at THIS call site regardless of readToken's future.
+  let token: string | undefined;
+  try { token = readToken(); } catch { token = undefined; }
   if (token) {
     const payload = verifyToken(token);
     const storedKey = readKey();
@@ -345,9 +348,13 @@ export function stopHeartbeat(): void {
 }
 
 async function heartbeat(hwid: string): Promise<void> {
-  const token = readToken();
-  if (!token) return;
   try {
+    // S58: read the token INSIDE the try. readToken() is total today (it swallows an AV-locked/torn file
+    // and returns undefined — S38), but keeping the read in-try means even a future readToken that could
+    // throw can never turn a fire-and-forget beat into an unhandledRejection (which would feed the money
+    // breaker with noise). A missing token just rides the offline grace, same as a network blip.
+    const token = readToken();
+    if (!token) return;
     // Health/update telemetry rider (C4) — additive; the server ignores unknown keys.
     const res = await http.post('/heartbeat', { hwid, token, ...telemetryRider() });
     // Revocation is signalled ONLY by the server's authoritative body marker
