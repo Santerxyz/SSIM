@@ -135,3 +135,25 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/vaultHardening.test.ts` (S5) — after recovering from `.bak`, the `.bak` still
   decrypts to the good credentials (reads it as a primary vault); fails against the old `backup:true`.
 - **Status:** FIXED. build clean · 213 tests (+1).
+
+### S12 — CsFloatKeyStore silently resets on corrupt file, then clobbers file + .bak — **FIXED**
+- **What:** Mirrored the B2 TokenStore degraded pattern in `CsFloatKeyStore`: a PRESENT-but-unreadable
+  or wrong-shape `csfloat_keys.json` now sets a `degraded` flag, `save()` becomes a no-op (never
+  clobbers the file or its `.bak`), the path is injectable for tests, and `isDegraded()` is masked in
+  vault mode (keys read from the vault → a corrupt leftover file is irrelevant). Surfaced via
+  `CsFloatService.isKeyStoreDegraded()` → `csfloatKeyStoreDegraded` on `/api/system/status` →
+  `renderCsFloatKeyStoreWarning` banner.
+- **Why:** the old `catch → return empty` silently reset the store; the next `set()/delete()` saved
+  with `backup:true`, copying the corrupt file over the good `.bak` then writing the near-empty state —
+  both recovery paths destroyed. All CSFloat keys vanish → pricing falls back to Steam and the
+  auto-accept worker silently skips every account.
+- **Files:** `src/csfloat/CsFloatKeyStore.ts`, `src/csfloat/CsFloatService.ts`, `src/api/server.ts`
+  (status), `public/app.js` (warning + `watchSystemStatus` wiring).
+- **Tests:** `test/csfloatKeyStoreDegraded.test.ts` — corrupt/wrong-shape → degraded, missing/empty-valid
+  → not, valid loads, degraded set() leaves the file+`.bak` untouched, healthy persists. (7 tests.)
+- **Status:** FIXED. build clean · 220 tests (+7).
+
+> **Note — known flaky test (pre-existing, NOT a regression):** `updaterEacces.test.ts:51`
+> "pipeToFile … KEEPS the partial file" is an intermittent filesystem-timing flake — it failed once
+> then passed on an immediate re-run with no code change in its path. Watch for it at gate checks; a
+> single retry clears it. Out of scope for the current issue.

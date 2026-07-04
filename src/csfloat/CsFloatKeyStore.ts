@@ -20,22 +20,48 @@ interface KeyFile { version: number; keys: Record<string, string>; }
 
 export class CsFloatKeyStore {
   private file: KeyFile;
-  constructor() { this.file = this.load(); }
+  /** True when csfloat_keys.json EXISTS but could not be read/parsed → the on-disk key memory is
+   *  untrustworthy. We surface it and REFUSE to write, so the present-but-corrupt file (and its .bak)
+   *  is never clobbered — recover it, then restart. A MISSING file (fresh install) is NOT degraded.
+   *  Mirrors the TokenStore / DeliveredStore B2 pattern; the OLD code silently reset to empty, and the
+   *  next set()/delete() then persisted that empty state over the good file + its .bak → all keys lost,
+   *  pricing silently falls back to Steam and the auto-accept worker skips every account. (S12.) */
+  private degraded = false;
+
+  // Path injectable for tests; production uses the module KEYS_PATH default.
+  constructor(private readonly filePath: string = KEYS_PATH) { this.file = this.load(); }
+
+  /** True when the file is present-but-unreadable AND we are in plaintext mode. In vault mode keys are
+   *  read from the vault, so a corrupt leftover file is irrelevant (no false alarm). */
+  isDegraded(): boolean { return this.degraded && !AccountVault.isEnabled(); }
 
   private load(): KeyFile {
-    if (!fsExtra.existsSync(KEYS_PATH)) { fsExtra.ensureDirSync(path.dirname(KEYS_PATH)); return { version: 1, keys: {} }; }
+    if (!fsExtra.existsSync(this.filePath)) { fsExtra.ensureDirSync(path.dirname(this.filePath)); return { version: 1, keys: {} }; }
     try {
-      const p = fsExtra.readJsonSync(KEYS_PATH) as Partial<KeyFile> | null;
-      const keys: Record<string, string> = {};
-      if (p?.keys && typeof p.keys === 'object') {
-        for (const [k, v] of Object.entries(p.keys)) if (typeof v === 'string' && v) keys[k] = v;
+      const p = fsExtra.readJsonSync(this.filePath) as Partial<KeyFile> | null;
+      if (!p || typeof p.keys !== 'object' || p.keys === null) {
+        // Present but wrong SHAPE → untrustworthy. DEGRADE instead of silently resetting to empty (which
+        // the next set()/delete() would persist, clobbering the good file + its .bak). (S12)
+        this.degraded = true;
+        logger.error(`${this.filePath} is present but malformed – refusing to overwrite it. CSFloat keys will NOT persist; restore it from ${path.basename(this.filePath)}.bak (or delete it) and restart.`);
+        return { version: 1, keys: {} };
       }
+      const keys: Record<string, string> = {};
+      for (const [k, v] of Object.entries(p.keys)) if (typeof v === 'string' && v) keys[k] = v;
       return { version: 1, keys };
-    } catch { logger.warn('csfloat_keys.json unreadable — starting empty'); return { version: 1, keys: {} }; }
+    } catch (err) {
+      this.degraded = true;
+      logger.error(`${this.filePath} unreadable – refusing to overwrite it (${(err as Error).message}). CSFloat keys will NOT persist; restore it from ${path.basename(this.filePath)}.bak (or delete it) and restart.`);
+      return { version: 1, keys: {} };
+    }
   }
 
   private save(): void {
-    try { writeJsonAtomic(KEYS_PATH, this.file, { spaces: 2, mode: 0o600, backup: true }); }
+    if (this.degraded) {
+      logger.warn(`CSFloat key store is DEGRADED – NOT persisting (would clobber the corrupt ${path.basename(this.filePath)} + its .bak). Fix the file and restart.`);
+      return;
+    }
+    try { writeJsonAtomic(this.filePath, this.file, { spaces: 2, mode: 0o600, backup: true }); }
     catch (err) { logger.warn(`could not persist CSFloat keys: ${(err as Error).message}`); }
   }
 

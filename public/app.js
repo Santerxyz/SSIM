@@ -916,6 +916,22 @@ function renderTokenStoreWarning(status) {
     + '<span><b>Refresh-token store is corrupt.</b> Tokens are NOT saving — restore refresh_tokens.json from its .bak and restart before a full refresh, or the fleet will re-login/2FA.</span>';
 }
 
+function renderCsFloatKeyStoreWarning(status) {
+  let node = document.getElementById('csfloatkeystore-warning');
+  const degraded = status && status.csfloatKeyStoreDegraded === true;
+  if (!degraded) { if (node) node.classList.add('hidden'); return; }
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'csfloatkeystore-warning';
+    node.className = 'fixed bottom-28 left-4 z-40 flex items-center gap-2 px-3.5 py-2 rounded-lg max-w-md '
+      + 'bg-amber-950/95 border border-amber-700 shadow-lg text-xs text-amber-100 backdrop-blur-sm';
+    document.body.appendChild(node);
+  }
+  node.classList.remove('hidden');
+  node.innerHTML = '<i class="fa-solid fa-key text-amber-400"></i>'
+    + '<span><b>CSFloat key store is corrupt.</b> Keys are NOT saving — pricing falls back to Steam and auto-accept skips accounts. Restore csfloat_keys.json from its .bak and restart.</span>';
+}
+
 function renderCrashBanner(status) {
   if (crashBannerDismissed) return;
   if (document.getElementById('crash-banner')) return; // render once
@@ -958,6 +974,7 @@ async function watchSystemStatus() {
       renderUpdateIndicator(st.update);
       renderBreakerIndicator(st);
       renderTokenStoreWarning(st);
+      renderCsFloatKeyStoreWarning(st);
       renderCrashBanner(st);
     }
     await new Promise((r) => setTimeout(r, 30000));

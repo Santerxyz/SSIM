@@ -2091,6 +2091,9 @@ export function createApp(deps: ApiDeps): Express {
       // Refresh-token store DEGRADED (B2): the file is present-but-corrupt and NOT persisting → the
       // operator must restore it before a mass refresh re-auths the fleet.
       ...(sessions.isTokenStoreDegraded() ? { tokenStoreDegraded: true } : {}),
+      // CSFloat key store DEGRADED (S12): csfloat_keys.json is present-but-corrupt (plaintext mode) →
+      // keys are silently absent (pricing falls back to Steam, auto-accept skips accounts). Surface it.
+      ...(csfloat.isKeyStoreDegraded() ? { csfloatKeyStoreDegraded: true } : {}),
       // Update availability + per-machine block (C3): "update available", and "ready but blocked on
       // this machine — manual install" when the artifact has failed its self-test ≥N times here.
       update: {

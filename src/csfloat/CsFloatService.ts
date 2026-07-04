@@ -30,6 +30,10 @@ export class CsFloatService {
   // ── key management ──────────────────────────────────────────────────────────
   hasKey(username: string): boolean { return this.keys.has(username); }
 
+  /** True when csfloat_keys.json is present-but-corrupt in plaintext mode → keys are NOT persisting
+   *  and are silently absent; surfaced on /api/system/status so the operator restores it (S12). */
+  isKeyStoreDegraded(): boolean { return this.keys.isDegraded(); }
+
   keyInfo(username: string): { configured: boolean; tail?: string } {
     const k = this.keys.get(username);
     return k ? { configured: true, tail: k.slice(-4) } : { configured: false };
