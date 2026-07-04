@@ -26,6 +26,10 @@ export class CsFloatError extends Error {
   }
 }
 
+/** S45: internal sentinel — a 429 whose backoff must happen OUTSIDE the limiter's single-flight slot.
+ *  Never surfaced to callers (the .catch in req() consumes it and re-schedules). */
+class RateLimitRetry extends Error {}
+
 export interface ListingSearchParams {
   cursor?:           string;
   limit?:            number;   // CSFloat caps at 50
@@ -135,21 +139,30 @@ export class CsFloatClient {
   }
 
   // ── core request: rate-limited, 429 backoff, clean error surfacing ──────────
-  private req<T>(config: AxiosRequestConfig): Promise<T> {
-    return this.limiter.schedule<T>(async () => {
-      /* paced by the per-key limiter (interactive vs. bulk via this.priority) */
-      for (let attempt = 0; ; attempt++) {
+  private req<T>(config: AxiosRequestConfig, attempt = 0): Promise<T> {
+    return this.limiter
+      .schedule<T>(async () => {
+        /* paced by the per-key limiter (interactive vs. bulk via this.priority) */
         let res;
         try {
           res = await this.http.request<T>(config);
         } catch (e) {
           throw new CsFloatError((e as AxiosError).message || 'CSFloat request failed (transport)');
         }
-        if (res.status === 429 && attempt < 3) { await delay(1000 * (attempt + 1)); continue; }
+        // S45: on a 429, DON'T sleep here — the backoff would hold the single-flight slot (maxConcurrent=1)
+        // for its whole duration, so interactive requests can't preempt a background pricing storm. Throw a
+        // sentinel so this task RESOLVES and frees the slot; the backoff + re-schedule happen in .catch below.
+        if (res.status === 429 && attempt < 3) throw new RateLimitRetry();
         if (res.status >= 200 && res.status < 300) return res.data as T;
         throw new CsFloatError(extractError(res.status, res.data), res.status, res.data);
-      }
-    }, this.priority);
+      }, this.priority)
+      .catch(async (err) => {
+        if (err instanceof RateLimitRetry) {
+          await delay(1000 * (attempt + 1));         // backoff OUTSIDE the slot (it's already freed)
+          return this.req<T>(config, attempt + 1);   // re-enter as a fresh task (a background client lands
+        }                                            // at the back of the low-priority queue → yields to interactive)
+        throw err;
+      });
   }
 }
 
