@@ -693,3 +693,14 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Tests:** `ssim-license-server/test/reliability.test.js` — publish leaves no `version.json.*.tmp`
   fragment and the manifest parses. 50/50 server tests.
 - **Status:** FIXED.
+
+### S36 — TokenStore `{ ...EMPTY }` shallow-spread aliased the shared tokens map — **FIXED**
+- **What:** replaced the module singleton `EMPTY` + its two `{ ...EMPTY }` shallow copies with a factory
+  `emptyFile()` that returns a brand-new `{ version:1, tokens:{} }` each time.
+- **Why:** `{ ...EMPTY }` copied only the top level — every fresh-install/degraded load shared the SAME
+  `EMPTY.tokens` object, so the first plaintext `set()` mutated the process-wide singleton and leaked that
+  token into every later TokenStore (two live instances: SessionManager + BanService).
+- **Files:** `src/core/TokenStore.ts`.
+- **Tests:** `test/tokenStoreDegraded.test.ts` — a fresh store doesn't inherit another instance's token
+  (teeth-verified: fails when the shared-alias is reintroduced).
+- **Status:** FIXED. Not covered by S35 (S35 refactored `readTokens`; the alias survived).

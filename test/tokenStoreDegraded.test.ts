@@ -111,3 +111,16 @@ test('S35b: in VAULT MODE a corrupt leftover plaintext file does NOT raise a fal
   }
   assert.equal(s.isDegraded(), true, 'and it is reported again once back in plaintext mode');
 });
+
+test('S36: a fresh-install store must NOT leak tokens into a later instance (no shared EMPTY alias)', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  // Instance A is a fresh install (missing file). In the buggy `{ ...EMPTY }` code its in-memory tokens
+  // map WAS the shared module singleton `EMPTY.tokens`, so this set() poisoned it process-wide.
+  const a = new TokenStore(mk(undefined));
+  a.set('alice', 'refresh-token-A');
+  assert.equal(a.get('alice'), 'refresh-token-A', 'A remembers its own token');
+  // Instance B is ALSO a fresh install, on a DIFFERENT path. It must start genuinely empty.
+  const b = new TokenStore(mk(undefined));
+  assert.equal(b.get('alice'), undefined, "B must not inherit A's token via a shared EMPTY.tokens object");
+  assert.equal(b.has('alice'), false, 'a fresh store is empty regardless of what other instances did');
+});

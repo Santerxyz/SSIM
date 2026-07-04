@@ -13,7 +13,11 @@ interface TokenFile {
   tokens:  Record<string, string>;
 }
 
-const EMPTY: TokenFile = { version: 1, tokens: {} };
+// S36: a FACTORY, not a shared singleton. `{ ...EMPTY }` was a SHALLOW copy — every fresh/degraded load
+// aliased the SAME `EMPTY.tokens` object, so the first `set()` mutated the module singleton and leaked
+// that token into every later TokenStore (two live instances: SessionManager + BanService). Return a
+// brand-new object with its own empty map each time.
+const emptyFile = (): TokenFile => ({ version: 1, tokens: {} });
 
 // ════════════════════════════════════════════════════════════════════════════
 //  TokenStore – persists Steam Auth-v2 refresh tokens to disk per account
@@ -49,7 +53,7 @@ export class TokenStore {
   private load(): TokenFile {
     if (!fsExtra.existsSync(this.filePath)) {
       fsExtra.ensureDirSync(path.dirname(this.filePath));
-      return { ...EMPTY }; // fresh install → empty is correct, NOT degraded
+      return emptyFile(); // fresh install → empty is correct, NOT degraded
     }
     try {
       const tokens = TokenStore.readTokens(fsExtra.readJsonSync(this.filePath) as Partial<TokenFile> | null);
@@ -100,7 +104,7 @@ export class TokenStore {
     } catch { /* .bak also unreadable → degrade below */ }
     this.degraded = true;
     logger.error(`${this.filePath} ${reason} and no valid ${base}.bak – refusing to overwrite it. Refresh tokens will NOT persist; restore it from ${base}.bak (or delete it) and restart.`);
-    return { ...EMPTY };
+    return emptyFile();
   }
 
   private save(): void {
