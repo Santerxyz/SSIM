@@ -6249,19 +6249,71 @@ function bindStaticEvents() {
  * physically refuses to serve the dashboard while unlicensed, so this is the
  * second line of defence (e.g. a stale tab left open from a prior session).
  */
+/** An AbortSignal that fires after `ms` (feature-detected; falls back to a manual controller). Used to
+ *  bound fetches so a backend that ACCEPTS but never ANSWERS can't hang the caller forever. (S23/S32) */
+function timeoutSignal(ms) {
+  try { if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return AbortSignal.timeout(ms); } catch (_) { /* fall through */ }
+  const c = new AbortController();
+  setTimeout(() => { try { c.abort(); } catch (_) { /* noop */ } }, ms);
+  return c.signal;
+}
+
 async function ensureLicensed() {
+  let res, data;
   try {
-    const res = await fetch('/api/system/status', { cache: 'no-store' });
-    const data = await res.json().catch(() => null);
-    if (res.ok && data && data.licensed === true) {
-      // Footer version reflects the ACTUAL backend version (from pkg.version), so it can never go
-      // stale like a hardcoded literal — and self-corrects after an auto-update swaps the backend.
-      if (data.version) { const f = document.getElementById('footer-status'); if (f) f.textContent = 'v' + data.version; }
-      return true;
-    }
-  } catch { /* unreachable / non-JSON → treat as unlicensed */ }
-  window.location.replace('/'); // → activation screen (license.html)
+    // S23: bound the probe — a backend that accepts but never answers used to hang init() forever, so the
+    // ssim-locked overlay never lifted (a permanently blank window).
+    res = await fetch('/api/system/status', { cache: 'no-store', signal: timeoutSignal(8000) });
+    data = await res.json().catch(() => null);
+  } catch (_) {
+    // Unreachable / timed out / non-JSON → NOT necessarily unlicensed. Do NOT redirect: in sidecar mode
+    // `/` is this same dashboard, so replace('/') was a reload loop (that also churned the session, S1).
+    // Show a visible retry screen that auto-recovers when the backend answers. (S23)
+    showBackendUnreachableScreen();
+    return false;
+  }
+  if (res.ok && data && data.licensed === true) {
+    // Footer version reflects the ACTUAL backend version (from pkg.version), so it can never go
+    // stale like a hardcoded literal — and self-corrects after an auto-update swaps the backend.
+    if (data.version) { const f = document.getElementById('footer-status'); if (f) f.textContent = 'v' + data.version; }
+    return true;
+  }
+  // Distinguish an EXPLICIT "activation needed" (the portal answering licensed:false, or a 403
+  // LICENSE_MISSING) — go to the activation screen — from an AMBIGUOUS 5xx/half-up backend, which is
+  // treated as unreachable (retry screen) rather than looped. (S23)
+  if (res.status === 403 || (data && data.licensed === false)) {
+    window.location.replace('/'); // → activation screen (license.html)
+    return false;
+  }
+  showBackendUnreachableScreen();
   return false;
+}
+
+/** S23: a visible "backend unreachable" screen shown INSTEAD of an automatic reload loop. It gently
+ *  re-probes and reloads ONCE the backend confirms it is licensed (a deliberate, non-looping recovery),
+ *  and offers a manual Retry. */
+function showBackendUnreachableScreen() {
+  if (document.getElementById('backend-unreachable')) return; // render once
+  const node = document.createElement('div');
+  node.id = 'backend-unreachable';
+  node.className = 'fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 text-center px-6 bg-[#0a0a0f] text-slate-200';
+  node.innerHTML = '<div style="font-size:18px;font-weight:600">Can’t reach SSIM’s backend</div>'
+    + '<div style="opacity:.75;max-width:28rem">SSIM is starting or its backend is busy. Your saved data is safe. '
+    + 'This will retry automatically; you can also retry now.</div>'
+    + '<button id="backend-retry" class="px-4 py-2 rounded-lg bg-brand text-white text-sm font-semibold">Retry</button>';
+  document.body.appendChild(node);
+  const btn = document.getElementById('backend-retry');
+  if (btn) btn.addEventListener('click', () => location.reload());
+  const probe = async () => {
+    if (!document.getElementById('backend-unreachable')) return; // dismissed
+    try {
+      const r = await fetch('/api/system/status', { cache: 'no-store', signal: timeoutSignal(6000) });
+      const d = await r.json().catch(() => null);
+      if (r.ok && d && d.licensed === true) { location.reload(); return; } // backend up → re-init cleanly (once)
+    } catch (_) { /* still down */ }
+    setTimeout(probe, 3000);
+  };
+  setTimeout(probe, 3000);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -416,3 +416,17 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/priceFillDeadBackend.test.ts` — the shipped loop bounds consecutive errors + resets on
   success (source-presence; fails against the old unbounded continue).
 - **Status:** FIXED. build clean · 260 tests (+1).
+
+### S23 — ensureLicensed: hung backend blanks the UI forever; failure → reload loop — **FIXED**
+- **What:** Added a `timeoutSignal(ms)` helper (feature-detected `AbortSignal.timeout` + fallback) and
+  bounded the boot `/api/system/status` probe (8s). `ensureLicensed` now distinguishes an EXPLICIT
+  unlicensed answer (`licensed:false` / 403 → activation redirect) from UNREACHABLE/timeout/ambiguous-5xx
+  → a visible `showBackendUnreachableScreen()` that gently re-probes and reloads ONCE the backend is up
+  (deliberate, non-looping), instead of the automatic `location.replace('/')`.
+- **Why:** the no-timeout fetch let a backend that accepts-but-never-answers hang `init()` forever (the
+  `ssim-locked` overlay never lifted → blank window); and `replace('/')` in sidecar mode targets this same
+  dashboard → a reload loop that also churned the session (S1). 
+- **Files:** `public/app.js` (`timeoutSignal`, `ensureLicensed`, `showBackendUnreachableScreen`).
+- **Tests:** `test/ensureLicensed.test.ts` — runs the shipped functions over mocked fetch/document/window:
+  licensed→proceed; licensed:false/403→redirect; unreachable/5xx→retry screen, NEVER a redirect.
+- **Status:** FIXED. build clean · 265 tests (+5).
