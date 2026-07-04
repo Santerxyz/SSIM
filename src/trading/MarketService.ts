@@ -236,7 +236,13 @@ export class MarketService {
     this.retryBackoffs   = opts?.retryBackoffMs   != null ? [opts.retryBackoffMs] : SELL_BACKOFF_MS;
     this.preflightBackoff = opts?.preflightBackoffMs != null ? opts.preflightBackoffMs : PREFLIGHT_BACKOFF_MS;
     this.confirmBackoff   = opts?.confirmBackoffMs != null ? opts.confirmBackoffMs : CONFIRM_BACKOFF_MS;
-    void this.runMassSell(groups, strategy, opts);
+    // S33: a fire-and-forget orchestrator that ever REJECTS would (a) escape `void` as an
+    // unhandledRejection → a money-breaker tick, and (b) never reach its trailing running=false → the
+    // job type latched refused until restart. Finalize on rejection: reset the flag + log (never rethrow).
+    void this.runMassSell(groups, strategy, opts).catch((err) => {
+      this.job.running = false; this.job.cancelling = false;
+      logger.error(`[mass-sell] orchestrator crashed – job released: ${(err as Error).message}`);
+    });
     return this.status();
   }
 

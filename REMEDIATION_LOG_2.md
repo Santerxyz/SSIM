@@ -445,3 +445,17 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/apiTimeout.test.ts` — a hanging fetch aborts as `timedOut`; `timeoutMs:0` disables it;
   a fast response is unaffected. (Reuses the S23 `timeoutSignal`.)
 - **Status:** FIXED. build clean · 268 tests (+3).
+
+### S33 — void-launched installers/orchestrators have no rejection finalizer — **FIXED**
+- **What:** Each `void this.runMass…()` launch (MarketService/TradeService/BuyService) now has a `.catch`
+  that resets its `running` flag + logs; `installNow` gained an internal `catch` that maps a `runUpdate`
+  throw to a returned failure result instead of rejecting.
+- **Why:** an unexpected rejection escaped `void` → `writeCrash('UNHANDLED REJECTION')` + a
+  `recordUncaught` tick (3/60s latches the money breaker), and the orchestrator never reached its trailing
+  `running=false` → the job type refused until restart. (PROVEN-latent hardening — no trigger proven at
+  HEAD, but a real risk.)
+- **Files:** `src/trading/{MarketService,TradeService,BuyService}.ts`, `src/licensing/updateScheduler.ts`.
+- **Tests:** `test/voidOrchestratorFinalize.test.ts` (a crashed mass-sell releases the job; the other two
+  void launches finalize); `test/updateScheduler.test.ts` (installNow catches a runUpdate throw → resolves
+  a failure, never rejects). AccountTrader untouched.
+- **Status:** FIXED. build clean · 271 tests (+3).

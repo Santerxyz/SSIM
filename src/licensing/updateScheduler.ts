@@ -142,6 +142,13 @@ export async function installNow(): Promise<{ updated: boolean; reason: string }
     // S14: pass the live busy-check so runUpdate can RE-CHECK immediately before the swap (the endpoint's
     // canInstallNow ran minutes ago — the download/self-test window is long enough to start a mass op).
     return await Updater.runUpdate(deps.currentVersion, { force: true, isBusy: deps.isBusy });
+  } catch (err) {
+    // S33: runUpdate can still throw (verify / self-test spawn / swapAndRelaunch). Catch it here so it
+    // never escapes the `void installNow()` call site as an unhandledRejection (which would writeCrash +
+    // tick the money breaker). runUpdate already set the specific failure outcome for its known paths;
+    // return a normal failure result rather than rejecting.
+    logger.error(`[update] install failed unexpectedly: ${(err as Error).message}`);
+    return { updated: false, reason: `install failed: ${(err as Error).message}` };
   } finally {
     inFlight = false;
   }

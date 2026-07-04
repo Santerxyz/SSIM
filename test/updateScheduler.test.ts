@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  currentView, canInstallNow, startUpdateScheduler, stopUpdateScheduler,
+  currentView, canInstallNow, startUpdateScheduler, stopUpdateScheduler, installNow,
 } from '../src/licensing/updateScheduler';
 import { setAvailableUpdate, setBlockedUpdate } from '../src/licensing/updateStatus';
+import { Updater } from '../src/licensing/Updater';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  C5 — periodic/manual update checks + idle-gated swap. (Tests run in-order in a
@@ -47,4 +48,18 @@ test('C5: currentView maps available + per-machine block, and blocks only the MA
 
   setAvailableUpdate(undefined);
   setBlockedUpdate(undefined);
+});
+
+test('S33: installNow CATCHES a runUpdate throw and returns a failure (never rejects → no breaker tick)', async () => {
+  const orig = Updater.runUpdate;
+  (Updater as unknown as { runUpdate: () => Promise<never> }).runUpdate = async () => { throw new Error('swap exploded'); };
+  startUpdateScheduler({ currentVersion: '1.3.4', isBusy: () => false }, 999_999);
+  try {
+    const r = await installNow(); // must RESOLVE (a failure result), not reject
+    assert.equal(r.updated, false);
+    assert.match(r.reason, /install failed/);
+  } finally {
+    (Updater as unknown as { runUpdate: typeof orig }).runUpdate = orig;
+    stopUpdateScheduler();
+  }
 });

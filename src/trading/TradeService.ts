@@ -553,7 +553,12 @@ export class TradeService {
       running: true, cancelling: false, cancelled: false, total: groups.length, done: 0, sent: 0, confirmed: 0, unconfirmed: 0,
       failed: [], results: [], startedAt: new Date().toISOString(),
     };
-    void this.runMassSend(groups, tradeUrl, opts);
+    // S33: finalize a fire-and-forget orchestrator on rejection — reset running + log — so it never
+    // escapes `void` as an unhandledRejection (breaker tick) nor latches the job type until restart.
+    void this.runMassSend(groups, tradeUrl, opts).catch((err) => {
+      this.massJob.running = false;
+      logger.error(`[mass-send] orchestrator crashed – job released: ${(err as Error).message}`);
+    });
     return this.massStatus();
   }
 

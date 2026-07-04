@@ -346,7 +346,12 @@ export class BuyService {
       total: usernames.length, refreshed: 0, processed: 0, placed: 0, filled: 0, skipped: 0, failed: 0,
       startedAt: new Date().toISOString(), results: [],
     };
-    void this.runMassBuy({ ...p, usernames });
+    // S33: finalize a fire-and-forget orchestrator on rejection — reset running + log — so it never
+    // escapes `void` as an unhandledRejection (breaker tick) nor latches the job type until restart.
+    void this.runMassBuy({ ...p, usernames }).catch((err) => {
+      this.massJob.running = false;
+      logger.error(`[mass-buy] orchestrator crashed – job released: ${(err as Error).message}`);
+    });
     return this.massBuyStatus();
   }
 
