@@ -5,6 +5,7 @@ import type { MaFile } from '../types/account';
 import { AccountVault } from './AccountVault';
 import { loadMaFileFromDisk, readCredentialsFile, listDropZoneMaFiles, parseAccountsCsv } from './maFiles';
 import { logger } from '../utils/logger';
+import { writeJsonAtomic } from '../utils/atomicJson';
 import { dataDir, vaultDir } from '../utils/paths';
 
 /**
@@ -290,7 +291,9 @@ export function quarantinePlaintextFile(
       try { fsExtra.removeSync(`${file}.bak`); } catch { /* best-effort */ }
       logger.warn(`[vault] quarantined ${removed} plaintext ${label}(s): deleted ${path.basename(file)} (+ .bak) — all copies are now in the encrypted vault`);
     } else {
-      fsExtra.writeJsonSync(file, { ...parsed, [section]: kept }, { spaces: 2 });
+      // S37: ATOMIC write — this module's contract is "never delete the last copy", so a power-cut
+      // mid-rewrite must not tear the kept-secrets file (temp→fsync→rename).
+      writeJsonAtomic(file, { ...parsed, [section]: kept }, { spaces: 2, mode: 0o600 });
       logger.warn(`[vault] quarantined ${removed} plaintext ${label}(s) from ${path.basename(file)}; kept ${Object.keys(kept).length} not-yet-vaulted entry/entries`);
     }
   } catch (e) {
