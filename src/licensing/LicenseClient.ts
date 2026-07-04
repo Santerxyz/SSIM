@@ -148,8 +148,14 @@ function writeMeta(m: LicenseMeta): void {
  * clock jump while offline can't poison the rollback high-water mark and later lock out
  * a valid offline user. (C13 / INV-G2.)
  */
-function markOnline(): void {
-  writeMeta(nextClockMeta(readMeta(), Date.now(), true));
+function markOnline(serverTimeMs?: number): void {
+  // S26: anchor the rollback high-water mark to the SERVER'S time (accurate, NTP-synced) rather than the
+  // LOCAL clock. A machine running with a forward-wrong clock WHILE online otherwise wrote that future
+  // value into maxSeenMs on every beat; after the clock was corrected, an expired-token boot hit
+  // `now < maxSeenMs - skew → rollback-refused` — offline grace dead until real time caught up. Fall back
+  // to the local clock only when the server reported none (an old server → today's behaviour, no worse).
+  const anchor = (typeof serverTimeMs === 'number' && Number.isFinite(serverTimeMs) && serverTimeMs > 0) ? serverTimeMs : Date.now();
+  writeMeta(nextClockMeta(readMeta(), anchor, true));
   licenseRevoked = false; // a successful server contact means the seat is live
 }
 
@@ -212,7 +218,7 @@ async function activate(key: string, hwid: string): Promise<ValidateResult> {
       if (!payload) return { ok: false, reason: 'The server returned an invalid token.' };
       if (payload.hwid !== hwid) return { ok: false, reason: 'Token HWID mismatch.' };
       storeToken(res.data.token);
-      markOnline(); // successful server contact → establish/reset the offline-grace anchor
+      markOnline(res.data?.serverTime); // S26: anchor to the server's time, not the local clock
       logger.info(`license activated (tier=${payload.tier})`);
       return { ok: true, reason: 'activated', payload };
     }
@@ -293,7 +299,7 @@ async function onlineRecheck(hwid: string, token: string): Promise<void> {
         logger.error('LICENSE REVOKED by backend.');
         void handleRevoked('This license has been revoked.');
       } else {
-        markOnline(); // successful server contact → reset the offline-grace anchor
+        markOnline(res.data?.serverTime); // S26: anchor to the server's time, not the local clock
       }
     }
   } catch {
@@ -339,7 +345,7 @@ async function heartbeat(hwid: string): Promise<void> {
       return;
     }
     if (res.status === 200) {
-      markOnline(); // contact succeeded → reset the offline-grace anchor
+      markOnline(res.data?.serverTime); // S26: anchor to the server's time, not the local clock
       if (typeof res.data?.token === 'string') {
         // backend may hand back a freshly-extended token → roll the offline window
         const next = verifyToken(res.data.token);

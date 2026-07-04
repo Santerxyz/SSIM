@@ -573,3 +573,17 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/updaterSigKeep.test.ts` — sha mismatch → shaOk:false (delete); sha-intact + no sigKind
   → shaOk:true (keep); sha-intact + invalid signature → shaOk:true (keep).
 - **Status:** FIXED. build clean · 288 tests (+3).
+
+### S26 — markOnline anchors the rollback clock to the LOCAL clock → forward-wrong clock poisons grace — **FIXED** *(client + server)*
+- **What:** `markOnline(serverTimeMs?)` now anchors `maxSeenMs` to the SERVER'S reported time (falling
+  back to the local clock only if none is sent — old-server safe). The heartbeat/validate/activate call
+  sites pass `res.data.serverTime`. Server: `activate`/`heartbeat`/`validate` success responses now
+  include `serverTime: Date.now()` *(ssim-license-server commit `f7f6b68`)*.
+- **Why:** a machine with a forward-wrong clock WHILE ONLINE wrote that future value into `maxSeenMs` on
+  every beat (C13 only stopped OFFLINE poisoning); after the clock was corrected, an expired-token boot hit
+  `now < maxSeenMs - skew → rollback-refused` — offline grace dead until real time caught up.
+- **Files:** `src/licensing/LicenseClient.ts`; server `src/server.js`.
+- **Tests:** `test/licenseUpdate.test.ts` (S26 — a server-time anchor vs a forward-wrong local one: the
+  latter locks out a corrected clock, the former does not); server `test/reliability.test.js` (the three
+  responses carry `serverTime`). `nextClockMeta`/`offlineGraceDecision` are already pure-tested.
+- **Status:** FIXED. client build clean · 289 tests (+1) · server 46 (+1). Client change is old-server-safe.

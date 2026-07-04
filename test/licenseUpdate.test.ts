@@ -25,6 +25,23 @@ test('offlineGraceDecision: a non-poisoned anchor still grants grace after the c
   assert.equal(offlineGraceDecision(trueNow, undefined, GRACE, SKEW), 'no-meta');
 });
 
+// S26 — markOnline now anchors maxSeenMs to the SERVER's time, not the local clock, so a forward-wrong
+// clock WHILE ONLINE can't poison the high-water mark and later refuse offline grace after correction.
+test('S26: anchoring to the SERVER time (not a forward-wrong local clock) keeps offline grace valid', () => {
+  const REAL = 1_700_000_000_000;                          // real "now"
+  const FORWARD_WRONG = REAL + 5 * 365 * 24 * 3600_000;    // the local clock, ~5 years ahead, while online
+
+  // OLD: markOnline(Date.now()) anchored to the forward-wrong LOCAL clock → maxSeenMs is in the future.
+  const poisoned = nextClockMeta(undefined, FORWARD_WRONG, true);
+  assert.equal(offlineGraceDecision(REAL, poisoned, GRACE, SKEW), 'rollback-refused',
+    'the OLD local-clock anchor locks out the user once the clock is corrected');
+
+  // NEW (S26): markOnline(res.data.serverTime) anchors to the ACCURATE server time.
+  const healthy = nextClockMeta(undefined, REAL, true);
+  assert.notEqual(offlineGraceDecision(REAL, healthy, GRACE, SKEW), 'rollback-refused',
+    'the server-time anchor never poisons the high-water mark, so a corrected clock still gets grace');
+});
+
 // C14 / INV-G3 — the orphan-delete must run ONLY after a confirmed successful swap.
 test('buildSwapScript: orphan-delete gated on swap success (no brick on a failed move)', () => {
   const s = buildSwapScript({
