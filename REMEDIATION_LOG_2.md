@@ -704,3 +704,12 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Tests:** `test/tokenStoreDegraded.test.ts` — a fresh store doesn't inherit another instance's token
   (teeth-verified: fails when the shared-alias is reintroduced).
 - **Status:** FIXED. Not covered by S35 (S35 refactored `readTokens`; the alias survived).
+
+### S50 — CS2 full-refresh had no transient/429 retry layer (parity gap vs TF2/quick) — **FIXED**
+- **What:** added `fetchRawRetrying()` wrapping each CS2 web-inventory context (2 + 16) in the SAME bounded
+  `REFRESH_RETRIES` transient/429 loop the TF2/quick path already used; added an overridable `pause()` seam.
+- **Why:** one 429/proxy blip on either context threw straight out → the whole account failed the pass →
+  inflated `failed` counts at fleet scale.
+- **Files:** `src/core/InventoryService.ts`. **Tests:** `test/inventoryCs2RefreshRetry.test.ts`
+  (transient → retried; non-transient → fails fast). +2 tests.
+- **Status:** FIXED. A non-transient error (auth/private) still fails immediately (no wasted retries).

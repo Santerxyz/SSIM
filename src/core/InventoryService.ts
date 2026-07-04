@@ -216,6 +216,38 @@ export class InventoryService {
     return p;
   }
 
+  /**
+   * S50: fetch ONE CS2 web-inventory context with the SAME bounded transient/429 retry the TF2 & quick
+   * paths already have (see the fetchInventoryOnly loop below). Without it a single 429/proxy blip on
+   * either context threw straight out and failed the whole account for the pass → inflated `failed`
+   * counts at fleet scale. A non-transient error (auth, private inventory) still throws immediately.
+   */
+  private async fetchRawRetrying(
+    session: ManagedSession, ctx: number, username: string,
+  ): Promise<Awaited<ReturnType<typeof InventoryManager.fetchRaw>>> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= REFRESH_RETRIES; attempt++) {
+      try {
+        return await InventoryManager.fetchRaw(session, 'cs2', ctx);
+      } catch (err) {
+        lastErr = err;
+        const rateLimited = isRateLimited(err);
+        if (attempt >= REFRESH_RETRIES || (!rateLimited && !isTransientRefreshError(err))) throw err;
+        const pause = rateLimited ? RETRY_PAUSE_RATELIMIT : RETRY_PAUSE_TRANSIENT;
+        logger.warn(
+          `[${username}] cs2 ctx${ctx} fetch attempt ${attempt + 1}/${REFRESH_RETRIES + 1} failed ` +
+          `(${(err as Error).message}) – retrying in ${Math.round(pause / 1000)}s`,
+        );
+        await this.pause(pause);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  /** The bounded-backoff wait between retry attempts — a seam so tests can exercise the retry path
+   *  without waiting real seconds. */
+  protected pause(ms: number): Promise<void> { return sleep(ms); }
+
   private async doRefreshOneViaGc(username: string): Promise<AccountInventory> {
     const account = this.accounts.get(username);
     if (!account) throw new Error(`Account "${username}" not found`);
@@ -247,8 +279,8 @@ export class InventoryService {
     //    currently-listed items. Names + exact unlock dates come straight from Steam's
     //    own descriptions (owner_descriptions "Tradable/Marketable After …"), so no
     //    schema resolver and no game-client connection are needed.
-    let raw2  = await InventoryManager.fetchRaw(session, 'cs2', 2);
-    let raw16 = await InventoryManager.fetchRaw(session, 'cs2', 16);
+    let raw2  = await this.fetchRawRetrying(session, 2, username);  // S50: bounded transient/429 retry
+    let raw16 = await this.fetchRawRetrying(session, 16, username);
     let ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
     let ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
 
