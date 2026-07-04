@@ -2,6 +2,7 @@ import { type SessionManager, refreshWebSession } from '../core/SessionManager';
 import type { AccountManager } from '../core/AccountManager';
 import type { InventoryService } from '../core/InventoryService';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
+import { isAmbiguousCommitFailure } from './commitAmbiguity';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { SessionState, type ManagedSession } from '../types/session';
@@ -496,6 +497,9 @@ export class TradeService {
       throw new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry to proceed.`);
     }
     this.journal.begin(guardKey, 'send');
+    // S3: set when offer.send fails TRANSPORT-AMBIGUOUSLY (the offer may already exist on Steam). The
+    // finally then SKIPS journal.resolve so a retry hits the refuse-once gate instead of duplicating it.
+    let commitMayHaveLanded = false;
     try {
       const trader = await this.getTrader(fromUsername);
       try {
@@ -503,6 +507,10 @@ export class TradeService {
         this.journal.record(guardKey, 'sent'); // the offer now exists on Steam (survives a post-commit crash)
         return result;
       } catch (err) {
+        // S3: an ECONNRESET/timeout on offer.send's response leg means the offer MAY have landed — keep
+        // the journal entry so a retry is refused once. A definite Steam rejection (eresult) is not
+        // ambiguous → the entry resolves normally. Classify the RAW error before it is re-shaped below.
+        if (isAmbiguousCommitFailure(err)) commitMayHaveLanded = true;
         // Bubble Steam's ACTUAL reason up cleanly (eresult / cause / full-inventory text),
         // reading only what Steam returned — never a follow-up inventory fetch. The parsed
         // flags are attached so callers that want structure (not just the string) have them.
@@ -516,7 +524,9 @@ export class TradeService {
     } finally {
       this.inFlight.delete(guardKey);
       moneyKeys.forEach((k) => MoneyOps.release(k));
-      this.journal.resolve(guardKey); // clean resolution (success OR caught failure) → no lingering entry
+      // S3: consume the entry on a clean resolution (success OR a definite failure), but KEEP it when the
+      // commit failed transport-ambiguously — so the next attempt is refused once, not duplicated.
+      if (!commitMayHaveLanded) this.journal.resolve(guardKey);
     }
   }
 

@@ -215,3 +215,35 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 
 **Wave 1 boundary re-check:** client build clean · client 225 tests · cargo clean · server 45 tests. ✔
 
+> **Field confirmations (user, 2026-07-04):** running 1.3.4 live-confirmed **S1** ("Open in Browser" →
+> "Missing/invalid capability token") and **S20** ("Live Logs doesn't work") — both fixed on this branch,
+> need a 1.3.5 release to reach the field. Pricing slowness = throttle-bound + S2/S13/S19. New **S68**
+> added to the register: the floating Live Logs button (`z-index:99999`) renders above toasts/modals/the
+> capability banner — obscures alerts (incl. my S1/S12 banners). Queued for Wave 5.
+
+---
+
+## Wave 2 — Money-path correctness
+
+### S3 — MoneyOpJournal consumed on a network-ambiguous commit failure → retry double-spends — **FIXED**
+- **What:** New `src/trading/commitAmbiguity.ts` `isAmbiguousCommitFailure(err)` classifies a commit
+  failure as transport-ambiguous (the order/offer may already be on Steam) — `verifyBeforeRetry` (buy),
+  or a transport signal (ECONNRESET/timeout/socket hang up/EPIPE/aborted) with NO `eresult`. `BuyService`
+  (`createBuyOrder().catch`) and `TradeService` (inner `sendTrade` catch) set a `commitMayHaveLanded`
+  flag on such a failure, and the `finally` SKIPS `journal.resolve` when it is set → the entry lingers →
+  the next attempt hits the refuse-once gate instead of firing a second real order/offer.
+- **Why:** `resolve()` ran in the `finally` on EVERY exit, so a thrown transport-ambiguous commit failure
+  (the common field storm — ECONNRESET on the response leg where the order landed but the probe threw
+  `verifyBeforeRetry`) consumed the entry → a retry double-spent real money. Only a hard process death
+  left an entry, so the dedup protected the rarest case, not the common one.
+- **Constraint:** `AccountTrader.ts` is NOT in the diff (grep-proven) — the classifier only READS the
+  error `createBuyOrder`/`sendTrade` already throw; the finalize re-POST is untouched. The never-throw
+  -after-placement contract is preserved (the `.catch` re-throws pre-placement failures only; once
+  `order.placed`/`record('placed')`, the post-order block still never throws out). Bias = when unsure,
+  ambiguous (a false "check Steam then retry" is cheap; a false "safe" double-spends).
+- **Files:** `src/trading/commitAmbiguity.ts` (new), `src/trading/BuyService.ts`, `src/trading/TradeService.ts`.
+- **Tests:** `test/commitAmbiguity.test.ts` (classifier: verifyBeforeRetry/transport → ambiguous, eresult
+  / plain rejection / null → not); `test/moneyOpJournalWiring.test.ts` (S3: ambiguous commit KEEPS the
+  entry, verifyBeforeRetry keeps it, a definite eresult rejection resolves it).
+- **Status:** FIXED. build clean · 232 tests (+7).
+

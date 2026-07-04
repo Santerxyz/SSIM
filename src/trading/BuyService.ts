@@ -2,6 +2,7 @@ import type { TradeService } from './TradeService';
 import type { BuyBilling } from './AccountTrader';
 import type { InventoryService } from '../core/InventoryService';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
+import { isAmbiguousCommitFailure } from './commitAmbiguity';
 import type { GameId, AccountInventory } from '../types/inventory';
 import { currencyInfo } from '../pricing/currencies';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
@@ -164,6 +165,9 @@ export class BuyService {
     // Snapshot live-ness BEFORE we touch the account so we only release a session WE create.
     const wasLiveBefore = this.trades.snapshotLive([p.username]);
     this.inFlight.add(guardKey);
+    // S3: set when the commit fails TRANSPORT-AMBIGUOUSLY (the order may already be on Steam). The finally
+    // then SKIPS journal.resolve so a retry hits the refuse-once gate instead of double-spending.
+    let commitMayHaveLanded = false;
     try {
       // B4: cross-restart dedup. A LINGERING journal entry means an identical buy died mid-flight last
       // run (Steam-side outcome unknown) → refuse the auto-refire ONCE; the finally consumes the entry so
@@ -222,6 +226,12 @@ export class BuyService {
         quantity:          qty,
         billing:           p.billing,
         retryAfterConfirm: p.retryAfterConfirm,
+      }).catch((err: unknown) => {
+        // S3: a transport-ambiguous commit failure (ECONNRESET/timeout on the response leg, or the
+        // explicit verifyBeforeRetry from the resting-order probe) means the order MAY already exist.
+        // Flag it so the finally keeps the journal entry → a retry is refused once, not double-spent.
+        if (isAmbiguousCommitFailure(err)) commitMayHaveLanded = true;
+        throw err;
       });
       if (order.placed) this.journal.record(guardKey, 'placed'); // survives a post-commit crash (record never throws)
 
@@ -293,7 +303,9 @@ export class BuyService {
       };
     } finally {
       this.inFlight.delete(guardKey);
-      this.journal.resolve(guardKey); // clean resolution (success OR the refuse-throw) → consume the entry
+      // S3: consume the entry on a clean resolution (success OR a definite/pre-commit failure), but KEEP
+      // it when the commit failed transport-ambiguously — so the next attempt is refused once.
+      if (!commitMayHaveLanded) this.journal.resolve(guardKey);
       // Release the session this direct buy created (mass-buy opts out — its batch releases once).
       if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
     }

@@ -48,3 +48,45 @@ test('B4 wiring: a buy matching a LINGERING journal entry is REFUSED before comm
   // The finally consumed the lingering entry → a DELIBERATE second attempt is no longer blocked.
   assert.equal(journal.findUnresolved(GUARD_KEY), undefined, 'the entry was consumed so a deliberate retry proceeds');
 });
+
+// ─── S3: a commit that fails must only CONSUME the journal entry when it is safe ───
+// A fixture whose pre-flight passes so buy() reaches trader.createBuyOrder, whose failure mode we choose.
+function makeBuyServiceReachingCommit(journal: MoneyOpJournal, createBuyOrder: () => Promise<unknown>): BuyService {
+  const svc = Object.create(BuyService.prototype) as BuyService;
+  const trader = { walletCurrency: 3, createBuyOrder } as Record<string, unknown>;
+  Object.assign(svc, {
+    inFlight: new Set<string>(),
+    journal,
+    trades: {
+      ensureWebSession: async () => trader,
+      snapshotLive: () => new Set<string>(),
+      releaseCreatedSessions: async () => {},
+    },
+    inventory: { forceRefresh: async () => ({ partial: false, items: [], wallet: { balance: 100, currency: 3 } }) },
+  });
+  return svc;
+}
+
+test('S3: a TRANSPORT-AMBIGUOUS commit failure KEEPS the journal entry (retry refused, not double-spent)', async () => {
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-s3a-')), 'money-op-journal.json');
+  const journal = new MoneyOpJournal(p);
+  const svc = makeBuyServiceReachingCommit(journal, async () => { throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }); });
+  await assert.rejects(svc.buy(P, { releaseSession: false }), /ECONNRESET/);
+  assert.ok(journal.findUnresolved(GUARD_KEY), 'the order may have landed → the entry MUST be kept');
+});
+
+test('S3: the verifyBeforeRetry commit signal also keeps the entry', async () => {
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-s3v-')), 'money-op-journal.json');
+  const journal = new MoneyOpJournal(p);
+  const svc = makeBuyServiceReachingCommit(journal, async () => { throw Object.assign(new Error('resting-order probe failed'), { verifyBeforeRetry: true }); });
+  await assert.rejects(svc.buy(P, { releaseSession: false }));
+  assert.ok(journal.findUnresolved(GUARD_KEY), 'verifyBeforeRetry must keep the entry');
+});
+
+test('S3: a DEFINITE commit rejection (eresult) resolves the entry (a corrected retry proceeds)', async () => {
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-s3d-')), 'money-op-journal.json');
+  const journal = new MoneyOpJournal(p);
+  const svc = makeBuyServiceReachingCommit(journal, async () => { throw Object.assign(new Error('insufficient funds'), { eresult: 15 }); });
+  await assert.rejects(svc.buy(P, { releaseSession: false }), /insufficient funds/);
+  assert.equal(journal.findUnresolved(GUARD_KEY), undefined, 'Steam rejected → order did not land → entry consumed');
+});
