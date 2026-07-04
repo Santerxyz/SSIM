@@ -327,3 +327,23 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   60s); with the clock jumped past the deadline the loop self-aborts to a partial result (< all items).
 - **Status:** FIXED. build clean · 247 tests (+2).
 
+### S28 — mass-sell reconcile positional-index race relabels a genuine failure as recovered — **FIXED**
+- **What:** `failedHere` is now a `Set<string>` of assetIds (not `{assetId, idx}`). Extracted the
+  reconcile into `reconcilePhantoms(user, failedAssetIds, finalListed)`, which removes recovered rows
+  from `this.job.failed` by IDENTITY (`f.username === user && recoveredIds.has(f.assetId)`) instead of
+  writing a `__recovered__` sentinel through a stored positional index and filtering it.
+- **Why:** with up to 25 concurrent `processBot` workers sharing `this.job.failed`, bot A's reconcile
+  `filter` reindexed the array while bot B awaited `getListedAssetIds()`; B then wrote `__recovered__`
+  through STALE indices onto the wrong row, which the next filter dropped — a genuine failure vanished
+  from the report. Identity-matching is race-safe: the read-filter-assign is synchronous (can't
+  interleave), and each bot only removes its own user's recovered ids.
+- **Constraint:** `AccountTrader.ts` NOT in the diff (grep-proven).
+- **Files:** `src/trading/MarketService.ts`.
+- **Tests:** `test/massSellReconcile.test.ts` — recovering botA's phantoms leaves botB's genuine failure
+  intact; identity includes the username (a same-assetId row of another bot is untouched); nothing
+  listed → no recovery.
+- **Status:** FIXED. build clean · 250 tests (+3).
+
+**Wave 2 boundary re-check:** client build clean · 250 tests · cargo clean (unchanged) · server 45. ✔
+(The recurring `updaterEacces.test.ts:51` pipeToFile flake failed once here, passed on re-run.)
+

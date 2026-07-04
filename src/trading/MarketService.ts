@@ -342,6 +342,23 @@ export class MarketService {
    *   If the connection drops mid-bot, the REMAINING items are deferred instead
    *   of hammering a dead session.
    */
+  /**
+   * S28: remove THIS bot's failed rows that are in fact listed (phantoms), by IDENTITY (username +
+   * assetId) — never by a positional index into the SHARED `this.job.failed`. Up to 25 processBot
+   * workers share that array; one bot's reconcile filter reindexes it while another awaits
+   * getListedAssetIds(), so a stored index would write/drop the WRONG row and silently vanish another
+   * bot's genuine failure. Identity-matching is race-safe (the read-filter-assign below is synchronous —
+   * it cannot interleave — and each bot only removes its own user's recovered ids). Returns the count.
+   */
+  private reconcilePhantoms(user: string, failedAssetIds: Set<string>, finalListed: Set<string>): number {
+    const recoveredIds = new Set([...failedAssetIds].filter((id) => finalListed.has(id)));
+    if (recoveredIds.size === 0) return 0;
+    this.job.failed = this.job.failed.filter((f) => !(f.username === user && recoveredIds.has(f.assetId)));
+    this.job.listed += recoveredIds.size;
+    this.job.recovered += recoveredIds.size;
+    return recoveredIds.size;
+  }
+
   private async processBot(
     group: MassSellGroup,
     resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<number | null>,
@@ -391,7 +408,7 @@ export class MarketService {
 
     // ── List each item (Rules 2 + 3) ──────────────────────────────────────────
     this.job.phase = 'listing';
-    const failedHere: Array<{ assetId: string; idx: number }> = [];
+    const failedHere = new Set<string>(); // S28: identity (assetId), NOT a positional index into the shared failed[]
     let listedForBot = 0;
     let pendingForBot = 0; // listings (incl. phantoms) that still need a 2FA confirm
 
@@ -466,7 +483,7 @@ export class MarketService {
         logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} no longer in inventory → skipped (gone)`);
       } else {
         this.job.failed.push({ username: user, assetId: item.assetId, error: outcome.error });
-        failedHere.push({ assetId: item.assetId, idx: this.job.failed.length - 1 });
+        failedHere.add(item.assetId);
         logger.error(`[mass-sell] ${user} ${pos}: ✗ failed ${item.marketHashName} – ${outcome.error}`);
       }
 
@@ -489,22 +506,11 @@ export class MarketService {
     // ── Rule 3 backstop: reconcile phantoms ────────────────────────────────────
     // After confirmation, phantom listings are ACTIVE and WILL show in the
     // listings set. Any item we marked failed that is in fact listed → recover.
-    if (failedHere.length > 0) {
+    if (failedHere.size > 0) {
       try {
         const finalListed = await trader.getListedAssetIds();
-        let recovered = 0;
-        for (const f of failedHere) {
-          if (finalListed.has(f.assetId)) {
-            this.job.failed[f.idx] = { username: user, assetId: f.assetId, error: '__recovered__' };
-            recovered++;
-          }
-        }
-        if (recovered > 0) {
-          this.job.failed = this.job.failed.filter(f => f.error !== '__recovered__');
-          this.job.listed += recovered;
-          this.job.recovered += recovered;
-          logger.info(`[mass-sell] ${user}: reconciled ${recovered} phantom listing(s) ← were marked failed`);
-        }
+        const recovered = this.reconcilePhantoms(user, failedHere, finalListed);
+        if (recovered > 0) logger.info(`[mass-sell] ${user}: reconciled ${recovered} phantom listing(s) ← were marked failed`);
       } catch { /* reconciliation is best-effort */ }
     }
 
