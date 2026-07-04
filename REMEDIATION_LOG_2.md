@@ -309,3 +309,21 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   runUpdate re-check sits behind network+spawn — both trivial guards).
 - **Status:** FIXED. build clean · 245 tests (+3).
 
+### S16 — GC 60s cap vs unbounded casket-move loop (false timeout + detached zombie) — **FIXED**
+- **What:** `withSession` takes an optional `timeoutMs` (default 60s, other callers unchanged).
+  `moveCasketItems` scales the backstop by item count (`20s + 3s×count + 20s margin`) AND gives the loop
+  its OWN deadline (`20s + 3s×count`, measured post-connect) checked each iteration — so the loop aborts
+  COOPERATIVELY with a partial `{moved, unconfirmed, failed}` before the backstop can fire (the 20s margin
+  > the 15s per-item verify timeout, so the loop always self-aborts first).
+- **Why:** the fixed 60s `withTimeout` false-"timed out" any move above ~50–80 items, and since it can't
+  cancel `fn(go)`, the move loop kept running DETACHED (a 2nd GC op could interleave on the same account)
+  while the caller got a timeout — which `runMove` then mislabelled as "nothing moved" though items DID
+  move. The cooperative deadline stops the loop itself (no detached zombie) and RETURNS the real partial
+  counts (so `runMove`'s success path records them — the mislabel is fixed by prevention; its catch now
+  only handles genuine pre-flight failures, for which "nothing moved" is accurate).
+- **Constraint:** `AccountTrader.ts` NOT in the diff (grep-proven).
+- **Files:** `src/trading/GcActionLayer.ts`.
+- **Tests:** `test/casketMoveBudget.test.ts` — backstop scales with count (3→49s, 100→340s, ≫ the old
+  60s); with the clock jumped past the deadline the loop self-aborts to a partial result (< all items).
+- **Status:** FIXED. build clean · 247 tests (+2).
+

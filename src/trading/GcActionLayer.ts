@@ -179,7 +179,7 @@ export class GcActionLayer {
    * connect (gamesPlayed[730] + await connectedToGC, hard timeout) → fn → GUARANTEED disconnect
    * (gamesPlayed[]) in finally. No persistent GC session; one op per account at a time.
    */
-  private async withSession<T>(username: string, fn: (go: GcLike) => Promise<T>): Promise<T> {
+  private async withSession<T>(username: string, fn: (go: GcLike) => Promise<T>, timeoutMs = 60_000): Promise<T> {
     const key = username.toLowerCase();
     if (this.inFlight.has(key)) throw new Error(`a GC operation is already running for ${username}`);
     this.inFlight.add(key);
@@ -190,7 +190,10 @@ export class GcActionLayer {
       await sleep(JITTER_MIN_MS + Math.floor(Math.random() * (JITTER_MAX_MS - JITTER_MIN_MS))); // anti-lockstep
       await this.connect(go, client);
       try {
-        return await withTimeout(fn(go), 60_000, `GC op for ${username}`);
+        // S16: the backstop budget is caller-scaled (a per-item op loop scales it by item count, and gives
+        // the loop its OWN shorter deadline so it self-aborts first). withTimeout can't cancel fn(go), so a
+        // premature fire would abandon a detached loop — the scaling makes it fire only as a true backstop.
+        return await withTimeout(fn(go), timeoutMs, `GC op for ${username}`);
       } finally {
         this.disconnect(client); // drop the GC session (keep the bounded handle for reuse)
       }
@@ -273,6 +276,14 @@ export class GcActionLayer {
     onProgress?: (p: { done: number; total: number; current: string; moved: number; failed: number }) => void,
     shouldCancel?: () => boolean,
   ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }> }> {
+    // S16: a per-item move costs ~0.9–1.8s (verify + pacing), so the old FIXED 60s backstop falsely
+    // "timed out" any move above ~50 items AND — since withTimeout cannot cancel fn(go) — left the loop
+    // running DETACHED (a 2nd GC op could then interleave). Scale the backstop by item count, and give the
+    // loop its OWN slightly-shorter deadline so it aborts COOPERATIVELY (returning its partial counts)
+    // before the backstop can fire — no detached zombie, and no "timed out = nothing moved" mislabel.
+    const MOVE_BASE_MS = 20_000;
+    const MOVE_PER_ITEM_MS = 3_000; // generous upper bound; a normal item finishes in ~half this
+    const loopBudgetMs = MOVE_BASE_MS + MOVE_PER_ITEM_MS * Math.max(1, itemIds.length);
     return this.withSession(username, async (go) => {
       if (direction === 'deposit') {
         const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
@@ -281,11 +292,18 @@ export class GcActionLayer {
           throw new Error(`deposit would exceed the ${CASKET_CAPACITY}-item cap (unit holds ${current})`);
         }
       }
+      const deadline = Date.now() + loopBudgetMs; // the loop's cooperative deadline (measured post-connect)
       const moved: string[] = [];
       const unconfirmed: string[] = [];
       const failed: Array<{ itemId: string; error: string }> = [];
       for (let i = 0; i < itemIds.length; i++) {
         if (shouldCancel?.()) break;
+        if (Date.now() >= deadline) {
+          // S16: abort CLEANLY before the backstop timeout — return the partial result so far (honest
+          // counts, no detached loop). The remaining items were not attempted; a re-run continues.
+          logger.warn(`[gc] ${username} ${direction}: move budget reached at item ${i}/${itemIds.length} – stopping cleanly (partial); the rest were NOT attempted (re-run to continue)`);
+          break;
+        }
         const itemId = String(itemIds[i]);
         try {
           // SEND (fire-and-forget). After this point we never throw for this item.
@@ -303,7 +321,7 @@ export class GcActionLayer {
       }
       logger.info(`[gc] ${username} ${direction}: ${moved.length} moved, ${unconfirmed.length} unconfirmed, ${failed.length} failed`);
       return { moved, unconfirmed, failed };
-    });
+    }, loopBudgetMs + 20_000); // backstop > the loop's own deadline → the loop self-aborts first (no detached zombie)
   }
 
   /** Polls the SO cache until the item reflects the expected casket state (or times out). */
