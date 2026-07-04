@@ -169,10 +169,31 @@ function freePort(): Promise<number> {
  *     so nothing 405s and silently looks like a proxy failure.
  * Returns the relay's loopback port + a close().
  */
-export function startProxyRelay(auth: NonNullable<IsolatedSessionSpec['proxyAuth']>, label = 'clean-browser'): Promise<{ port: number; close: () => void }> {
+export function startProxyRelay(
+  auth: NonNullable<IsolatedSessionSpec['proxyAuth']>,
+  label = 'clean-browser',
+  opts?: { maxConns?: number; firstByteTimeoutMs?: number },
+): Promise<{ port: number; close: () => void }> {
   const credHeader = `Proxy-Authorization: Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
 
+  // S65: this relay carries the account's PROXY credentials and, being a loopback proxy, is technically an
+  // open proxy any local process could use while the window is open. A true client-auth close isn't possible
+  // here — Chromium presents no proxy credentials (the whole reason the relay exists), and Edge/Chrome hand
+  // off to a DETACHED browser process whose PID we don't hold, so there's nothing to PID-pin. What we CAN do
+  // safely (without risking the just-field-fixed tunnel path) is BOUND the exposure: cap concurrent tunnels,
+  // and drop any connector that opens a socket but doesn't send a request promptly (an idle probe/scanner).
+  // Chromium always sends its CONNECT/request immediately, so neither ever affects a legitimate tunnel.
+  const MAX_RELAY_CONNS = opts?.maxConns ?? 64;
+  const FIRST_BYTE_TIMEOUT_MS = opts?.firstByteTimeoutMs ?? 5_000;
+  let activeConns = 0;
+
   const server = net.createServer((client) => {
+    if (activeConns >= MAX_RELAY_CONNS) { client.destroy(); return; } // bound concurrent tunnels (S65)
+    activeConns++;
+    const firstByteTimer = setTimeout(() => { client.destroy(); }, FIRST_BYTE_TIMEOUT_MS); // drop idle connectors (S65)
+    firstByteTimer.unref?.();
+    client.once('data', () => clearTimeout(firstByteTimer));
+    client.on('close', () => { activeConns--; clearTimeout(firstByteTimer); });
     client.on('error', () => client.destroy());
     let buf = Buffer.alloc(0);
 

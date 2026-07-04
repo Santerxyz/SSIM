@@ -922,3 +922,15 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   item total captured permanently on the curve.
 - **Files:** `src/core/ValueHistoryService.ts`. **Tests:** `test/valueHistoryFillDefer.test.ts` (defer while
   filling; record on drain; immediate when idle). +3 tests. **Status:** FIXED.
+
+### S65 — clean-browser relay is an unauthenticated loopback open-proxy — **FIXED (exposure bounded)**
+- **What:** capped concurrent relay tunnels (MAX_RELAY_CONNS=64) and drop any connector that opens a socket
+  but sends no request within FIRST_BYTE_TIMEOUT_MS (5s) — idle probes/floods are shed. Both are injectable
+  for tests. Chromium always sends immediately, so neither affects a legitimate tunnel.
+- **Why it isn't a full close:** a true client-auth is impossible for THIS relay — Chromium presents no proxy
+  credentials (the relay exists precisely because Chromium takes none on the CLI), and Edge/Chrome hand off to
+  a DETACHED browser process whose PID we don't hold, so there's nothing to PID-pin. The field-critical part
+  (domain-cookie logout + missing proxy auth) was already fixed at HEAD. The relay stays loopback-only + short-
+  lived; these caps bound the residual local-trust exposure.
+- **Files:** `src/trading/cleanBrowser.ts`. **Tests:** `test/proxyRelayGuard.test.ts` (idle-drop, conn cap,
+  loopback bind). +3 tests. **Status:** FIXED (bounded); a native peer-cred pin is the only hard close, parked.
