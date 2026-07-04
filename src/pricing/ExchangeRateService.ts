@@ -12,6 +12,13 @@ export class ExchangeRateService {
   private usdToEur = FALLBACK_USD_TO_EUR;
   private updatedAt = 0; // ms of last SUCCESSFUL fetch (0 = never → still on the hardcoded fallback)
   private timer?: NodeJS.Timeout;
+  // S44: a failed refresh used to wait the full 12h before retrying, so a transient blip stranded the
+  // fallback/stale rate for half a day. Retry in MINUTES with bounded exponential backoff; the counter
+  // resets each 12h tick (a fresh retry budget per cycle) and on any success.
+  private retryTimer?: NodeJS.Timeout;
+  private retryAttempt = 0;
+  private static readonly RETRY_BASE_MS = 5 * 60 * 1000; // 5,10,20,40 min — all << the 12h interval
+  private static readonly MAX_RETRIES   = 4;
   private readonly path: string;
 
   /** `filePath` overridable for tests. Loads the last persisted rate so a cold start
@@ -50,24 +57,45 @@ export class ExchangeRateService {
 
   start(): void {
     void this.refresh();
-    this.timer = setInterval(() => void this.refresh(), REFRESH_MS);
+    // Each 12h tick resets the short-retry budget so every cycle gets a fresh set of backoff attempts.
+    this.timer = setInterval(() => { this.retryAttempt = 0; void this.refresh(); }, REFRESH_MS);
     this.timer.unref?.();
   }
 
-  stop(): void { if (this.timer) clearInterval(this.timer); }
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.clearRetry();
+  }
 
   private async refresh(): Promise<void> {
     try {
       const resp = await axios.get('https://api.frankfurter.app/latest?from=USD&to=EUR', { timeout: 8_000 });
       const rate = resp.data?.rates?.EUR;
-      if (typeof rate === 'number' && rate > 0) {
-        this.usdToEur = rate;
-        this.updatedAt = Date.now();
-        this.persist(); // survive restarts so a cold start doesn't revert to 0.92 (C20)
-        logger.info(`[fx] USD→EUR = ${rate}`);
-      }
+      if (typeof rate !== 'number' || !(rate > 0)) throw new Error('no usable EUR rate in response');
+      this.usdToEur = rate;
+      this.updatedAt = Date.now();
+      this.persist(); // survive restarts so a cold start doesn't revert to 0.92 (C20)
+      logger.info(`[fx] USD→EUR = ${rate}`);
+      this.clearRetry(); // S44: a good refresh cancels any pending short-retry and resets the backoff
     } catch (err) {
       logger.warn(`[fx] refresh failed (${(err as Error).message}) – using ${this.usdToEur}`);
+      this.scheduleRetry(); // S44: retry in minutes, not 12h
     }
+  }
+
+  /** S44: after a failed refresh, arm ONE short retry with bounded exponential backoff (minutes). Once
+   *  MAX_RETRIES is reached we stop until the next 12h tick (which resets the budget) — never a busy loop. */
+  private scheduleRetry(): void {
+    if (this.retryTimer) return;                                        // one pending retry at a time
+    if (this.retryAttempt >= ExchangeRateService.MAX_RETRIES) return;   // budget spent → wait for the 12h tick
+    const delay = ExchangeRateService.RETRY_BASE_MS * 2 ** this.retryAttempt;
+    this.retryAttempt++;
+    this.retryTimer = setTimeout(() => { this.retryTimer = undefined; void this.refresh(); }, delay);
+    this.retryTimer.unref?.();
+  }
+
+  private clearRetry(): void {
+    this.retryAttempt = 0;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
   }
 }
