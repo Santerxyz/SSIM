@@ -38,7 +38,9 @@ export interface PricingStatus {
  */
 export class PricingService {
   private cache = new PriceCache();
-  private queue: Array<{ name: string; appid: number }> = [];
+  // S13: each job carries its ENQUEUE-time cache key + source, so a mid-fill effective-source flip (a
+  // CSFloat key added/removed at runtime) cannot leave a stale key in `queued` forever.
+  private queue: Array<{ name: string; appid: number; key: string; sourceId: PriceSourceId }> = [];
   private queued = new Set<string>(); // cache keys queued or in-flight (dedup across loads)
   private readonly rlAttempts = new Map<string, number>(); // per-key 429 retry counter (#17)
   private running = false;
@@ -125,7 +127,7 @@ export class PricingService {
       const key = this.cacheKey(it.name, it.appid, sid);
       if (this.queued.has(key)) continue;
       this.queued.add(key);
-      this.queue.push(it);
+      this.queue.push({ name: it.name, appid: it.appid, key, sourceId: sid }); // S13: pin the enqueue key+source
     }
     if (!this.running && !this.stopped && this.queue.length) void this.run();
   }
@@ -147,8 +149,13 @@ export class PricingService {
     try {
       while (this.queue.length && !this.stopped) {
         const job = this.queue.shift()!;
-        const src = this.activeSource();
-        const key = this.cacheKey(job.name, job.appid, src.id);
+        // S13: process the job entirely under its ENQUEUE-time key + source (not the CURRENT activeSource),
+        // so a mid-fill effective-source flip can't rebuild a different key at dequeue → the finally would
+        // then delete the WRONG key, leaving the enqueue key stuck in `queued` forever (the name becomes
+        // permanently unfetchable). A CSFloat job whose key was since removed simply fetches null → the
+        // name re-queues under the new active source on the next enrich (no permanent poisoning).
+        const key = job.key;
+        const src: PriceSource = job.sourceId === 'csfloat' && this.csfloatSource ? this.csfloatSource : this.steamSource;
         let requeued = false;
         try {
           const cents = await src.fetchPriceCents(job.name, job.appid);

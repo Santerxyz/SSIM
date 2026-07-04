@@ -101,3 +101,19 @@ test('S2: the PriceCache soft flag only attaches to a null miss (a real price is
     assert.notEqual(cache.get('plainnull').soft, true, 'a plain null (authoritative) is not soft');
   } finally { svc.shutdown(); }
 });
+
+test('S13: a processed job de-queues its ENQUEUE key even after the effective source flips mid-fill', async () => {
+  const svc = new PricingService();
+  try {
+    (svc as any).steamSource = { id: 'steam', fetchPriceCents: async () => 100 };
+    // A Steam job is queued; then the effective source flips to csfloat (a runtime CSFloat-key change).
+    (svc as any).queued = new Set(['SteamKey']);
+    (svc as any).queue = [{ name: 'AK-47', appid: 730, key: 'SteamKey', sourceId: 'steam' }];
+    (svc as any).activeSource = () => ({ id: 'csfloat' }); // the CURRENT source differs from the job's
+    void (svc as any).run();
+    await new Promise((r) => setTimeout(r, 250)); // let the single item resolve (before the inter-fetch sleep)
+    assert.equal((svc as any).queued.has('SteamKey'), false,
+      'the ENQUEUE key is removed (old code rebuilt a csfloat key → SteamKey lingered forever, name unfetchable)');
+    assert.equal((svc as any).queued.size, 0, 'queued fully drained — no permanent poisoning');
+  } finally { svc.shutdown(); }
+});

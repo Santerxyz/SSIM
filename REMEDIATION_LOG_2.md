@@ -649,3 +649,20 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Status:** FIXED. build clean · 296 tests (+3).
 
 **Wave 4 boundary re-check:** (below)
+client build clean · 296 tests · cargo clean · server 48 tests. ✔
+
+---
+
+## Wave 5 — Long tail
+
+### S13 — price dedup set poisoned when the effective source flips mid-fill — **FIXED**
+- **What:** Each queued job now carries its ENQUEUE-time `key` + `sourceId`; `run()` processes it under
+  those (not the CURRENT `activeSource()`), so the `finally` deletes the SAME key that was added to
+  `queued`.
+- **Why:** `ensureFilled` inserted under the enqueue-time key but `run()` rebuilt the key at dequeue; when
+  `activeSource()` flipped (a CSFloat key added/removed at runtime), the `finally` deleted the wrong key →
+  the enqueue key lingered in `queued` forever → that name became permanently unfetchable.
+- **Files:** `src/pricing/PricingService.ts`.
+- **Tests:** `test/pricingErrorMiss.test.ts` (S13 — a job de-queues its enqueue key even when activeSource
+  differs at dequeue).
+- **Status:** FIXED. build clean · 297 tests (+1).
