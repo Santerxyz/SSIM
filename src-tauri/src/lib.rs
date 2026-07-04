@@ -356,40 +356,76 @@ fn run_backend_selftest() -> i32 {
     };
     let extract_ms = t0.elapsed().as_millis();
     let t1 = Instant::now();
-    match std::process::Command::new(&path)
+    // S56: spawn + a BOUNDED wait instead of .output(). `.output()` blocks until the child's stdout pipe
+    // hits EOF — i.e. until EVERY writer closes, INCLUDING a grandchild that inherited the handle. A
+    // grandchild orphan that never exits would pin us (and the shared self-test cache exe) forever. We (a)
+    // wait on the CHILD via try_wait (so once IT exits we proceed regardless of a lingering pipe writer),
+    // and (b) hard-timeout as a backstop, killing the whole process tree on expiry. The updater's outer
+    // execFileSync timeout is still the real budget; this is defence-in-depth.
+    const SELFTEST_CHILD_TIMEOUT_SECS: u64 = 600;
+    let mut child = match std::process::Command::new(&path)
         .env("SSIM_SIDECAR", "1")
         .env("SSIM_HOME", ssim_home().to_string_lossy().to_string())
         .env("SSIM_SELFTEST", "1")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .spawn()
     {
-        Ok(o) => {
-            let boot_ms = t1.elapsed().as_millis();
-            // C6 PROFILE: the extract-vs-boot split, so a slow/AV-heavy machine's budget can be reasoned
-            // about from REAL numbers rather than guessed. Emitted to shell.log + the file report + stdout.
-            let profile = format!(
-                "SSIM_SELFTEST_PROFILE extract={extract_ms}ms boot={boot_ms}ms total={}ms path={}",
-                t0.elapsed().as_millis(), path.display()
-            );
-            log_shell(&profile);
-            // Persist the backend's report AND the profile to <home>/.ssim-selftest.out (the file channel
-            // the ≥1.2.4 updater reads).
-            let mut report = o.stdout.clone();
-            report.extend_from_slice(format!("\n{profile}\n").as_bytes());
-            let _ = std::fs::write(ssim_home().join(".ssim-selftest.out"), &report);
-            // C7: ALSO write the backend's stdout (which carries SSIM_SELFTEST_OK) to OUR inherited stdout
-            // handle. A GUI-subsystem process CAN write to a parent-provided pipe handle — the Windows
-            // subsystem controls console ALLOCATION, not std-handle inheritance, so when the updater's
-            // execFileSync provides a stdout pipe, GetStdHandle returns it and this write reaches the
-            // parent. That means a v1.2.0–1.2.2 stdout-ONLY updater CAN see the marker here — provided it
-            // (a) completed the all-or-nothing download and (b) the boot fits its 60 s budget (which the
-            // C6 stable-cache path widens). Confirmed by Windows handle semantics; see REMEDIATION_LOG.
-            let _ = std::io::stdout().write_all(&o.stdout);
-            let _ = std::io::stdout().write_all(format!("\n{profile}\n").as_bytes());
-            let _ = std::io::stdout().flush();
-            o.status.code().unwrap_or(2)
-        }
-        Err(e) => { eprintln!("SSIM_SELFTEST_FAIL spawn: {e}"); 2 }
+        Ok(c) => c,
+        Err(e) => { eprintln!("SSIM_SELFTEST_FAIL spawn: {e}"); return 2; }
+    };
+    // Drain stdout on a thread so a full pipe can never block the child; it delivers the bytes once the
+    // pipe reaches EOF. If a grandchild holds the pipe open we simply won't receive them (empty stdout).
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    if let Some(mut so) = child.stdout.take() {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let _ = so.read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        });
     }
+    let child_pid = child.id();
+    let deadline = Instant::now() + std::time::Duration::from_secs(SELFTEST_CHILD_TIMEOUT_SECS);
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code().unwrap_or(2),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    eprintln!("SSIM_SELFTEST_FAIL timeout after {SELFTEST_CHILD_TIMEOUT_SECS}s — killing the self-test process tree");
+                    let _ = child.kill();
+                    // Best-effort TREE kill so a grandchild orphan can't keep the cache exe pinned.
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &child_pid.to_string()])
+                        .output();
+                    let _ = child.wait();
+                    break 2;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => { eprintln!("SSIM_SELFTEST_FAIL wait: {e}"); break 2; }
+        }
+    };
+    let boot_ms = t1.elapsed().as_millis();
+    // Collect whatever stdout the child produced (a short grace after exit; empty if a grandchild pins the pipe).
+    let stdout_bytes = rx.recv_timeout(std::time::Duration::from_millis(1000)).unwrap_or_default();
+    // C6 PROFILE: the extract-vs-boot split, so a slow/AV-heavy machine's budget can be reasoned about from
+    // REAL numbers rather than guessed. Emitted to shell.log + the file report + stdout.
+    let profile = format!(
+        "SSIM_SELFTEST_PROFILE extract={extract_ms}ms boot={boot_ms}ms total={}ms path={}",
+        t0.elapsed().as_millis(), path.display()
+    );
+    log_shell(&profile);
+    // Persist the backend's report AND the profile to <home>/.ssim-selftest.out (the file channel the
+    // ≥1.2.4 updater reads).
+    let mut report = stdout_bytes.clone();
+    report.extend_from_slice(format!("\n{profile}\n").as_bytes());
+    let _ = std::fs::write(ssim_home().join(".ssim-selftest.out"), &report);
+    // C7: ALSO write the backend's stdout (which carries SSIM_SELFTEST_OK) to OUR inherited stdout handle,
+    // so a v1.2.0–1.2.2 stdout-ONLY updater can still see the marker (Windows handle semantics).
+    let _ = std::io::stdout().write_all(&stdout_bytes);
+    let _ = std::io::stdout().write_all(format!("\n{profile}\n").as_bytes());
+    let _ = std::io::stdout().flush();
+    code
 }
 
 /// Open (or focus) the live-logs window. Triggered by the backend writing "SSIM_OPEN_LOGS" to its

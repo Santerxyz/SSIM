@@ -838,3 +838,12 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
   across boots.
 - **Files:** `src-tauri/src/lib.rs`. **Tests:** `#[cfg(test)] mod tests` (sweep removes only tmp*, keeps the
   real backend + unrelated files; missing dir is a no-op) — `cargo test` 2/2. **Status:** FIXED. `cargo check` green.
+
+### S56 — shell self-test `.output()` has no own timeout (grandchild orphan can pin the cache exe) — **FIXED** (Rust)
+- **What:** replaced `.output()` with spawn + a bounded wait: stdout is drained on a thread, the CHILD is
+  polled via `try_wait` (so once it exits we proceed regardless of a lingering pipe writer), and a 600s
+  hard-timeout backstop kills the whole process tree (`taskkill /F /T`) on expiry.
+- **Why:** `.output()` blocks until the stdout pipe hits EOF — i.e. until every writer closes, including a
+  grandchild that inherited the handle — so a grandchild orphan could pin the shared self-test cache exe.
+- **Files:** `src-tauri/src/lib.rs`. **Verify:** `cargo check` green (spawn/timeout logic isn't unit-testable
+  without a real child; the outer execFileSync timeout remains the primary budget). **Status:** FIXED.
