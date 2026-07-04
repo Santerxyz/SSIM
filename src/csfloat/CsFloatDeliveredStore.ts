@@ -23,6 +23,12 @@ export class CsFloatDeliveredStore {
    *  re-delivered (a second real Steam offer per sale). A MISSING file (fresh install) is NOT
    *  degraded — nothing has been delivered yet. */
   private degraded = false;
+  /** Consecutive persist failures. The load-side degraded gate only covers a file that was corrupt AT
+   *  BOOT; a RUNTIME write failure (disk full / EACCES / AV lock) leaves the just-delivered id in memory
+   *  only, so a crash + restart re-delivers that sale (a second real Steam offer). After N consecutive
+   *  failures we latch degraded → auto-delivery pauses, bounding how many sales can be exposed. (S39.) */
+  private persistFailures = 0;
+  private static readonly PERSIST_FAIL_LIMIT = 3;
 
   constructor(private readonly path: string = DEFAULT_PATH) {
     this.load();
@@ -63,8 +69,16 @@ export class CsFloatDeliveredStore {
     }
     try {
       writeJsonAtomic(this.path, { version: 1, ids: this.ids }, { spaces: 0 });
+      this.persistFailures = 0; // a successful write re-persists the FULL id list → a prior blip self-heals
     } catch (err) {
-      logger.error(`failed to persist ${this.path}: ${(err as Error).message}`);
+      this.persistFailures++;
+      logger.error(`failed to persist ${this.path} (${this.persistFailures}/${CsFloatDeliveredStore.PERSIST_FAIL_LIMIT}): ${(err as Error).message}`);
+      if (this.persistFailures >= CsFloatDeliveredStore.PERSIST_FAIL_LIMIT && !this.degraded) {
+        // The dedup memory can no longer be made durable — pause auto-delivery so a subsequent crash
+        // can't re-deliver a growing set of sales whose delivered-ids were never saved. (S39)
+        this.degraded = true;
+        logger.error(`${this.path}: ${this.persistFailures} consecutive persist failures – CSFloat auto-delivery DISABLED to avoid re-delivering sales whose dedup cannot be saved. Fix the disk/permissions and restart.`);
+      }
     }
   }
 }

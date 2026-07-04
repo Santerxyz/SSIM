@@ -157,3 +157,19 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 > "pipeToFile … KEEPS the partial file" is an intermittent filesystem-timing flake — it failed once
 > then passed on an immediate re-run with no code change in its path. Watch for it at gate checks; a
 > single retry clears it. Out of scope for the current issue.
+
+### S39 — DeliveredStore write failure leaves dedup memory-only → crash re-delivers a real offer — **FIXED**
+- **What:** `add()` now counts consecutive persist failures and latches `degraded=true` after N=3, so
+  the worker's existing per-pass `isDegraded()` gate PAUSES auto-delivery. A successful write resets the
+  streak (a `writeJsonAtomic` re-persists the FULL id list, so a transient blip self-heals).
+- **Why:** the load-side degraded gate only covered a boot-time corrupt file. A RUNTIME write failure
+  (disk full / EACCES / AV lock) left the just-delivered id in memory only; a crash + restart then
+  reloaded a file missing that id → `isDegraded()` false → the sale got a SECOND real Steam offer.
+  Latching after N bounds how many un-persisted deliveries can accumulate before delivery halts.
+- **Care:** money-adjacent (real Steam offers). The offer is already sent when `add()` runs, so the
+  latch can't un-expose ids already delivered-but-unpersisted this run — it caps the count and stops
+  further exposure, which is the achievable guarantee (matches the register's "after N failures").
+- **Files:** `src/csfloat/CsFloatDeliveredStore.ts`.
+- **Tests:** `test/csfloatDelivery.test.ts` (S39) — 3 consecutive failures latch degraded; a mid-streak
+  success resets it and persists the buffered ids.
+- **Status:** FIXED. build clean · 222 tests (+2).
