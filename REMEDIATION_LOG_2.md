@@ -500,3 +500,20 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Files:** `src/core/TokenStore.ts`.
 - **Tests:** `test/tokenStoreDegraded.test.ts` (S24) — a throwing vault `setToken` does not escape `set`.
 - **Status:** FIXED. build clean · 278 tests (+1).
+
+### S25 — createdSession ownership map shared across flows → mid-fetch logout / reaper leak — **FIXED**
+- **What:** Replaced the service-level `createdSession` Map (keyed by account) with an
+  `AsyncLocalStorage<{createdByCall?}>` (`ownershipCtx`). Each per-account refresh runs inside
+  `ownershipCtx.run(store, …)`; `ensureSession` records ownership into the CALLER'S store; the worker
+  reads its OWN `store` for the release decision. No shared key for concurrent flows to clobber.
+- **Why:** `runRefresh` and `refreshAfterTrade` both set/read `createdSession[account]` with awaits
+  between; a trade's post-refresh running concurrently with a fleet refresh of the same account could log
+  the shared session out mid-fetch (spurious failure) or leave it unreleased (leaked to the reaper).
+- **Files:** `src/core/InventoryService.ts`.
+- **Tests:** `test/sessionOwnership.test.ts` — two interleaved same-account `ensureSession` flows keep
+  isolated ownership (creator=true / reuser=false); no store leaks outside a `run()`. **Updated**
+  `test/teardownQuiescence.test.ts` to simulate ownership via `ownershipCtx.getStore()` (documented
+  mechanism change) — its "releases ONLY created sessions" assertion still holds.
+- **Status:** FIXED. build clean · 280 tests (+2 net; +2 new − 0, teardown test updated in place).
+
+**Wave 3 boundary re-check:** client build clean · 280 tests · cargo clean (unchanged) · server 45. ✔

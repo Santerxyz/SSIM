@@ -116,7 +116,8 @@ test('destroySession neutralizes the client so its armed logon timer cannot relo
 
 interface SvcInternals {
   refreshMaybeThrottled: (u: string, g: string) => Promise<unknown>;
-  createdSession: Map<string, boolean>;
+  // S25: ownership is now a per-invocation AsyncLocalStorage store, not a shared per-account map.
+  ownershipCtx: { getStore(): { createdByCall?: boolean } | undefined };
 }
 
 function makeSvc(released: string[]): InventoryService {
@@ -157,11 +158,13 @@ test('refreshAfterTrade: releases ONLY sessions this refresh created', async () 
   const svc = makeSvc(released);
   const internals = svc as unknown as SvcInternals;
 
-  // Simulate ensureSession's ownership marker: odd accounts were created by this
-  // refresh, even accounts reused a session another op owns.
+  // Simulate ensureSession's ownership marker: odd accounts were created by this refresh, even accounts
+  // reused a session another op owns. ensureSession writes into the worker's per-invocation store (S25),
+  // and this mock runs inside that same ownershipCtx.run() context — so getStore() is the worker's store.
   internals.refreshMaybeThrottled = async (u: string) => {
     const created = Number(u.replace(/\D/g, '')) % 2 === 1;
-    internals.createdSession.set(u.toLowerCase(), created);
+    const store = internals.ownershipCtx.getStore();
+    if (store) store.createdByCall = created;
     return {};
   };
 

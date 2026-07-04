@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { InventoryStore } from './InventoryStore';
 import { InventoryManager } from './InventoryManager';
 import { fetchListedItems } from './MarketListings';
@@ -156,11 +157,13 @@ export class InventoryService {
    *  kill each other's session – share one promise per account instead. */
   private readonly inFlight = new Map<string, Promise<AccountInventory>>();
 
-  /** Per-account ownership marker for the bulk refresh: did THIS refresh's ensureSession
-   *  create the live session (true) or reuse/coalesce one another op owns (false)? Set by
-   *  ensureSession, read+cleared by the bulk worker so it releases only sessions it created
-   *  — never tears down a session another operation is using. (C17 / INV-A6.) */
-  private readonly createdSession = new Map<string, boolean>();
+  /** S25: PER-INVOCATION ownership context — did THIS refresh's ensureSession create the live session
+   *  (true) or reuse one another op owns (false)? Was a service-level Map keyed by ACCOUNT, which two
+   *  concurrent flows on the same account (a fleet refresh + a post-trade refresh) clobbered — one could
+   *  log the shared session out mid-fetch, or neither release it (leaked to the reaper). AsyncLocalStorage
+   *  scopes ownership to each per-account refresh call instead, so concurrent flows never collide. Each
+   *  worker runs its refresh inside `ownershipCtx.run(store, …)` and reads its OWN `store` for release. */
+  private readonly ownershipCtx = new AsyncLocalStorage<{ createdByCall?: boolean }>();
 
   refreshOne(username: string, game: GameId = 'cs2'): Promise<AccountInventory> {
     // CS2 has ONE refresh and it is the COMPLETE one: the full pure-web fetch
@@ -536,15 +539,17 @@ export class InventoryService {
   private async ensureSession(username: string): Promise<ManagedSession> {
     const account = this.accounts.get(username);
     if (!account) throw new Error(`Account "${username}" not found`);
-    const key = username.toLowerCase();
+    // S25: record ownership into the CALLER'S per-invocation store (undefined outside a refresh worker,
+    // e.g. a single-account API refresh that never releases) — never a shared per-account map.
+    const store = this.ownershipCtx.getStore();
     const existing = this.sessions.getSession(username);
     if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession) {
-      this.createdSession.set(key, false); // reused a live session — not ours to release
-      this.sessions.markUsed(username);    // genuine use → keep it out of the idle reaper (B40)
+      if (store) store.createdByCall = false; // reused a live session — not ours to release
+      this.sessions.markUsed(username);        // genuine use → keep it out of the idle reaper (B40)
       return existing;
     }
     const { session, createdByCall } = await this.sessions.loginAccountOwned(account);
-    this.createdSession.set(key, createdByCall);
+    if (store) store.createdByCall = createdByCall;
     this.sessions.markUsed(username);
     return session;
   }
@@ -623,25 +628,21 @@ export class InventoryService {
       while (queue.length > 0) {
         if (this.refreshCancel) break; // "End Task": stop pulling new accounts; in-flight fetch finishes
         const username = queue.shift()!;
-        // Ownership is tracked EXPLICITLY (createdSession, set by ensureSession via
-        // loginAccountOwned) instead of a racy isLive() snapshot that a concurrent
-        // LOGGING_IN could corrupt. Clear any stale marker before this account's refresh.
-        const key = username.toLowerCase();
-        this.createdSession.delete(key);
+        // S25: ownership is scoped to THIS account-refresh via a per-invocation store (isolated from a
+        // concurrent post-trade refresh of the same account), set by ensureSession within the run().
+        const store: { createdByCall?: boolean } = {};
         try {
-          await this.refreshMaybeThrottled(username, game);
+          await this.ownershipCtx.run(store, () => this.refreshMaybeThrottled(username, game));
         } catch (err) {
           this.job.failed.push({ username, error: (err as Error).message });
           logger.warn(`[${username}] ${game} refresh failed: ${(err as Error).message}`);
         } finally {
           this.job.done++;
-          // Release ONLY a session THIS refresh created (explicit ownership recorded by
-          // ensureSession) so a full-fleet refresh doesn't end with the whole fleet held
-          // live (the resource storm), WITHOUT ever tearing down a session another op owns
-          // or leaking one we created. The inventory is already cached, so logging out loses
-          // nothing; any later action re-logs on demand. Best-effort. (C17 / INV-A6.)
-          const createdByUs = this.createdSession.get(key) === true;
-          this.createdSession.delete(key);
+          // Release ONLY a session THIS refresh created (ownership recorded by ensureSession into our own
+          // store) so a full-fleet refresh doesn't end with the whole fleet held live (the resource
+          // storm), WITHOUT ever tearing down a session another op owns or leaking one we created. The
+          // inventory is already cached, so logging out loses nothing; any later action re-logs. (C17 / S25.)
+          const createdByUs = store.createdByCall === true;
           if (REFRESH_RELEASE_SESSIONS && createdByUs) {
             try {
               if (this.sessions.isLive(username)) { await this.sessions.logoutAccount(username); released++; }
@@ -738,15 +739,14 @@ export class InventoryService {
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const username = queue.shift()!;
-        const key = username.toLowerCase();
-        this.createdSession.delete(key); // clear any stale ownership marker
+        // S25: per-invocation ownership store, isolated from a concurrent fleet refresh of the same account.
+        const store: { createdByCall?: boolean } = {};
         try {
-          await this.refreshMaybeThrottled(username, 'cs2');
+          await this.ownershipCtx.run(store, () => this.refreshMaybeThrottled(username, 'cs2'));
         } catch (err) {
           logger.warn(`[${username}] post-trade refresh failed: ${(err as Error).message}`);
         } finally {
-          const createdByUs = this.createdSession.get(key) === true;
-          this.createdSession.delete(key);
+          const createdByUs = store.createdByCall === true;
           if (REFRESH_RELEASE_SESSIONS && createdByUs) {
             try {
               if (this.sessions.isLive(username)) await this.sessions.logoutAccount(username);
