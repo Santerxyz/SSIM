@@ -815,3 +815,18 @@ client build clean · 296 tests · cargo clean · server 48 tests. ✔
 - **Files:** `src/licensing/updateStatus.ts` (new outcome), `src/licensing/Updater.ts`,
   `src/licensing/updateScheduler.ts`. **Tests:** `test/updaterCheckOutcome.test.ts` (503/network→check-failed;
   current; update). +4 tests. **Status:** FIXED. `check()` gained an injectable `get` (test seam).
+
+### S54 — transient 'lock' (AV/MOTW) self-test failures counted toward the permanent C3 block — **FIXED**
+- **What:** added `selfTestFailureCountsTowardBlock(kind)` (false for 'lock'); `runUpdate` skips
+  `recordSelfTestFailure` for a 'lock' outcome (keeps current, retries fresh next boot) — 'crash'/'no-marker'/
+  'timeout' still count.
+- **Why:** the ~7s backoff ladder is far shorter than an AV scan, so three cold-AV boots permanently BLOCKED
+  a good update for a condition the classifier itself calls transient.
+- **Files:** `src/licensing/Updater.ts`. **Tests:** `test/updaterLockNoBlock.test.ts` (lock→false; others→true).
+  +1 test. **Status:** FIXED. Keep-current guard unchanged (a lock still never swaps).
+
+### S55 — C2 worst-case boot delay (bounded) — **SKIPPED (UX note, by design)**
+- **Rationale:** the register itself classifies S55 as a UX note ("PROVEN (bounded; C1 preserves progress)").
+  The worst-case delay is the anti-brick self-test budget + one escalation; C1 preserves progress across boots
+  so it never repeats work. Reducing it would mean weakening the self-test budget — the exact anti-brick guard
+  the owner constraints forbid weakening. No code defect; left as-is with progress-preserving C1 intact.

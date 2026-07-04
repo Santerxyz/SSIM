@@ -787,6 +787,17 @@ export function clearSelfTestState(dir: string = updatesStageDir()): void {
   try { fsExtra.removeSync(selfTestStatePath(dir)); } catch { /* best-effort */ }
 }
 
+/**
+ * S54: does a self-test failure of this KIND count toward the persistent C3 per-sha block?
+ * A 'lock' (EACCES/EBUSY/MOTW — an AV mid-scan or a Controlled-Folder handle) is ENVIRONMENTAL, not an
+ * artifact defect; the classifier itself calls it retryable and its backoff ladder (~7s) is far shorter
+ * than a real AV scan. Counting it meant three cold-AV boots permanently BLOCKED a perfectly good update.
+ * A 'crash' / 'no-marker' / 'timeout' IS a real per-artifact failure and still counts.
+ */
+export function selfTestFailureCountsTowardBlock(kind: string | undefined): boolean {
+  return kind !== 'lock';
+}
+
 /** Map a self-test failure kind → the coarse telemetry outcome (C4 enum). 'crash' has no dedicated
  *  bucket (a crash also means the boot never confirmed OK), so it folds into 'selftest-no-marker'. */
 function selfTestOutcomeFor(kind: string | undefined): UpdateOutcome {
@@ -894,11 +905,16 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   }
   const selfTest = await selfTestNewExe(file);
   if (!selfTest.ok) {
-    // C1: KEEP the verified artifact staged (do NOT remove it) so the next boot resumes at verify+self-
-    // test without re-downloading ~185 MB. C3: record the streak; surface (log marker + UI + telemetry)
-    // once it crosses the threshold — never a silent infinite keep-current.
-    const state = recordSelfTestFailure(info.sha256, info.latest, selfTest.kind);
     setUpdateOutcome(selfTestOutcomeFor(selfTest.kind));
+    // S54: a transient 'lock' (AV mid-scan / MOTW / Controlled-Folder handle) must NOT be folded into the C3
+    // per-sha streak — three cold-AV boots would otherwise permanently BLOCK a good update. Keep current
+    // this boot and retry fresh next boot; the keep-current guard is unchanged (still no swap).
+    if (!selfTestFailureCountsTowardBlock(selfTest.kind)) {
+      return { updated: false, reason: `new exe self-test locked [${selfTest.kind}] – kept current; retrying next boot (transient, not counted toward the C3 block)` };
+    }
+    // C1: KEEP the verified artifact staged (do NOT remove it) so the next boot resumes at verify+self-test
+    // without re-downloading ~185 MB. C3: record the streak; surface once it crosses the threshold — never a silent keep.
+    const state = recordSelfTestFailure(info.sha256, info.latest, selfTest.kind);
     if (state.consecutiveFailures >= SELFTEST_BLOCK_THRESHOLD) surfaceBlockedUpdate(info, state);
     return { updated: false, reason: `new exe failed its self-test [${selfTest.kind}] – kept the current version` };
   }
