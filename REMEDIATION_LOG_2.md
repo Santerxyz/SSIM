@@ -605,3 +605,15 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
 - **Tests:** `test/hwidPin.test.ts` — getHwid returns 64-hex + pins it; a pinned id wins even when live
   factors would differ (drift-proof); a missing/malformed pin is rejected (recompute, never a false id).
 - **Status:** FIXED. build clean · 292 tests (+3).
+
+### S31 — server key-guard pins only the public key → a mismatched pair signs unaccepted tokens — **FIXED** *(server repo)*
+- **What:** *(ssim-license-server commit `b86f5cc`)* Added `keys.verifyKeypair()` (Ed25519: sign a random
+  probe with the loaded PRIVATE key, verify with the loaded PUBLIC key) and an UNCONDITIONAL boot
+  self-check in `index.js` that refuses to start on a mismatch — independent of the pinned `EXPECTED_PUBKEY_FPR`.
+- **Why:** the S3 fingerprint guard pins only the PUBLIC key; a correct `public.pem` + a stale
+  `private.pem` passed it yet `token.sign` produced tokens the client-embedded public key rejects →
+  progressive fleet-wide activation + heartbeat-token-refresh failure that S2/S3 don't catch.
+- **Files:** `ssim-license-server/src/keys.js`, `src/index.js`.
+- **Tests:** server `test/reliability.test.js` (S31 — verifyKeypair true for the matching pair; a
+  mismatched pair fails the Ed25519 probe).
+- **Status:** FIXED. server `npm test` = **48 pass** (+2). Client untouched.
