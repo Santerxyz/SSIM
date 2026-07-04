@@ -518,6 +518,10 @@ async function setGame(game) {
       state.tf2Inventories = {};
       for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
       state.tf2Loaded = true;
+      // S29: this first TF2 load enriches + queues a server-side price fill for the cold TF2 cache, but
+      // nothing watched it (boot/refresh/source-switch all start a watch; this path did not) → TF2 prices
+      // stayed "…" until an unrelated trigger. Start the watch so prices + totals fill in live (mirrors init()).
+      void watchPriceFill(refreshActiveViewFromCache);
     } catch (err) { toast(err.message, 'error'); }
   }
   renderMain();

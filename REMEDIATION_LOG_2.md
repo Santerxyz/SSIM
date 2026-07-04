@@ -395,3 +395,14 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   `fetched`). Existing reprice/priceFillIndicator/auditFollowups tests still green.
 - **Status:** FIXED. build clean · 258 tests (+3).
 
+
+### S29 — TF2 first-load queues a fill nothing watches → TF2 prices stay "…" — **FIXED**
+- **What:** `setGame`'s first-TF2-load branch now `void watchPriceFill(refreshActiveViewFromCache)` after
+  the initial `/api/inventory-tf2` load, mirroring `init()`.
+- **Why:** the GET enriches + `ensureFilled(missing)` server-side, but `setGame` started no watcher
+  (boot/refresh/source-switch all do), so a cold TF2 cache showed "…" prices + wrong totals until a TF2
+  refresh-all or restart.
+- **Files:** `public/app.js` (`setGame`).
+- **Tests:** `test/tf2FillWatch.test.ts` — the shipped `setGame` first-load branch starts watchPriceFill
+  (source-presence; fails against the old code). watchPriceFill itself is covered by S10/S19.
+- **Status:** FIXED. build clean · 259 tests (+1).
