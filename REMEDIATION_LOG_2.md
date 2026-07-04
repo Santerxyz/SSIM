@@ -153,10 +153,11 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   → not, valid loads, degraded set() leaves the file+`.bak` untouched, healthy persists. (7 tests.)
 - **Status:** FIXED. build clean · 220 tests (+7).
 
-> **Note — known flaky test (pre-existing, NOT a regression):** `updaterEacces.test.ts:51`
-> "pipeToFile … KEEPS the partial file" is an intermittent filesystem-timing flake — it failed once
-> then passed on an immediate re-run with no code change in its path. Watch for it at gate checks; a
-> single retry clears it. Out of scope for the current issue.
+> **Note — flaky test FIXED (test-hygiene, not an S-item):** `updaterEacces.test.ts:51` "pipeToFile …
+> KEEPS the partial file" raced the async write-stream open against a nextTick source-destroy, so `dest`
+> was sometimes not yet created when checked. Fixed by seeding a prior-attempt partial on disk so the
+> "not deleted" assertion is deterministic (still catches a real delete-on-error regression). Verified
+> 5/5 stable. Committed separately from the S-series.
 
 ### S39 — DeliveredStore write failure leaves dedup memory-only → crash re-delivers a real offer — **FIXED**
 - **What:** `add()` now counts consecutive persist failures and latches `degraded=true` after N=3, so

@@ -50,7 +50,12 @@ test('pipeToFile: append mode resumes from the existing partial (resumable downl
 
 test('pipeToFile: on a source error it REJECTS and KEEPS the partial file (so the loop can resume)', async () => {
   const dest = tmp('partial.bin');
-  try { fs.rmSync(dest, { force: true }); } catch { /* none */ }
+  // Seed a prior-attempt partial on disk. This makes the "file is KEPT" assertion DETERMINISTIC: the old
+  // version raced the async write-stream open against the nextTick source-destroy, so the file sometimes
+  // hadn't been created yet when checked (intermittent flake). A pre-existing partial still verifies the
+  // real contract — pipeToFile must NOT delete/unlink it on error (a delete-on-error regression would
+  // remove it and fail this assertion).
+  fs.writeFileSync(dest, 'existing-partial');
   const src = new Readable({ read() { /* pushed manually below */ } });
   src.push(Buffer.from('partialbytes'));
   process.nextTick(() => src.destroy(new Error('connection reset')));
