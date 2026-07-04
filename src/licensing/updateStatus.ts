@@ -35,7 +35,8 @@ export type UpdateOutcome =
   | 'selftest-eacces'
   | 'selftest-timeout'
   | 'selftest-no-marker'
-  | 'deferred-busy'; // S14: verified+self-tested, but a money/item op started during the window → swap deferred
+  | 'deferred-busy'  // S14: verified+self-tested, but a money/item op started during the window → swap deferred
+  | 'swap-blocked';  // S9: the swap (move) itself failed ≥N times on this machine (AV/EDR / Controlled Folder Access)
 
 /** A newer version exists but its self-test has failed enough times on THIS machine that we have
  *  surfaced it (C3). The swap is still refused (keep-current guard) — this only makes it visible. */

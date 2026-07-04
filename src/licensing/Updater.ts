@@ -566,6 +566,8 @@ export function buildSwapScript(o: {
   deletePaths?: string[];      // extra files to remove AFTER the swap (e.g. orphaned ssim-backend.exe on migration)
   vbsPath: string;             // deleted by the bat
   selfPath?: string;           // what the bat deletes last; defaults to %~f0 (itself) in production
+  markerPath?: string;         // S9: file the bat writes on a FAILED move so the next boot counts it
+  markerSha?: string;          // S9: the artifact sha recorded in that marker (per-sha swap-fail streak)
 }): string {
   const waitOrKill = (pid: number, label: string): string =>
     `set /a ${label}=0\r\n:${label}\r\n` +
@@ -592,8 +594,16 @@ export function buildSwapScript(o: {
     `goto swapfail\r\n` +                                       // move never succeeded → SKIP the delete
     `:swapped\r\n` +
     dels +                                                     // orphan delete — ONLY after a confirmed swap
-    `:swapfail\r\n` +
+    // SUCCESS: relaunch the NEW exe with --ssim-updated (the "Update installed" splash is now honest).
     `start "" "${o.relaunch}"${o.relaunchUpdatedFlag ? ' --ssim-updated' : ''}\r\n` +
+    `goto done\r\n` +
+    `:swapfail\r\n` +
+    // S9: RECORD the swap failure so the next boot can count it and, after N, BLOCK the swap instead of
+    // looping boot→self-test→swap→relaunch forever. And relaunch the OLD exe WITHOUT --ssim-updated (the
+    // swap did NOT happen, so do not claim "Update installed").
+    (o.markerPath ? `echo ${o.markerSha ?? ''}>"${o.markerPath}"\r\n` : '') +
+    `start "" "${o.relaunch}"\r\n` +
+    `:done\r\n` +
     `del "${o.vbsPath}" >nul 2>&1\r\ndel "${o.selfPath ?? '%~f0'}"\r\n`
   );
 }
@@ -610,6 +620,8 @@ function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean;
   const shellExe = process.env.SSIM_SHELL_EXE;            // set ONLY by the single-exe shell
   const installDir = path.dirname(process.execPath);
   const siblingShell = path.join(installDir, 'SSIM.exe'); // the two-file GUI shell next to ssim-backend.exe
+  // S9: every swap shape records a failed move to this marker so the next boot counts it (→ block after N).
+  const swapMarker = { markerPath: swapFailureMarkerPath(), markerSha: info.sha256 };
 
   let script: string;
   let mode: string;
@@ -617,7 +629,7 @@ function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean;
     // (1) SINGLE-EXE: replace + relaunch the consolidated SSIM.exe (shell + embedded backend).
     script = buildSwapScript({
       tmp: newExe, target: shellExe, relaunch: shellExe, relaunchUpdatedFlag: true,
-      backendPid: process.pid, shellPid: process.ppid, vbsPath: vbs,
+      backendPid: process.pid, shellPid: process.ppid, vbsPath: vbs, ...swapMarker,
     });
     mode = 'single-exe';
   } else if (info.kind === 'single-exe' && IS_SIDECAR_MODE && fs.existsSync(siblingShell)) {
@@ -625,7 +637,7 @@ function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean;
     // shell with it, DELETE the now-orphaned ssim-backend.exe (our own running file), relaunch SSIM.exe.
     script = buildSwapScript({
       tmp: newExe, target: siblingShell, relaunch: siblingShell, relaunchUpdatedFlag: true,
-      backendPid: process.pid, shellPid: process.ppid, deletePaths: [process.execPath], vbsPath: vbs,
+      backendPid: process.pid, shellPid: process.ppid, deletePaths: [process.execPath], vbsPath: vbs, ...swapMarker,
     });
     mode = 'two-file→single-exe migration';
   } else if (IS_SIDECAR_MODE) {
@@ -633,14 +645,14 @@ function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean;
     // respawns the freshly-swapped sidecar. No SSIM_SHELL_EXE → it's the OLD shell, so no --ssim-updated.
     script = buildSwapScript({
       tmp: newExe, target: process.execPath, relaunch: siblingShell,
-      backendPid: process.pid, shellPid: process.ppid, vbsPath: vbs,
+      backendPid: process.pid, shellPid: process.ppid, vbsPath: vbs, ...swapMarker,
     });
     mode = 'two-file backend';
   } else {
     // (4) HEADLESS standalone (no shell): swap our own exe and relaunch it directly.
     script = buildSwapScript({
       tmp: newExe, target: process.execPath, relaunch: process.execPath,
-      backendPid: process.pid, vbsPath: vbs,
+      backendPid: process.pid, vbsPath: vbs, ...swapMarker,
     });
     mode = 'standalone';
   }
@@ -678,6 +690,45 @@ export interface SelfTestState {
 const SELFTEST_STATE_FILE = 'selftest-state.json';
 /** Surface (never silently pin) after this many identical-sha self-test failures. */
 export const SELFTEST_BLOCK_THRESHOLD = 3;
+
+// ── S9: swap-failure marker + per-sha streak (a MOVE that never succeeds must not loop forever) ───────
+const SWAP_FAIL_MARKER = 'swap-failed.marker'; // written by the swap bat on :swapfail (contains the sha)
+const SWAP_FAIL_STATE  = 'swap-fail-state.json';
+/** Block re-attempting the SWAP after this many identical-sha move failures on this machine. */
+export const SWAP_BLOCK_THRESHOLD = 3;
+interface SwapFailState { sha256: string; count: number; }
+/** Absolute path of the marker file the swap bat writes on a failed move (consumed next boot). */
+export function swapFailureMarkerPath(dir: string = updatesStageDir()): string { return path.join(dir, SWAP_FAIL_MARKER); }
+function readSwapFailState(dir: string): SwapFailState | undefined {
+  try {
+    const r = JSON.parse(fs.readFileSync(path.join(dir, SWAP_FAIL_STATE), 'utf8')) as Partial<SwapFailState>;
+    if (typeof r.sha256 === 'string' && Number.isFinite(r.count)) return { sha256: r.sha256, count: Number(r.count) };
+  } catch { /* absent/unreadable → no streak */ }
+  return undefined;
+}
+/**
+ * S9: consume a swap-failure marker the bat wrote last boot. If present, fold it into a per-sha streak
+ * (a new sha starts a fresh streak of 1); delete the marker. Returns the current streak (or the existing
+ * one when there is no new marker) so the caller can block after SWAP_BLOCK_THRESHOLD. Injectable dir.
+ */
+export function consumeSwapFailureMarker(dir: string = updatesStageDir()): SwapFailState | undefined {
+  const markerPath = path.join(dir, SWAP_FAIL_MARKER);
+  let markerSha: string | undefined;
+  try {
+    if (fs.existsSync(markerPath)) { markerSha = (fs.readFileSync(markerPath, 'utf8') || '').trim() || undefined; fs.rmSync(markerPath, { force: true }); }
+  } catch { /* best-effort */ }
+  const prev = readSwapFailState(dir);
+  if (!markerSha) return prev; // no NEW failure this boot → return the existing streak for the block check
+  const same = prev && prev.sha256 === markerSha;
+  const next: SwapFailState = { sha256: markerSha, count: same ? prev!.count + 1 : 1 };
+  try { writeJsonAtomic(path.join(dir, SWAP_FAIL_STATE), next, { spaces: 0 }); } catch { /* best-effort */ }
+  return next;
+}
+/** Clear the swap-fail streak + marker (on up-to-date / a fresh good state). Injectable dir for tests. */
+export function clearSwapFailState(dir: string = updatesStageDir()): void {
+  try { fs.rmSync(path.join(dir, SWAP_FAIL_STATE), { force: true }); } catch { /* best-effort */ }
+  try { fs.rmSync(path.join(dir, SWAP_FAIL_MARKER), { force: true }); } catch { /* best-effort */ }
+}
 
 function selfTestStatePath(dir: string): string { return path.join(dir, SELFTEST_STATE_FILE); }
 
@@ -765,6 +816,7 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   if (!info) {
     setUpdateOutcome('up-to-date');
     setAvailableUpdate(undefined);
+    clearSwapFailState(); // S9: on the latest, drop any stale swap-fail streak for a now-superseded sha
     return { updated: false, reason: 'up-to-date' };
   }
   // A newer version exists — surface it regardless of whether the swap ultimately succeeds.
@@ -779,6 +831,18 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   if (!opts?.force && prior && prior.sha256 === info.sha256 && prior.consecutiveFailures >= SELFTEST_BLOCK_THRESHOLD) {
     surfaceBlockedUpdate(info, prior);
     return { updated: false, reason: `update v${info.latest} blocked on this machine (self-test failed ${prior.consecutiveFailures}× [${prior.lastKind}]) – keeping current` };
+  }
+
+  // S9: consume the swap-failure marker the bat wrote on a FAILED move last boot, and fold it into a
+  // per-sha streak. A persistent MOVE failure (AV/EDR lock, or Controlled Folder Access on a Desktop
+  // install) used to loop boot→self-test→swap→relaunch FOREVER with nothing recorded. After N such
+  // failures for THIS artifact, BLOCK the swap (surface it) instead of re-attempting. `force` overrides.
+  const swapFail = consumeSwapFailureMarker();
+  if (!opts?.force && swapFail && swapFail.sha256 === info.sha256 && swapFail.count >= SWAP_BLOCK_THRESHOLD) {
+    logger.error(`SSIM_UPDATE_BLOCKED v${info.latest} sha=${info.sha256.slice(0, 12)} SWAP (move) failed ${swapFail.count}× on this machine – keeping current; likely AV/EDR or Controlled Folder Access on the install path. A manual reinstall (or an install-path exclusion) is needed.`);
+    setBlockedUpdate({ version: info.latest, sha256: info.sha256, kind: 'swap-fail', failures: swapFail.count, since: Date.now() });
+    setUpdateOutcome('swap-blocked');
+    return { updated: false, reason: `update v${info.latest} SWAP blocked on this machine (move failed ${swapFail.count}×) – keeping current` };
   }
 
   // Tell the shell to show "Downloading update…" on its splash — the download can be ~175 MB and runs

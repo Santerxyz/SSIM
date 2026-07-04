@@ -541,3 +541,22 @@ Status legend: **FIXED** (committed + test + log) · **SKIPPED (already addresse
   `selfTestNewExe` awaits an async `runOnce`); `test/updaterReliability.test.ts` (sha256File awaited).
   All existing selfTest/classify/keep-current property tests still green.
 - **Status:** FIXED. build clean · 282 tests (+2).
+
+### S9 — persistent swap failure loops boot→swap→relaunch forever; splash claims success — **FIXED**
+- **What:** The swap bat now RECORDS a per-sha swap-failure marker on the `:swapfail` path (a failed
+  `move /Y`) and relaunches the OLD exe WITHOUT `--ssim-updated` (no false "Update installed"); the
+  SUCCESS path keeps the flag. New `consumeSwapFailureMarker` folds the marker into a per-sha streak at
+  boot; `runUpdate` BLOCKS the swap (logs the stable `SSIM_UPDATE_BLOCKED` marker + `setBlockedUpdate` +
+  `swap-blocked` outcome) after `SWAP_BLOCK_THRESHOLD=3` — `force` overrides; a new sha / up-to-date
+  resets it.
+- **Why:** when `move /Y` fails (AV/EDR lock, or Controlled Folder Access on a Desktop install), the bat
+  correctly relaunches the old exe, but the old client re-offered the update, C1 reused the artifact, the
+  self-test passed again, and it swapped→failed→relaunched forever — nothing counted the swap failure,
+  and it even showed the "Update installed" splash each cycle.
+- **Constraint:** keep-current guard intact — the swap-block is an ADDED early-return; `swapAndRelaunch`
+  is still the single call site reached only after `selfTest.ok`.
+- **Files:** `src/licensing/Updater.ts`, `src/licensing/updateStatus.ts` (`swap-blocked` outcome).
+- **Tests:** `test/updaterSwapFail.test.ts` — the bat writes the marker on failure + drops the false
+  updated-flag (and keeps it on success); marker absent when no path given; `consumeSwapFailureMarker`
+  counts per-sha, resets on a new sha, survives a no-marker boot, clears. Existing buildSwapScript test green.
+- **Status:** FIXED. build clean · 285 tests (+3).
