@@ -22,6 +22,7 @@ import { ProcessHealth } from './core/ProcessHealth';
 import { AccountVault } from './core/AccountVault';
 import { unlockVault, migrateAccountsIntoVault } from './core/vaultBoot';
 import { installSteamTotpTimeout } from './trading/steamTotpTimeout';
+import { quiesceMoneyOps } from './utils/quiesce';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../package.json') as { version: string };
 
@@ -35,6 +36,19 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 let deps: ReturnType<typeof createDeps> | undefined;
 let server: Server | undefined;
 let activePort = PORT; // the actually-bound port (PORT, or the next free one)
+
+// S14 / H-XCT-005: the SINGLE source of truth for "an interruptible real-item op is in
+// flight". The update SWAP defers on this (isBusy below), and so do the graceful-shutdown
+// and re-license teardown paths (quiesceMoneyOps), so a buy/sell/trade/craft/move is never
+// severed mid-commit by an exit. A mass-sell, trade-up craft or casket move hard-exited mid-
+// flight loses unconfirmed listings / an irreversible craft's outcome / an in-flight move.
+const isBusy = (): boolean => !!deps && (
+  deps.trades.busy() || deps.buy.busy() || deps.inventory.busy() ||
+  deps.market.busy() || deps.tradeup.busy() || deps.casket.busy()
+);
+// Bounded drain budget shared by shutdown() and teardownFullApp(); the hard-exit fallback
+// and the shell close watchdog (lib.rs) both strictly exceed this so the drain has room.
+const QUIESCE_TIMEOUT_MS = 6000;
 
 // ── Single-instance lock (extracted to core/singleInstance.ts for testability) ──
 // See that module: an ATOMIC (fs.open 'wx'), FAIL-SAFE guard that makes a double-run —
@@ -143,6 +157,10 @@ async function startFullApp(): Promise<void> {
 
 /** Tears the running app down cleanly and frees the port (for re-activation). */
 async function teardownFullApp(): Promise<void> {
+  // H-XCT-005: let an in-flight buy/sell/trade/craft/move settle (bounded) BEFORE severing
+  // sessions, so a re-license does not tear a money op's web session out mid-commit.
+  const drained = await quiesceMoneyOps(isBusy, { timeoutMs: QUIESCE_TIMEOUT_MS });
+  logger.info(`re-license teardown: money-op drain ${drained}`);
   LicenseClient.stopHeartbeat();
   stopUpdateScheduler();
   stopMemHeartbeat();
@@ -230,13 +248,8 @@ async function gateAndRun(): Promise<void> {
   // is in flight (isBusy). Boot-time auto-update above is unchanged.
   startUpdateScheduler({
     currentVersion: pkg.version,
-    // S14: gate the mid-session swap on EVERY interruptible real-item op, not just trade/buy/refresh —
-    // a mass-sell, trade-up craft or casket move hard-exited by the swap loses unconfirmed listings /
-    // an irreversible craft's outcome / an in-flight move.
-    isBusy: () => !!deps && (
-      deps.trades.busy() || deps.buy.busy() || deps.inventory.busy() ||
-      deps.market.busy() || deps.tradeup.busy() || deps.casket.busy()
-    ),
+    // S14: gate the mid-session swap on EVERY interruptible real-item op (shared isBusy).
+    isBusy,
   });
 }
 
@@ -330,10 +343,14 @@ process.on('uncaughtException', (err) => {
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return; // idempotent — SIGINT/SIGTERM/stdin-quit/stdin-EOF (S51) can co-fire
-  shuttingDown = true;
+  shuttingDown = true; // set BEFORE the first await so co-firing signals can't double-enter
   logger.info(`${signal} received – shutting down…`);
   releaseInstanceLock();
   clearOwnPortFile(); // S52: only remove OUR announced port file (never a refused-instance false-delete)
+  // H-XCT-005: let an in-flight buy/sell/trade/craft/move settle (bounded) BEFORE logoutAll severs
+  // its web session — the ambiguous-commit interruption S14 fixed for the update swap, on the exit path.
+  const drained = await quiesceMoneyOps(isBusy, { timeoutMs: QUIESCE_TIMEOUT_MS });
+  logger.info(`shutdown: money-op drain ${drained}`);
   LicenseClient.stopHeartbeat();
   stopUpdateScheduler();
   stopMemHeartbeat();
@@ -350,8 +367,9 @@ async function shutdown(signal: string): Promise<void> {
     await deps.sessions.logoutAll().catch(() => undefined);
   }
   if (server) server.close(() => process.exit(0));
-  // Hard-exit fallback if connections linger
-  setTimeout(() => process.exit(0), 3000).unref();
+  // Hard-exit fallback if connections linger — must strictly exceed the quiesce budget so the
+  // bounded money-op drain above always has room to complete before this fires. (H-XCT-005)
+  setTimeout(() => process.exit(0), QUIESCE_TIMEOUT_MS + 3000).unref();
 }
 
 process.on('SIGINT',  () => void shutdown('SIGINT'));

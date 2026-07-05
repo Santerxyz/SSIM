@@ -789,8 +789,11 @@ pub fn run() {
                 }
                 // Watchdog: if the backend hasn't terminated shortly, force-kill + exit so we
                 // never orphan it. The normal path exits earlier via CommandEvent::Terminated.
+                // 12s strictly exceeds the backend's bounded money-op quiesce budget (6s drain +
+                // 3s hard-exit fallback) so a graceful drain completes before this backstop fires
+                // (H-XCT-005). The backstop stays — a genuinely wedged backend is still killed.
                 std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_secs(8));
+                    std::thread::sleep(Duration::from_secs(12));
                     if let Some(child) = app.state::<AppState>().sidecar.lock().unwrap().take() {
                         let _ = child.kill();
                     }
