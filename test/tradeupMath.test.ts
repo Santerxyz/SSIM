@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { achievableWears, wearForFloat, computeContract, type TuInput, type OutputProvider } from '../src/trading/tradeupMath';
+import { achievableWears, wearForFloat, wearMidpoint, computeContract, type TuInput, type OutputProvider } from '../src/trading/tradeupMath';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  H-TRD-075 — warmOutputPrices must not queue wears a skin's float range can't
@@ -63,4 +63,22 @@ test('computeContract accepts a set of all-finite floats', () => {
   const inputs = Array.from({ length: 10 }, () => mkInput(0.2));
   const c = computeContract(inputs, 'rarity_out', fixtureSchema, () => 100);
   assert.ok(Math.abs(c.avgFloat - 0.2) < 1e-9);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-TRD-078 — when the claimed wear band and the skin's [min,max] range don't
+//  intersect (schema float-range drift), wearMidpoint must resolve to the NEAREST
+//  range bound, not always skinMin. A band sitting wholly above the range answers
+//  skinMax; a band below answers skinMin (unchanged). Returning skinMin for an
+//  above-range band is the maximally optimistic wrong end (biases EV/profit up).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('wearMidpoint returns skinMax when the band is above the range', () => {
+  // Battle-Scarred band [0.45, 1.01) is wholly above a 0..0.38 range → nearest bound is 0.38.
+  assert.equal(wearMidpoint('Battle-Scarred', 0, 0.38), 0.38);
+});
+
+test('wearMidpoint returns skinMin when the band is below the range', () => {
+  // Factory New band [0.00, 0.07) is wholly below a 0.40..1 range → nearest bound is 0.40.
+  assert.equal(wearMidpoint('Factory New', 0.4, 1), 0.4);
 });

@@ -46,14 +46,17 @@ export function achievableWears(minFloat: number, maxFloat: number): Wear[] {
 
 /**
  * Estimated input float when the EXACT float is unknown (the pure-web inventory does not expose
- * floats): the midpoint of the item's wear band, clamped to the skin's own [min,max] range. The
+ * floats): the midpoint of the item's wear band, clamped to the skin's own [min,max] range. When
+ * the band and the [min,max] range don't intersect (schema float-range drift), resolves to the
+ * nearest range bound — skinMax if the band sits above the range, skinMin if below. The
  * GC execution path can substitute real floats; previews use this estimate (flagged in the UI).
  */
 export function wearMidpoint(wear: Wear, skinMin = 0, skinMax = 1): number {
   const b = WEAR_BANDS.find((x) => x.wear === wear) ?? WEAR_BANDS[2];
   const lo = Math.max(b.lo, skinMin);
   const hi = Math.min(b.hi === 1.01 ? 1 : b.hi, skinMax);
-  return hi >= lo ? (lo + hi) / 2 : skinMin;
+  if (hi >= lo) return (lo + hi) / 2;
+  return b.lo > skinMax ? skinMax : skinMin;
 }
 
 /** The trade-up output float for a given average input float and output skin float range. */
