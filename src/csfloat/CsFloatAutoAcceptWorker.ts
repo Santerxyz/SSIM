@@ -119,11 +119,28 @@ export class CsFloatAutoAcceptWorker {
         continue;
       }
       logger.info(`[csfloat-auto-accept] ${username}: delivering CSFloat trade ${id} (asset ${d.assetId})`);
-      const sent = await this.trades.sendTrade(username, {
-        tradeUrl: d.tradeUrl,
-        partnerSteamId: d.partnerSteamId,
-        myItems: [{ assetId: d.assetId }],
-      });
+      let sent;
+      try {
+        sent = await this.trades.sendTrade(username, {
+          tradeUrl: d.tradeUrl,
+          partnerSteamId: d.partnerSteamId,
+          myItems: [{ assetId: d.assetId }],
+        });
+      } catch (err) {
+        // H-FLT-001: the poll cadence (45s) is far longer than TradeService's refuse-once min-age
+        // (8s), so the refuse-once gate is only a one-poll speed-bump for this automated caller.
+        // Classify the failure: a TRANSPORT-AMBIGUOUS commit (ECONNRESET/timeout on offer.send's
+        // response leg) means the offer MAY already exist on Steam — record it in the delivered store
+        // exactly like a success so it is NEVER auto-resent, and tell the operator to verify manually.
+        // A DEFINITE Steam rejection did not land, so do NOT record it; log and move on.
+        if ((err as { commitMayHaveLanded?: boolean }).commitMayHaveLanded === true) {
+          this.delivered.add(id);
+          logger.warn(`[csfloat-auto-accept] ${username}: trade ${id} — the Steam send was network-AMBIGUOUS (${(err as Error).message}); the offer MAY have been created. It will NOT be auto-resent. Verify this account's Steam trade offers manually and re-deliver only if genuinely absent.`);
+        } else {
+          logger.error(`[csfloat-auto-accept] ${username}: trade ${id} — Steam rejected the send (${(err as Error).message}); not marked delivered, will retry on a later poll.`);
+        }
+        continue;
+      }
       // Mark delivered regardless of confirm status: the offer EXISTS on Steam now, so a
       // re-attempt would create a SECOND real offer for the same sale. An unconfirmed one needs
       // MANUAL 2FA confirmation (surfaced loudly), never an automatic resend.

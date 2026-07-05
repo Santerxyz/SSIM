@@ -518,10 +518,14 @@ export class TradeService {
         // reading only what Steam returned — never a follow-up inventory fetch. The parsed
         // flags are attached so callers that want structure (not just the string) have them.
         const parsed = parseSteamTradeError(err);
-        const clean = new Error(parsed.message) as Error & { eresult?: number; cause?: string; inventoryFull?: boolean };
+        const clean = new Error(parsed.message) as Error & { eresult?: number; cause?: string; inventoryFull?: boolean; commitMayHaveLanded?: boolean };
         if (parsed.eresult != null) clean.eresult = parsed.eresult;
         if (parsed.cause) clean.cause = parsed.cause;
         clean.inventoryFull = parsed.inventoryFull;
+        // S3/H-FLT-001: carry the transport-ambiguity verdict on the re-thrown error. parseSteamTradeError
+        // reshapes the message, so a caller (the CSFloat auto-accept worker) cannot re-classify reliably —
+        // it reads this flag to know the offer MAY exist on Steam and must never be auto-resent.
+        clean.commitMayHaveLanded = commitMayHaveLanded;
         throw clean;
       }
     } finally {
