@@ -36,7 +36,7 @@ export type ImportState =
 
 const SESSION_TTL_MS        = 5 * 60_000; // prune a finished/dead import session after this
 const MAX_ACTIVE_IMPORTS    = 10;         // hard ceiling on concurrent in-flight imports
-const QR_LOGIN_TIMEOUT_MS   = 120_000;    // QR challenge stays pollable this long, then 'expired'
+const LOGIN_TIMEOUT_MS      = 120_000;    // a QR/credentials login stays pollable this long, then 'expired'
 
 interface ImportSession {
   id:              string;
@@ -90,13 +90,13 @@ export class AccountImportService {
 
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
     // loginTimeout must be set BEFORE polling begins (i.e. before startWithQR resolves).
-    session.loginTimeout = QR_LOGIN_TIMEOUT_MS;
+    session.loginTimeout = LOGIN_TIMEOUT_MS;
 
     const id = uuidv4();
     const now = Date.now();
     const rec: ImportSession = {
       id, method: 'qr', state: 'waiting', session, environmentId: envId,
-      createdAt: now, expiresAt: now + QR_LOGIN_TIMEOUT_MS,
+      createdAt: now, expiresAt: now + LOGIN_TIMEOUT_MS,
     };
     this.active.set(id, rec);
     this.wireEvents(rec);
@@ -131,11 +131,16 @@ export class AccountImportService {
     if (this.accounts.get(accountName)) throw new Error(`Account "${accountName}" already exists`);
 
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
+    // loginTimeout must be set BEFORE polling begins — confirmation-only guards start
+    // polling via setImmediate as soon as startWithCredentials resolves, and the setter
+    // throws once polling has started. Without this the credentials path silently used
+    // the library's 30s default while expiresAt advertised the full window below.
+    session.loginTimeout = LOGIN_TIMEOUT_MS;
     const id = uuidv4();
     const now = Date.now();
     const rec: ImportSession = {
       id, method: 'credentials', state: 'waiting', session, environmentId: envId,
-      createdAt: now, expiresAt: now + QR_LOGIN_TIMEOUT_MS,
+      createdAt: now, expiresAt: now + LOGIN_TIMEOUT_MS,
     };
     this.active.set(id, rec);
     this.wireEvents(rec);
@@ -167,6 +172,9 @@ export class AccountImportService {
     if (!trimmed) throw new Error('a Steam Guard code is required');
     // Rejects on wrong code (e.g. TwoFactorCodeMismatch) — bubble to the route; state stays 'guard' for retry.
     await rec.session.submitSteamGuardCode(trimmed);
+    // Polling (and thus the library's loginTimeout) only starts now for code guards —
+    // re-anchor the service-side deadline so prune/snapshot match the real window.
+    rec.expiresAt = Date.now() + LOGIN_TIMEOUT_MS;
     return this.snapshot(rec);
   }
 
