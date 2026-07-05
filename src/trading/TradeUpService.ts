@@ -117,7 +117,18 @@ export class TradeUpService {
       running: true, cancelling: false, cancelled: false, enabled: st.craftEnabled, statusReason: st.reason,
       total: contracts.length, done: 0, crafted: 0, failed: 0, results: [], startedAt: new Date().toISOString(),
     };
-    void this.runExecute(username, contracts);
+    // S33: a fire-and-forget orchestrator that ever REJECTS would (a) escape `void` as an
+    // unhandledRejection → a money-breaker tick, and (b) never reach its trailing running=false → the
+    // job stays latched running until restart (409s every future start; S14 update busy-gate defers
+    // installs forever). Finalize on rejection: release the job + log (never rethrow).
+    void this.runExecute(username, contracts).catch((err) => {
+      this.execJob.running = false;
+      this.execJob.cancelling = false;
+      this.execJob.current = undefined;
+      this.execJob.finishedAt = new Date().toISOString();
+      this.execCancel = false;
+      logger.error(`[tradeup] execution orchestrator crashed — job released: ${err instanceof Error ? err.message : String(err)}`);
+    });
     return this.executeStatus();
   }
 
@@ -146,7 +157,7 @@ export class TradeUpService {
         }
       } catch (e) {
         this.execJob.failed++;
-        this.execJob.results.push({ index: i, submitted: false, error: (e as Error).message });
+        this.execJob.results.push({ index: i, submitted: false, error: e instanceof Error ? e.message : String(e) });
       } finally {
         this.execJob.done++;
       }
