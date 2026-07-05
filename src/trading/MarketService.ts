@@ -288,14 +288,18 @@ export class MarketService {
 
     // Fixed custom price → no lookups; otherwise getSellInfo's internal 3-method
     // cascade (via the bot proxy + cookies) resolves the price. Cached per name.
-    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }): Promise<number | null> => {
-      if (customNet != null) return customNet;
-      if (netCache.has(name)) return netCache.get(name)!;
+    // S2 (in-run): a null net is cached (and short-circuits every same-name item) ONLY
+    // when Steam actually answered (`info.authoritative`). A transport-failure null
+    // (all cascade tries threw) is NOT cached and surfaces as `transport:true` so the
+    // caller defers the item instead of failing it and poisoning the rest of the run.
+    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }): Promise<{ net: number | null; transport: boolean }> => {
+      if (customNet != null) return { net: customNet, transport: false };
+      if (netCache.has(name)) return { net: netCache.get(name)!, transport: false };
       const info = await this.pricing.getSellInfo(name, ctx);
       const buyer = targetBuyerCents(info, strategy);
       const net = buyer != null ? sellerNetFromBuyer(buyer) : null;
-      netCache.set(name, net);
-      return net;
+      if (net != null || info.authoritative) netCache.set(name, net);
+      return { net, transport: net == null && !info.authoritative };
     };
 
     const worker = async (): Promise<void> => {
@@ -372,7 +376,7 @@ export class MarketService {
 
   private async processBot(
     group: MassSellGroup,
-    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<number | null>,
+    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
   ): Promise<void> {
     const user = group.username;
@@ -422,6 +426,7 @@ export class MarketService {
     const failedHere = new Set<string>(); // S28: identity (assetId), NOT a positional index into the shared failed[]
     let listedForBot = 0;
     let pendingForBot = 0; // listings (incl. phantoms) that still need a 2FA confirm
+    let transportPriceMisses = 0; // S2: consecutive price lookups that failed at the transport layer (not "no price")
 
     for (let i = 0; i < group.items.length; i++) {
       const item = group.items[i];
@@ -451,7 +456,26 @@ export class MarketService {
         continue;
       }
 
-      const net = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookies: trader.cookies });
+      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookies: trader.cookies });
+      if (net == null && transport) {
+        // S2 (in-run): the price lookup failed at the transport layer (429 storm, proxy
+        // reset, 5xx) — Steam never answered, so this is NOT "no price". Defer the item
+        // (retryable), never fail it, so one blip doesn't mass-fail every same-name item.
+        this.job.deferred.push({ username: user, assetId: item.assetId, error: 'price lookup failed (connection) – not attempted' });
+        this.job.done++;
+        transportPriceMisses++;
+        logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} – price lookup failed (connection), deferred`);
+        // Two connection-class price misses in a row → the bot's egress is down; defer the
+        // rest instead of burning a lookup per item (same philosophy as the 'deferred' outcome).
+        if (transportPriceMisses >= 2) {
+          const rest = group.items.slice(i + 1);
+          logger.warn(`[mass-sell] ${user} ${pos}: price lookups failing (connection) – deferring ${rest.length} remaining item(s)`);
+          this.deferAll(group, rest, 'price lookup failed (connection) – not attempted');
+          break;
+        }
+        continue;
+      }
+      transportPriceMisses = 0; // Steam answered (a real net or an authoritative no-price) → streak broken.
       if (net == null) {
         this.job.skippedNoPrice++;
         this.job.failed.push({ username: user, assetId: item.assetId, error: 'no market price (skipped)' });

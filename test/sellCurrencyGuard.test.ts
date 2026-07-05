@@ -43,7 +43,7 @@ async function runProcessBot(walletCurrency: number | undefined): Promise<{ bloc
     { assetId: 'a1', marketHashName: 'AK-47 | Redline' },
     { assetId: 'a2', marketHashName: 'AWP | Asiimov' },
   ] };
-  const resolveNet = async () => 1000; // EUR cents
+  const resolveNet = async () => ({ net: 1000, transport: false }); // EUR cents; Steam answered
   await (svc as unknown as { processBot: (g: unknown, r: unknown, d: number) => Promise<void> })
     .processBot(group, resolveNet, 0);
 

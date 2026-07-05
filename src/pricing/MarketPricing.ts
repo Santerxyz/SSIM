@@ -25,6 +25,12 @@ export interface SellInfo {
   /** Median sell price (buyer-facing EUR cents) or null. */
   medianCents:   number | null;
   volume:        number | null;
+  /** True iff at least one cascade try got a HTTP 200 with `success === true` — i.e.
+   *  Steam actually answered. A null `lowestCents` with `authoritative:true` is a
+   *  genuine "no listings"; with `authoritative:false` the price was NEVER read
+   *  (all tries threw: 429 storm, proxy reset, 5xx, or a throttled `success:false`)
+   *  and must NOT be cached as "no price" for the run (S2 class). */
+  authoritative: boolean;
 }
 
 /** A per-account HTTPS agent (proxy / local-IP bound) used to route a price
@@ -78,6 +84,10 @@ export class MarketPricing {
     ];
 
     const t0 = Date.now();
+    // A try that RETURNS (doesn't throw) got a 200 + success===true — Steam answered
+    // (viaPriceOverview throws on any non-200 or success!==true). Track it so an
+    // exhausted-with-no-price result is still authoritative if any try was answered.
+    let sawAuthoritative = false;
     for (let i = 0; i < methods.length; i++) {
       const n = i + 1;
       const m = methods[i];
@@ -85,6 +95,7 @@ export class MarketPricing {
       plog(`[Try ${n}/3] "${short}" → trying ${m.label}…`);
       try {
         const info = await m.run();
+        sawAuthoritative = true;
         if (info.lowestCents != null) {
           plog(`[Try ${n}/3] ✓ hit via ${m.label}: ${(info.lowestCents / 100).toFixed(2)}€ ` +
                `(method ${Date.now() - ts}ms, total ${Date.now() - t0}ms)`);
@@ -101,7 +112,7 @@ export class MarketPricing {
       }
     }
     plog(`✗ All 3 methods exhausted for "${short}" – no price (total ${Date.now() - t0}ms)`, 'warn');
-    return { lowestCents: null, medianCents: null, volume: null };
+    return { lowestCents: null, medianCents: null, volume: null, authoritative: sawAuthoritative };
   }
 
   /**
@@ -127,9 +138,10 @@ export class MarketPricing {
     const lowest = parseEurCents(r.data.lowest_price);
     const median = parseEurCents(r.data.median_price);
     return {
-      lowestCents: lowest ?? (allowMedian ? median : null),
-      medianCents: median,
-      volume:      parseVolume(r.data.volume),
+      lowestCents:   lowest ?? (allowMedian ? median : null),
+      medianCents:   median,
+      volume:        parseVolume(r.data.volume),
+      authoritative: true, // reached only on a 200 + success===true response
     };
   }
 
