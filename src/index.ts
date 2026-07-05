@@ -364,6 +364,7 @@ async function shutdown(signal: string): Promise<void> {
     deps.inventory.gcStore.flush();
     deps.history.flush();
     AccountVault.flush();
+    deps.sessions.shutdown(); // stop the idle-session reaper (B40) before discarding the manager
     await deps.sessions.logoutAll().catch(() => undefined);
   }
   if (server) server.close(() => process.exit(0));
