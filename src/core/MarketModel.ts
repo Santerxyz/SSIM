@@ -31,7 +31,8 @@ export interface MarketListing {
   pricePerItemMinor: number;
   currency:          number;   // Steam ECurrencyCode (0 = unknown)
   quantity:          number;
-  /** false ⇒ awaiting mobile confirmation (pending_listings / listings_to_confirm). */
+  /** true ⇒ live sell (`listings`) or a server-side hold (`listings_on_hold`);
+   *  false ⇒ awaiting mobile confirmation (`pending_listings` / `listings_to_confirm`). */
   confirmed:         boolean;
 }
 
@@ -123,6 +124,13 @@ export function parseMyListings(d: any): ParsedMyListings {
       const ml = toListing(l, false);
       if (ml) out.listings.push(ml);
     }
+  }
+  // On-hold listings ARE confirmed sells — Steam is holding the item (device-change
+  // window etc.), the hold is server-side, not an awaiting-2FA state. Keep them in the
+  // Listed bucket so the operator can see/cancel them; do NOT overload confirmed:false.
+  for (const l of Array.isArray(d.listings_on_hold) ? d.listings_on_hold : []) {
+    const ml = toListing(l, true);
+    if (ml) out.listings.push(ml);
   }
   // Safety net: any asset id present in the `assets` map is market-held even if no
   // listing object referenced it → keep it in the dedup superset (never Owned).

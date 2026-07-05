@@ -162,6 +162,22 @@ test('parseMyListings folds pending listings into the dedup superset (confirmed=
   assert.equal(listingsForApp(p, 730)[0].confirmed, false);
 });
 
+// ── H-TRD-115: an on-hold listing appears in the Listed bucket as confirmed=true ──
+
+test('parseMyListings scans listings_on_hold → row is confirmed=true and in the superset', () => {
+  const page = {
+    listings: [], listings_on_hold: [
+      { listingid: 'H1', asset: { appid: 730, contextid: '2', id: '444', amount: '1' } },
+    ],
+    assets: {},
+  };
+  const p = parseMyListings(page);
+  const rows = listingsForApp(p, 730);
+  assert.equal(rows.length, 1, 'the on-hold listing is kept as a Listed row');
+  assert.equal(rows[0].confirmed, true, 'a server-side hold is confirmed, not awaiting-2FA');
+  assert.ok(listedAssetIdsForApp(p, 730).has('444'), 'on-hold asset is in the no-leak superset');
+});
+
 // ── H-TRD-113: non-numeric currencyid falls back to 0 (the "0 = unknown" contract) ──
 
 test('parseMyListings: a non-numeric currencyid yields currency 0 (not NaN)', () => {
