@@ -60,13 +60,29 @@ export class MoneyOpJournal {
     return new MoneyOpJournal(dataDir('money-op-journal.json'), DEFAULT_TTL_MS, () => 0, false);
   }
 
-  private read(): Record<string, MoneyOpEntry> {
+  /**
+   * Read the journal, distinguishing a genuinely-absent/corrupt file (empty is AUTHORITATIVE — the
+   * dedup memory really is nothing) from a TRANSIENT fs error on an existing file (empty is a FABRICATION
+   * we must not persist — an EBUSY/EPERM sharing violation from AV/indexer/backup, the Windows S54/S58
+   * failure mode). `unreliable` gates the destructive persists (begin's wholesale write, the sweep-persist,
+   * the no-entry rm) so a blip can never erase other accounts' lingering double-spend entries.
+   */
+  private read(): { map: Record<string, MoneyOpEntry>; unreliable: boolean } {
+    if (!fs.existsSync(this.filePath)) return { map: {}, unreliable: false };
+    let raw: string;
     try {
-      if (!fs.existsSync(this.filePath)) return {};
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Record<string, MoneyOpEntry> | null;
-      return parsed && typeof parsed === 'object' ? parsed : {};
+      raw = fs.readFileSync(this.filePath, 'utf8');
+    } catch (err) {
+      // ENOENT (raced deletion) is authoritative-empty; any other fs error (EBUSY/EPERM/EACCES/EIO…) is a
+      // transient failure on an existing file — degrade to empty for THIS call but never persist it.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { map: {}, unreliable: false };
+      return { map: {}, unreliable: true };
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, MoneyOpEntry> | null;
+      return { map: parsed && typeof parsed === 'object' ? parsed : {}, unreliable: false };
     } catch {
-      return {}; // a corrupt journal is a lost dedup memory, not a hazard — degrade to today's behaviour
+      return { map: {}, unreliable: false }; // a corrupt journal is a lost dedup memory, not a hazard — degrade to today's behaviour
     }
   }
 
@@ -90,9 +106,11 @@ export class MoneyOpJournal {
   begin(opHash: string, op: string): void {
     if (!this.enabled) return;
     try {
-      const map = this.sweep(this.read());
-      map[opHash] = { op, phase: 'initiated', at: this.now() };
-      this.write(map);
+      const { map, unreliable } = this.read();
+      if (unreliable) return; // a transient read blip — do NOT clobber the whole file to this one entry (the op proceeds unjournaled, as it does today on a failed write)
+      const swept = this.sweep(map);
+      swept[opHash] = { op, phase: 'initiated', at: this.now() };
+      this.write(swept);
     } catch { /* never throw */ }
   }
 
@@ -100,7 +118,8 @@ export class MoneyOpJournal {
   record(opHash: string, phase: MoneyOpPhase, detail?: string): void {
     if (!this.enabled) return;
     try {
-      const map = this.read();
+      const { map, unreliable } = this.read();
+      if (unreliable) return; // a transient read blip — do not write over an unread file
       if (map[opHash]) { map[opHash] = { ...map[opHash], phase, at: this.now(), detail }; this.write(map); }
     } catch { /* never throw */ }
   }
@@ -109,7 +128,8 @@ export class MoneyOpJournal {
   resolve(opHash: string): void {
     if (!this.enabled) return;
     try {
-      const map = this.read();
+      const { map, unreliable } = this.read();
+      if (unreliable) return; // a transient read blip — do not write over an unread file
       if (map[opHash]) { delete map[opHash]; this.write(map); }
     } catch { /* never throw */ }
   }
@@ -122,9 +142,11 @@ export class MoneyOpJournal {
   findUnresolved(opHash: string): MoneyOpEntry | undefined {
     if (!this.enabled) return undefined;
     try {
-      const map = this.sweep(this.read());
-      this.write(map); // persist the sweep
-      return map[opHash];
+      const { map, unreliable } = this.read();
+      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do NOT persist the fabricated-empty sweep
+      const swept = this.sweep(map);
+      this.write(swept); // persist the sweep
+      return swept[opHash];
     } catch {
       return undefined;
     }
@@ -141,7 +163,9 @@ export class MoneyOpJournal {
   consultRefusal(opHash: string, opts?: { force?: boolean; minRefuseMs?: number }): MoneyOpEntry | undefined {
     if (!this.enabled) return undefined;
     try {
-      const map = this.sweep(this.read());
+      const { map, unreliable } = this.read();
+      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do NOT write/delete over an unread file (would erase other accounts' lingering entries)
+      this.sweep(map);
       const entry = map[opHash];
       if (!entry) { this.write(map); return undefined; } // no lingering op → allow (persist the sweep)
       const minAge = opts?.minRefuseMs ?? DEFAULT_MIN_REFUSE_MS;

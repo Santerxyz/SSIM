@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -102,6 +102,31 @@ test('S15: force=true allows immediately (consumes the entry without waiting)', 
 test('S15: consultRefusal with NO lingering entry allows (undefined) — legit ops are unaffected', () => {
   const j = new MoneyOpJournal(jpath());
   assert.equal(j.consultRefusal('fresh-op'), undefined);
+});
+
+// ─── H-TRD-107: a TRANSIENT fs read failure (EBUSY/EPERM) is never persisted as authoritative-empty ───
+test('H-TRD-107: a transient read failure never erases lingering entries', () => {
+  const p = jpath();
+  // Run 1: two accounts crash mid-flight, leaving lingering entries.
+  const j = new MoneyOpJournal(p);
+  j.begin('A', 'buy');
+  j.begin('B', 'buy');
+  assert.ok(j.findUnresolved('A'), 'A lingers');
+  // Run 2: an UNRELATED op on account C fires while AV holds a read lock (EBUSY).
+  mock.method(fs, 'readFileSync', () => {
+    const e = new Error('EBUSY: resource busy or locked');
+    (e as NodeJS.ErrnoException).code = 'EBUSY';
+    throw e;
+  });
+  const j2 = new MoneyOpJournal(p);
+  assert.equal(j2.consultRefusal('C'), undefined, 'a transient read blip degrades to ALLOW');
+  j2.begin('C', 'buy'); // must NOT clobber the whole file to {C}
+  mock.restoreAll();
+  // The on-disk journal is byte-intact: A and B still linger.
+  assert.ok(fs.existsSync(p), 'the journal file was not deleted by the blip');
+  const j3 = new MoneyOpJournal(p);
+  assert.ok(j3.findUnresolved('A'), 'A still present — its double-spend memory survived the blip');
+  assert.ok(j3.findUnresolved('B'), 'B still present');
 });
 
 test('B4: the journal never throws on a corrupt file (degrades to today’s behaviour, not a hazard)', () => {
