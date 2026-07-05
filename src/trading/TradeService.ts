@@ -676,15 +676,20 @@ export class TradeService {
 
   // ── Managed-identity helpers ─────────────────────────────────────────────
 
-  /** True when the SteamID64 belongs to one of our managed accounts. */
+  /** True when the SteamID64 belongs to one of our managed accounts. Sessions come and go
+   *  (mass-send releases sender sessions immediately, the idle reaper the rest), so we also
+   *  consult the persistent SteamID registry (accounts.json, written through on every login) —
+   *  otherwise late/unconfirmed internal offers get misclassified EXTERNAL and skipped forever. */
   isManagedSteamId(steamId: string): boolean {
-    return this.sessions.getAllSessions().some(s => s.steamId === steamId);
+    return this.sessions.getAllSessions().some(s => s.steamId === steamId)
+        || this.accounts.getAll().some(a => a.steamId === steamId);
   }
 
   managedSteamIds(): string[] {
-    return this.sessions.getAllSessions()
-      .map(s => s.steamId)
+    const ids = this.sessions.getAllSessions().map(s => s.steamId)
+      .concat(this.accounts.getAll().map(a => a.steamId))
       .filter((id): id is string => !!id);
+    return [...new Set(ids)];
   }
 
   setAutoAccept(on: boolean): void { this.autoAcceptInternal = on; }
