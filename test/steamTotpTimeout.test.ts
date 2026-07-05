@@ -39,6 +39,16 @@ test('S6: an ERROR falls back to 0 and is NOT cached (the next call re-attempts)
   assert.equal(calls, 2, 'an error/timeout is not cached → re-attempted next time');
 });
 
+test('S6: a NaN offset from the vendor falls back and is not cached', async () => {
+  let calls = 0;
+  // The vendor's missing-return bug: a 200 whose server_time is truthy-non-numeric fires callback(null, NaN).
+  const nan = (cb: Cb) => { calls++; cb(null, calls === 1 ? NaN : 9); };
+  const wrapped = makeTimeoutGetOffset(nan, { timeoutMs: 50 });
+  assert.equal((await call(wrapped)).off, 0, 'a NaN "success" falls back to 0 (not delivered/cached as NaN)');
+  assert.equal((await call(wrapped)).off, 9, 'not cached → a subsequent success re-fetches the real value');
+  assert.equal(calls, 2, 'the NaN was not cached, so the underlying getTimeOffset ran again');
+});
+
 test('S6: the cache expires after cacheTtlMs (re-fetch)', async () => {
   let clock = 1000; let calls = 0;
   const ok = (cb: Cb) => { calls++; cb(null, 7); };

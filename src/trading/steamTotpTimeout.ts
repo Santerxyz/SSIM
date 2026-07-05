@@ -74,7 +74,14 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
     }, timeoutMs);
     timer.unref?.();
     try {
-      original((err, offset) => { clearTimeout(timer); done(err ? (cachedOffset ?? 0) : offset, !err); });
+      // A non-finite "success" (the vendor's missing-return bug: a 200 whose server_time is truthy-non-numeric
+      // fires callback(null, NaN)) is treated exactly like the error path — fallback + NOT cached — so NaN never
+      // poisons the cache for an hour and SteamTotp.time(NaN)→BigInt(NaN) never throws (H-TRD-092).
+      original((err, offset) => {
+        clearTimeout(timer);
+        const ok = !err && Number.isFinite(offset);
+        done(ok ? offset : (cachedOffset ?? 0), ok);
+      });
     } catch {
       clearTimeout(timer);
       done(cachedOffset ?? 0, false);
