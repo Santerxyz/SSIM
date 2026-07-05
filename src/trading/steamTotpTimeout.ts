@@ -144,5 +144,6 @@ export function installSteamTotpTimeout(opts?: TotpTimeoutOpts): void {
   const totp = SteamTotp as unknown as { getTimeOffset: GetOffset };
   const original = totp.getTimeOffset.bind(totp);
   totp.getTimeOffset = makeTimeoutGetOffset(original, opts);
-  logger.info('[steam-totp] getTimeOffset wrapped with a 10s timeout + per-process cache (S6)');
+  const t = opts?.timeoutMs ?? 10_000;
+  logger.info(`[steam-totp] getTimeOffset wrapped with a ${t}ms timeout + per-process cache (S6)`);
 }
