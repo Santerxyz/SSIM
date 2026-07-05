@@ -275,7 +275,7 @@ export class GcActionLayer {
     direction: 'deposit' | 'withdraw',
     onProgress?: (p: { done: number; total: number; current: string; moved: number; failed: number }) => void,
     shouldCancel?: () => boolean,
-  ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }> }> {
+  ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }>; stopped: 'completed' | 'budget' | 'cancelled' }> {
     // S16: a per-item move costs ~0.9–1.8s (verify + pacing), so the old FIXED 60s backstop falsely
     // "timed out" any move above ~50 items AND — since withTimeout cannot cancel fn(go) — left the loop
     // running DETACHED (a 2nd GC op could then interleave). Scale the backstop by item count, and give the
@@ -296,12 +296,14 @@ export class GcActionLayer {
       const moved: string[] = [];
       const unconfirmed: string[] = [];
       const failed: Array<{ itemId: string; error: string }> = [];
+      let stopped: 'completed' | 'budget' | 'cancelled' = 'completed';
       for (let i = 0; i < itemIds.length; i++) {
-        if (shouldCancel?.()) break;
+        if (shouldCancel?.()) { stopped = 'cancelled'; break; }
         if (Date.now() >= deadline) {
           // S16: abort CLEANLY before the backstop timeout — return the partial result so far (honest
           // counts, no detached loop). The remaining items were not attempted; a re-run continues.
           logger.warn(`[gc] ${username} ${direction}: move budget reached at item ${i}/${itemIds.length} – stopping cleanly (partial); the rest were NOT attempted (re-run to continue)`);
+          stopped = 'budget';
           break;
         }
         const itemId = String(itemIds[i]);
@@ -320,7 +322,7 @@ export class GcActionLayer {
         await sleep(350 + Math.floor(Math.random() * 400)); // gentle pacing between GC writes
       }
       logger.info(`[gc] ${username} ${direction}: ${moved.length} moved, ${unconfirmed.length} unconfirmed, ${failed.length} failed`);
-      return { moved, unconfirmed, failed };
+      return { moved, unconfirmed, failed, stopped };
     }, loopBudgetMs + 20_000); // backstop > the loop's own deadline → the loop self-aborts first (no detached zombie)
   }
 

@@ -6745,8 +6745,16 @@ function casketPollMove() {
         // This runs even when j.error is set: an 'aborted' (mid-move backstop) throw still moved real
         // items, so we reconcile the panel and surface the error toast alongside the progress toast.
         if (j.error) toast(j.error, 'error');
-        if (j.moved) toast(`Storage: ${j.moved} ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}${j.unconfirmed ? ' (' + j.unconfirmed + ' unconfirmed — verify in-game)' : ''}`, j.unconfirmed ? 'warn' : 'success');
-        else toast(`Storage: ${j.unconfirmed} sent but unconfirmed — verify in-game`, 'warn');
+        // H-TRD-081: a budget-stop (S16 cooperative break) left the rest UNATTEMPTED — say so
+        // explicitly (warn tone), never the success-flavoured "N deposited"; a cancel-after-current
+        // gets a "Cancelled — " prefix so the toast never reads as a full completion.
+        if (j.stoppedReason === 'budget') {
+          toast(`Storage: ${j.done}/${j.total} attempted — ${j.total - j.done} not attempted; run the move again to continue`, 'warn');
+        } else {
+          const prefix = j.stoppedReason === 'cancelled' ? 'Cancelled — ' : '';
+          if (j.moved) toast(`${prefix}Storage: ${j.moved} ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}${j.unconfirmed ? ' (' + j.unconfirmed + ' unconfirmed — verify in-game)' : ''}`, j.unconfirmed ? 'warn' : 'success');
+          else toast(`${prefix}Storage: ${j.unconfirmed} sent but unconfirmed — verify in-game`, 'warn');
+        }
         // Backend reconciled this account's inventory post-move (H-TRD-084), so re-pull the coalesced
         // /api/inventory cache (reuse the S10 entry point — no new fetch path) BEFORE re-rendering, so
         // the deposit panel drops the moved items in the same modal session (they'd otherwise stay as

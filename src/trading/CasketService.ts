@@ -93,6 +93,12 @@ export class CasketService {
       job.unconfirmed = res.unconfirmed.length;
       job.failed = res.failed.length;
       job.failures = res.failed;
+      // Label how the move ended (S16 residue): 'completed' = natural exit, 'budget' = cooperative
+      // deadline break (the rest were NOT attempted — a re-run continues), 'cancelled' = the user's
+      // cancel-after-current break. `cancelled` is a strict function of this discriminator so a cancel
+      // clicked during the final item's verify window can't mislabel a fully-completed job.
+      job.stoppedReason = res.stopped;
+      job.cancelled = res.stopped === 'cancelled';
     } catch (e) {
       // Label the throw by what actually happened. A pre-flight throw (gated off, library missing, not
       // logged in, cap exceeded) fires before any send → 'preflight' (nothing moved). The withTimeout
@@ -105,7 +111,6 @@ export class CasketService {
     } finally {
       job.running = false;
       job.cancelling = false;
-      job.cancelled = job.cancelRequested === true;
       job.current = undefined;
       job.finishedAt = new Date().toISOString();
       // Post-move reconcile (parity with every other mutating service): deposited/withdrawn assets
