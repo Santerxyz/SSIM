@@ -22,7 +22,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 const TRANSPORT_AMBIGUOUS =
-  /econnreset|etimedout|esockettimedout|socket hang ?up|timed?\s*out|timeout|econnaborted|epipe|\baborted\b|no response/i;
+  /econnreset|etimedout|esockettimedout|socket hang ?up|timed?\s*out|timeout|econnaborted|epipe|\baborted\b|no response|http (error )?5\d\d\b/i;
 
 export function isAmbiguousCommitFailure(err: unknown): boolean {
   const e = err as { verifyBeforeRetry?: boolean; eresult?: number; message?: string; code?: string } | null | undefined;

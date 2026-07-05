@@ -834,6 +834,20 @@ export class AccountTrader {
     }
     logger.info(`[${this.username}] createbuyorder ${p.marketHashName} x${qty} total=${priceTotal} cur=${p.currency} → HTTP ${status} success=${data?.success}`);
 
+    // A returned 5xx is a Steam-EDGE failure (validateStatus:() => true means it did NOT
+    // throw): the create MIGHT have executed before the upstream answer was lost — the same
+    // response-leg-lost case as the network throw above, just with a status instead of an
+    // ECONNRESET. Probe for a matching resting order; if found, report placed. Otherwise
+    // surface the EXPLICIT verify-before-retry signal so the operator confirms before re-buying.
+    if (status >= 500) {
+      const recovered = await probeResting();
+      if (recovered) return recovered;
+      throw Object.assign(
+        new Error(`createbuyorder HTTP ${status} – order state UNKNOWN, verify open orders before retrying`),
+        { verifyBeforeRetry: true },
+      );
+    }
+
     // Active immediately (no confirmation required).
     if (status === 200 && data && data.success === 1) {
       return {

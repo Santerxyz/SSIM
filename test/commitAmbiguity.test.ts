@@ -21,6 +21,14 @@ test('S3: a DEFINITE Steam rejection (eresult) is NOT ambiguous (the op did not 
   assert.equal(isAmbiguousCommitFailure(Object.assign(new Error('econnreset-ish'), { eresult: 8 })), false);
 });
 
+test('H-TRD-103: a returned Steam-edge HTTP 5xx is ambiguous (the commit may have landed)', () => {
+  // tradeoffer-manager "HTTP error 5xx" send strings + createbuyorder's returned-5xx throw
+  assert.equal(isAmbiguousCommitFailure(new Error('HTTP error 502')), true);
+  assert.equal(isAmbiguousCommitFailure(new Error('createbuyorder rejected (HTTP 504, success=undefined)')), true);
+  // a 4xx is a definite rejection — the request was understood and refused
+  assert.equal(isAmbiguousCommitFailure(new Error('createbuyorder rejected (HTTP 400, success=undefined)')), false);
+});
+
 test('S3: a plain rejection / non-error is NOT ambiguous', () => {
   assert.equal(isAmbiguousCommitFailure(new Error('Item is not tradable')), false);
   assert.equal(isAmbiguousCommitFailure(new Error('order total exceeds the safety ceiling')), false);
