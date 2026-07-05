@@ -183,6 +183,11 @@ export class GcActionLayer {
     const key = username.toLowerCase();
     if (this.inFlight.has(key)) throw new Error(`a GC operation is already running for ${username}`);
     this.inFlight.add(key);
+    // B40: this is a genuine op entry — touch it now and keep it fresh so the idle reaper (30-min TTL)
+    // can never log the account out mid-move/mid-craft (a large casket move legitimately runs 10-35+ min).
+    this.sessions.markUsed(username);
+    const keepAlive = setInterval(() => this.sessions.markUsed(username), 60_000);
+    keepAlive.unref?.();
     let client: unknown;
     try {
       const go = this.getHandle(username);
@@ -198,6 +203,7 @@ export class GcActionLayer {
         this.disconnect(client); // drop the GC session (keep the bounded handle for reuse)
       }
     } finally {
+      clearInterval(keepAlive);
       this.inFlight.delete(key);
     }
   }
