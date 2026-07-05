@@ -322,6 +322,56 @@ export function sweepStaleCleanProfiles(): void {
 }
 
 /**
+ * Watch the browser's own debug port and tear down (close relay + delete profile) when it
+ * disappears — the port follows the real browser across Edge/Chrome's hand-off, so the relay
+ * no longer dies under a live window. Used by BOTH the success path and the failure path
+ * (H-TRD-064) so a browser that outlived a post-spawn error is torn down when IT closes, not
+ * before. A probe counts as ALIVE only if `/json/version` answers with JSON carrying a
+ * `Browser` field — a recycled ephemeral port answering with anything else must NOT pin the
+ * relay open forever.
+ */
+export function armPortWatch(port: number, teardown: () => void): void {
+  let misses = 0;
+  const watch = setInterval(() => {
+    fetch(`http://127.0.0.1:${port}/json/version`).then(
+      async (r) => {
+        try {
+          const info = (await r.json()) as { Browser?: unknown };
+          if (info && typeof info.Browser !== 'undefined') { misses = 0; return; } // real browser still listening
+        } catch { /* not JSON — treat as a miss below */ }
+        if (++misses >= 6) { clearInterval(watch); teardown(); } // ~9s of no real debug port ⇒ window closed
+      },
+      () => { if (++misses >= 6) { clearInterval(watch); teardown(); } }, // ~9s of no debug port ⇒ window closed
+    );
+  }, 1500);
+  watch.unref?.();
+}
+
+/**
+ * Best-effort: ask a still-listening browser to close itself over CDP (`Browser.close` on the
+ * browser target). Used on the failure path (H-TRD-064) so a window orphaned by a post-spawn error
+ * closes itself rather than being left broken. Never throws — a browser that won't answer is left to
+ * the operator + the port watcher.
+ */
+async function closeBrowserBestEffort(port: number): Promise<void> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) });
+    const info = (await r.json()) as { webSocketDebuggerUrl?: string };
+    const wsUrl = info?.webSocketDebuggerUrl;
+    if (!wsUrl) return; // no browser target to talk to
+    await new Promise<void>((resolve) => {
+      const ws = new WebSocket(wsUrl);
+      const done = (): void => { try { ws.close(); } catch { /* ignore */ } resolve(); };
+      const t = setTimeout(done, 2000);
+      t.unref?.();
+      ws.onopen = () => { try { ws.send(JSON.stringify({ id: 1, method: 'Browser.close' })); } catch { /* ignore */ } };
+      ws.onmessage = () => { clearTimeout(t); done(); };
+      ws.onerror = () => { clearTimeout(t); done(); };
+    });
+  } catch { /* browser not reachable — leave it to the operator + the watcher */ }
+}
+
+/**
  * Launch the isolated browser for `spec` and inject its cookies. Best-effort: any failure
  * logs + cleans up the ephemeral profile and throws. The browser stays open until the
  * operator closes it (closing discards the ephemeral profile).
@@ -335,6 +385,8 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
   let relay: { port: number; close: () => void } | null = null;
   let child: ChildProcess | undefined;
   let tornDown = false;
+  let port = -1;            // the debug port (hoisted so the failure-path catch can reach the live browser, H-TRD-064)
+  let portAnswered = false; // did the debug port ever respond? (guards the failure-path teardown, H-TRD-064)
   const teardown = (): void => {
     if (tornDown) return;
     tornDown = true;
@@ -362,7 +414,7 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
       proxyAuthApplied = true;
     }
 
-    const port = await freePort();
+    port = await freePort();
     const args = [
       `--user-data-dir=${profileDir}`,
       `--remote-debugging-port=${port}`,
@@ -377,12 +429,16 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     child.on('error', () => { /* spawn failure surfaces as the debugger-discovery timeout below */ });
     child.unref();
 
-    // Discover the page debugger WS endpoint (poll — Chromium needs a moment).
+    // Discover the page debugger WS endpoint (poll — Chromium needs a moment). 15s budget: a cold
+    // Edge start on a busy host can exceed 6s, and a false negative here orphans a LIVE window
+    // (H-TRD-064). portAnswered records that the debug port ever responded — the catch below uses it
+    // to keep the relay+profile alive under a browser that outlived the error, instead of ripping them.
     let wsUrl = '';
-    for (let i = 0; i < 40 && !wsUrl; i++) {
+    for (let i = 0; i < 100 && !wsUrl; i++) {
       await sleep(150);
       try {
         const r = await fetch(`http://127.0.0.1:${port}/json/list`);
+        portAnswered = true;
         const tabs = (await r.json()) as Array<{ type: string; webSocketDebuggerUrl?: string }>;
         wsUrl = tabs.find((t) => t.type === 'page' && t.webSocketDebuggerUrl)?.webSocketDebuggerUrl ?? '';
       } catch { /* not up yet */ }
@@ -414,19 +470,26 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     // the relay no longer dies under a live window. Backstop: tear everything down if SSIM exits.
     hookShutdownOnce();
     liveTeardowns.add(teardown);
-    let misses = 0;
-    const watch = setInterval(() => {
-      fetch(`http://127.0.0.1:${port}/json/version`).then(
-        () => { misses = 0; },
-        () => { if (++misses >= 6) { clearInterval(watch); teardown(); } }, // ~9s of no debug port ⇒ window closed
-      );
-    }, 1500);
-    watch.unref?.();
+    armPortWatch(port, teardown);
 
     return { profileDir, proxyUsed: spec.proxyServer, proxyAuthApplied };
   } catch (err) {
-    try { child?.kill(); } catch { /* ignore */ }
-    teardown();
+    // A post-spawn failure (debugger not found in time, WS handshake error/timeout) does NOT mean the
+    // browser died — Edge/Chrome hand off to a detached window that outlives the launcher and this error
+    // (H-TRD-064). If the debug port ever answered, a LIVE window is open: best-effort close it, and if it
+    // stays up, keep the relay+profile alive under it via the watcher instead of ripping them away (which
+    // reintroduces the ERR_PROXY_CONNECTION_FAILED + orphaned-secret-dir the design eliminated).
+    if (portAnswered) {
+      await closeBrowserBestEffort(port);
+      hookShutdownOnce();
+      liveTeardowns.add(teardown);
+      armPortWatch(port, teardown); // relay+profile outlive the browser exactly as on the success path
+    } else {
+      // The port never answered — the browser presumably never started. Kill the spawned launcher (covers a
+      // not-yet-handed-off Chrome) and tear the relay+profile down inline.
+      try { child?.kill(); } catch { /* ignore */ }
+      teardown();
+    }
     throw err;
   }
 }
