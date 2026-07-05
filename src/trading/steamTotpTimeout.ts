@@ -34,6 +34,7 @@ export interface TotpTimeoutOpts {
   timeoutMs?: number;
   cacheTtlMs?: number;
   now?: () => number;
+  monotonicNow?: () => number;
 }
 
 /** Wrap a getTimeOffset(cb) with a timeout + per-process offset cache. Pure/testable — the caller
@@ -42,12 +43,21 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const cacheTtlMs = opts.cacheTtlMs ?? 60 * 60 * 1000;
   const now = opts.now ?? (() => Date.now());
+  const monotonicNow = opts.monotonicNow ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
   let cachedOffset: number | undefined;
   let cachedAt = 0;
+  let cachedAtMono = 0;
 
   return (cb: OffsetCb): void => {
-    // Fresh cache → answer instantly, no network (the offset is process-stable).
-    if (cachedOffset !== undefined && now() - cachedAt < cacheTtlMs) { cb(null, cachedOffset, 0); return; }
+    // Fresh cache → answer instantly, no network (the offset is process-stable). A wall-clock step
+    // (clock fix, W32Time correction, VM RTC resync, resume) diverges wall vs monotonic elapsed → the
+    // cached offset is no longer valid, so treat the entry as expired and re-fetch (S6/H-TRD-087).
+    if (cachedOffset !== undefined) {
+      const wallElapsed = now() - cachedAt;
+      const monoElapsed = monotonicNow() - cachedAtMono;
+      const stepped = wallElapsed < 0 || Math.abs(wallElapsed - monoElapsed) > 5_000;
+      if (!stepped && wallElapsed < cacheTtlMs) { cb(null, cachedOffset, 0); return; }
+    }
     let settled = false;
     // A stall/error uses the best-known offset (last cache, else 0) and is NOT cached, so the next call
     // re-attempts the real value; a real success IS cached. Never surfaces an error (parity with the
@@ -55,7 +65,7 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
     const done = (offset: number, cacheable: boolean): void => {
       if (settled) return;
       settled = true;
-      if (cacheable) { cachedOffset = offset; cachedAt = now(); }
+      if (cacheable) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); }
       cb(null, offset, 0);
     };
     const timer = setTimeout(() => {

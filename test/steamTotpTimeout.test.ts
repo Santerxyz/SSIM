@@ -52,3 +52,16 @@ test('S6: a synchronously-throwing original degrades to 0, never crashes', async
   const wrapped = makeTimeoutGetOffset(() => { throw new Error('boom'); }, { timeoutMs: 50 });
   assert.equal((await call(wrapped)).off, 0);
 });
+
+test('S6: a wall-clock step invalidates the cached offset', async () => {
+  let wall = 1000; let mono = 1000; let calls = 0;
+  const ok = (cb: Cb) => { calls++; cb(null, 7); };
+  const wrapped = makeTimeoutGetOffset(ok, {
+    timeoutMs: 50, cacheTtlMs: 60 * 60 * 1000,
+    now: () => wall, monotonicNow: () => mono,
+  });
+  await call(wrapped);                          // caches at wall=1000/mono=1000
+  wall += 120_000; mono += 1_000;               // clock steps forward 2min, only 1s of real time elapsed
+  await call(wrapped);
+  assert.equal(calls, 2, 'the wall/mono divergence expired the cache → re-fetched');
+});
