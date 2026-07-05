@@ -346,7 +346,7 @@ export class GcActionLayer {
    * via the `craftingComplete` event (which returns the produced item id). NEVER re-sends.
    */
   async craftTradeUp(username: string, p: { inputAssetIds: string[]; inputRarityId: string; stattrak: boolean }):
-    Promise<{ submitted: boolean; confirmed: boolean; outputItemId?: string }> {
+    Promise<{ submitted: boolean; confirmed: boolean; rejected?: boolean; outputItemId?: string }> {
     if (p.inputAssetIds.length !== 10) throw new Error('a trade-up needs exactly 10 input asset ids');
     if (!this.craftVerified()) {
       throw new Error('trade-up craft is disabled — set SSIM_GC_VERIFIED=1 after verifying on a test account (irreversible: destroys 10 items)');
@@ -361,7 +361,7 @@ export class GcActionLayer {
       if (missing.length) { reject(new Error(`inputs no longer present: ${missing.join(', ')} — refresh & recompute`)); return; }
 
       let settled = false;
-      const finish = (val: { submitted: boolean; confirmed: boolean; outputItemId?: string }): void => {
+      const finish = (val: { submitted: boolean; confirmed: boolean; rejected?: boolean; outputItemId?: string }): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -370,12 +370,17 @@ export class GcActionLayer {
       };
       const onDone = (_recipe: unknown, idList: unknown): void => {
         const ids = Array.isArray(idList) ? idList.map(String) : [];
+        const rec = Number(_recipe);
+        if (rec >= 0 && rec !== recipe) return; // another craft's response — keep waiting
+        // The GC answers a REFUSED craft with recipe -1 and an empty id list (lib README: "-1 on
+        // failure"); a successful trade-up ALWAYS yields exactly one item, so no id can never be success.
+        if (rec === -1 || ids.length === 0) { finish({ submitted: true, confirmed: false, rejected: true }); return; }
         finish({ submitted: true, confirmed: true, outputItemId: ids[0] });
       };
       // After the send we NEVER reject — a thrown post-submit error would invite a duplicate craft
       // (destroying another 10 items). An unconfirmed result means "submitted; verify in-game".
       const timer = setTimeout(() => finish({ submitted: true, confirmed: false }), CRAFT_CONFIRM_TIMEOUT_MS);
-      go.once('craftingComplete', onDone);
+      go.on('craftingComplete', onDone);
       try {
         go.craft(p.inputAssetIds.map(String), recipe);
         logger.info(`[gc] ${username} trade-up submitted (recipe ${recipe}, 10 inputs)`);

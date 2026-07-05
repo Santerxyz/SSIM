@@ -136,8 +136,14 @@ export class TradeUpService {
           inputRarityId: contracts[i].rarityId,
           stattrak: !!contracts[i].stattrak,
         });
-        this.execJob.crafted++;
-        this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
+        if (r.rejected) {
+          // The GC answered and REFUSED the craft — no items were consumed, nothing produced.
+          this.execJob.failed++;
+          this.execJob.results.push({ index: i, submitted: true, error: 'GC rejected the craft — no items were consumed (check inputs/recipe)' });
+        } else {
+          if (r.confirmed) this.execJob.crafted++; // count only a GC-confirmed craft
+          this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
+        }
       } catch (e) {
         this.execJob.failed++;
         this.execJob.results.push({ index: i, submitted: false, error: (e as Error).message });
