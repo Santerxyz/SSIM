@@ -312,13 +312,26 @@ export class MarketService {
           break;
         }
         const group = queue.shift()!;
-        await this.processBot(group, resolveNet, itemDelay);
+        // Bot containment (H-TRD-024): processBot's own item/preflight guards already account for
+        // everything it reached, so a rejection escaping it is unexpected. Swallow it here so this
+        // worker keeps pulling the next bot instead of dying and rejecting Promise.allSettled's
+        // sibling — counters are NOT touched (processBot already recorded what it did; the visible
+        // done < total gap plus this log is the honest record).
+        try {
+          await this.processBot(group, resolveNet, itemDelay);
+        } catch (err) {
+          logger.error(`[mass-sell] ${group.username}: bot aborted (${(err as Error)?.message ?? String(err)})`);
+        }
         if (queue.length > 0 && !this.cancelRequested) await sleep(DEFAULT_BOT_DELAY);
       }
     };
 
     const workers = Math.max(1, Math.min(concurrency, groups.length || 1));
-    await Promise.all(Array.from({ length: workers }, () => worker()));
+    // Run containment (H-TRD-024): allSettled — never allow a future worker-reject path to skip the
+    // releaseCreatedSessions / finalizer below (which would leak this run's sessions and latch the job).
+    // worker() already contains per-bot rejections, so no result here should ever reject; allSettled is
+    // the belt-and-braces guarantee the S33 outer .catch was designed to backstop.
+    await Promise.allSettled(Array.from({ length: workers }, () => worker()));
     // Release the sessions this sell created so a mass-sell doesn't leave the whole folder resident.
     await this.trades.releaseCreatedSessions(groups.map((g) => g.username), wasLiveBefore);
 
@@ -432,6 +445,11 @@ export class MarketService {
       const item = group.items[i];
       const pos = `${i + 1}/${N}`;
 
+      // Item containment (H-TRD-024): an UNEXPECTED throw inside one item's processing (e.g.
+      // isAssetSellable hitting a malformed disk-cached stack) must cost exactly one `failed`
+      // row, never abort the bot — a bare throw here escapes to worker()/Promise.all and would
+      // strand the rest of the fleet's workers as zombies against the next run.
+      try {
       // "End Task" mid-bot: defer this item + the rest (retryable) and stop this bot.
       if (this.cancelRequested) {
         const rest = group.items.slice(i);
@@ -523,6 +541,15 @@ export class MarketService {
       }
 
       if (i < group.items.length - 1) await sleep(itemDelay);
+      } catch (err) {
+        // An exception no branch above anticipated → one honest `failed` row, then carry on
+        // with the next item. This is containment (defined outcome), not a retry wrapper.
+        const msg = (err as Error)?.message ?? String(err);
+        this.job.failed.push({ username: user, assetId: item.assetId, error: 'internal error: ' + msg });
+        this.job.done++;
+        failedHere.add(item.assetId);
+        logger.error(`[mass-sell] ${user} ${pos}: ✗ internal error ${item.marketHashName} – ${msg}`);
+      }
     }
 
     // ── Confirm this bot's pending listings in one 2FA batch (Hotfix A: retry) ──
