@@ -1,4 +1,5 @@
 import type { GcActionLayer, GcItem, GcStatus } from './GcActionLayer';
+import type { InventoryService } from '../core/InventoryService';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -34,7 +35,7 @@ export class CasketService {
   private job: CasketMoveJob = { running: false, direction: 'deposit', username: '', casketId: '', total: 0, done: 0, moved: 0, unconfirmed: 0, failed: 0, failures: [] };
   private cancel = false;
 
-  constructor(private readonly gc: GcActionLayer) {}
+  constructor(private readonly gc: GcActionLayer, private readonly inventory: InventoryService) {}
 
   status(): GcStatus { return this.gc.status(); }
   moveStatus(): CasketMoveJob { return { ...this.job, failures: [...this.job.failures] }; }
@@ -97,6 +98,16 @@ export class CasketService {
       this.job.current = undefined;
       this.job.finishedAt = new Date().toISOString();
       this.cancel = false;
+      // Post-move reconcile (parity with every other mutating service): deposited/withdrawn assets
+      // left Steam's web inventory (ctx2), so the cached inventory is now stale. Refresh this one
+      // account's FULL pipeline so the modal + master view drop the moved items without a manual
+      // refresh. `unconfirmed` is included — an unconfirmed item may well have moved (see line 21-23),
+      // the same rule the frontend applies to its contents reload. Failed-only / pre-flight-error jobs
+      // skip (nothing changed on Steam). refreshOne in-flight-dedups, so a concurrent fleet refresh
+      // coalesces; a rejection only warns (the job state is already finalized above).
+      if (this.job.moved > 0 || this.job.unconfirmed > 0) {
+        void this.inventory.refreshOne(this.job.username, 'cs2').catch((e) => logger.warn(`[casket] post-move inventory reconcile failed for ${this.job.username}: ${(e as Error).message}`));
+      }
     }
   }
 }

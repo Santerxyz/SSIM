@@ -6722,7 +6722,11 @@ function casketPollMove() {
         // reflects reality — an "unconfirmed" item may well have moved (the SO just didn't echo).
         if (j.moved) toast(`Storage: ${j.moved} ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}${j.unconfirmed ? ' (' + j.unconfirmed + ' unconfirmed — verify in-game)' : ''}`, j.unconfirmed ? 'warn' : 'success');
         else toast(`Storage: ${j.unconfirmed} sent but unconfirmed — verify in-game`, 'warn');
-        await loadCasketContents(); renderCasketPanels();
+        // Backend reconciled this account's inventory post-move (H-TRD-084), so re-pull the coalesced
+        // /api/inventory cache (reuse the S10 entry point — no new fetch path) BEFORE re-rendering, so
+        // the deposit panel drops the moved items in the same modal session (they'd otherwise stay as
+        // owned/tradable in the stale cache, inviting a duplicate deposit).
+        await loadCasketContents(); await refreshActiveViewFromCache(); renderCasketPanels();
       }
     } catch { /* stop on error */ }
   };

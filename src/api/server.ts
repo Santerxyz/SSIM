@@ -112,7 +112,7 @@ export function createDeps(): ApiDeps {
   // Shared GC action layer (trade-up + casket execution; gated behind SSIM_GC_VERIFIED).
   const gc        = new GcActionLayer(sessions);
   const tradeup   = new TradeUpService(inventory, pricing, cs2Schema, gc);
-  const casket    = new CasketService(gc);
+  const casket    = new CasketService(gc, inventory);
   // GC-preferred reader so the worth curve counts GC records (incl. listed items), not just web.
   const history   = new ValueHistoryService(
     accounts,
