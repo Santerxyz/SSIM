@@ -85,6 +85,18 @@ test('isSellable / assertSellable refuse trade-locked and non-tradable items', (
   assert.doesNotThrow(() => assertSellable({ assetId: '1', tradable: true, tradeLockExpiry: null }));
 });
 
+// ── H-TRD-117: the gate fails CLOSED on a missing flag or an unparseable date ──
+
+test('isSellable fails closed on a missing tradable flag and an unparseable lock date', () => {
+  assert.equal(isSellable({}), false, 'undefined tradable ⇒ not sellable');
+  assert.equal(isSellable({ tradable: true, tradeLockExpiry: 'not-a-date' }), false, 'NaN lock date ⇒ not sellable');
+});
+
+test('bucketOf fails closed on a missing tradable flag and an unparseable lock date', () => {
+  assert.equal(bucketOf({}), 'tradelocked', 'undefined tradable ⇒ not classified tradable');
+  assert.equal(bucketOf({ tradable: true, tradeLockExpiry: 'not-a-date' }), 'tradelocked', 'NaN lock date ⇒ tradelocked');
+});
+
 // ── H-TRD-111: a non-listings payload must NOT coerce to "successfully empty" ──
 
 test('parseMyListings THROWS on {success:false} (Steam error body, HTTP 200)', () => {

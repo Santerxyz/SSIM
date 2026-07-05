@@ -205,8 +205,9 @@ export interface BucketInput {
 export function bucketOf(item: BucketInput, nowMs: number = Date.now()): ItemBucket {
   if (item.category === 'listed') return 'listed';
   const exp = item.tradeLockExpiry ? new Date(item.tradeLockExpiry).getTime() : 0;
+  if (Number.isNaN(exp)) return 'tradelocked'; // unparseable lock date ⇒ fail closed
   if (exp && exp > nowMs) return 'tradelocked';
-  if (item.tradable === false) return 'tradelocked'; // untradable-for-any-reason ≠ tradable
+  if (item.tradable !== true) return 'tradelocked'; // untradable-for-any-reason ≠ tradable
   return 'tradable';
 }
 
@@ -215,9 +216,9 @@ export function bucketOf(item: BucketInput, nowMs: number = Date.now()): ItemBuc
 /** True iff the item may be listed on the market or sent in a trade right now. */
 export function isSellable(item: BucketInput, nowMs: number = Date.now()): boolean {
   const exp = item.tradeLockExpiry ? new Date(item.tradeLockExpiry).getTime() : 0;
+  if (Number.isNaN(exp)) return false; // unparseable lock date ⇒ fail closed
   if (exp && exp > nowMs) return false; // trade-locked
-  if (item.tradable === false) return false; // not tradable
-  return true;
+  return item.tradable === true; // must be affirmatively tradable
 }
 
 /** Throws when the item is trade-locked or non-tradable. */
