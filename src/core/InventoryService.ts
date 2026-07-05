@@ -217,31 +217,37 @@ export class InventoryService {
   }
 
   /**
-   * S50: fetch ONE CS2 web-inventory context with the SAME bounded transient/429 retry the TF2 & quick
-   * paths already have (see the fetchInventoryOnly loop below). Without it a single 429/proxy blip on
-   * either context threw straight out and failed the whole account for the pass → inflated `failed`
-   * counts at fleet scale. A non-transient error (auth, private inventory) still throws immediately.
+   * S50 / H-TRD-123: run ONE leg of a refresh under the SAME bounded transient/429 retry the TF2 & quick
+   * paths already have (see the fetchInventoryOnly loop below). Without it a single 429/proxy blip on a
+   * leg threw straight out and failed the whole account for the pass → inflated `failed` counts at fleet
+   * scale. A non-transient error (auth, private inventory) still throws immediately. `label` names the leg
+   * in the warn line; retries are sequential inside the account's existing refresh slot (no concurrency raise).
    */
-  private async fetchRawRetrying(
-    session: ManagedSession, ctx: number, username: string,
-  ): Promise<Awaited<ReturnType<typeof InventoryManager.fetchRaw>>> {
+  private async retrying<T>(op: () => Promise<T>, label: string, username: string): Promise<T> {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= REFRESH_RETRIES; attempt++) {
       try {
-        return await InventoryManager.fetchRaw(session, 'cs2', ctx);
+        return await op();
       } catch (err) {
         lastErr = err;
         const rateLimited = isRateLimited(err);
         if (attempt >= REFRESH_RETRIES || (!rateLimited && !isTransientRefreshError(err))) throw err;
         const pause = rateLimited ? RETRY_PAUSE_RATELIMIT : RETRY_PAUSE_TRANSIENT;
         logger.warn(
-          `[${username}] cs2 ctx${ctx} fetch attempt ${attempt + 1}/${REFRESH_RETRIES + 1} failed ` +
+          `[${username}] ${label} attempt ${attempt + 1}/${REFRESH_RETRIES + 1} failed ` +
           `(${(err as Error).message}) – retrying in ${Math.round(pause / 1000)}s`,
         );
         await this.pause(pause);
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  /** S50: fetch ONE CS2 web-inventory context under the shared retry policy (see `retrying`). */
+  private fetchRawRetrying(
+    session: ManagedSession, ctx: number, username: string,
+  ): Promise<Awaited<ReturnType<typeof InventoryManager.fetchRaw>>> {
+    return this.retrying(() => InventoryManager.fetchRaw(session, 'cs2', ctx), `cs2 ctx${ctx} fetch`, username);
   }
 
   /** The bounded-backoff wait between retry attempts — a seam so tests can exercise the retry path
@@ -264,7 +270,10 @@ export class InventoryService {
     let listingsOk = true;
     let listedTruncated = false;
     try {
-      const fetched = await fetchListedItems(session);
+      // H-TRD-123: the listings leg gets the SAME bounded transient/429 retry as the ctx2/ctx16
+      // fetches (S50) so one proxy/429 blip no longer leaves a stale listed bucket for the pass.
+      // Read-only re-reads (≤MAX_PAGES GETs); non-transient errors still fail fast into the catch.
+      const fetched = await this.retrying(() => fetchListedItems(session), 'mylistings', username);
       listed = InventoryManager.stack(fetched.items);
       // Canonical dedup superset from the single parser (includes metadata-less and
       // pending listings) — strictly ⊇ the displayed rows, so nothing on the market
