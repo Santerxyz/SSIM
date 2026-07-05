@@ -6728,14 +6728,23 @@ function casketPollMove() {
   const tick = async () => {
     try {
       const j = await api('/api/casket/move-status');
-      const line = j.error ? `<span class="text-amber-400">${escapeHtml(j.error)}</span>`
-        : `<span class="text-slate-300">${j.direction}: ${j.done}/${j.total} · moved ${j.moved}${j.unconfirmed ? ' · unconfirmed ' + j.unconfirmed : ''} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}</span>`;
+      // An 'aborted' throw (mid-move backstop) carries real partial counters — show them WITH the error,
+      // never error-only (that would tell the user a 150-items-deep move did nothing). A 'preflight' throw
+      // (done/moved/unconfirmed all 0) still renders error-only.
+      const hadProgress = j.done > 0 || j.moved > 0 || j.unconfirmed > 0;
+      const counters = `<span class="text-slate-300">${j.direction}: ${j.done}/${j.total} · moved ${j.moved}${j.unconfirmed ? ' · unconfirmed ' + j.unconfirmed : ''} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}</span>`;
+      const line = j.error
+        ? (hadProgress ? counters + ` <span class="text-amber-400">${escapeHtml(j.error)}</span>` : `<span class="text-amber-400">${escapeHtml(j.error)}</span>`)
+        : counters;
       foot.innerHTML = line + (j.running ? ` <button data-ck-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
       foot.querySelector('[data-ck-cancel]')?.addEventListener('click', () => api('/api/casket/move-cancel', { method: 'POST' }).catch(() => {}));
       if (j.running) { ckState.moveTimer = setTimeout(tick, 1000); }
-      else if (!j.error && (j.moved || j.unconfirmed)) {
+      else if (j.moved || j.unconfirmed) {
         // Reload the unit's contents on ANY sent move (confirmed OR unconfirmed) so the panel
         // reflects reality — an "unconfirmed" item may well have moved (the SO just didn't echo).
+        // This runs even when j.error is set: an 'aborted' (mid-move backstop) throw still moved real
+        // items, so we reconcile the panel and surface the error toast alongside the progress toast.
+        if (j.error) toast(j.error, 'error');
         if (j.moved) toast(`Storage: ${j.moved} ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}${j.unconfirmed ? ' (' + j.unconfirmed + ' unconfirmed — verify in-game)' : ''}`, j.unconfirmed ? 'warn' : 'success');
         else toast(`Storage: ${j.unconfirmed} sent but unconfirmed — verify in-game`, 'warn');
         // Backend reconciled this account's inventory post-move (H-TRD-084), so re-pull the coalesced

@@ -29,8 +29,11 @@ export interface CasketMoveJob {
   failures:    Array<{ itemId: string; error: string }>;
   startedAt?:  string;
   finishedAt?: string;
-  /** Set when GC execution is gated off / unavailable — nothing was moved. */
+  /** Set when the move threw. stoppedReason 'preflight' ⇒ nothing was moved; 'aborted' ⇒ the
+   *  counters reflect real partial progress (backstop abort). */
   error?:      string;
+  /** How the move ended. 'aborted'/'preflight' are set by the catch (see error above). */
+  stoppedReason?: 'completed' | 'budget' | 'cancelled' | 'aborted' | 'preflight';
 }
 
 export class CasketService {
@@ -91,9 +94,14 @@ export class CasketService {
       job.failed = res.failed.length;
       job.failures = res.failed;
     } catch (e) {
-      // A pre-flight failure (gated off, library missing, not logged in, cap exceeded) — nothing moved.
-      job.error = (e as Error).message;
-      logger.warn(`[casket] ${username} ${direction} aborted: ${(e as Error).message}`);
+      // Label the throw by what actually happened. A pre-flight throw (gated off, library missing, not
+      // logged in, cap exceeded) fires before any send → 'preflight' (nothing moved). The withTimeout
+      // backstop (GcActionLayer) fires MID-move → 'aborted' and the counters (set live by onProgress)
+      // reflect real partial progress — keep them, do NOT reset. `done > 0` is a faithful discriminator
+      // because onProgress fires only after a real send.
+      job.error = String((e as Error)?.message ?? e);
+      job.stoppedReason = job.done > 0 ? 'aborted' : 'preflight';
+      logger.warn(`[casket] ${username} ${direction} aborted: ${job.error}`);
     } finally {
       job.running = false;
       job.cancelling = false;
@@ -105,8 +113,10 @@ export class CasketService {
       // account's FULL pipeline so the modal + master view drop the moved items without a manual
       // refresh. `unconfirmed` is included — an unconfirmed item may well have moved (see line 21-23),
       // the same rule the frontend applies to its contents reload. Failed-only / pre-flight-error jobs
-      // skip (nothing changed on Steam). refreshOne in-flight-dedups, so a concurrent fleet refresh
-      // coalesces; a rejection only warns (the job state is already finalized above).
+      // skip (nothing changed on Steam); an 'aborted' (mid-move backstop) job with real partial progress
+      // is covered here — its live `moved` makes the same `moved>0` condition true. refreshOne
+      // in-flight-dedups, so a concurrent fleet refresh coalesces; a rejection only warns (the job state
+      // is already finalized above).
       if (job.moved > 0 || job.unconfirmed > 0) {
         void this.inventory.refreshOne(job.username, 'cs2').catch((e) => logger.warn(`[casket] post-move inventory reconcile failed for ${job.username}: ${(e as Error).message}`));
       }
