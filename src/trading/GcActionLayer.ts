@@ -69,7 +69,8 @@ function loadGc(): (new (client: unknown) => GcLike) | undefined {
   return GcCtor;
 }
 
-/** The real globaloffensive surface this layer uses (verified against v3.3.0). */
+/** The real globaloffensive surface this layer uses (verified against v3.3.0). The stale-`_helloTimer`
+ *  heal in `connect` reaches private v3.x fields (`_helloTimer`/`_isInCSGO`) — re-verify on any 4.x upgrade. */
 interface GcLike {
   haveGCSession: boolean;
   inventory?: GcItem[];
@@ -226,6 +227,13 @@ export class GcActionLayer {
       const timer = setTimeout(() => done(new Error('GC connect timeout (account may not own CS2, or the GC is busy)')), CONNECT_TIMEOUT_MS);
       go.once('connectedToGC', onConn);
       go.once('error', onErr);
+      // Heal the globaloffensive v3.3.0 bug: a prior ClientLogonFatalError does `clearTimeout(this._helloTimer)`
+      // but never nulls it (handlers.js:16), and `handleAppQuit` clears the misnamed `_helloInterval` instead
+      // (index.js:70-74), so the stale (cleared, truthy) Timeout permanently makes `_connect()` refuse to send a
+      // hello ("has helloTimer", index.js:104-107) → every later op on this reused handle fakes a connect timeout.
+      // The guard touches only provably-dead state — a live hello loop (`_isInCSGO` true) is never disturbed.
+      const priv = go as unknown as { _helloTimer?: NodeJS.Timeout | null; _isInCSGO?: boolean };
+      if (!go.haveGCSession && !priv._isInCSGO && priv._helloTimer) { clearTimeout(priv._helloTimer); priv._helloTimer = null; }
       try { (client as { gamesPlayed(apps: number[]): void }).gamesPlayed([CS2_APPID]); }
       catch (e) { done(e as Error); }
     });
