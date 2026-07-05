@@ -276,9 +276,68 @@ export function startProxyRelay(
   });
 }
 
-/** One CDP request/response over the page's debugger WebSocket. */
-async function cdp(ws: WebSocket, id: number, method: string, params: unknown): Promise<void> {
-  ws.send(JSON.stringify({ id, method, params }));
+/** Registered awaiters for in-flight CDP commands, keyed by request id. */
+type CdpPending = Map<number, { resolve: () => void; reject: (e: Error) => void }>;
+
+/**
+ * One CDP request/response over the page's debugger WebSocket: send the command, register an
+ * awaiter in `pending`, and resolve only when the matching `{id}` reply arrives (via the single
+ * `ws.onmessage` handler set up by injectSessionOverCdp) — or reject on a 3s per-command timeout.
+ * An error/failure reply rejects, so a refused `Network.setCookie` no longer looks like success.
+ */
+function cdp(ws: WebSocket, pending: CdpPending, id: number, method: string, params: unknown): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, 3000);
+    t.unref?.();
+    pending.set(id, { resolve: () => { clearTimeout(t); resolve(); }, reject: (e) => { clearTimeout(t); reject(e); } });
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+}
+
+/**
+ * Inject ONE account's cookies over the page debugger WS at `wsUrl` and navigate to Steam.
+ * Response-awaited: enables Network, sets every cookie, and navigates, awaiting each CDP reply —
+ * so a rejected setCookie / failed navigate rejects here (the caller's catch surfaces a real 500
+ * and skips the false "clean browser opened" log) instead of the old fire-and-forget 400ms flush
+ * that reported success regardless. Exported as the injection test seam (H-TRD-060).
+ */
+export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[]): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    let id = 0;
+    const pending: CdpPending = new Map();
+    const t = setTimeout(() => { try { ws.close(); } catch { /* ignore */ } reject(new Error('debugger handshake timed out')); }, 8000);
+    ws.onmessage = (ev: { data: unknown }) => {
+      let m: { id?: number; error?: { message?: string }; result?: { success?: boolean } };
+      try { m = JSON.parse(String(ev.data)); } catch { return; }
+      if (typeof m.id !== 'number') return;
+      const p = pending.get(m.id);
+      if (!p) return;
+      pending.delete(m.id);
+      if (m.error) p.reject(new Error('CDP error: ' + (m.error.message ?? 'unknown')));
+      else if (m.result && m.result.success === false) p.reject(new Error('CDP setCookie rejected'));
+      else p.resolve();
+    };
+    ws.onopen = async () => {
+      try {
+        await cdp(ws, pending, ++id, 'Network.enable', {});
+        for (const c of cookies) {
+          await cdp(ws, pending, ++id, 'Network.setCookie', { name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly });
+        }
+        await cdp(ws, pending, ++id, 'Page.navigate', { url: STEAM_URL });
+        clearTimeout(t);
+        try { ws.close(); } catch { /* ignore */ }
+        resolve();
+      } catch (e) {
+        // A throw inside this bare async handler would otherwise become an unhandled rejection — route
+        // it to reject so the caller's catch (H-TRD-064's gated teardown) sees the failure.
+        clearTimeout(t);
+        try { ws.close(); } catch { /* ignore */ }
+        reject(e as Error);
+      }
+    };
+    ws.onerror = () => { clearTimeout(t); reject(new Error('debugger connection failed')); };
+  });
 }
 
 // ── Ephemeral-session lifetime ──────────────────────────────────────────────
@@ -449,22 +508,10 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     }
     if (!wsUrl) throw new Error('could not reach the browser debugger to inject the session');
 
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
-      let id = 0;
-      const t = setTimeout(() => { try { ws.close(); } catch { /* ignore */ } reject(new Error('debugger handshake timed out')); }, 8000);
-      ws.onopen = async () => {
-        await cdp(ws, ++id, 'Network.enable', {});
-        for (const c of spec.cookies) {
-          await cdp(ws, ++id, 'Network.setCookie', { name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly });
-        }
-        await cdp(ws, ++id, 'Page.navigate', { url: STEAM_URL });
-        clearTimeout(t);
-        // Give the commands a tick to flush, then detach (the page keeps running).
-        setTimeout(() => { try { ws.close(); } catch { /* ignore */ } resolve(); }, 400);
-      };
-      ws.onerror = () => { clearTimeout(t); reject(new Error('debugger connection failed')); };
-    });
+    // Response-awaited injection: every CDP command is awaited to its reply, so a rejected setCookie
+    // or a failed navigate throws to the catch below (real 500, no false success log) instead of the
+    // old fire-and-forget 400ms flush that always "succeeded". (H-TRD-060.)
+    await injectSessionOverCdp(wsUrl, spec.cookies);
 
     const authNote = proxyAuthApplied ? 'yes (via local relay)' : (spec.proxyServer ? 'no (open proxy)' : 'n/a');
     logger.info(`[${spec.username}] clean browser opened (proxy=${spec.proxyServer ?? 'LOCAL IP'}, proxy auth: ${authNote}, cookies=${spec.cookies.map((c) => c.name).join('+') || 'none'})`);
