@@ -24,6 +24,7 @@ import { LicenseClient } from '../licensing/LicenseClient';
 import { getAvailableUpdate, getBlockedUpdate, getPriorCrash, getUpdateOutcome } from '../licensing/updateStatus';
 import { checkOnly, canInstallNow, installNow, isUpdateOpInFlight } from '../licensing/updateScheduler';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
+import { isAmbiguousCommitFailure } from '../trading/commitAmbiguity';
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
 import { BanService } from '../trading/BanService';
@@ -1408,6 +1409,14 @@ export function createApp(deps: ApiDeps): Express {
       if (/not found|not ready|no cookies|requires either|trade ?url|trade-link|same account|disabled|empty/i.test(msg)) {
         return res.status(400).json({ error: msg });
       }
+      // H-TRD-125: a DEFINITE Steam rejection (eresult / recognised cause / full inventory) means the
+      // offer does NOT exist — surface the plain reason, not the ambiguous "verify before retry" warning.
+      // Transport-ambiguous / structure-less faults keep today's safe verifyBeforeRetry default.
+      const f = err as { eresult?: number; cause?: string; inventoryFull?: boolean };
+      const definite = !isAmbiguousCommitFailure(err)
+        && f.eresult !== 16 // belt: Steam's may-have-sent code (H-TRD-104)
+        && (f.eresult != null || !!f.cause || f.inventoryFull === true);
+      if (definite) return res.status(502).json({ error: msg, eresult: f.eresult, cause: f.cause, inventoryFull: f.inventoryFull === true });
       return res.status(502).json({ error: msg, verifyBeforeRetry: true });
     }
 
