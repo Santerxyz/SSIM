@@ -273,7 +273,9 @@ export class TradeUpService {
       }
     }
 
-    candidates.sort((a, b) => b.profitCents - a.profitCents);
+    // H-TRD-072: rank fully-priced first, profit second, so the MAX_CANDIDATES slice
+    // keeps honest fully-priced contracts over estimate ones with fabricated near-zero cost.
+    candidates.sort((a, b) => (Number(b.fullyPriced) - Number(a.fullyPriced)) || (b.profitCents - a.profitCents));
     const top = candidates.slice(0, MAX_CANDIDATES);
 
     if (top.some((c) => !c.fullyPriced)) {
