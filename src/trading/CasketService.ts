@@ -24,6 +24,8 @@ export interface CasketMoveJob {
   unconfirmed: number;
   failed:      number;
   current?:    string;
+  /** Cancel was requested for THIS job (per-job, so a backstop-detached prior loop can't cross-wire). */
+  cancelRequested?: boolean;
   failures:    Array<{ itemId: string; error: string }>;
   startedAt?:  string;
   finishedAt?: string;
@@ -33,7 +35,6 @@ export interface CasketMoveJob {
 
 export class CasketService {
   private job: CasketMoveJob = { running: false, direction: 'deposit', username: '', casketId: '', total: 0, done: 0, moved: 0, unconfirmed: 0, failed: 0, failures: [] };
-  private cancel = false;
 
   constructor(private readonly gc: GcActionLayer, private readonly inventory: InventoryService) {}
 
@@ -62,7 +63,6 @@ export class CasketService {
     if (this.job.running) throw new Error('a storage move is already running');
     if (!casketId) throw new Error('a storage unit must be selected');
     if (!Array.isArray(itemIds) || itemIds.length === 0) throw new Error('no items selected');
-    this.cancel = false;
     this.job = {
       running: true, cancelling: false, cancelled: false, direction, username, casketId,
       total: itemIds.length, done: 0, moved: 0, unconfirmed: 0, failed: 0, failures: [], startedAt: new Date().toISOString(),
@@ -72,32 +72,34 @@ export class CasketService {
   }
 
   cancelMove(): CasketMoveJob {
-    if (this.job.running) { this.cancel = true; this.job.cancelling = true; logger.info('[casket] move cancel requested'); }
+    if (this.job.running) { this.job.cancelRequested = true; this.job.cancelling = true; logger.info('[casket] move cancel requested'); }
     return this.moveStatus();
   }
 
   private async runMove(username: string, casketId: string, itemIds: string[], direction: 'deposit' | 'withdraw'): Promise<void> {
+    // Bind THIS job so a backstop-detached loop (S16: withTimeout can't cancel fn(go)) writes only into
+    // its own orphaned object — never into the NEXT job started after `finally` reopened the gate.
+    const job = this.job;
     try {
       const res = await this.gc.moveCasketItems(
         username, casketId, itemIds, direction,
-        (p) => { this.job.done = p.done; this.job.current = p.current; this.job.moved = p.moved; this.job.failed = p.failed; },
-        () => this.cancel,
+        (p) => { if (!job.running) return; job.done = p.done; job.current = p.current; job.moved = p.moved; job.failed = p.failed; },
+        () => job.cancelRequested === true,
       );
-      this.job.moved = res.moved.length;
-      this.job.unconfirmed = res.unconfirmed.length;
-      this.job.failed = res.failed.length;
-      this.job.failures = res.failed;
+      job.moved = res.moved.length;
+      job.unconfirmed = res.unconfirmed.length;
+      job.failed = res.failed.length;
+      job.failures = res.failed;
     } catch (e) {
       // A pre-flight failure (gated off, library missing, not logged in, cap exceeded) — nothing moved.
-      this.job.error = (e as Error).message;
+      job.error = (e as Error).message;
       logger.warn(`[casket] ${username} ${direction} aborted: ${(e as Error).message}`);
     } finally {
-      this.job.running = false;
-      this.job.cancelling = false;
-      this.job.cancelled = this.cancel;
-      this.job.current = undefined;
-      this.job.finishedAt = new Date().toISOString();
-      this.cancel = false;
+      job.running = false;
+      job.cancelling = false;
+      job.cancelled = job.cancelRequested === true;
+      job.current = undefined;
+      job.finishedAt = new Date().toISOString();
       // Post-move reconcile (parity with every other mutating service): deposited/withdrawn assets
       // left Steam's web inventory (ctx2), so the cached inventory is now stale. Refresh this one
       // account's FULL pipeline so the modal + master view drop the moved items without a manual
@@ -105,8 +107,8 @@ export class CasketService {
       // the same rule the frontend applies to its contents reload. Failed-only / pre-flight-error jobs
       // skip (nothing changed on Steam). refreshOne in-flight-dedups, so a concurrent fleet refresh
       // coalesces; a rejection only warns (the job state is already finalized above).
-      if (this.job.moved > 0 || this.job.unconfirmed > 0) {
-        void this.inventory.refreshOne(this.job.username, 'cs2').catch((e) => logger.warn(`[casket] post-move inventory reconcile failed for ${this.job.username}: ${(e as Error).message}`));
+      if (job.moved > 0 || job.unconfirmed > 0) {
+        void this.inventory.refreshOne(job.username, 'cs2').catch((e) => logger.warn(`[casket] post-move inventory reconcile failed for ${job.username}: ${(e as Error).message}`));
       }
     }
   }
