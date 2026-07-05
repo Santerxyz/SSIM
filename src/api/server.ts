@@ -788,8 +788,10 @@ export function createApp(deps: ApiDeps): Express {
   }));
   app.delete('/api/csfloat/:username/key', (req: Request, res: Response) => {
     if (!csAccount(req, res)) return;
-    csfloat.clearKey(req.params.username);
-    res.json({ ok: true, configured: false });
+    try {
+      csfloat.clearKey(req.params.username);
+      res.json({ ok: true, configured: false });
+    } catch (err) { res.status(400).json({ error: (err as Error).message }); }
   });
 
   // ── documented core ──
