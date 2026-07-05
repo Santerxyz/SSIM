@@ -105,11 +105,21 @@ export class TradeUpService {
   startExecute(username: string, contracts: TuExecContract[]): TradeUpExecJob {
     if (this.execJob.running) throw new Error('a trade-up execution is already running');
     if (!Array.isArray(contracts) || contracts.length === 0) throw new Error('no contracts selected');
+    // H-TRD-067: contracts CONSUME their inputs — an asset id may appear at most once across the whole
+    // selection (and not twice within one contract). Overlapping candidates (the top-N by profit are
+    // near-duplicates by construction) otherwise craft contract 1 then fail every later sharer at the GC
+    // presence re-check; a non-unique intra-contract set passes that per-id membership check and pushes a
+    // malformed craft the GC refuses — reported today as a false confirmed success (H-TRD-052).
+    const used = new Set<string>();
     for (const c of contracts) {
       if (!c || !Array.isArray(c.inputAssetIds) || c.inputAssetIds.length !== 10 || !c.inputAssetIds.every((id) => typeof id === 'string' && id)) {
         throw new Error('each contract must carry exactly 10 input asset ids');
       }
       if (typeof c.rarityId !== 'string' || !c.rarityId) throw new Error('each contract must carry its input rarityId (for the craft recipe)');
+      for (const id of c.inputAssetIds) {
+        if (used.has(id)) throw new Error(`asset ${id} is used by more than one selected contract (or twice in one) — contracts consume their inputs; deselect overlapping candidates`);
+        used.add(id);
+      }
     }
     const st = this.gc.status();
     this.execCancel = false;

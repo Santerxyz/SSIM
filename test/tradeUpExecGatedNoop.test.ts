@@ -15,6 +15,10 @@ import { TradeUpService } from '../src/trading/TradeUpService';
 type AnyGc = any;
 
 const TEN = Array.from({ length: 10 }, (_, i) => String(i));
+// H-TRD-067: contracts consume their inputs, so startExecute now rejects overlapping
+// asset ids. Give each contract its own disjoint 10-id block; the gate/no-op assertions
+// below are unchanged — only the fixtures are made non-overlapping so they reach the gate.
+const block = (n: number) => Array.from({ length: 10 }, (_, i) => String(n * 10 + i));
 
 test('tradeup exec gated off completes immediately as a safe no-op', () => {
   let crafted = 0;
@@ -24,9 +28,9 @@ test('tradeup exec gated off completes immediately as a safe no-op', () => {
   };
   const svc: AnyGc = new TradeUpService({} as never, {} as never, {} as never, gc);
   const job = svc.startExecute('bot', [
-    { inputAssetIds: TEN, rarityId: 'rarity_common_weapon', stattrak: false },
-    { inputAssetIds: TEN, rarityId: 'rarity_common_weapon', stattrak: false },
-    { inputAssetIds: TEN, rarityId: 'rarity_common_weapon', stattrak: false },
+    { inputAssetIds: block(0), rarityId: 'rarity_common_weapon', stattrak: false },
+    { inputAssetIds: block(1), rarityId: 'rarity_common_weapon', stattrak: false },
+    { inputAssetIds: block(2), rarityId: 'rarity_common_weapon', stattrak: false },
   ]);
   assert.equal(job.running, false, 'the no-op returns a non-running (already-finished) job');
   assert.equal(job.enabled, false, 'enabled is false — the UI keys its disabled footer off this');
