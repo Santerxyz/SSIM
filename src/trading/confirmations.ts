@@ -31,7 +31,20 @@ export function shapeConfirmations(raw: unknown): ConfirmationView[] {
     if (!id || seen.has(id)) continue;                 // dedup by confirmation id
     seen.add(id);
     const type = Number(o.type) || 0;
-    const timeRaw = Number(o.time);
+    // Producer-faithful creation time. CConfirmation carries the numeric moment in
+    // `timestamp` (Date) and an ISO STRING in `time`; raw getlist JSON may carry a
+    // numeric `time`. 0 when unknown.
+    let timeMs = 0;
+    if (o.timestamp instanceof Date) {
+      const t = o.timestamp.getTime();
+      if (Number.isFinite(t) && t > 0) timeMs = t;
+    } else if (typeof o.time === 'number') {
+      const t = o.time;
+      if (Number.isFinite(t) && t > 0) timeMs = t > 1e12 ? t : t * 1000;
+    } else if (typeof o.time === 'string') {
+      const p = Date.parse(o.time);
+      if (Number.isFinite(p) && p > 0) timeMs = p;
+    }
     out.push({
       id,
       type,
@@ -40,7 +53,7 @@ export function shapeConfirmations(raw: unknown): ConfirmationView[] {
       receiving: String(o.receiving ?? ''),
       creator:   String(o.creator ?? o.creatorid ?? ''),
       iconUrl:   typeof o.icon === 'string' ? (o.icon as string) : '',
-      timeMs:    Number.isFinite(timeRaw) && timeRaw > 0 ? (timeRaw > 1e12 ? timeRaw : timeRaw * 1000) : 0,
+      timeMs,
     });
   }
   // Deterministic: newest first, tie-break by id so the order is stable across fetches.

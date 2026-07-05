@@ -43,18 +43,29 @@ test('OTP: msUntilNextTotp aligns to the 30s boundary', () => {
 });
 
 // ── Confirmations: dedup + deterministic order (thin view of getConfirmations) ──
-test('shapeConfirmations: dedups by id, orders newest-first deterministically', () => {
+test('shapeConfirmations: real CConfirmation shape (ISO time / Date timestamp) orders newest-first', () => {
+  const older = new Date('2026-07-05T10:00:00.000Z');
+  const newer = new Date('2026-07-05T12:00:00.000Z');
   const raw = [
-    { id: '100', type: 3, title: 'Sell A', time: 1000 },
-    { id: '200', type: 2, title: 'Trade B', time: 3000 },
-    { id: '100', type: 3, title: 'Sell A dup', time: 1000 }, // duplicate confirmation id
-    { id: '150', type: 3, title: 'Sell C', time: 3000 },     // ties 200's time → tie-break by id
+    // CConfirmation shape: ISO STRING `time` + numeric `timestamp` (Date) — the live producer.
+    { id: '100', type: 3, title: 'Sell A', time: older.toISOString(), timestamp: older },
+    { id: '200', type: 2, title: 'Trade B', time: newer.toISOString(), timestamp: newer },
+    { id: '100', type: 3, title: 'Sell A dup', time: older.toISOString(), timestamp: older }, // duplicate confirmation id
+    { id: '150', type: 3, title: 'Sell C', time: newer.toISOString(), timestamp: newer },     // ties 200's time → tie-break by id
   ];
   const v = shapeConfirmations(raw);
   assert.equal(v.length, 3, 'duplicate id removed');
   assert.deepEqual(v.map((c) => c.id), ['150', '200', '100'], 'time desc, tie-break id asc');
+  assert.equal(v[0].timeMs, newer.getTime(), 'ISO/Date timestamp → real ms epoch');
+  assert.equal(v[2].timeMs, older.getTime());
   assert.equal(v[1].typeName, 'trade');
   assert.equal(v[2].typeName, 'market');
+  // Raw getlist JSON tolerance: a numeric `time` in seconds still gets the s→ms heuristic.
+  const num = shapeConfirmations([{ id: '9', type: 3, title: 'N', time: 1500 }]);
+  assert.equal(num[0].timeMs, 1500 * 1000, 'numeric seconds time → ms');
+  // Unparseable time → 0 (never NaN).
+  const bad = shapeConfirmations([{ id: '8', type: 3, title: 'B', time: 'garbage' }]);
+  assert.equal(bad[0].timeMs, 0, 'unparseable time → 0');
   assert.deepEqual(shapeConfirmations(null), [], 'empty/garbage input → empty list');
 });
 
