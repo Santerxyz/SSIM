@@ -13,13 +13,17 @@ import { dataDir } from '../utils/paths';
 //  Steam-side order/offer may already exist (BACKEND_RELIABILITY.md F5, residual 1).
 //
 //  This journal closes that gap WITHOUT changing any success-path behaviour:
-//   • begin(op)   is written BEFORE the commit; resolve(op) removes it after the op
-//     RESOLVES (success OR caught failure — both run the finally). So a CLEANLY
+//   • begin(op)   is written BEFORE the commit; resolve(op) removes it on a CLEAN
+//     resolution — success or a DEFINITE (non-transport-ambiguous, S3) caught
+//     failure; callers skip resolve when the commit was transport-ambiguous
+//     (`commitMayHaveLanded`) or the call was refused (BuyService via its `refused`
+//     flag; TradeService by throwing before its try/finally opens). So a CLEANLY
 //     completed op leaves NO trace → legitimate sequential repeats are unaffected.
-//   • Only a HARD crash between begin() and resolve() leaves a LINGERING entry —
-//     an op whose Steam-side outcome is unknown. On the next run, a retry whose
-//     op-hash matches that lingering entry is refused ONCE (and the entry consumed,
-//     so a deliberate second attempt proceeds) with a "verify on Steam" message.
+//   • A HARD crash between begin() and resolve(), OR a transport-ambiguous commit
+//     failure (S3, commitAmbiguity.ts), leaves a LINGERING entry — an op whose
+//     Steam-side outcome is unknown. On the next run a matching retry is REFUSED
+//     and the entry KEPT (S15); after an 8s min-age a deliberate retry is allowed
+//     and consumes it (see consultRefusal), with a "verify on Steam" message.
 //   • TTL-bounded (24h): an entry older than the TTL is swept. The window must
 //     outlive a crash-overnight → retry-next-morning cycle; post-S15 a lingering
 //     entry costs only one refused click + an 8s pause, so the sweep exists to
@@ -34,7 +38,7 @@ import { dataDir } from '../utils/paths';
 export type MoneyOpPhase = 'initiated' | 'placed' | 'sent';
 
 export interface MoneyOpEntry {
-  op: string;        // 'buy' | 'send' — for the surfaced message
+  op: string;        // 'buy' | 'send' — forensic: identifies the op class when the on-disk journal is inspected after a crash
   phase: MoneyOpPhase;
   at: number;        // epoch ms of begin()/record()
   detail?: string;
@@ -152,7 +156,7 @@ export class MoneyOpJournal {
     } catch { /* never throw */ }
   }
 
-  /** Remove the entry — call in the finally on ANY clean resolution (success OR caught failure). */
+  /** Remove the entry — call in the finally on a CLEAN resolution (success or a DEFINITE, non-transport-ambiguous caught failure; callers skip this on a transport-ambiguous commit (S3) or a refusal (S15)). */
   resolve(opHash: string): void {
     if (!this.enabled) return;
     try {
@@ -163,6 +167,7 @@ export class MoneyOpJournal {
   }
 
   /**
+   * Test-inspection helper (production refusal goes through consultRefusal since S15).
    * Return a LINGERING (crash-interrupted) entry for `opHash` within the TTL, or undefined. A non-empty
    * result means a prior identical op died mid-flight and its Steam-side outcome is unknown → the caller
    * should refuse the auto-refire and surface it. (Persists the sweep so expired entries are cleaned.)
