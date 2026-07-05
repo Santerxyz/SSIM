@@ -161,6 +161,9 @@ export class TradeService {
   /** Per (account|destination|item-set) in-flight guard against duplicate real sends. */
   private readonly inFlight = new Set<string>();
   private autoAcceptInternal = true;
+  /** In-flight count of single/batch offer actions (accept/decline/cancel) — a batch of
+   *  accepts clears mobile 2FA confirmations, so busy() must see it to gate an update swap. */
+  private offerActionsInFlight = 0;
   private massJob: MassTradeJob = { running: false, total: 0, done: 0, sent: 0, confirmed: 0, unconfirmed: 0, failed: [], results: [] };
   /** Co-operative cancel flag for the live mass-send (set by cancelMass()). */
   private massCancel = false;
@@ -335,13 +338,22 @@ export class TradeService {
     return results;
   }
 
-  /** Performs ONE offer action (accept / decline / cancel) for `username`. */
+  /** Performs ONE offer action (accept / decline / cancel) for `username`.
+   *  Wraps the whole body in the busy() counter (covers the single-action route AND every
+   *  batch worker with one site). The `return await`s are load-bearing: returning the bare
+   *  promise would run the finally (decrement) the moment the promise is created, making the
+   *  gate false during the very accept+2FA window it exists to cover. */
   async offerAction(username: string, offerId: string, action: OfferAction): Promise<void> {
-    const trader = await this.getTrader(username);
-    if (action === 'accept') return trader.acceptTradeOffer(offerId);
-    // 'cancel' (our sent offer) and 'decline' (an incoming offer) share one Steam call;
-    // the library routes it by the offer's isOurOffer flag.
-    return trader.cancelOrDeclineOffer(offerId);
+    this.offerActionsInFlight++;
+    try {
+      const trader = await this.getTrader(username);
+      if (action === 'accept') return await trader.acceptTradeOffer(offerId);
+      // 'cancel' (our sent offer) and 'decline' (an incoming offer) share one Steam call;
+      // the library routes it by the offer's isOurOffer flag.
+      return await trader.cancelOrDeclineOffer(offerId);
+    } finally {
+      this.offerActionsInFlight--;
+    }
   }
 
   /**
@@ -736,9 +748,10 @@ export class TradeService {
   setAutoAccept(on: boolean): void { this.autoAcceptInternal = on; }
   isAutoAccept(): boolean          { return this.autoAcceptInternal; }
 
-  /** True while a send is in flight or a mass-send job is running — the update scheduler (C5) checks
-   *  this so a mid-session update never hard-exits into a swap while real trades are being dispatched. */
-  busy(): boolean { return this.inFlight.size > 0 || this.massJob.running; }
+  /** True while a send is in flight, an offer action (single or batch accept/decline/cancel) is
+   *  running, or a mass-send job is running — the update scheduler (C5) checks this so a mid-session
+   *  update never hard-exits into a swap while real trades or 2FA confirmations are being dispatched. */
+  busy(): boolean { return this.inFlight.size > 0 || this.offerActionsInFlight > 0 || this.massJob.running; }
 
   /** Number of live AccountTrader instances (each owns a polling TradeOfferManager).
    *  Surfaced for the memory heartbeat so RSS can be correlated with fleet size. */
