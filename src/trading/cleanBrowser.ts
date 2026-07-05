@@ -129,6 +129,8 @@ export function buildIsolatedSession(input: {
         }
       }
     }
+  } else if (input.network?.type === 'localip' && input.network.value && input.network.value !== '0.0.0.0') {
+    warnings.push(`this account is pinned to local interface ${input.network.value}; a browser cannot bind a source IP and will egress via the DEFAULT interface — this may differ from its normal egress and risk a Steam lock`);
   } else {
     warnings.push('this account has NO proxy (runs on the host IP) — opening on the local IP may differ from its normal egress and risk a Steam lock');
   }

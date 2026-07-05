@@ -160,11 +160,18 @@ test('A.2d — an authed SOCKS proxy REFUSES (cannot apply SOCKS auth) rather th
 });
 
 test('A.3 — no-proxy WARNS instead of leaking the host IP', () => {
-  for (const network of [{ type: 'localip', value: '192.168.1.5' }, null]) {
+  for (const network of [{ type: 'localip', value: '0.0.0.0' }, null]) {
     const spec = buildIsolatedSession({ username: 'dan', cookieStrings: ['steamLoginSecure=Z'], network });
     assert.equal(spec.proxyServer, null, 'never the host IP');
     assert.ok(spec.warnings.some((w) => /NO proxy/i.test(w)), 'warns about the missing proxy');
   }
+});
+
+test('A.3b — a localip-pinned account WARNS with its pinned IP (browser cannot bind a source IP)', () => {
+  const spec = buildIsolatedSession({ username: 'iris', cookieStrings: ['steamLoginSecure=Z'], network: { type: 'localip', value: '192.168.1.10' } });
+  assert.equal(spec.proxyServer, null, 'never the host IP');
+  assert.ok(spec.warnings.some((w) => /192\.168\.1\.10/.test(w)), 'names the pinned interface in the warning');
+  assert.ok(!spec.warnings.some((w) => /NO proxy/i.test(w)), 'not the generic no-proxy warning');
 });
 
 // ── Feature A: the local relay actually AUTHENTICATES the browser to the proxy ──
