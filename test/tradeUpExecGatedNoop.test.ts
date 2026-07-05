@@ -24,6 +24,7 @@ test('tradeup exec gated off completes immediately as a safe no-op', () => {
   let crafted = 0;
   const gc: AnyGc = {
     status: () => ({ craftEnabled: false, reason: 'craft disabled (SSIM_GC_VERIFIED not set)' }),
+    opInFlight: () => false,
     craftTradeUp: async () => { crafted++; return { submitted: true, confirmed: true }; },
   };
   const svc: AnyGc = new TradeUpService({} as never, {} as never, {} as never, gc);
@@ -44,7 +45,7 @@ test('tradeup exec gated off completes immediately as a safe no-op', () => {
 });
 
 test('tradeup exec still validates malformed payloads before the gate', () => {
-  const gc: AnyGc = { status: () => ({ craftEnabled: false, reason: 'off' }) };
+  const gc: AnyGc = { status: () => ({ craftEnabled: false, reason: 'off' }), opInFlight: () => false };
   const svc: AnyGc = new TradeUpService({} as never, {} as never, {} as never, gc);
   // 9 asset ids — malformed; must throw (→409) even though craft is gated off.
   assert.throws(

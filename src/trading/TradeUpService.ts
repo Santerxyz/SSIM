@@ -1,6 +1,7 @@
 import type { InventoryService } from '../core/InventoryService';
 import type { PricingService } from '../pricing/PricingService';
 import type { GcActionLayer } from './GcActionLayer';
+import { GcBusyError } from './GcActionLayer';
 import { Cs2SchemaService, parseSkinName, type SkinDef } from '../core/Cs2SchemaService';
 import { computeContract, wearMidpoint, achievableWears, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
 import { isSellable } from '../core/MarketModel';
@@ -75,6 +76,12 @@ export class TradeUpService {
   /** Single live execution job (the trade-up money/item path is deliberately serialized). */
   private execJob: TradeUpExecJob = { running: false, enabled: false, statusReason: '', total: 0, done: 0, crafted: 0, failed: 0, results: [] };
   private execCancel = false;
+  // H-TRD-069: a GcBusyError can ONLY fire before the craft is sent (the per-account slot rejects
+  // pre-connect), so a busy rejection ⇔ nothing sent → we WAIT the slot out (a storage move / float
+  // read holding it) rather than burning the contract as a real failure. Bounded, cancel-aware; a
+  // maximal 1000-item casket batch can legitimately exhaust the window and lands in the honest message.
+  private readonly busyRetryWaitMs = 5_000;
+  private readonly busyRetryMaxAttempts = 24; // ~2min: covers the float read (≤~37s) + small/medium storage batches
 
   constructor(
     private readonly inventory: InventoryService,
@@ -121,6 +128,11 @@ export class TradeUpService {
         used.add(id);
       }
     }
+    // H-TRD-069: refuse upfront if this account's single GC-op slot is already held (a storage move /
+    // float read is running) — otherwise every contract would enter the loop only to wait the slot out.
+    if (this.gc.opInFlight(username)) {
+      throw new Error(`a GC operation (storage/float read) is running for ${username} — wait for it to finish`);
+    }
     const st = this.gc.status();
     this.execCancel = false;
     // Gated off (SSIM_GC_VERIFIED=0 / dev): completes IMMEDIATELY as a SAFE NO-OP. Running the loop
@@ -163,26 +175,44 @@ export class TradeUpService {
     for (let i = 0; i < contracts.length; i++) {
       if (this.execCancel) break;
       this.execJob.current = i;
-      try {
-        const r = await this.gc.craftTradeUp(username, {
-          inputAssetIds: contracts[i].inputAssetIds,
-          inputRarityId: contracts[i].rarityId,
-          stattrak: !!contracts[i].stattrak,
-        });
-        if (r.rejected) {
-          // The GC answered and REFUSED the craft — no items were consumed, nothing produced.
+      // H-TRD-069: a GcBusyError ⇔ the craft was NEVER sent (the per-account slot rejects pre-connect),
+      // so it is 100% safe to wait the holder (storage move / float read) out and re-attempt the SAME
+      // contract — never a masking retry of a submitted craft. Bounded + cancel-aware; done++ fires ONCE.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const r = await this.gc.craftTradeUp(username, {
+            inputAssetIds: contracts[i].inputAssetIds,
+            inputRarityId: contracts[i].rarityId,
+            stattrak: !!contracts[i].stattrak,
+          });
+          if (r.rejected) {
+            // The GC answered and REFUSED the craft — no items were consumed, nothing produced.
+            this.execJob.failed++;
+            this.execJob.results.push({ index: i, submitted: true, error: 'GC rejected the craft — no items were consumed (check inputs/recipe)' });
+          } else {
+            if (r.confirmed) this.execJob.crafted++; // count only a GC-confirmed craft
+            this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
+          }
+          break;
+        } catch (e) {
+          if (e instanceof GcBusyError && attempt < this.busyRetryMaxAttempts) {
+            if (this.execCancel) {
+              this.execJob.failed++;
+              this.execJob.results.push({ index: i, submitted: false, error: `${e.message} — cancelled while waiting` });
+              break;
+            }
+            await sleep(this.busyRetryWaitMs);
+            continue; // slot may have freed — re-attempt the same contract
+          }
           this.execJob.failed++;
-          this.execJob.results.push({ index: i, submitted: true, error: 'GC rejected the craft — no items were consumed (check inputs/recipe)' });
-        } else {
-          if (r.confirmed) this.execJob.crafted++; // count only a GC-confirmed craft
-          this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
+          const msg = e instanceof GcBusyError
+            ? 'GC busy for the whole wait window (storage/float op running) — nothing was sent; re-run when it finishes'
+            : (e instanceof Error ? e.message : String(e));
+          this.execJob.results.push({ index: i, submitted: false, error: msg });
+          break;
         }
-      } catch (e) {
-        this.execJob.failed++;
-        this.execJob.results.push({ index: i, submitted: false, error: e instanceof Error ? e.message : String(e) });
-      } finally {
-        this.execJob.done++;
       }
+      this.execJob.done++;
       if (i < contracts.length - 1 && !this.execCancel) await sleep(1_500);
     }
     this.execJob.running = false;

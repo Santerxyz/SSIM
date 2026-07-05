@@ -49,7 +49,7 @@ test('tradeup exec: a rejected runExecute releases the job (void launch .catch)'
   const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
   process.on('unhandledRejection', onUnhandled);
   try {
-    const gc: AnyGc = { status: () => ({ craftEnabled: true, reason: '' }) };
+    const gc: AnyGc = { status: () => ({ craftEnabled: true, reason: '' }), opInFlight: () => false };
     const svc: AnyGc = new TradeUpService({} as never, {} as never, {} as never, gc);
     // Force the orchestrator itself to reject (simulate an unexpected throw before the loop).
     svc.runExecute = () => Promise.reject(new Error('orchestrator boom'));

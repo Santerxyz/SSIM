@@ -27,6 +27,18 @@ import { logger } from '../utils/logger';
 //  (destroys 10 items) → stays behind the explicit SSIM_GC_VERIFIED flag.
 // ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Thrown by `withSession` when the per-account single-op slot is already held (concurrency 1).
+ * Distinguished from a real failure because it can ONLY fire BEFORE the craft is sent (the
+ * inFlight guard rejects pre-connect) — so a busy rejection ⇔ nothing was sent, always safe to wait out.
+ */
+export class GcBusyError extends Error {
+  constructor(username: string) {
+    super(`a GC operation is already running for ${username}`);
+    this.name = 'GcBusyError';
+  }
+}
+
 const CS2_APPID = 730;
 const CONNECT_TIMEOUT_MS = 35_000; // GC hello has exponential backoff; allow a couple of rounds
 const MOVE_VERIFY_TIMEOUT_MS = 15_000;
@@ -120,6 +132,9 @@ export class GcActionLayer {
 
   available(): boolean { return !!loadGc(); }
 
+  /** True while this account holds the single per-account GC-op slot (a storage move / float read is running). */
+  opInFlight(username: string): boolean { return this.inFlight.has(username.toLowerCase()); }
+
   /**
    * Trade-up CRAFT gate (irreversible — destroys 10 items). Resolution:
    *   • SSIM_GC_VERIFIED = 0/false/off  → FORCE OFF — the KILL SWITCH. Set this (then relaunch) to
@@ -183,7 +198,7 @@ export class GcActionLayer {
    */
   private async withSession<T>(username: string, fn: (go: GcLike) => Promise<T>, timeoutMs = 60_000): Promise<T> {
     const key = username.toLowerCase();
-    if (this.inFlight.has(key)) throw new Error(`a GC operation is already running for ${username}`);
+    if (this.inFlight.has(key)) throw new GcBusyError(username);
     this.inFlight.add(key);
     // B40: this is a genuine op entry — touch it now and keep it fresh so the idle reaper (30-min TTL)
     // can never log the account out mid-move/mid-craft (a large casket move legitimately runs 10-35+ min).

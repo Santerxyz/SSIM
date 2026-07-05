@@ -21,6 +21,7 @@ test('tradeup exec rejects overlapping contracts', () => {
   let crafted = 0;
   const gc: AnyGc = {
     status: () => ({ craftEnabled: true, reason: 'ok' }),
+    opInFlight: () => false,
     craftTradeUp: async () => { crafted++; return { submitted: true, confirmed: true }; },
   };
   const svc: AnyGc = new TradeUpService({} as never, {} as never, {} as never, gc);
@@ -49,6 +50,7 @@ test('tradeup exec rejects overlapping contracts', () => {
 test('tradeup exec allows disjoint contracts', () => {
   const gc: AnyGc = {
     status: () => ({ craftEnabled: false, reason: 'off' }),
+    opInFlight: () => false,
     craftTradeUp: async () => ({ submitted: true, confirmed: true }),
   };
   const svc: AnyGc = new TradeUpService({} as never, {} as never, {} as never, gc);
