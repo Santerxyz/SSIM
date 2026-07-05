@@ -688,8 +688,14 @@ export class MarketService {
             return 'phantom';
           }
         } catch (probeErr) {
-          // The probe itself failed → the connection is very likely dead.
-          if (isTransient(probeErr)) return 'deferred';
+          // The probe itself failed → we cannot read this bot's own listings, so neither
+          // phantom detection nor further listing attempts are trustworthy (a dead web
+          // session throws non-transient market/mylistings HTTP 40x too, not just transient
+          // connection errors). ANY probe failure → defer: the honest, retryable bucket.
+          // The caller defers the bot's remainder, so no request is burned on a dead session.
+          const pmsg = (probeErr as Error)?.message ?? String(probeErr);
+          logger.warn(`[mass-sell] ${trader.username} ${assetId}: phantom probe failed (${pmsg}) – deferring (phantom status unknown, session suspect)`);
+          return 'deferred';
         }
 
         if (!isTransient(err)) {
