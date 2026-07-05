@@ -195,8 +195,22 @@ export class AgentFactory {
   // ── Proxy (HTTP/HTTPS or SOCKS4/5) ─────────────────────────────────────────
 
   private static fromProxy(rawProxy: string): AgentBundle {
-    const proxyUrl = normalizeProxy(rawProxy);
-    const isSocks = /^socks[45h]?:\/\//i.test(proxyUrl);
+    // Recover the RAW credentials ONCE and build every output from those raw parts.
+    // The store path (server.ts) already ran `normalizeProxy` on operator input, so
+    // `rawProxy` (returned verbatim as network.value) is SINGLE-encoded; `parseProxy`
+    // does not decode, so its username/password come back still percent-escaped.
+    // Applying `normalizeProxy` again here re-encoded them a SECOND time and handed
+    // every consumer the WRONG password whenever a credential contained a char
+    // `encodeURIComponent` escapes. Decoding the parsed creds exactly once is the
+    // inverse of that store-time encode → raw creds; from there each consumer is fed
+    // credentials encoded exactly as many times as it decodes (web agents take raw
+    // parts via an options object → zero/one layer; steam-user httpProxy gets a
+    // single-encoded URL; steam-user socksProxy gets the raw-creds URL).
+    const parsed = parseProxy(rawProxy);
+    const proxyUrl = normalizeProxy(rawProxy); // fallback for the unparseable / no-creds cases only
+    const rawUser = parsed?.username !== undefined ? decodeOnce(parsed.username) : undefined;
+    const rawPass = parsed?.password !== undefined ? decodeOnce(parsed.password) : undefined;
+    const isSocks = /^socks[45h]?:\/\//i.test(parsed ? `${parsed.scheme}://` : proxyUrl);
 
     if (isSocks) {
       /**
@@ -207,20 +221,51 @@ export class AgentFactory {
        * transport (SOCKS can't carry its raw TCP path). WITHOUT socksProxy the
        * CM/GC connection would go DIRECTLY from the host IP – the classic leak.
        * (httpProxy + socksProxy are mutually exclusive in steam-user; we set one.)
+       *
+       * RESIDUAL: steam-user's `socksProxy` is a URL STRING it feeds to
+       * `new SocksProxyAgent(string)` (WHATWG `new URL()`), which percent-encodes
+       * raw special chars on parse and never decodes them — so a SOCKS proxy
+       * password containing a URL-special char still authenticates the CM tunnel
+       * with a mangled password. That is a socks-proxy-agent@6 / steam-user string
+       * -API limitation, not fixable here without a pre-built-agent call site; the
+       * raw-creds form below is correct for alphanumeric creds and no worse than
+       * before for special-char creds. The WEB SOCKS agent (built from parts) and
+       * the whole HTTP/HTTPS path ARE fully repaired.
        */
       logger.warn('[network] SOCKS proxy → CM/GC tunneled over WebSocket via socksProxy (host IP not exposed). HTTP/HTTPS proxies remain the primary, best-tested CM-tunneling path.');
       return {
-        httpsAgent:       new SocksProxyAgent(proxyUrl),
-        steamUserOptions: { socksProxy: proxyUrl },
+        httpsAgent:       parsed
+          ? new SocksProxyAgent({ protocol: `${parsed.scheme}:`, hostname: parsed.host, port: Number(parsed.port), userId: rawUser, password: rawPass })
+          : new SocksProxyAgent(proxyUrl),
+        steamUserOptions: { socksProxy: parsed && rawUser !== undefined
+          ? `${parsed.scheme}://${rawUser}:${rawPass ?? ''}@${parsed.host}:${parsed.port}`
+          : proxyUrl },
       };
     }
 
     // HTTP / HTTPS proxy – steam-user tunnels the CM TCP connection via HTTP CONNECT.
+    // Web agent: raw creds via options object → agent base64s them verbatim (one layer).
+    // steam-user httpProxy: flows to https-proxy-agent-family code that percent-DECODES
+    // one layer, so build a SINGLE-encoded URL from the raw parts (never rawProxy,
+    // which is already normalized → double).
     return {
-      httpsAgent:       new HttpsProxyAgent(proxyUrl),
-      steamUserOptions: { httpProxy: proxyUrl },
+      httpsAgent:       parsed && rawUser !== undefined
+        ? new HttpsProxyAgent({ protocol: `${parsed.scheme}:`, host: parsed.host, port: Number(parsed.port), auth: `${rawUser}:${rawPass ?? ''}` })
+        : new HttpsProxyAgent(proxyUrl),
+      steamUserOptions: { httpProxy: parsed && rawUser !== undefined
+        ? `${parsed.scheme}://${encodeURIComponent(rawUser)}:${encodeURIComponent(rawPass ?? '')}@${parsed.host}:${parsed.port}`
+        : proxyUrl },
     };
   }
+}
+
+/**
+ * Decodes one layer of percent-encoding — the inverse of the single `normalizeProxy`
+ * the store path already applied. On a malformed escape it returns the input
+ * unchanged (preserving today's behavior rather than throwing on the socket path).
+ */
+function decodeOnce(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
 }
 
 // ─── Proxy parsing + normalization ──────────────────────────────────────────
@@ -296,12 +341,17 @@ export function parseProxy(raw: string): ParsedProxy | null {
  * agents understand: "scheme://user:pass@host:port" (credentials URL-encoded). If
  * the input can't be parsed as a proxy, falls back to the legacy behavior (prepend
  * http:// when there is no scheme) so nothing that worked before regresses.
+ *
+ * IDEMPOTENT: creds are `decodeOnce`d before re-encoding, so a second application
+ * over an already-normalized string returns it unchanged (previously `%40`→`%2540`
+ * double-encoded). This lets the store path (server.ts) and any later re-normalize
+ * collapse to a single encoding layer.
  */
 export function normalizeProxy(value: string): string {
   const p = parseProxy(value);
   if (p) {
     const auth = p.username
-      ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password ?? '')}@`
+      ? `${encodeURIComponent(decodeOnce(p.username))}:${encodeURIComponent(decodeOnce(p.password ?? ''))}@`
       : '';
     return `${p.scheme}://${auth}${p.host}:${p.port}`;
   }
