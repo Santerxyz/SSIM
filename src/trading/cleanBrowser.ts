@@ -124,6 +124,9 @@ export function buildIsolatedSession(input: {
         } else if (/^socks/i.test(scheme)) {
           warnings.push('this account uses an AUTHENTICATED SOCKS proxy — the clean browser cannot apply SOCKS auth; refusing rather than opening on a failing proxy');
           proxyServer = null;
+        } else if (/^https$/i.test(scheme)) {
+          warnings.push('this account uses an AUTHENTICATED TLS (https://) proxy — the clean-browser relay would send its credentials in cleartext; refusing rather than downgrading');
+          proxyServer = null;
         } else {
           proxyAuth = { host: p.host, port: Number(p.port), username: p.username, password: p.password ?? '', scheme };
         }

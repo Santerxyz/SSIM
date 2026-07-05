@@ -159,6 +159,12 @@ test('A.2d — an authed SOCKS proxy REFUSES (cannot apply SOCKS auth) rather th
   assert.ok(spec.warnings.some((w) => /SOCKS/i.test(w)), 'warns it cannot apply SOCKS auth');
 });
 
+test('A.2e — an authed https:// (TLS) proxy REFUSES rather than downgrading creds to cleartext', () => {
+  const spec = buildIsolatedSession({ username: 'ivan', cookieStrings: ['steamLoginSecure=X'], network: { type: 'proxy', value: 'https://user:pass@1.2.3.4:8080' } });
+  assert.equal(spec.proxyServer, null, 'refuses — the relay would send creds in cleartext');
+  assert.ok(spec.warnings.some((w) => /https/i.test(w)), 'warns about the TLS (https://) proxy downgrade');
+});
+
 test('A.3 — no-proxy WARNS instead of leaking the host IP', () => {
   for (const network of [{ type: 'localip', value: '0.0.0.0' }, null]) {
     const spec = buildIsolatedSession({ username: 'dan', cookieStrings: ['steamLoginSecure=Z'], network });
