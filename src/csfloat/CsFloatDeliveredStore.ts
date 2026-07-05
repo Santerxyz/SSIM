@@ -29,13 +29,23 @@ export class CsFloatDeliveredStore {
    *  failures we latch degraded → auto-delivery pauses, bounding how many sales can be exposed. (S39.) */
   private persistFailures = 0;
   private static readonly PERSIST_FAIL_LIMIT = 3;
+  /** Sidecar written when the runtime-persist latch trips, so the degraded state SURVIVES a restart.
+   *  The in-memory latch alone is lost on the crash it defends against — the last-good file lacks the
+   *  buffered ids, so a fresh boot would resume delivery and re-send them. Present at boot → stay
+   *  degraded until an operator clears the fault and removes this file. (S39 residue / INV-F1.) */
+  private readonly MARKER_PATH: string;
 
   constructor(private readonly path: string = DEFAULT_PATH) {
+    this.MARKER_PATH = `${this.path}.persist_failed`;
     this.load();
   }
 
   private load(): void {
     try {
+      if (fsExtra.existsSync(this.MARKER_PATH)) {
+        this.degraded = true; // a prior run could not persist delivered ids → stay paused across the restart
+        logger.error(`${this.MARKER_PATH} present – a prior run could not persist delivered ids; CSFloat auto-delivery stays DISABLED until the disk/permission fault is cleared, ${this.MARKER_PATH} is removed, and the app is restarted.`);
+      }
       if (!fsExtra.existsSync(this.path)) return; // fresh install → empty is correct, not degraded
       const parsed = fsExtra.readJsonSync(this.path) as { ids?: unknown } | null;
       if (parsed && Array.isArray(parsed.ids)) {
@@ -70,6 +80,10 @@ export class CsFloatDeliveredStore {
     try {
       writeJsonAtomic(this.path, { version: 1, ids: this.ids }, { spaces: 0 });
       this.persistFailures = 0; // a successful write re-persists the FULL id list → a prior blip self-heals
+      // The full id list is now durable again, so a marker from a self-healed blip must not strand the
+      // operator on the next boot. Best-effort clear (a failed unlink just leaves a false marker → safe).
+      try { if (fsExtra.existsSync(this.MARKER_PATH)) fsExtra.unlinkSync(this.MARKER_PATH); }
+      catch (err) { logger.error(`could not clear ${this.MARKER_PATH} after a successful persist: ${(err as Error).message}`); }
     } catch (err) {
       this.persistFailures++;
       logger.error(`failed to persist ${this.path} (${this.persistFailures}/${CsFloatDeliveredStore.PERSIST_FAIL_LIMIT}): ${(err as Error).message}`);
@@ -78,6 +92,12 @@ export class CsFloatDeliveredStore {
         // can't re-deliver a growing set of sales whose delivered-ids were never saved. (S39)
         this.degraded = true;
         logger.error(`${this.path}: ${this.persistFailures} consecutive persist failures – CSFloat auto-delivery DISABLED to avoid re-delivering sales whose dedup cannot be saved. Fix the disk/permissions and restart.`);
+        // Latch the degraded state to disk so a crash inside this unpersistable window can't resume
+        // delivery on the next boot (the in-memory latch alone is lost on that crash). Best-effort:
+        // the marker shares the disk that just failed — if it also fails, the in-memory latch is the
+        // only protection for THIS run, which is the pre-existing behavior.
+        try { fsExtra.writeFileSync(this.MARKER_PATH, `${new Date().toISOString()} persist_failures=${this.persistFailures}\n`); }
+        catch (markerErr) { logger.error(`could not write ${this.MARKER_PATH}: ${(markerErr as Error).message}`); }
       }
     }
   }
