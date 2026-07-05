@@ -719,11 +719,24 @@ export class TradeService {
     }
 
     logger.info(`[${receiver.username}] internal offer ${offerId} from ${partnerId} – auto-accepting`);
+    // Reaper contract (SessionManager.ts:64-65): a session in active use is touched on every op
+    // entry so a 30-min-idle receiver can't be reaped mid accept+2FA.
+    this.sessions.markUsed(receiver.username);
+    // Staleness guard: the bulk-read fan-out releases each session the moment getTradeOffers returns,
+    // while an early poll may have ALREADY dispatched this accept. A detached/replaced trader (its
+    // session being torn down) must not fire a write — the next attach re-emits the offer as new.
+    if (this.traders.get(receiver.username.toLowerCase()) !== receiver) return;
+    // busy() visibility: this accept clears a mobile 2FA confirmation, so count it in the same
+    // in-flight gauge as offer actions (the return await requirement keeps the finally off the
+    // freshly-created promise). Then an update swap (S14) defers between accept and confirmation.
+    this.offerActionsInFlight++;
     try {
       await receiver.acceptOffer(offer);
       logger.info(`[${receiver.username}] offer ${offerId} accepted`);
     } catch (err) {
       logger.error(`[${receiver.username}] auto-accept failed for ${offerId}: ${(err as Error).message}`);
+    } finally {
+      this.offerActionsInFlight--;
     }
   }
 
