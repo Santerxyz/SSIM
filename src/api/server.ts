@@ -1391,6 +1391,9 @@ export function createApp(deps: ApiDeps): Express {
       // returns status:'unconfirmed' below — so a throw here means the offer was NOT
       // confirmed-sent, but a network send can still time out post-dispatch.
       const msg = (err as Error).message;
+      // S15 refuse-once: a marked pre-commit refusal is an honest duplicate-precondition, not a
+      // retryable gateway fault — answer 409 so a blind retry-on-502 client cannot re-fire it.
+      if ((err as { moneyOpRefused?: boolean }).moneyOpRefused) return res.status(409).json({ error: msg, refused: true });
       if (/already in flight|already running/i.test(msg)) return res.status(409).json({ error: msg });
       if (/not found|not ready|no cookies|requires either|trade ?url|trade-link|same account|disabled|empty/i.test(msg)) {
         return res.status(400).json({ error: msg });
@@ -1766,6 +1769,9 @@ export function createApp(deps: ApiDeps): Express {
       // Classify: a precondition/duplicate must NOT look like a retryable gateway
       // fault on a money endpoint (a blind retry-on-502 could double-spend).
       const msg = (err as Error).message;
+      // S15 refuse-once: a marked pre-commit refusal is an honest duplicate-precondition, not a
+      // retryable gateway fault — answer 409 so a blind retry-on-502 client cannot re-fire it.
+      if ((err as { moneyOpRefused?: boolean }).moneyOpRefused) return res.status(409).json({ error: msg, refused: true });
       if (/already running/i.test(msg)) return res.status(409).json({ error: msg });
       if (/not found|no sessionid|no steamloginsecure|no identity_secret|wallet currency|exceeds|invalid/i.test(msg)) {
         return res.status(400).json({ error: msg });

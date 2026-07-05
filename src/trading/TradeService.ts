@@ -494,7 +494,10 @@ export class TradeService {
       this.inFlight.delete(guardKey);
       moneyKeys.forEach((k) => MoneyOps.release(k));
       // S15: do NOT resolve here — consultRefusal KEEPS the entry so a rapid re-fire is refused too.
-      throw new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry in a few seconds to proceed.`);
+      // Marker so the send endpoint answers 409 (honest duplicate-precondition), not a retryable 502.
+      const e = new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry in a few seconds to proceed.`) as Error & { moneyOpRefused?: true };
+      e.moneyOpRefused = true;
+      throw e;
     }
     this.journal.begin(guardKey, 'send');
     // S3: set when offer.send fails TRANSPORT-AMBIGUOUSLY (the offer may already exist on Steam). The

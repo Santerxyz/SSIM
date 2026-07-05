@@ -147,3 +147,50 @@ test('H-TRD-042: a pre-commit failure still resolves the journal entry (no linge
   await assert.rejects(svc.buy(P, { releaseSession: true }), /REACHED_COMMIT_PATH/);
   assert.equal(journal.findUnresolved(GUARD_KEY), undefined, 'a pre-commit failure resolves the entry even with releaseSession:true');
 });
+
+// ─── H-TRD-040: the S15 refuse-once error carries a machine-readable marker so the money ───
+// endpoint answers 409 (honest duplicate-precondition), not a retryable 502 an HTTP client
+// would blindly re-fire (a blind retry-on-502 could double-spend after the 8s min-age).
+
+test('H-TRD-040: a refused buy throws an error MARKED moneyOpRefused (not classified by prose)', async () => {
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-trd040-')), 'money-op-journal.json');
+  const journal = new MoneyOpJournal(p);
+  journal.begin(GUARD_KEY, 'buy'); // a lingering entry from a crash-interrupted prior run
+  const svc = makeBuyServiceWithJournal(journal);
+  await assert.rejects(
+    svc.buy(P, { releaseSession: false }),
+    (err: Error & { moneyOpRefused?: boolean }) => {
+      assert.equal(err.moneyOpRefused, true, 'the refusal is marked so it is not surfaced as a retryable 502');
+      assert.match(err.message, /interrupted before it finished/);
+      return true;
+    },
+  );
+});
+
+// The /api/market/buy catch classifies by this exact precedence: a marked refusal → 409 +refused,
+// then the prose-regex buckets, then verifyBeforeRetry → 502, then a bare transport error → 502.
+// Mirrored here so a re-word of a BuyService message can never silently re-bucket the money error.
+function classifyBuyError(err: Error): { status: number; body: Record<string, unknown> } {
+  const msg = (err as Error).message;
+  if ((err as { moneyOpRefused?: boolean }).moneyOpRefused) return { status: 409, body: { error: msg, refused: true } };
+  if (/already running/i.test(msg)) return { status: 409, body: { error: msg } };
+  if (/not found|no sessionid|no steamloginsecure|no identity_secret|wallet currency|exceeds|invalid/i.test(msg)) {
+    return { status: 400, body: { error: msg } };
+  }
+  if ((err as { verifyBeforeRetry?: boolean }).verifyBeforeRetry) return { status: 502, body: { error: msg, verifyBeforeRetry: true } };
+  return { status: 502, body: { error: msg } };
+}
+
+test('H-TRD-040: the classifier answers 409 + refused for a MARKED refusal', () => {
+  const e = Object.assign(new Error('A matching buy was interrupted before it finished (…) …'), { moneyOpRefused: true });
+  const r = classifyBuyError(e);
+  assert.equal(r.status, 409, 'a duplicate-precondition is not a retryable gateway fault');
+  assert.equal(r.body.refused, true);
+});
+
+test('H-TRD-040: an UNMARKED transport error still classifies as a retryable 502', () => {
+  const e = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+  const r = classifyBuyError(e as Error);
+  assert.equal(r.status, 502, 'a genuine transport fault keeps its 502 (defense-in-depth fallback intact)');
+  assert.equal(r.body.refused, undefined);
+});

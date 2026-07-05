@@ -179,7 +179,11 @@ export class BuyService {
       const priorBuy = this.journal.consultRefusal(guardKey);
       if (priorBuy) {
         refused = true;
-        throw new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry in a few seconds to proceed.`);
+        // S15: a machine-readable marker so the money endpoint answers 409 (a honest
+        // duplicate-precondition), not a retryable 502 an HTTP client would blindly re-fire.
+        const e = new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry in a few seconds to proceed.`) as Error & { moneyOpRefused?: true };
+        e.moneyOpRefused = true;
+        throw e;
       }
       this.journal.begin(guardKey, 'buy');
       // SESSION PRE-FLIGHT: guarantee a live web session with a valid sessionid cookie BEFORE
