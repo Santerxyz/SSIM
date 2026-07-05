@@ -41,9 +41,20 @@ test('B4: record() advances the phase but the entry still lingers until resolve 
   const p = jpath();
   const j = new MoneyOpJournal(p);
   j.begin('op', 'buy');
-  j.record('op', 'placed');
+  j.record('op', 'buy', 'placed');
   const e = j.findUnresolved('op');
   assert.equal(e?.phase, 'placed', 'a post-commit crash records it was actually placed');
+});
+
+test('H-TRD-110: record() after a lost begin still journals the landed op', () => {
+  const p = jpath();
+  const j = new MoneyOpJournal(p);
+  // begin() was NEVER called (its write failed transiently / the entry was clobbered). record() is the
+  // one call made with CERTAIN knowledge the op landed → it must UPSERT, not silently no-op.
+  j.record('op', 'buy', 'placed');
+  assert.equal(j.findUnresolved('op')?.phase, 'placed', 'the landed op is journaled even without a prior begin');
+  j.resolve('op');
+  assert.equal(j.findUnresolved('op'), undefined, 'and it clears on resolve');
 });
 
 test('B4: a lingering entry OLDER than the TTL is swept (a long-past crash cannot block forever)', () => {

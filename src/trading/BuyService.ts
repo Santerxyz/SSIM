@@ -242,7 +242,7 @@ export class BuyService {
         if (isAmbiguousCommitFailure(err)) commitMayHaveLanded = true;
         throw err;
       });
-      if (order.placed) this.journal.record(guardKey, 'placed'); // survives a post-commit crash (record never throws)
+      if (order.placed) this.journal.record(guardKey, 'buy', 'placed'); // survives a post-commit crash (record never throws)
 
       // ── From here the order IS placed on Steam. NEVER throw out of buy() now —
       //    a thrown post-order error would become a 5xx and invite a duplicate retry.

@@ -504,7 +504,7 @@ export class TradeService {
       const trader = await this.getTrader(fromUsername);
       try {
         const result = await trader.sendTrade(params);
-        this.journal.record(guardKey, 'sent'); // the offer now exists on Steam (survives a post-commit crash)
+        this.journal.record(guardKey, 'send', 'sent'); // the offer now exists on Steam (survives a post-commit crash)
         return result;
       } catch (err) {
         // S3: an ECONNRESET/timeout on offer.send's response leg means the offer MAY have landed — keep

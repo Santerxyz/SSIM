@@ -114,13 +114,18 @@ export class MoneyOpJournal {
     } catch { /* never throw */ }
   }
 
-  /** Advance the phase after the commit (so a post-commit crash records it was actually placed/sent). */
-  record(opHash: string, phase: MoneyOpPhase, detail?: string): void {
+  /** Advance the phase after the commit (so a post-commit crash records it was actually placed/sent).
+   *  UPSERT: if a transient begin() write failed (blip) or the entry was clobbered, record() is the one
+   *  call made with CERTAIN knowledge the op landed on Steam — so it CREATES the entry when absent rather
+   *  than silently no-op'ing away the highest-value crash-protection window (H-TRD-110). */
+  record(opHash: string, op: string, phase: MoneyOpPhase, detail?: string): void {
     if (!this.enabled) return;
     try {
       const { map, unreliable } = this.read();
       if (unreliable) return; // a transient read blip — do not write over an unread file
-      if (map[opHash]) { map[opHash] = { ...map[opHash], phase, at: this.now(), detail }; this.write(map); }
+      const existing = map[opHash];
+      map[opHash] = { op: existing?.op ?? op, phase, at: this.now(), detail };
+      this.write(map);
     } catch { /* never throw */ }
   }
 
