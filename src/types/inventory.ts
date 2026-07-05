@@ -89,6 +89,9 @@ export interface AccountInventory {
    * partial record as the authoritative full inventory. (C12 / INV-B9/B10.)
    */
   partial?:    boolean;
+  /** Steam's `total_inventory_count` for this read; undefined when Steam did not supply it.
+   *  A strict 0 is the AUTHORITATIVE-empty signal used to converge a genuinely-emptied cache. (H-INV-005.) */
+  reportedTotal?: number;
   /**
    * Which refresh produced this record:
    *   'web' – the Steam Community /inventory endpoint (default, fast, but blind to

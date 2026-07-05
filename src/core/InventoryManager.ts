@@ -84,6 +84,7 @@ export class InventoryManager {
     const descByKey     = new Map<string, RawDescription>(); // dedup across pages
     let   startAssetId: string | undefined;
     let   totalCount    = 0;
+    let   sawTotal      = false; // did Steam ever send total_inventory_count? (absent ≠ authoritative 0)
     let   hitPageCap    = false; // true if we stopped while Steam still had more pages
 
     for (let page = 0; page < MAX_INVENTORY_PAGES; page++) {
@@ -161,7 +162,7 @@ export class InventoryManager {
 
       for (const a of body.assets ?? []) assets.push(a);
       for (const d of body.descriptions ?? []) descByKey.set(`${d.classid}_${d.instanceid}`, d);
-      totalCount = body.total_inventory_count ?? totalCount;
+      if (body.total_inventory_count != null) { totalCount = body.total_inventory_count; sawTotal = true; }
 
       // Continue only while Steam signals more pages AND advances the cursor.
       if (body.more_items && body.last_assetid && body.last_assetid !== startAssetId) {
@@ -184,7 +185,9 @@ export class InventoryManager {
       `[${username}] raw inventory: ${assets.length} assets, ` +
       `${descByKey.size} descriptions (total_inventory_count=${totalCount})`,
     );
-    return { assets, descriptions: [...descByKey.values()], total_inventory_count: totalCount, success: 1, truncated: hitPageCap };
+    // Preserve the distinction between an EXPLICIT total_inventory_count:0 (authoritative empty,
+    // used downstream to converge a genuinely-emptied cache) and an OMITTED field (unknown → protect).
+    return { assets, descriptions: [...descByKey.values()], total_inventory_count: sawTotal ? totalCount : undefined, success: 1, truncated: hitPageCap };
   }
 
   // ── 2) Parse raw assets + descriptions → CS2Item[] ──────────────────────────
@@ -310,6 +313,7 @@ export class InventoryManager {
       fetchedAt:  new Date(),
       fromCache:  false,
       partial:    !!raw.truncated, // honest flag: a page-capped read is incomplete (C12)
+      reportedTotal: raw.total_inventory_count, // Steam's own total (undefined when omitted) → authoritative-empty signal (H-INV-005)
     };
   }
 }

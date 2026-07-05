@@ -284,12 +284,20 @@ export class InventoryService {
     let ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
     let ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
 
+    // H-INV-005: Steam's OWN total is the empty/partial disambiguator. A strict 0 on BOTH
+    // contexts means the account is AUTHORITATIVELY empty (converge the cache); an ABSENT
+    // field (undefined) keeps full protection. fetchRaw now returns undefined when the field
+    // was omitted, so `=== 0` never fires on an unknown read.
+    let authoritativeEmpty = raw2.total_inventory_count === 0 && raw16.total_inventory_count === 0;
+
     // Genuine retry on a suspicious empty read: if BOTH inventory contexts came back
     // with zero assets while the cache holds owned/locked items, Steam very likely served
     // a partial/empty page (total_inventory_count disagreeing with reality). Give it ONE
     // more chance before we trust the empty read — far better than accepting the first bad
     // page and then having the partial-read path kick in. (One re-fetch, bounded.)
-    if (ctx2.length + ctx16.length === 0) {
+    // Skip entirely when Steam already DECLARED the account empty (authoritativeEmpty): there
+    // is nothing to re-read, and re-reading would only burn two full-context fetches + 2s.
+    if (ctx2.length + ctx16.length === 0 && !authoritativeEmpty) {
       const cached = this.gcStore.get(username);
       const cachedOwned = cached ? cached.items.some(i => i.category !== 'listed') : false;
       if (cachedOwned) {
@@ -299,6 +307,7 @@ export class InventoryService {
         raw16 = await InventoryManager.fetchRaw(session, 'cs2', 16);
         ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
         ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
+        authoritativeEmpty = raw2.total_inventory_count === 0 && raw16.total_inventory_count === 0;
       }
     }
 
@@ -366,8 +375,14 @@ export class InventoryService {
     //   • rawCount  >  0  → the read succeeded; owned/locked is 0 only because EVERYTHING the
     //     account holds is now listed/sold. That is the TRUTH and MUST overwrite the cache.
     // (`gcOwnedLockedCount` = ctx2+ctx16 AFTER removing listed; `rawCount` = before removing.)
+    //   • authoritativeEmpty (H-INV-005) → Steam ITSELF reported total_inventory_count:0 on BOTH
+    //     contexts; the account is genuinely empty (traded/consolidated away). Fall through to the
+    //     normal commit so the cache CONVERGES to empty instead of freezing phantom items forever.
     const rawCount = ctx2.length + ctx16.length;
-    if (rawCount === 0) {
+    if (rawCount === 0 && authoritativeEmpty) {
+      logger.info(`[${username}] inventory authoritatively empty (total_inventory_count=0 on both contexts) – committing empty`);
+    }
+    if (rawCount === 0 && !authoritativeEmpty) {
       const prev = this.gcStore.get(username);
       const prevOwnedLocked = prev
         ? prev.items.filter(i => i.category !== 'listed').reduce((n, i) => n + (i.quantity || 0), 0)
@@ -565,7 +580,10 @@ export class InventoryService {
     // when it has no cached stack). Keep the fuller cache; the next good read overwrites it.
     const prev = this.storeFor(game).get(username);
     const prevCount = prev ? prev.items.reduce((n, i) => n + (i.quantity || 0), 0) : 0;
-    const suspectEmpty     = inv.totalItems === 0 && prevCount > 0;
+    // H-INV-005: an EXPLICIT reportedTotal:0 means Steam itself declared the account empty →
+    // commit the empty read so a genuinely-emptied account converges (not suspect). An absent
+    // reportedTotal (undefined) keeps full protection.
+    const suspectEmpty     = inv.totalItems === 0 && prevCount > 0 && inv.reportedTotal !== 0;
     const suspectTruncated = !!inv.partial && prevCount > inv.totalItems;
     if (suspectEmpty || suspectTruncated) {
       logger.warn(`[${username}] ${game} refresh returned ${inv.totalItems} item(s) (${suspectEmpty ? 'empty' : 'page-cap truncated'}) while cache holds ${prevCount} – keeping fuller cache (suspected partial read), NOT wiping`);
