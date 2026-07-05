@@ -66,6 +66,10 @@ test('shapeConfirmations: real CConfirmation shape (ISO time / Date timestamp) o
   // Unparseable time → 0 (never NaN).
   const bad = shapeConfirmations([{ id: '8', type: 3, title: 'B', time: 'garbage' }]);
   assert.equal(bad[0].timeMs, 0, 'unparseable time → 0');
+  // Give-side outflow (summary[0]) surfaces alongside the receive side — the safety-critical half.
+  const both = shapeConfirmations([{ id: '7', type: 2, title: 'Trade D', sending: '1 item', receiving: 'Nothing' }]);
+  assert.equal(both[0].sending, '1 item', 'sending carries the give-side summary');
+  assert.equal(both[0].receiving, 'Nothing', 'receiving preserved');
   assert.deepEqual(shapeConfirmations(null), [], 'empty/garbage input → empty list');
 });
 

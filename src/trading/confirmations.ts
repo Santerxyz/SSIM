@@ -13,6 +13,8 @@ export interface ConfirmationView {
   typeName:  'trade' | 'market' | 'other';
   title:     string;
   receiving: string;
+  /** What the account gives away (trade) / the listing summary (market); '' when none. */
+  sending:   string;
   /** Object id (trade-offer id / market-listing id) behind the confirmation. */
   creator:   string;
   iconUrl:   string;
@@ -51,6 +53,7 @@ export function shapeConfirmations(raw: unknown): ConfirmationView[] {
       typeName:  type === 2 ? 'trade' : type === 3 ? 'market' : 'other',
       title:     String(o.title ?? o.headline ?? 'Confirmation'),
       receiving: String(o.receiving ?? ''),
+      sending:   String(o.sending ?? ''),
       creator:   String(o.creator ?? o.creatorid ?? ''),
       iconUrl:   typeof o.icon === 'string' ? (o.icon as string) : '',
       timeMs,

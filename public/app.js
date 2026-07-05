@@ -4043,7 +4043,7 @@ function renderSdaConfirmations() {
       ${c.iconUrl ? `<img src="${escapeAttr(safeIconUrl(c.iconUrl))}" alt="" loading="lazy" class="w-9 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : `<i class="fa-solid ${typeIcon(c.typeName)} text-slate-500 w-9 text-center shrink-0"></i>`}
       <div class="min-w-0 flex-1">
         <div class="text-sm text-slate-200 truncate" title="${escapeAttr(c.title)}">${escapeHtml(c.title)}</div>
-        <div class="text-2xs text-slate-500">${escapeHtml(c.typeName)}${c.receiving ? ' · ' + escapeHtml(c.receiving) : ''}</div>
+        <div class="text-2xs text-slate-500 truncate">${escapeHtml(c.typeName)}${c.sending ? ' · gives ' + escapeHtml(c.sending) : ''}${c.receiving ? ' · gets ' + escapeHtml(c.receiving) : ''}</div>
       </div>
       <button data-conf-approve="${escapeAttr(c.id)}" class="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-check"></i><span>Approve</span></button>
     </div>`).join('');
