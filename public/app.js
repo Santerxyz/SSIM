@@ -6725,9 +6725,11 @@ function casketPollMove() {
   const ov = document.getElementById('casket-overlay'); if (!ov) return;
   const foot = ov.querySelector('[data-foot]');
   clearTimeout(ckState.moveTimer);
+  resetPoller('casketErr'); // S17: start a clean error-retry window for this move
   const tick = async () => {
     try {
       const j = await api('/api/casket/move-status');
+      resetPoller('casketErr'); // S17: a good poll clears the error-retry window
       // An 'aborted' throw (mid-move backstop) carries real partial counters — show them WITH the error,
       // never error-only (that would tell the user a 150-items-deep move did nothing). A 'preflight' throw
       // (done/moved/unconfirmed all 0) still renders error-only.
@@ -6761,7 +6763,15 @@ function casketPollMove() {
         // owned/tradable in the stale cache, inviting a duplicate deposit).
         await loadCasketContents(); await refreshActiveViewFromCache(); renderCasketPanels();
       }
-    } catch { /* stop on error */ }
+    } catch {
+      // S17: a transient status-fetch error must not permanently kill the poller while the move keeps
+      // running server-side (its completion re-pull/toast would then never fire, freezing the footer).
+      // Bounded retry, mirroring the refresh/mass/sell pollers: keep polling until POLL_STALL_MS of
+      // CONTINUOUS errors, then give up with a give-up line (backend reconcile per H-TRD-084 covers the job).
+      if (!pollerStalled('casketErr', 0)) { ckState.moveTimer = setTimeout(tick, 2_000); return; }
+      resetPoller('casketErr');
+      if (foot) foot.innerHTML = '<span class="text-amber-400">status unavailable — the move may still be running; reopen Storage to reload the unit</span>';
+    }
   };
   tick();
 }
