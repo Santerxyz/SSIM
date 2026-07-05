@@ -52,3 +52,40 @@ test('H-TRD-064: armPortWatch keeps the session alive while the port answers wit
     await srv.close();
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-TRD-065 — a rejected loopback probe is NOT proof the window closed. Under a
+//  fleet refresh the connect can fail with transient local resource pressure
+//  (EMFILE/ENOBUFS/…) while the browser is alive. Only ECONNREFUSED (nothing
+//  listening) means the window is gone: those get the 6-miss (~9s) teardown; any
+//  other rejection gets the patient 40-miss (~60s) window so a ~9s local blip
+//  never tears the relay from under a live window. fetchImpl + intervalMs are
+//  injected so the classification is tested deterministically without sockets.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** A fetch stub that always rejects with the given `cause.code`, counting calls. */
+function rejectingFetch(code: string): { impl: typeof fetch; calls: () => number } {
+  let n = 0;
+  const impl = ((): Promise<Response> => { n++; const e = new Error('probe failed') as Error & { cause?: { code?: string } }; e.cause = { code }; return Promise.reject(e); }) as unknown as typeof fetch;
+  return { impl, calls: () => n };
+}
+
+test('H-TRD-065: transient local rejections (EMFILE) do NOT tear down within the 6-miss window', async () => {
+  const f = rejectingFetch('EMFILE');
+  let torn = false;
+  armPortWatch(1, () => { torn = true; }, { fetchImpl: f.impl, intervalMs: 5 });
+  // Let ~20 probes reject (5ms interval): well past 6, far below the 40-miss soft ceiling.
+  const start = Date.now();
+  while (f.calls() < 20 && Date.now() - start < 4_000) { await new Promise((r) => setTimeout(r, 10)); }
+  assert.ok(f.calls() >= 20, 'the watcher must keep probing');
+  assert.ok(!torn, 'a live browser under transient local socket pressure must NOT be torn down');
+});
+
+test('H-TRD-065: ECONNREFUSED rejections tear down after 6 misses', async () => {
+  const f = rejectingFetch('ECONNREFUSED');
+  let torn = false;
+  armPortWatch(1, () => { torn = true; }, { fetchImpl: f.impl, intervalMs: 5 });
+  const start = Date.now();
+  while (!torn && Date.now() - start < 4_000) { await new Promise((r) => setTimeout(r, 10)); }
+  assert.ok(torn, 'ECONNREFUSED means nothing is listening — teardown must fire at 6 misses');
+});

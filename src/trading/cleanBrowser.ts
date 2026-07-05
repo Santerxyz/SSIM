@@ -393,20 +393,35 @@ export function sweepStaleCleanProfiles(): void {
  * `Browser` field — a recycled ephemeral port answering with anything else must NOT pin the
  * relay open forever.
  */
-export function armPortWatch(port: number, teardown: () => void): void {
-  let misses = 0;
+export function armPortWatch(
+  port: number,
+  teardown: () => void,
+  opts?: { fetchImpl?: typeof fetch; intervalMs?: number },
+): void {
+  const doFetch = opts?.fetchImpl ?? fetch;
+  let misses = 0;      // definitive "browser gone" signals (ECONNREFUSED / port answers as non-browser)
+  let softMisses = 0;  // transient local trouble (EMFILE/ENOBUFS/EADDRNOTAVAIL/… under fleet-refresh socket pressure)
   const watch = setInterval(() => {
-    fetch(`http://127.0.0.1:${port}/json/version`).then(
+    doFetch(`http://127.0.0.1:${port}/json/version`).then(
       async (r) => {
         try {
           const info = (await r.json()) as { Browser?: unknown };
-          if (info && typeof info.Browser !== 'undefined') { misses = 0; return; } // real browser still listening
+          if (info && typeof info.Browser !== 'undefined') { misses = 0; softMisses = 0; return; } // real browser still listening
         } catch { /* not JSON — treat as a miss below */ }
-        if (++misses >= 6) { clearInterval(watch); teardown(); } // ~9s of no real debug port ⇒ window closed
+        if (++misses >= 6) { clearInterval(watch); teardown(); } // ~9s answering as a non-browser ⇒ window closed
       },
-      () => { if (++misses >= 6) { clearInterval(watch); teardown(); } }, // ~9s of no debug port ⇒ window closed
+      // A rejected loopback probe is NOT proof the window closed. Under a 537-account fleet refresh
+      // (thousands of concurrent sockets, ECONNRESET storms) the connect can fail with local resource
+      // pressure (EMFILE/ENOBUFS/EADDRNOTAVAIL/EADDRINUSE) while the browser is alive and listening.
+      // Only ECONNREFUSED (nothing listening) actually means the window is gone — treat everything else
+      // with patience so a ~9s local blip cannot tear the relay from under a live window (S65).
+      (e: unknown) => {
+        const code = (e as { cause?: { code?: string } })?.cause?.code;
+        if (code === 'ECONNREFUSED') { if (++misses >= 6) { clearInterval(watch); teardown(); } } // ~9s refused ⇒ window closed
+        else if (++softMisses >= 40) { clearInterval(watch); teardown(); } // ~60s of weird-but-persistent trouble ⇒ give up
+      },
     );
-  }, 1500);
+  }, opts?.intervalMs ?? 1500);
   watch.unref?.();
 }
 
