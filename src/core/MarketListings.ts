@@ -36,6 +36,12 @@ export interface ListedItems {
    * never also counted as Owned/locked (one asset = one bucket).
    */
   assetIds: Set<string>;
+  /**
+   * true ⇒ the MAX_PAGES cap was exhausted with more listings still to read, so the
+   * listed bucket is INCOMPLETE. Feeds `inv.partial` (C12) so the cache is never
+   * marked complete when listings past the cap were dropped.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -49,6 +55,7 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
   const acc = emptyParsed();
   const PAGE = 100;
   const MAX_PAGES = 30; // up to 3000 listings
+  let truncated = false;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const start = page * PAGE;
@@ -80,11 +87,17 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
     const listings = Array.isArray(d.listings) ? d.listings : [];
     if (listings.length < PAGE) break;                          // last (partial) page
     if (Number.isFinite(total) && start + PAGE >= total) break; // covered all
+    // Reached the last allowed page yet neither break fired ⇒ more listings remain past
+    // the cap. Flag the bucket INCOMPLETE (C12) instead of silently claiming completeness.
+    if (page === MAX_PAGES - 1) {
+      truncated = true;
+      logger.warn(`[${session.account.username}] market/mylistings exceeds ${MAX_PAGES * PAGE} listings – listed bucket INCOMPLETE`);
+    }
   }
 
   const items = listingsForApp(acc, CS2_APPID).map(toListedItem);
   logger.info(`[${session.account.username}] market: ${items.length} listed item(s)`);
-  return { items, assetIds: listedAssetIdsForApp(acc, CS2_APPID) };
+  return { items, assetIds: listedAssetIdsForApp(acc, CS2_APPID), truncated };
 }
 
 function toListedItem(l: MarketListing): CS2Item {

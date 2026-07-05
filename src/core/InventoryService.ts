@@ -262,6 +262,7 @@ export class InventoryService {
     let listed: CS2Item[] = [];
     let listedAssetIds = new Set<string>();
     let listingsOk = true;
+    let listedTruncated = false;
     try {
       const fetched = await fetchListedItems(session);
       listed = InventoryManager.stack(fetched.items);
@@ -269,6 +270,7 @@ export class InventoryService {
       // pending listings) — strictly ⊇ the displayed rows, so nothing on the market
       // can leak back into the Owned/locked bucket.
       listedAssetIds = fetched.assetIds;
+      listedTruncated = fetched.truncated; // MAX_PAGES cap exhausted → listed bucket INCOMPLETE (C12)
     } catch (err) {
       listingsOk = false;
       logger.warn(`[${username}] market-listings fetch failed (listed bucket unread this pass): ${(err as Error).message}`);
@@ -316,7 +318,7 @@ export class InventoryService {
     const now = Date.now();
     const ownedLockedRaw = [...ctx2, ...ctx16].filter(i => !listedAssetIds.has(i.assetId));
     const gcOwnedLockedCount = ownedLockedRaw.length; // owned+locked count, BEFORE listed are merged in
-    const partial = !!(raw2.truncated || raw16.truncated); // page-capped read → INCOMPLETE (C12)
+    const partial = !!(raw2.truncated || raw16.truncated || listedTruncated); // page-capped read → INCOMPLETE (C12)
     const inv: AccountInventory = {
       username, steamId, game: 'cs2', source: 'gc',
       items:      InventoryManager.stack(ownedLockedRaw),
