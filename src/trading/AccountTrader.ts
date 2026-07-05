@@ -647,7 +647,7 @@ export class AccountTrader {
       // confirmation failure here — we report it as 'unconfirmed' for manual review
       // (mirrors the buy path's "never throw after placed" money-safety rule).
       try {
-        await this.confirmOffer(offer.id);
+        await this.confirmOffer(offer.id, 'sent');
         return { offerId: offer.id, status: 'confirmed' };
       } catch (err) {
         logger.error(
@@ -673,7 +673,7 @@ export class AccountTrader {
       // rethrow a confirmation failure here — we report it as 'unconfirmed' for manual review
       // (mirrors sendTrade's "never throw after committed" money-safety rule).
       try {
-        await this.confirmOffer(offer.id);
+        await this.confirmOffer(offer.id, 'accepted');
       } catch (err) {
         logger.error(
           `[${this.username}] offer ${offer.id} ACCEPTED but 2FA confirmation failed ` +
@@ -687,11 +687,36 @@ export class AccountTrader {
 
   // ── Mobile 2FA confirmation via identity_secret ──────────────────────────
 
-  async confirmOffer(offerId: string): Promise<void> {
+  async confirmOffer(offerId: string, kind: 'sent' | 'accepted'): Promise<void> {
     // Route through the bounded retry+backoff wrapper: Steam's mobile-conf servers
     // return transient 5xx under load, and a single un-retried failure would strand
     // a sent-but-unconfirmed offer (it previously called the lib method exactly once).
-    await this.acceptConfirmationForObject(offerId, `trade ${offerId}`);
+    try {
+      await this.acceptConfirmationForObject(offerId, `trade ${offerId}`);
+    } catch (err) {
+      // The retry loop exhausted. But if attempt 1's ajaxop LANDED on Steam and only
+      // its response was lost (timeout/RST on the response leg), attempts 2–4 find no
+      // confirmation for the object and we throw — even though the offer is already
+      // cleared. Disambiguate via the offer's state before propagating a status lie.
+      let cleared = false;
+      let state: number | undefined;
+      try {
+        const offer = await this.getOfferById(offerId);
+        state = Number(offer?.state);
+        // A sent offer whose confirmation cleared leaves CreatedNeedsConfirmation (9)
+        // for Active (2)/Accepted (3); an accept-side confirmation still pending leaves
+        // the offer Active (2), so the accepted path only trusts Accepted (3).
+        cleared = kind === 'sent'
+          ? state !== Number(ETradeOfferState.CreatedNeedsConfirmation)
+          : state === Number(ETradeOfferState.Accepted);
+      } catch {
+        // The state probe itself failed — the outcome is unproven, so surface the
+        // ORIGINAL confirmation error (never claim success on an unprovable state).
+      }
+      if (!cleared) throw err;
+      logger.info(`[${this.username}] trade ${offerId} verified cleared via offer state (${state}) after a lost-response confirmation`);
+      return;
+    }
     logger.info(`[${this.username}] trade ${offerId} auto-confirmed via 2FA`);
   }
 
