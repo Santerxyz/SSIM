@@ -264,7 +264,10 @@ export class InventoryManager {
     for (const item of items) {
       // Trade-lock timestamp (or 'none') is part of the key → different locks split.
       const lockKey = item.tradeLockExpiry ? item.tradeLockExpiry.toISOString() : 'none';
-      const key = `${item.marketHashName}__${lockKey}`;
+      // Pending-2FA listings must not collapse into confirmed ones (C9 / INV-D4) —
+      // non-listed items have listingConfirmed === undefined → constant 'ok' suffix.
+      const stateKey = item.listingConfirmed === false ? 'pending' : 'ok';
+      const key = `${item.marketHashName}__${lockKey}__${stateKey}`;
 
       const existing = stacks.get(key);
       if (existing) {
