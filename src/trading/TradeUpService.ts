@@ -113,6 +113,18 @@ export class TradeUpService {
     }
     const st = this.gc.status();
     this.execCancel = false;
+    // Gated off (SSIM_GC_VERIFIED=0 / dev): completes IMMEDIATELY as a SAFE NO-OP. Running the loop
+    // would only iterate every contract to a guaranteed craftTradeUp throw (~1.5s each) with busy()===true
+    // the whole time (defers a mid-session update install, S14), and report failed:N for an execution
+    // that never could run. Short-circuit to a no-op terminal state — nothing is ever crafted.
+    if (!st.craftEnabled) {
+      const now = new Date().toISOString();
+      this.execJob = {
+        running: false, cancelling: false, cancelled: false, enabled: false, statusReason: st.reason,
+        total: contracts.length, done: 0, crafted: 0, failed: 0, results: [], startedAt: now, finishedAt: now,
+      };
+      return this.executeStatus();
+    }
     this.execJob = {
       running: true, cancelling: false, cancelled: false, enabled: st.craftEnabled, statusReason: st.reason,
       total: contracts.length, done: 0, crafted: 0, failed: 0, results: [], startedAt: new Date().toISOString(),
