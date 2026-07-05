@@ -82,3 +82,46 @@ test('wearMidpoint returns skinMin when the band is below the range', () => {
   // Factory New band [0.00, 0.07) is wholly below a 0.40..1 range → nearest bound is 0.40.
   assert.equal(wearMidpoint('Factory New', 0.4, 1), 0.4);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-TRD-080 — an input from a collection the schema can't produce outputs for is
+//  a malformed set, not a defensive skip: silently dropping it makes Σprobability
+//  < 1 and understates EV in a way indistinguishable from a pricing gap. The empty
+//  output pool must throw (the caller catches + skips the candidate).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const twoCollectionSchema = (empty: string): OutputProvider => ({
+  outputsFor: (collection) => (collection === empty ? [] : [{ name: 'Test Skin', minFloat: 0, maxFloat: 1 }]),
+  marketHashName: (skinName, wear, stattrak) => `${stattrak ? 'StatTrak™ ' : ''}${skinName} (${wear})`,
+});
+
+const mkInputIn = (collection: string, float: number): TuInput => ({
+  marketHashName: 'Input (Field-Tested)',
+  baseName: 'Input',
+  collection,
+  rarityId: 'rarity_test',
+  stattrak: false,
+  float,
+  priceCents: 100,
+});
+
+test('computeContract throws when one input collection has no outputs', () => {
+  const inputs = [
+    ...Array.from({ length: 5 }, () => mkInputIn('Collection A', 0.2)),
+    ...Array.from({ length: 5 }, () => mkInputIn('Collection B', 0.2)),
+  ];
+  assert.throws(
+    () => computeContract(inputs, 'rarity_out', twoCollectionSchema('Collection B'), () => 100),
+    /no next-rarity outputs/,
+  );
+});
+
+test('computeContract outcome probabilities sum to 1 when both collections have outputs', () => {
+  const inputs = [
+    ...Array.from({ length: 5 }, () => mkInputIn('Collection A', 0.2)),
+    ...Array.from({ length: 5 }, () => mkInputIn('Collection B', 0.2)),
+  ];
+  const c = computeContract(inputs, 'rarity_out', twoCollectionSchema('none'), () => 100);
+  const total = c.outcomes.reduce((s, o) => s + o.probability, 0);
+  assert.ok(Math.abs(total - 1) < 1e-9);
+});

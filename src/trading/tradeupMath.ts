@@ -119,8 +119,9 @@ export type PriceFn = (marketHashName: string) => number | null;
 
 /**
  * Computes a full trade-up contract for an exact set of 10 inputs. Throws ONLY on a malformed
- * input set (not 10, mixed rarity, mixed StatTrak) — a pure validation error the caller guards
- * against before ever touching real items. Pricing gaps are tolerated (unpriced → 0 + flagged).
+ * input set (not 10, mixed rarity, mixed StatTrak, an input collection without next-rarity
+ * outputs) — a pure validation error the caller guards against before ever touching real items.
+ * Pricing gaps are tolerated (unpriced → 0 + flagged).
  */
 export function computeContract(
   inputs: TuInput[],
@@ -146,7 +147,7 @@ export function computeContract(
   const merged = new Map<string, TuOutcome>();
   for (const [collection, count] of perCollection) {
     const outs = schema.outputsFor(collection, rarityId);
-    if (outs.length === 0) continue; // eligible inputs guarantee ≥1; defensive skip
+    if (outs.length === 0) throw new Error(`collection "${collection}" has no next-rarity outputs — input set is not trade-up eligible`);
     const per = (count / 10) / outs.length;
     for (const o of outs) {
       const outFloat = outputFloatValue(avgFloat, o.minFloat, o.maxFloat);
