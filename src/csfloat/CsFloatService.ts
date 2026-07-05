@@ -74,7 +74,9 @@ export class CsFloatService {
   }
 
   async validateKey(username: string, apiKey: string): Promise<Record<string, unknown>> {
-    return new CsFloatClient(apiKey, this.agentFor(username)).me();
+    const agent = this.agentFor(username);
+    try { return await new CsFloatClient(apiKey, agent).me(); }
+    finally { AgentFactory.destroyIfDisposable(agent); }
   }
 
   // ── operations: documented core ──────────────────────────────────────────────
