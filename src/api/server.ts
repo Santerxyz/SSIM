@@ -1627,6 +1627,11 @@ export function createApp(deps: ApiDeps): Express {
     if (!Array.isArray(names) || !names.every(n => typeof n === 'string')) {
       return res.status(400).json({ error: 'names must be a string array' });
     }
+    // H-TRD-022: sanity bound — a real selection is far below 500; refuse an absurd list
+    // rather than launch a tens-of-minutes cascade for one interactive request.
+    if (names.length > 500) {
+      return res.status(400).json({ error: 'too many names' });
+    }
     if (!VALID_STRATEGIES.includes(strategy)) {
       return res.status(400).json({ error: `strategy must be one of ${VALID_STRATEGIES.join(', ')}` });
     }
@@ -1634,9 +1639,14 @@ export function createApp(deps: ApiDeps): Express {
     if (strategy === 'custom' && custom == null) {
       return res.status(400).json({ error: 'customCents (EUR cents ≥ 1) is required for strategy "custom"' });
     }
+    // H-TRD-022: when the client disconnects (its 120s abort, or a manual close), stop the
+    // backend cascade instead of running it to completion for an already-dead request.
+    let clientGone = false;
+    req.on('close', () => { clientGone = true; });
     res.json(await market.preview(names, strategy, {
       customCents: custom ?? undefined,
       username: typeof username === 'string' ? username : undefined,
+      shouldStop: () => clientGone || res.writableEnded || req.destroyed,
     }));
   }));
 

@@ -212,7 +212,7 @@ export class MarketService {
   async preview(
     names: string[],
     strategy: SellStrategy,
-    opts?: { customCents?: number; username?: string },
+    opts?: { customCents?: number; username?: string; shouldStop?: () => boolean },
   ): Promise<Record<string, { netCents: number | null; buyerCents: number | null }>> {
     const out: Record<string, { netCents: number | null; buyerCents: number | null }> = {};
 
@@ -224,12 +224,25 @@ export class MarketService {
     }
 
     const ctx = await this.priceCtxFor(opts?.username);
-    for (const name of [...new Set(names)]) {
-      // getSellInfo runs its own 3-method cascade internally – one call suffices.
-      const info = await this.pricing.getSellInfo(name, ctx);
-      const buyer = targetBuyerCents(info, strategy);
-      out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
-    }
+    // H-TRD-022: bound the cascade to a live viewer. The sequential loop kept issuing
+    // Steam requests for a client that had already aborted (S32, client aborts at 120s);
+    // `shouldStop` (the route flips it on 'close') stops fetching and returns the partial
+    // map. A small 3-worker pool over the deduped names caps concurrency well below the
+    // mass-sell's own 25 (see runMassSell) while making preview proportional to the batch.
+    const unique = [...new Set(names)];
+    let idx = 0;
+    const shouldStop = opts?.shouldStop;
+    const worker = async (): Promise<void> => {
+      while (idx < unique.length) {
+        if (shouldStop?.()) return;
+        const name = unique[idx++];
+        // getSellInfo runs its own 3-method cascade internally – one call suffices.
+        const info = await this.pricing.getSellInfo(name, ctx);
+        const buyer = targetBuyerCents(info, strategy);
+        out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, unique.length) }, () => worker()));
     return out;
   }
 
