@@ -1084,6 +1084,7 @@ export class AccountTrader {
 
           let idx = 0, confirmed = 0;
           let firstErr: Error | null = null;
+          let prevT = 0;
           const next = (): void => {
             if (idx >= listings.length) {
               // A mid-pass respond failure still resolves with the count confirmed
@@ -1092,7 +1093,11 @@ export class AccountTrader {
               return;
             }
             const conf = listings[idx++];
-            const t = SteamTotp.time(off) + idx; // unique time per accept
+            // Monotonic-fresh time: strictly unique AND increasing per accept, but
+            // bounded to ≤1s beyond real server time for any batch size — a fresh
+            // base plus a running index would sign the Nth accept N seconds in the
+            // future, risking rejection once outside Steam's tolerance at 200-500 listings.
+            const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;
             const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
             conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) => {
               if (rErr) { if (!firstErr) firstErr = rErr; }
@@ -1159,10 +1164,14 @@ export class AccountTrader {
           if (targets.length === 0) { resolve({ done: 0, failed: [] }); return; }
           const tag = accept ? 'accept' : 'reject';
           let idx = 0, done = 0; const failed: string[] = [];
+          let prevT = 0;
           const next = (): void => {
             if (idx >= targets.length) { resolve({ done, failed }); return; }
             const conf = targets[idx++];
-            const t = SteamTotp.time(off) + idx;                       // unique time per response
+            // Monotonic-fresh time: unique + increasing per response, bounded to ≤1s
+            // beyond real time (a fresh base + running index would sign the tail of an
+            // "action all" batch far in the future and risk key rejection at scale).
+            const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;   // unique time per response
             const key = SteamTotp.getConfirmationKey(identitySecret, t, tag);
             conf.respond(t, { tag, key }, accept, (rErr: Error | null) => {
               if (rErr) failed.push(String(conf?.id)); else done++;
