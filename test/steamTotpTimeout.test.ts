@@ -64,6 +64,18 @@ test('S6: a NaN offset from the vendor falls back and is not cached', async () =
   assert.equal(calls, 2, 'the NaN was not cached, so the underlying getTimeOffset ran again');
 });
 
+test('S6: a success arriving AFTER the timeout still populates the cache', async () => {
+  let calls = 0; let captured: Cb | null = null;
+  // The vendor stalls past timeoutMs (the fallback fires first), then answers late — under sustained
+  // >timeoutMs latency this is the ONLY way the cache can ever populate (H-TRD-091).
+  const late = (cb: Cb) => { calls++; captured = cb; /* answers after the timer settles */ };
+  const wrapped = makeTimeoutGetOffset(late, { timeoutMs: 20 });
+  await call(wrapped);                 // stalls → timeout fallback (off 0) delivered, then…
+  captured!(null, 42);                 // …the real success arrives late; must still cache 42
+  assert.equal((await call(wrapped)).off, 42, 'the late success populated the cache — served without a new fetch');
+  assert.equal(calls, 1, 'the NEXT call did not touch the network (offset was cached by the late success)');
+});
+
 test('S6: concurrent misses share ONE underlying fetch', async () => {
   let calls = 0; let captured: Cb | null = null;
   const defer = (cb: Cb) => { calls++; captured = cb; /* answers later */ };

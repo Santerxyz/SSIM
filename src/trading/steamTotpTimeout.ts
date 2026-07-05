@@ -99,6 +99,12 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
       original((err, offset) => {
         clearTimeout(timer);
         const ok = !err && Number.isFinite(offset);
+        // Cache a real success INDEPENDENTLY of `settled`: under sustained >timeoutMs latency the timer
+        // settles first and `done` early-returns before its own cache write, so the real offset would be
+        // thrown away and the cache never populates (every call keeps paying the full stall). Writing it
+        // here lets one slow-but-successful response end that regime; the already-delivered fallback is
+        // not re-fired — only future calls benefit (H-TRD-091).
+        if (ok) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); }
         done(ok ? null : (err ?? new Error('QueryTime returned a non-finite offset')), ok ? offset : 0, ok);
       });
     } catch (e) {
