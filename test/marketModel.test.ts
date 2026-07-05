@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseMyListings, listingsForApp, listedAssetIdsForApp,
+  parseMyListings, mergeParsed, emptyParsed, listingsForApp, listedAssetIdsForApp,
   bucketOf, isSellable, assertSellable,
 } from '../src/core/MarketModel';
 
@@ -99,6 +99,55 @@ test('parseMyListings returns empty (no throw) for a legit empty account', () =>
   const p = parseMyListings({ success: true, total_count: 0, listings: [], assets: {} });
   assert.equal(listingsForApp(p, 730).length, 0);
   assert.equal(listedAssetIdsForApp(p, 730).size, 0);
+});
+
+// ── H-TRD-116: mergeParsed dedups a listing re-fetched across a page boundary ──
+
+test('mergeParsed keeps a listing shared by two pages only once (listingId)', () => {
+  const p1 = parseMyListings({
+    total_count: 2,
+    listings: [
+      { listingid: 'L111', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: 2003 },
+    ],
+    assets: {},
+  });
+  const p2 = parseMyListings({
+    total_count: 2,
+    listings: [
+      { listingid: 'L111', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: 2003 },
+      { listingid: 'L222', asset: { appid: 730, contextid: '2', id: '222', amount: '1' }, price: 2000, fee: 300, currencyid: 2003 },
+    ],
+    assets: {},
+  });
+  const acc = emptyParsed();
+  mergeParsed(acc, p1);
+  mergeParsed(acc, p2);
+  assert.equal(acc.listings.length, 2, 'the re-fetched L111 is merged once, not twice');
+  assert.deepEqual(listingsForApp(acc, 730).map(l => l.listingId).sort(), ['L111', 'L222']);
+});
+
+test('mergeParsed dedups a PENDING listing (listingId empty) by asset composite', () => {
+  const pending = (id: string) => ({
+    listings: [],
+    pending_listings: [{ asset: { appid: 730, contextid: '2', id, amount: '1' } }],
+    assets: {},
+  });
+  const acc = emptyParsed();
+  mergeParsed(acc, parseMyListings(pending('333')));
+  mergeParsed(acc, parseMyListings(pending('333')));      // same pending asset re-appears
+  assert.equal(acc.listings.length, 1, 'a pending listing with no listingId is deduped by assetId');
+});
+
+test('mergeParsed keeps TWO distinct pending listings (different assetIds)', () => {
+  const pending = (id: string) => ({
+    listings: [],
+    pending_listings: [{ asset: { appid: 730, contextid: '2', id, amount: '1' } }],
+    assets: {},
+  });
+  const acc = emptyParsed();
+  mergeParsed(acc, parseMyListings(pending('333')));
+  mergeParsed(acc, parseMyListings(pending('444')));
+  assert.equal(acc.listings.length, 2, 'distinct pending assets are both kept');
 });
 
 test('parseMyListings folds pending listings into the dedup superset (confirmed=false)', () => {

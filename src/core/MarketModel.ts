@@ -44,6 +44,13 @@ export interface ParsedMyListings {
    * `assets` map + pending arrays) so nothing can leak back into the Owned bucket.
    */
   assetIdsByApp: Map<number, Set<string>>;
+  /**
+   * Listing-identity keys already accumulated across pages, so a listing re-fetched
+   * after a mid-pagination shift (Steam's newest-first order changes while we page)
+   * is merged once, not twice. Lazily built by `mergeParsed` from `listings` when a
+   * hand-built accumulator lacks it. Key = listingId || 'asset:'+appId/contextId/assetId.
+   */
+  seenKeys?: Set<string>;
 }
 
 function iconUrlOf(desc: any): string {
@@ -129,9 +136,29 @@ export function parseMyListings(d: any): ParsedMyListings {
   return out;
 }
 
-/** Merge a freshly-parsed page into a multi-page accumulator. */
+/** Listing-identity key: the cancel handle when present, else the asset composite
+ *  (unique within app+context — pending listings can have listingId ''). */
+function listingKey(l: MarketListing): string {
+  return l.listingId || `asset:${l.appId}/${l.contextId}/${l.assetId}`;
+}
+
+/**
+ * Merge a freshly-parsed page into a multi-page accumulator, deduping by listing
+ * identity: multi-page reads are snapshots seconds apart while listings can change
+ * (SSIM's own mass-sell adds/removes), so a listing shifted past a page boundary is
+ * re-fetched — keeping both copies inflates the Listed stack quantity and worth.
+ */
 export function mergeParsed(acc: ParsedMyListings, page: ParsedMyListings): void {
-  acc.listings.push(...page.listings);
+  if (!acc.seenKeys) {                             // backfill for hand-built accumulators
+    acc.seenKeys = new Set<string>();
+    for (const l of acc.listings) acc.seenKeys.add(listingKey(l));
+  }
+  for (const l of page.listings) {
+    const key = listingKey(l);
+    if (acc.seenKeys.has(key)) continue;           // already merged from an earlier page
+    acc.seenKeys.add(key);
+    acc.listings.push(l);
+  }
   for (const [appId, ids] of page.assetIdsByApp) {
     let s = acc.assetIdsByApp.get(appId);
     if (!s) { s = new Set<string>(); acc.assetIdsByApp.set(appId, s); }
@@ -140,7 +167,7 @@ export function mergeParsed(acc: ParsedMyListings, page: ParsedMyListings): void
 }
 
 export function emptyParsed(): ParsedMyListings {
-  return { listings: [], assetIdsByApp: new Map() };
+  return { listings: [], assetIdsByApp: new Map(), seenKeys: new Set() };
 }
 
 export function listingsForApp(p: ParsedMyListings, appId: number): MarketListing[] {
