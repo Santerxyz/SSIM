@@ -587,7 +587,12 @@ export class InventoryService {
     const suspectTruncated = !!inv.partial && prevCount > inv.totalItems;
     if (suspectEmpty || suspectTruncated) {
       logger.warn(`[${username}] ${game} refresh returned ${inv.totalItems} item(s) (${suspectEmpty ? 'empty' : 'page-cap truncated'}) while cache holds ${prevCount} – keeping fuller cache (suspected partial read), NOT wiping`);
-      return prev!; // the cache already holds this record (returned as an independent clone)
+      // H-TRD-041: mark the substituted clone so fresh-read-dependent consumers (buy verification)
+      // treat it as a FAILED fresh read, not the pre-buy snapshot. `prev` is already an independent
+      // deep copy (InventoryStore.get clones), so stamping it never touches the cache.
+      const fallbackClone = prev!;
+      fallbackClone.staleReadFallback = true;
+      return fallbackClone;
     }
 
     this.storeFor(game).set(username, inv);

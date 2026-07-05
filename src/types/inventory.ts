@@ -104,6 +104,12 @@ export interface AccountInventory {
   totalValueUsd?: number;
   /** Steam wallet balance in the account's native currency, captured at refresh. */
   wallet?:     { currency: number; balance: number };
+  /**
+   * Read-time only — this result is a carried-forward cache record substituted for a suspect
+   * (empty/page-cap-shrunk) fresh read. NEVER persisted; fresh-read-dependent consumers (buy
+   * verification) must treat it as a failed fresh read. (H-TRD-041.)
+   */
+  staleReadFallback?: boolean;
 }
 
 // ─── Raw Steam API Response ────────────────────────────────────────────────────

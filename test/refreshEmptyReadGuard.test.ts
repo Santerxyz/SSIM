@@ -42,6 +42,18 @@ test('B31: a page-cap TRUNCATED smaller read keeps the fuller cache', async () =
   assert.equal(out.totalItems, 3, 'a truncated smaller read must not clobber the fuller cache');
 });
 
+// ─── H-TRD-041: the suspect-read substitution stamps the RETURNED clone (not the cache) so
+//     buy verification treats it as a failed fresh read; the cache stays unflagged. ──────────
+test('H-TRD-041: a suspect (empty) read returns staleReadFallback:true; the cache is not flagged', async () => {
+  const { svc, setFetch } = svcWithCachedTf2({ ...cached });
+  setFetch({ username: 'tf2bot', steamId: '1', game: 'tf2', source: 'web', fromCache: false, fetchedAt: new Date(), totalItems: 0, items: [] });
+  const out = await svc.refreshOne('tf2bot', 'tf2');
+  assert.equal(out.staleReadFallback, true, 'the substituted clone is stamped for the buy verifier');
+  // The stamp lives on the returned clone only — a follow-up cached read must NOT carry it.
+  const cachedRead = svc.tf2Store.get('tf2bot');
+  assert.equal(cachedRead?.staleReadFallback, undefined, 'the cache record itself is never stamped');
+});
+
 test('B31: a GENUINE non-empty read still overwrites the cache', async () => {
   const { svc, setFetch } = svcWithCachedTf2({ ...cached });
   setFetch({ username: 'tf2bot', steamId: '1', game: 'tf2', source: 'web', fromCache: false, fetchedAt: new Date(), totalItems: 5, items: [{ marketHashName: 'Key', category: 'tradable', tradable: true, tradeLockExpiry: null, quantity: 5, assetIds: ['a', 'b', 'c', 'd', 'e'] } as never] });

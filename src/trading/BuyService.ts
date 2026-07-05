@@ -196,9 +196,11 @@ export class BuyService {
       // (it would over-report the fill). The AFTER read already guards this; the BEFORE
       // read must too. Remember it so the post-order verification reports "unverified"
       // instead of a wrong fill count — the order still proceeds (money unaffected).
-      const baselinePartial = !!before.partial;
+      // H-TRD-041: a stale-fallback baseline (B31 suspect-read substitution) is a failed fresh read,
+      // so it mis-anchors ownedBefore the same way a page-capped one does → also unverified.
+      const baselinePartial = !!before.partial || !!before.staleReadFallback;
       if (baselinePartial) {
-        logger.warn(`[${p.username}] pre-buy baseline inventory was PARTIAL (page-capped) – fill count will be reported as unverified`);
+        logger.warn(`[${p.username}] pre-buy baseline inventory was PARTIAL (page-capped) or stale-fallback – fill count will be reported as unverified`);
       }
 
       // Currency MUST be known — never guess. A wrong currency/scale spends real
@@ -254,12 +256,13 @@ export class BuyService {
       let verifyFailed = baselinePartial;
       try {
         const after = await this.inventory.forceRefresh(p.username, game);
-        if (after.partial) {
-          // The verification read was TRUNCATED (page cap) → ownedAfter would reflect an
-          // incomplete inventory, so the fill diff is unreliable. Don't report a possibly
-          // wrong fill; mark unverified instead. (C11 / INV-D3.)
+        if (after.partial || after.staleReadFallback) {
+          // The verification read was TRUNCATED (page cap) or a B31 stale-fallback substitution
+          // (H-TRD-041: a suspect after-read hands back the pre-buy snapshot) → ownedAfter would
+          // reflect an incomplete / stale inventory, so the fill diff is unreliable. Don't report a
+          // possibly wrong fill; mark unverified instead. (C11 / INV-D3.)
           verifyFailed = true;
-          logger.warn(`[${p.username}] post-buy verification read was PARTIAL (page-capped) – fill count unreliable; order WAS placed, check manually`);
+          logger.warn(`[${p.username}] post-buy verification read was ${after.partial ? 'PARTIAL (page-capped)' : 'a stale-fallback substitution'} – fill count unreliable; order WAS placed, check manually`);
         } else {
           ownedAfter = ownedCount(after, p.marketHashName);
           walletAfter = after.wallet?.balance;
