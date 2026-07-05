@@ -193,8 +193,10 @@ export class GcActionLayer {
       const go = this.getHandle(username);
       client = (this.sessions.getSession(username)!.client as unknown);
       await sleep(JITTER_MIN_MS + Math.floor(Math.random() * (JITTER_MAX_MS - JITTER_MIN_MS))); // anti-lockstep
-      await this.connect(go, client);
       try {
+        // connect() is inside the guard so a connect timeout/error still runs disconnect() (gamesPlayed([]))
+        // — otherwise the account stays in-game CS2 with the lib's hello retry loop firing indefinitely.
+        await this.connect(go, client);
         // S16: the backstop budget is caller-scaled (a per-item op loop scales it by item count, and gives
         // the loop its OWN shorter deadline so it self-aborts first). withTimeout can't cancel fn(go), so a
         // premature fire would abandon a detached loop — the scaling makes it fire only as a true backstop.
