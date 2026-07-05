@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import axios from 'axios';
 import { AccountTrader, matchRestingBuyOrder } from '../src/trading/AccountTrader';
+import { BuyService } from '../src/trading/BuyService';
+import { MoneyOpJournal } from '../src/core/MoneyOpJournal';
 
 // ─── Buy-order money-safety (B10/B12) ──────────────────────────────────────────
 // createbuyorder is a non-idempotent CREATE. A NETWORK error must never surface as a
@@ -92,6 +94,59 @@ test('B12: a NETWORK error on POST 0 with NO matching order → throws verifyBef
   } finally {
     (axios as { post: unknown }).post = origPost;
   }
+});
+
+// ─── H-TRD-039: buy()'s money ceilings fail OPEN on non-finite input, and a 0/negative ───
+// quantity was up-coerced into a real 1-item purchase. buy() now fails CLOSED on non-finite /
+// non-positive caller price/quantity BEFORE it can reach createBuyOrder. Both messages carry
+// "invalid" so the /api/market/buy classifier buckets them as 400, not a retryable 502.
+
+const BUY_P = { username: 'buybot', marketHashName: 'AK-47 | Redline', appId: 730, pricePerItemMinor: 1000, quantity: 1 };
+
+/** A BuyService whose commit path is instrumented: `created` flips true iff createBuyOrder ran. The
+ *  input guards reject BEFORE ensureWebSession/forceRefresh, so a rejection must leave `created` false. */
+function makeBuyServiceTrackingCommit(): { svc: BuyService; state: { created: boolean } } {
+  const state = { created: false };
+  const trader = { walletCurrency: 3, createBuyOrder: async () => { state.created = true; return { placed: true, confirmed: true, needsConfirmation: false, buyOrderId: 'B1', raw: {} }; } };
+  const svc = Object.create(BuyService.prototype) as BuyService;
+  Object.assign(svc, {
+    inFlight: new Set<string>(),
+    journal: MoneyOpJournal.disabled(),
+    trades: {
+      ensureWebSession: async () => trader,
+      snapshotLive: () => new Set<string>(),
+      releaseCreatedSessions: async () => {},
+    },
+    inventory: { forceRefresh: async () => ({ partial: false, items: [], wallet: { balance: 100, currency: 3 } }) },
+  });
+  return { svc, state };
+}
+
+test('H-TRD-039: buy() with pricePerItemMinor NaN rejects /invalid pricePerItemMinor/ and never commits', async () => {
+  const { svc, state } = makeBuyServiceTrackingCommit();
+  await assert.rejects(
+    svc.buy({ ...BUY_P, pricePerItemMinor: NaN }, { releaseSession: false }),
+    /invalid pricePerItemMinor/,
+    'a NaN price must fail closed, not flow into the (NaN-blinded) ceilings',
+  );
+  assert.equal(state.created, false, 'createBuyOrder must never run on invalid input');
+});
+
+test('H-TRD-039: buy() with quantity 0 rejects /invalid quantity/ (no silent up-coercion to a 1-item buy)', async () => {
+  const { svc, state } = makeBuyServiceTrackingCommit();
+  await assert.rejects(
+    svc.buy({ ...BUY_P, quantity: 0 }, { releaseSession: false }),
+    /invalid quantity/,
+    'a zero request must reject, not buy one item',
+  );
+  assert.equal(state.created, false, 'createBuyOrder must never run on invalid input');
+});
+
+test('H-TRD-039: a valid buy() still reaches createBuyOrder and succeeds', async () => {
+  const { svc, state } = makeBuyServiceTrackingCommit();
+  const res = await svc.buy(BUY_P, { releaseSession: false });
+  assert.equal(state.created, true, 'a well-formed call passes the input guards and commits');
+  assert.equal(res.placed, true);
 });
 
 test('a clean Steam REJECTION (HTTP response, no confirmation) still throws — genuine failure, not placed', async () => {

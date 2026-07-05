@@ -155,8 +155,15 @@ export class BuyService {
     // account resident; a mass-buy passes releaseSession:false because its batch releases all at once.
     const release = opts?.releaseSession !== false;
     const game: GameId = p.appId === 440 ? 'tf2' : 'cs2';
-    const qty = Math.max(1, Math.floor(p.quantity));
+    const qty = Math.floor(Number(p.quantity));            // replaces the Math.max(1, …) up-coercion
     const perItem = Math.round(p.pricePerItemMinor);
+    // H-TRD-039: fail CLOSED on non-finite/non-positive caller input BEFORE any guard/journal state is
+    // touched (this throw predates wasLiveBefore/inFlight.add below). Without it a NaN perItem makes
+    // priceTotalMinor NaN and BOTH pre-commit ceilings compare false (NaN comparisons) → the caps fail
+    // OPEN; the old Math.max(1, …) also up-coerced a quantity-0 request into a real 1-item buy. "invalid"
+    // in both messages keys the /api/market/buy classifier to 400 (bad request), not a retryable 502.
+    if (!Number.isInteger(perItem) || perItem < 1) throw new Error(`invalid pricePerItemMinor ${p.pricePerItemMinor} – must resolve to an integer ≥ 1 (wallet minor units)`);
+    if (!Number.isInteger(qty) || qty < 1) throw new Error(`invalid quantity ${p.quantity} – must resolve to an integer ≥ 1`);
 
     const guardKey = `${p.username.toLowerCase()}|${p.appId}|${p.marketHashName}`;
     if (this.inFlight.has(guardKey)) {
