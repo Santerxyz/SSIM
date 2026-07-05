@@ -340,8 +340,14 @@ export class AccountVaultImpl {
   getCsFloatKey(username: string): string | undefined { return this.payload?.csfloatKeys[username.toLowerCase()]; }
   setCsFloatKey(username: string, key: string): void {
     if (!this.payload) return;
-    this.payload.csfloatKeys[username.toLowerCase()] = key;
-    this.scheduleSave();
+    const k = username.toLowerCase();
+    // First-set (B32 parity): the first CSFloat key for an account is its sole marketplace
+    // credential; a 1.5s debounced+unref'd save could be lost to a kill/power-loss in the window,
+    // stranding an account the operator was told is "configured". Persist a FIRST key
+    // SYNCHRONOUSLY; keep the debounce only for key ROTATION churn (an existing key updating).
+    const firstSet = !this.payload.csfloatKeys[k];
+    this.payload.csfloatKeys[k] = key;
+    if (firstSet) this.save(); else this.scheduleSave();
   }
   deleteCsFloatKey(username: string): void {
     if (!this.payload) return;
