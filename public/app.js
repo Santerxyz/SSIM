@@ -2186,7 +2186,12 @@ function ordersHtml(data) {
   const emptyRow = (txt) => `<div class="px-4 py-8 text-center text-slate-600 text-sm">${txt}</div>`;
   const buyInner = buys.length ? buys.map(buyOrderRow).join('') : emptyRow('No active buy orders.');
   const sellInner = sells.length ? sells.map(sellOrderRow).join('') : emptyRow('No active sell orders.');
-  return ordersShellHtml(buyInner, sellInner, { buy: buys.length, sell: sells.length });
+  // Non-blocking honesty banner: the backend flags a mid-fetch Steam/proxy error that
+  // truncated the snapshot, so the list below is partial, not authoritative.
+  const banner = data.partial
+    ? `<div class="mb-3 px-4 py-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs flex items-center gap-2"><i class="fa-solid fa-triangle-exclamation shrink-0"></i><span>Order list may be incomplete (Steam/proxy error during fetch) — refresh to retry.</span></div>`
+    : '';
+  return banner + ordersShellHtml(buyInner, sellInner, { buy: buys.length, sell: sells.length });
 }
 
 function orderIcon(o) {

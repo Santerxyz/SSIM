@@ -103,6 +103,10 @@ export interface ActiveBuyOrder {
 export interface MarketOrders {
   sellOrders: ActiveSellOrder[];
   buyOrders:  ActiveBuyOrder[];
+  /** True when a page ≥ 1 or the buy-order landing fallback failed mid-fetch, so the
+   *  returned rows are a partial (not authoritative) snapshot — the UI labels it as such
+   *  instead of presenting a truncated list as complete. */
+  partial?:   boolean;
 }
 
 // ── Trade Offers (sent + received) ────────────────────────────────────────────
@@ -358,6 +362,7 @@ export class AccountTrader {
     const cookies = this.session.webSession?.cookies ?? [];
     const seenSell = new Map<string, ActiveSellOrder>();
     const seenBuy = new Map<string, ActiveBuyOrder>();
+    let partial = false; // a page ≥ 1 or the buy-order fallback failed → snapshot is incomplete
     const PAGE = 100;
     const MAX_PAGES = 30; // up to 3000 listings
 
@@ -380,8 +385,8 @@ export class AccountTrader {
       const start = page * PAGE;
       const { status, data } = await get(
         `https://steamcommunity.com/market/mylistings/render/?query=&start=${start}&count=${PAGE}&norender=1`);
-      if (status !== 200)            { if (page === 0) throw new Error(`market/mylistings HTTP ${status}`); break; }
-      if (!data || typeof data !== 'object') { if (page === 0) throw new Error('market/mylistings: malformed response'); break; }
+      if (status !== 200)            { if (page === 0) throw new Error(`market/mylistings HTTP ${status}`); partial = true; break; }
+      if (!data || typeof data !== 'object') { if (page === 0) throw new Error('market/mylistings: malformed response'); partial = true; break; }
 
       // Canonical parse → Active Orders sell rows. Same membership rule as the
       // inventory "Listed" bucket, so the two views can never disagree. Deduped by
@@ -394,6 +399,7 @@ export class AccountTrader {
         parsed = parseMyListings(data);
       } catch (err) {
         if (page === 0) throw err;
+        partial = true;
         break;
       }
       for (const l of parsed.listings) {
@@ -414,11 +420,12 @@ export class AccountTrader {
       try {
         const { status, data } = await get('https://steamcommunity.com/market/mylistings/?norender=1');
         if (status === 200 && data && typeof data === 'object') collectBuyOrders(data, seenBuy);
-      } catch { /* buy-order fallback is best-effort – never fail the whole fetch over it */ }
+        else partial = true; // fetched but non-200 / malformed → buy orders unknown, not "none"
+      } catch { partial = true; /* fallback threw → buy orders unknown; the fetch itself never fails over it */ }
     }
 
-    logger.info(`[${this.username}] market orders: ${seenSell.size} sell / ${seenBuy.size} buy`);
-    return { sellOrders: [...seenSell.values()], buyOrders: [...seenBuy.values()] };
+    logger.info(`[${this.username}] market orders: ${seenSell.size} sell / ${seenBuy.size} buy${partial ? ' (partial)' : ''}`);
+    return { sellOrders: [...seenSell.values()], buyOrders: [...seenBuy.values()], partial };
   }
 
   /**
