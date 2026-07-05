@@ -21,6 +21,10 @@ test('S3: a DEFINITE Steam rejection (eresult) is NOT ambiguous (the op did not 
   assert.equal(isAmbiguousCommitFailure(Object.assign(new Error('econnreset-ish'), { eresult: 8 })), false);
 });
 
+test('H-TRD-104: eresult 16 (Timeout) is ambiguous (Steam\'s backend timed out; the offer may have been created)', () => {
+  assert.equal(isAmbiguousCommitFailure(Object.assign(new Error('There was an error sending your trade offer. Please try again later. (16)'), { eresult: 16 })), true);
+});
+
 test('H-TRD-103: a returned Steam-edge HTTP 5xx is ambiguous (the commit may have landed)', () => {
   // tradeoffer-manager "HTTP error 5xx" send strings + createbuyorder's returned-5xx throw
   assert.equal(isAmbiguousCommitFailure(new Error('HTTP error 502')), true);
