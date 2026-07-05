@@ -439,6 +439,7 @@ export class MarketService {
     const failedHere = new Set<string>(); // S28: identity (assetId), NOT a positional index into the shared failed[]
     let listedForBot = 0;
     let pendingForBot = 0; // listings (incl. phantoms) that still need a 2FA confirm
+    let skippedAlreadyListed = 0; // H-TRD-026: pre-existing listings (crash-rerun) — may still await a 2FA confirm
     let transportPriceMisses = 0; // S2: consecutive price lookups that failed at the transport layer (not "no price")
 
     for (let i = 0; i < group.items.length; i++) {
@@ -459,8 +460,11 @@ export class MarketService {
       }
 
       // Already listed (pre-existing or an earlier phantom) → count once, skip.
+      // H-TRD-026: a pre-existing listing may still be awaiting its 2FA confirm (crash-rerun
+      // after listings were created but before the confirm phase). Count it so the confirm
+      // gate below still fires; confirmMarketListings is idempotent when nothing is pending.
       if (listedSet.has(item.assetId)) {
-        this.job.listed++; this.job.done++;
+        this.job.listed++; this.job.done++; skippedAlreadyListed++;
         logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} already listed → skipped (${listedForBot} new this bot)`);
         continue;
       }
@@ -553,9 +557,13 @@ export class MarketService {
     }
 
     // ── Confirm this bot's pending listings in one 2FA batch (Hotfix A: retry) ──
-    if (pendingForBot > 0) {
+    // H-TRD-026: also arm the confirm phase when the only "pending" work is pre-existing
+    // listings from an interrupted earlier run (skippedAlreadyListed) — those may still
+    // await mobile confirmation. confirmMarketListings is idempotent (getConfirmations
+    // returns only still-pending confirmations → resolves 0 when nothing is left).
+    if (pendingForBot + skippedAlreadyListed > 0) {
       this.job.phase = 'confirming';
-      logger.info(`[mass-sell] ${user}: confirming ${pendingForBot} listing(s) via 2FA…`);
+      logger.info(`[mass-sell] ${user}: confirming ${pendingForBot} new + ${skippedAlreadyListed} pre-existing listing(s) via 2FA…`);
       try {
         const n = await this.confirmWithRetry(trader, user);
         this.job.confirmed += n;
