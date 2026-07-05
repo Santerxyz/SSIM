@@ -36,7 +36,8 @@ test('S16: the loop aborts COOPERATIVELY at the deadline → partial result, no 
   let t = 5_000_000;
   const go = {
     haveGCSession: true,
-    inventory: ['a', 'b', 'c', 'd'].map((id) => ({ id })), // withdraw wants NO casket_id → verify true at once
+    // withdraw wants NO casket_id → verify true at once; the c1 unit must exist for the pre-flight guard.
+    inventory: [{ id: 'c1' }, ...['a', 'b', 'c', 'd'].map((id) => ({ id }))],
     removeFromCasket: () => { t += 10_000_000; },          // each send jumps the clock far past the deadline
     addToCasket: () => { t += 10_000_000; },
     getCasketContents: (_c: string, cb: (e: Error | null, items: unknown[]) => void) => cb(null, []),

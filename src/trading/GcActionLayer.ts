@@ -315,8 +315,14 @@ export class GcActionLayer {
     const MOVE_PER_ITEM_MS = 3_000; // generous upper bound; a normal item finishes in ~half this
     const loopBudgetMs = MOVE_BASE_MS + MOVE_PER_ITEM_MS * Math.max(1, itemIds.length);
     return this.withSession(username, async (go) => {
+      // A stale/wrong casketId (unit deleted in-game since listCaskets) otherwise burns the whole
+      // budget crawling misleading "unconfirmed" items against a unit that does not exist: deposits
+      // empty-coerce a missing unit to `current = 0` and pass the cap; withdraws never look it up at
+      // all. Caskets are always in the SO cache (listCaskets reads it), so a missing unit is a hard,
+      // pre-send failure for BOTH directions — fail fast with nothing sent (lands runMove's 'preflight').
+      const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
+      if (!unit) throw new Error(`storage unit ${casketId} not found in the live GC inventory — refresh the unit list and retry`);
       if (direction === 'deposit') {
-        const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
         const current = Number(unit?.casket_contained_item_count) || 0;
         if (current + itemIds.length > CASKET_CAPACITY) {
           throw new Error(`deposit would exceed the ${CASKET_CAPACITY}-item cap (unit holds ${current})`);
