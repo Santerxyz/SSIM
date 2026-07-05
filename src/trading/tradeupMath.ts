@@ -29,8 +29,8 @@ const WEAR_BANDS: ReadonlyArray<{ wear: Wear; lo: number; hi: number }> = [
 
 /** Maps a float (0..1) to its CS2 wear bucket. 0.07 is Minimal Wear (band lower bound inclusive). */
 export function wearForFloat(f: number): Wear {
-  const x = Number.isFinite(f) ? f : 0;
-  for (const b of WEAR_BANDS) if (x < b.hi) return b.wear;
+  if (!Number.isFinite(f)) throw new Error('wearForFloat: non-finite float');
+  for (const b of WEAR_BANDS) if (f < b.hi) return b.wear;
   return 'Battle-Scarred';
 }
 
@@ -130,8 +130,9 @@ export function computeContract(
   const stattrak = inputs[0].stattrak;
   if (!inputs.every((i) => i.rarityId === rarityId)) throw new Error('all 10 inputs must share the same rarity');
   if (!inputs.every((i) => i.stattrak === stattrak)) throw new Error('all 10 inputs must share the same StatTrak status');
+  if (!inputs.every((i) => Number.isFinite(i.float))) throw new Error('every input needs a finite float');
 
-  const avgFloat = inputs.reduce((s, i) => s + (Number.isFinite(i.float) ? i.float : 0), 0) / 10;
+  const avgFloat = inputs.reduce((s, i) => s + i.float, 0) / 10;
 
   // Inputs per collection → that collection's share of the 10/10 probability mass.
   const perCollection = new Map<string, number>();

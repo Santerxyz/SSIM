@@ -235,7 +235,8 @@ export class GcActionLayer {
     return this.withSession(username, async (go) => {
       const out = new Map<string, number>();
       for (const it of go.inventory ?? []) {
-        if (typeof it.paint_wear === 'number' && it.id != null) out.set(String(it.id), it.paint_wear);
+        const w = it.paint_wear;
+        if (typeof w === 'number' && Number.isFinite(w) && it.id != null) out.set(String(it.id), w);
       }
       return out;
     });
