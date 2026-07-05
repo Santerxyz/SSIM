@@ -70,9 +70,21 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
       break;
     }
     const d = r.data;
-    if (!d || typeof d !== 'object') break;
+    if (!d || typeof d !== 'object') {
+      if (page === 0) throw new Error('market/mylistings: malformed response');
+      break;
+    }
 
-    mergeParsed(acc, parseMyListings(d));
+    // parseMyListings throws on a non-listings body ({"success":false}/shapeless) so a
+    // transient market-subsystem hiccup is never mistaken for "no listings" (which would
+    // wipe the Listed bucket). Page 0 propagates the throw (the caller's listingsOk guard
+    // then carries the cached bucket forward); later pages stop (partial-page semantics).
+    try {
+      mergeParsed(acc, parseMyListings(d));
+    } catch (err) {
+      if (page === 0) throw err;
+      break;
+    }
 
     const total = Number(d.total_count);
     const listings = Array.isArray(d.listings) ? d.listings : [];

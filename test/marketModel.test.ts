@@ -85,6 +85,22 @@ test('isSellable / assertSellable refuse trade-locked and non-tradable items', (
   assert.doesNotThrow(() => assertSellable({ assetId: '1', tradable: true, tradeLockExpiry: null }));
 });
 
+// ── H-TRD-111: a non-listings payload must NOT coerce to "successfully empty" ──
+
+test('parseMyListings THROWS on {success:false} (Steam error body, HTTP 200)', () => {
+  assert.throws(() => parseMyListings({ success: false }), /not a listings payload/);
+});
+
+test('parseMyListings THROWS on a structureless object ({})', () => {
+  assert.throws(() => parseMyListings({}), /not a listings payload/);
+});
+
+test('parseMyListings returns empty (no throw) for a legit empty account', () => {
+  const p = parseMyListings({ success: true, total_count: 0, listings: [], assets: {} });
+  assert.equal(listingsForApp(p, 730).length, 0);
+  assert.equal(listedAssetIdsForApp(p, 730).size, 0);
+});
+
 test('parseMyListings folds pending listings into the dedup superset (confirmed=false)', () => {
   const page = {
     listings: [], pending_listings: [

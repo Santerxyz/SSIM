@@ -66,6 +66,17 @@ function addId(map: Map<number, Set<string>>, appId: number, id: string): void {
 export function parseMyListings(d: any): ParsedMyListings {
   const out: ParsedMyListings = { listings: [], assetIdsByApp: new Map() };
   if (!d || typeof d !== 'object') return out;
+  // A non-listings payload (Steam error body such as {"success":false} — served
+  // HTTP 200 on market-subsystem hiccups — or any shapeless JSON) must NOT parse
+  // to "successfully empty", which would wipe the Listed bucket. Reject unless the
+  // body carries a listings-shaped key. Accept boolean success (market) AND numeric
+  // 1 (inventory) — see DEDUP baseline §D. A legit empty account keeps parsing.
+  const structural =
+    ('listings' in d) || ('assets' in d) || ('total_count' in d) ||
+    ('pending_listings' in d) || ('listings_to_confirm' in d);
+  if (d.success === false || d.success === 0 || !structural) {
+    throw new Error('mylistings: not a listings payload (success=' + String((d as any).success) + ')');
+  }
   const assets = d.assets ?? {};
 
   const toListing = (l: any, confirmed: boolean): MarketListing | null => {

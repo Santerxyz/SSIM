@@ -386,7 +386,17 @@ export class AccountTrader {
       // Canonical parse → Active Orders sell rows. Same membership rule as the
       // inventory "Listed" bucket, so the two views can never disagree. Deduped by
       // listingId; pending listings appear too (projected with confirmed=false upstream).
-      for (const l of parseMyListings(data).listings) {
+      // parseMyListings throws on a non-listings body ({"success":false}/shapeless) so a
+      // hiccup is never coerced to "no orders": page 0 surfaces it (mirrors the status/
+      // shape handling above); later pages stop (partial-page semantics).
+      let parsed;
+      try {
+        parsed = parseMyListings(data);
+      } catch (err) {
+        if (page === 0) throw err;
+        break;
+      }
+      for (const l of parsed.listings) {
         const key = l.listingId || `asset:${l.assetId}`;
         if (!seenSell.has(key)) seenSell.set(key, toSellOrder(l));
       }
