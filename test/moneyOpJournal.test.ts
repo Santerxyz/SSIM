@@ -174,3 +174,13 @@ test('B4: the journal never throws on a corrupt file (degrades to today’s beha
   assert.doesNotThrow(() => j.findUnresolved('op'));
   assert.doesNotThrow(() => j.resolve('op'));
 });
+
+test('H-TRD-108: an array journal file is treated as corrupt so begin() still persists as an object map', () => {
+  const p = jpath();
+  // A JSON array on disk passes typeof===object; begin() writing a string-keyed prop onto it would be
+  // DROPPED by JSON.stringify → the op journals nothing. The array must be treated as corrupt-empty.
+  fs.writeFileSync(p, '[]');
+  new MoneyOpJournal(p).begin('op', 'buy');
+  // A fresh instance re-reads the file: the entry actually persisted (as an object map, not lost to the array).
+  assert.ok(new MoneyOpJournal(p).findUnresolved('op'), 'begin() persisted the entry despite the array file');
+});

@@ -107,7 +107,9 @@ export class MoneyOpJournal {
     }
     try {
       const parsed = JSON.parse(raw) as Record<string, MoneyOpEntry> | null;
-      return { map: parsed && typeof parsed === 'object' ? parsed : {}, unreliable: false };
+      // An array file (external edit/corruption) passes typeof===object but JSON.stringify silently DROPS
+      // string-keyed props of arrays, so begin() would "write" but journal nothing — treat it as corrupt.
+      return { map: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}, unreliable: false };
     } catch {
       return { map: {}, unreliable: false }; // a corrupt journal is a lost dedup memory, not a hazard — degrade to today's behaviour
     }
