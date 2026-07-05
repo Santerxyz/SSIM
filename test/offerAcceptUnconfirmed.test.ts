@@ -13,8 +13,9 @@ import assert from 'node:assert/strict';
 //
 //  acceptOffer reads only `offer.accept`, `offer.itemsToGive`, `offer.id`,
 //  `this.username` and `this.confirmOffer`; batchOfferAction reads this.sessions
-//  (isLive/logoutAccount) and this.getTrader → acceptTradeOffer. Object.create +
-//  stubbed collaborators exercises the exact shipped logic.
+//  (isLive/logoutAccount) and this.ensureWebSession → acceptTradeOffer (the money-op
+//  pre-flight, H-TRD-010). Object.create + stubbed collaborators exercises the exact
+//  shipped logic.
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('H-TRD-018: acceptOffer resolves "unconfirmed" (does NOT reject) when confirm fails on a two-sided offer', async () => {
@@ -96,9 +97,9 @@ test('H-TRD-018: batchOfferAction reports an unconfirmed accept as { ok:true, st
     isLive: () => false,
     logoutAccount: async () => undefined,
   };
-  // Mirror the real getTrader side effect (login makes the account live); the trader's
+  // Mirror the real ensureWebSession side effect (login makes the account live); the trader's
   // acceptTradeOffer forwards acceptOffer's 'unconfirmed' status here.
-  s.getTrader = async (_username: string) => ({
+  s.ensureWebSession = async (_username: string) => ({
     acceptTradeOffer: async (_offerId: string) => 'unconfirmed',
     cancelOrDeclineOffer: async (_offerId: string) => undefined,
   });
@@ -119,7 +120,7 @@ test('H-TRD-018: batchOfferAction reports a clean accept as ok:true with no stat
   const s: any = Object.create(TradeService.prototype);
   s.offerActionsInFlight = 0;
   s.sessions = { isLive: () => false, logoutAccount: async () => undefined };
-  s.getTrader = async (_username: string) => ({
+  s.ensureWebSession = async (_username: string) => ({
     acceptTradeOffer: async (_offerId: string) => 'accepted',
     cancelOrDeclineOffer: async (_offerId: string) => undefined,
   });

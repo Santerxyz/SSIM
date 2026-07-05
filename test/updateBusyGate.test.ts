@@ -58,7 +58,8 @@ test('H-TRD-012: TradeService.busy() is true while a batch accept is in flight',
   // Controllable promise the stubbed accept hangs on: busy() stays true until we resolve.
   let releaseAccept!: () => void;
   const accepted = new Promise<void>((resolve) => { releaseAccept = resolve; });
-  (svc as any).getTrader = async () => ({
+  // The write path pre-flights the session via ensureWebSession (H-TRD-010), so stub that.
+  (svc as any).ensureWebSession = async () => ({
     acceptTradeOffer: () => accepted, // hangs until releaseAccept()
   });
 

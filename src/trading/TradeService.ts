@@ -351,7 +351,10 @@ export class TradeService {
   async offerAction(username: string, offerId: string, action: OfferAction): Promise<'done' | 'unconfirmed'> {
     this.offerActionsInFlight++;
     try {
-      const trader = await this.getTrader(username);
+      // Money-op WRITE: use the session-readiness PRE-FLIGHT (in-place cookie refresh on a stale
+      // sessionid), NOT getTrader's trust-the-cached-ready path — a resident account whose proactive
+      // cookie refresh stalled would otherwise fire the accept/decline/cancel on dead cookies. (H-TRD-010)
+      const trader = await this.ensureWebSession(username);
       // A two-sided accept COMMITS on Steam even when its 2FA confirmation later fails; the trader
       // reports that as 'unconfirmed' (never rethrown) so the offer is not shown as "failed" — it
       // is done on Steam and only awaits a manual mobile confirmation (mirrors the send path). The
@@ -567,7 +570,11 @@ export class TradeService {
     // finally then SKIPS journal.resolve so a retry hits the refuse-once gate instead of duplicating it.
     let commitMayHaveLanded = false;
     try {
-      const trader = await this.getTrader(fromUsername);
+      // Money-op WRITE: use the session-readiness PRE-FLIGHT (in-place cookie refresh on a stale
+      // sessionid) rather than getTrader's trust-the-cached-ready path — mass-send skips re-login for
+      // an account that's already live, so a stalled proactive cookie refresh would send on dead
+      // cookies without this. Buys/sells already pre-flight; this closes the send asymmetry. (H-TRD-010)
+      const trader = await this.ensureWebSession(fromUsername);
       try {
         const result = await trader.sendTrade(params);
         this.journal.record(guardKey, 'send', 'sent'); // the offer now exists on Steam (survives a post-commit crash)

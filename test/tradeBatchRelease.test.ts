@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 //  It now mirrors the offers-read fan-out: group by account, snapshot live-ness
 //  BEFORE the first action, and release in a `finally` iff WE created the session
 //  (same guard as getOffersForAccounts at 323-325). batchOfferAction only reads
-//  this.sessions (isLive/logoutAccount), this.offerAction → this.getTrader, so
-//  Object.create + stubbed collaborators exercises the exact shipped logic.
+//  this.sessions (isLive/logoutAccount), this.offerAction → this.ensureWebSession
+//  (the money-op pre-flight, H-TRD-010), so Object.create + stubbed collaborators
+//  exercises the exact shipped logic.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface Env {
@@ -25,11 +26,11 @@ function svc(TradeService: any, env: Env): any {
     isLive: (u: string) => env.live.has(u.toLowerCase()),
     logoutAccount: async (u: string) => { env.loggedOut.push(u); env.live.delete(u.toLowerCase()); },
   };
-  // getTrader stub: a real getTrader LOGS THE ACCOUNT IN (making it live) before returning; the
-  // trader then performs the Steam write. Here we mirror that side effect (mark live) and record
-  // the call, so the shipped offerAction routing (accept vs cancel/decline) and the post-action
+  // ensureWebSession stub: the real pre-flight LOGS THE ACCOUNT IN (making it live) before returning
+  // the trader, which then performs the Steam write. Here we mirror that side effect (mark live) and
+  // record the call, so the shipped offerAction routing (accept vs cancel/decline) and the post-action
   // release guard (isLive AFTER the actions) run against realistic state.
-  s.getTrader = async (username: string) => {
+  s.ensureWebSession = async (username: string) => {
     env.live.add(username.toLowerCase());
     return {
       acceptTradeOffer: async (offerId: string) => { env.actioned.push({ username, offerId, action: 'accept' }); },
