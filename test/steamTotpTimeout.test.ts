@@ -49,6 +49,29 @@ test('S6: a NaN offset from the vendor falls back and is not cached', async () =
   assert.equal(calls, 2, 'the NaN was not cached, so the underlying getTimeOffset ran again');
 });
 
+test('S6: concurrent misses share ONE underlying fetch', async () => {
+  let calls = 0; let captured: Cb | null = null;
+  const defer = (cb: Cb) => { calls++; captured = cb; /* answers later */ };
+  const wrapped = makeTimeoutGetOffset(defer, { timeoutMs: 50_000 });
+  const a = call(wrapped);
+  const b = call(wrapped);              // second miss coalesces onto the first in-flight fetch
+  captured!(null, 42);                  // one terminal result fans out to both subscribers
+  assert.equal((await a).off, 42);
+  assert.equal((await b).off, 42);
+  assert.equal(calls, 1, 'concurrent misses fire the underlying getTimeOffset exactly once');
+});
+
+test('S6: concurrent misses share ONE timeout stall (both get the fallback)', async () => {
+  let calls = 0;
+  const stall = () => { calls++; /* never calls back */ };
+  const wrapped = makeTimeoutGetOffset(stall, { timeoutMs: 20 });
+  const a = call(wrapped);
+  const b = call(wrapped);             // coalesces onto the same stalling fetch + its single timer
+  assert.equal((await a).off, 0, 'both subscribers get the timeout fallback');
+  assert.equal((await b).off, 0);
+  assert.equal(calls, 1, 'only one raw request was armed for both callers');
+});
+
 test('S6: the cache expires after cacheTtlMs (re-fetch)', async () => {
   let clock = 1000; let calls = 0;
   const ok = (cb: Cb) => { calls++; cb(null, 7); };

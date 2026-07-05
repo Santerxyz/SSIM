@@ -47,6 +47,9 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
   let cachedOffset: number | undefined;
   let cachedAt = 0;
   let cachedAtMono = 0;
+  // Single-flight: while one QueryTime fetch is in flight, concurrent cache-misses subscribe to it
+  // instead of each firing their own raw https request + their own 10s stall (S6/H-TRD-088).
+  let inflight: OffsetCb[] | null = null;
 
   return (cb: OffsetCb): void => {
     // Fresh cache → answer instantly, no network (the offset is process-stable). A wall-clock step
@@ -58,15 +61,21 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
       const stepped = wallElapsed < 0 || Math.abs(wallElapsed - monoElapsed) > 5_000;
       if (!stepped && wallElapsed < cacheTtlMs) { cb(null, cachedOffset, 0); return; }
     }
+    // A fetch is already running → subscribe and let its single terminal result fan out to us.
+    if (inflight) { inflight.push(cb); return; }
+    const subscribers: OffsetCb[] = [cb];
+    inflight = subscribers;
     let settled = false;
     // A stall/error uses the best-known offset (last cache, else 0) and is NOT cached, so the next call
     // re-attempts the real value; a real success IS cached. Never surfaces an error (parity with the
     // callers' own `off = err ? 0 : offset`), so the confirmation proceeds bounded instead of hanging.
+    // Drains every coalesced subscriber with the identical result, then ends the in-flight window.
     const done = (offset: number, cacheable: boolean): void => {
       if (settled) return;
       settled = true;
       if (cacheable) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); }
-      cb(null, offset, 0);
+      inflight = null;
+      for (const sub of subscribers) sub(null, offset, 0);
     };
     const timer = setTimeout(() => {
       logger.warn(`[steam-totp] QueryTime stalled >${timeoutMs}ms – using offset ${cachedOffset ?? 0} (S6)`);
