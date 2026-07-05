@@ -315,11 +315,17 @@ export class BuyService {
       };
     } finally {
       this.inFlight.delete(guardKey);
+      // Release the session this direct buy created (mass-buy opts out — its batch releases once). This
+      // runs BEFORE journal.resolve so the refuse-once memory survives a crash inside the release await
+      // (H-TRD-042): the outcome has not reached the operator until Express writes the response AFTER this
+      // finally, so consuming the entry any earlier would let a post-restart re-fire double-spend a buy the
+      // operator never saw complete. releaseCreatedSessions is best-effort (never throws), so resolve is
+      // always reached when the process lives; if release ever hangs the entry lingers and the next
+      // identical buy is refused once — safe friction consistent with the S15 contract.
+      if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
       // S3/S15: consume the entry on a clean resolution (success OR a definite/pre-commit failure), but
       // KEEP it when the commit failed transport-ambiguously (S3) or when THIS call was a refusal (S15).
       if (!commitMayHaveLanded && !refused) this.journal.resolve(guardKey);
-      // Release the session this direct buy created (mass-buy opts out — its batch releases once).
-      if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
     }
   }
 

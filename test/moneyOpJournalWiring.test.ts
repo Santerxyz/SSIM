@@ -103,3 +103,47 @@ test('S3: a DEFINITE commit rejection (eresult) resolves the entry (a corrected 
   await assert.rejects(svc.buy(P, { releaseSession: false }), /insufficient funds/);
   assert.equal(journal.findUnresolved(GUARD_KEY), undefined, 'Steam rejected → order did not land → entry consumed');
 });
+
+// ─── H-TRD-042: the finally releases the session BEFORE consuming the journal entry ───
+// A crash inside the release await must not have already erased the refuse-once memory of a buy
+// whose outcome has not yet reached the operator (the response is serialized AFTER this finally).
+
+/** A fixture whose commit SUCCEEDS so buy() reaches the finally; records the ORDER of the two
+ *  finally side-effects (release vs resolve) into `order`. `journal.resolve` is spied in place. */
+function makeSuccessfulBuyRecordingOrder(order: string[]): { svc: BuyService; journal: MoneyOpJournal } {
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-trd042-')), 'money-op-journal.json');
+  const journal = new MoneyOpJournal(p);
+  const realResolve = journal.resolve.bind(journal);
+  journal.resolve = (k: string) => { order.push('resolve'); realResolve(k); };
+  const trader = { walletCurrency: 3, createBuyOrder: async () => ({ placed: true, confirmed: true, needsConfirmation: false, buyOrderId: 'B1', raw: {} }) };
+  const svc = Object.create(BuyService.prototype) as BuyService;
+  Object.assign(svc, {
+    inFlight: new Set<string>(),
+    journal,
+    trades: {
+      ensureWebSession: async () => trader,
+      snapshotLive: () => new Set<string>(),
+      releaseCreatedSessions: async () => { order.push('release'); },
+    },
+    inventory: { forceRefresh: async () => ({ partial: false, items: [], wallet: { balance: 100, currency: 3 } }) },
+  });
+  return { svc, journal };
+}
+
+test('H-TRD-042: a successful direct buy releases the session BEFORE resolving the journal entry', async () => {
+  const order: string[] = [];
+  const { svc } = makeSuccessfulBuyRecordingOrder(order);
+  const res = await svc.buy(P, { releaseSession: true });
+  assert.equal(res.placed, true, 'the buy succeeded');
+  assert.deepEqual(order, ['release', 'resolve'], 'release runs first so a crash mid-release keeps the refuse-once entry');
+});
+
+test('H-TRD-042: a pre-commit failure still resolves the journal entry (no lingering refusal)', async () => {
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-trd042pre-')), 'money-op-journal.json');
+  const journal = new MoneyOpJournal(p);
+  // ensureWebSession throws BEFORE any commit → a definite pre-commit failure. The finally must still
+  // consume the entry (nothing landed on Steam), so a later legitimate retry is not refused.
+  const svc = makeBuyServiceWithJournal(journal);
+  await assert.rejects(svc.buy(P, { releaseSession: true }), /REACHED_COMMIT_PATH/);
+  assert.equal(journal.findUnresolved(GUARD_KEY), undefined, 'a pre-commit failure resolves the entry even with releaseSession:true');
+});
