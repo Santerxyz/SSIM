@@ -20,8 +20,11 @@ import { dataDir } from '../utils/paths';
 //     an op whose Steam-side outcome is unknown. On the next run, a retry whose
 //     op-hash matches that lingering entry is refused ONCE (and the entry consumed,
 //     so a deliberate second attempt proceeds) with a "verify on Steam" message.
-//   • TTL-bounded: an entry older than the TTL is swept (a stale crash long since
-//     verified by the operator can't block forever).
+//   • TTL-bounded (24h): an entry older than the TTL is swept. The window must
+//     outlive a crash-overnight → retry-next-morning cycle; post-S15 a lingering
+//     entry costs only one refused click + an 8s pause, so the sweep exists to
+//     bound growth/staleness, not UX — a stale crash long since verified by the
+//     operator can't block forever.
 //
 //  Every method is best-effort and NEVER throws — it must not perturb the money
 //  path (esp. the "never throw after placement" contract). Injectable path/ttl/now
@@ -41,7 +44,7 @@ export interface MoneyOpEntry {
   refusedAt?: number;
 }
 
-const DEFAULT_TTL_MS = 60 * 60 * 1000; // ~1h
+export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h — must outlive a crash-overnight→retry-next-morning cycle; post-S15 a lingering entry costs only one refused click + an 8s pause, so the sweep exists to bound growth/staleness, not UX
 const DEFAULT_MIN_REFUSE_MS = 8_000;   // S15: a lingering op is refused for ≥8s before a deliberate retry is allowed
 
 export class MoneyOpJournal {

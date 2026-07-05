@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MoneyOpJournal } from '../src/core/MoneyOpJournal';
+import { MoneyOpJournal, DEFAULT_TTL_MS } from '../src/core/MoneyOpJournal';
 import { logger } from '../src/utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -66,6 +66,12 @@ test('B4: a lingering entry OLDER than the TTL is swept (a long-past crash canno
   j.begin('op', 'buy');
   clock += 5000; // 5s later — well past the TTL
   assert.equal(j.findUnresolved('op'), undefined, 'an expired entry is swept, not surfaced');
+});
+
+test('H-TRD-106: default TTL spans an overnight crash→next-morning retry', () => {
+  // The realistic recovery timeline (crash at night, operator restarts and re-fires next morning) exceeds
+  // an hour; a 1h TTL swept the lingering entry exactly when it was most needed. Pin ≥24h.
+  assert.ok(DEFAULT_TTL_MS >= 24 * 60 * 60 * 1000, 'the default TTL must outlive a crash-overnight → retry-next-morning cycle');
 });
 
 test('B4: distinct op-hashes (a buy and a send) never collide', () => {
