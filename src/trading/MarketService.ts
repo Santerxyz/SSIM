@@ -140,18 +140,27 @@ export class MarketService {
   busy(): boolean { return this.job.running; }
 
   /**
-   * Pre-list guard (INV-B2 / INV-D1 / C3): is this asset sellable per the cached
-   * inventory? A trade-locked or non-tradable item must never reach `sellOnMarket` —
-   * Steam is only a backstop, and a locked item must never surface as an active sell
-   * order. When the cache has no record of the asset we defer to Steam (return true),
-   * since the pre-flight already proved connectivity and `gone` handling covers staleness.
+   * Pre-list guard (INV-B2 / INV-D1 / C3): the set of asset ids in the cached inventory
+   * that must never reach `sellOnMarket` — trade-locked or non-tradable stacks, so a
+   * locked item never surfaces as an active sell order. Built ONCE per bot (H-TRD-021)
+   * from a single `getCached` snapshot (which deep-clones the whole record, INV-B12), not
+   * once per item, so a mass-sell of K items costs one clone + one scan instead of K.
+   * `undefined` when the account has no cached inventory: with no record we defer to Steam
+   * (every asset treated as sellable), since the pre-flight already proved connectivity and
+   * `gone` handling covers staleness. An asset absent from the returned set is likewise
+   * sellable — the cache simply has no record of it (same defer-to-Steam semantics).
+   * A malformed disk-cached record (non-array `items`) throws here exactly as the old
+   * per-item `inv.items.find(...)` did — H-TRD-024 contains that throw as one `failed` row.
    */
-  private isAssetSellable(username: string, assetId: string): boolean {
+  private buildUnsellableIndex(username: string): Set<string> | undefined {
     const inv = this.inventory?.getCached(username);
-    if (!inv) return true;
-    const stack = inv.items.find(s => (s.assetIds ?? []).some(id => String(id) === String(assetId)));
-    if (!stack) return true;
-    return isSellable(stack);
+    if (!inv) return undefined;
+    const unsellable = new Set<string>();
+    inv.items.forEach(stack => {
+      if (isSellable(stack)) return;
+      for (const id of stack.assetIds ?? []) unsellable.add(String(id));
+    });
+    return unsellable;
   }
 
   /** Lowest market ask (minor units of `currency`) for the buy modal's live-price
@@ -442,6 +451,16 @@ export class MarketService {
     let skippedAlreadyListed = 0; // H-TRD-026: pre-existing listings (crash-rerun) — may still await a 2FA confirm
     let transportPriceMisses = 0; // S2: consecutive price lookups that failed at the transport layer (not "no price")
 
+    // Pre-list guard, snapshotted ONCE per bot (H-TRD-021): the trade-locked / non-tradable
+    // asset ids per the cached inventory. `undefined` (no cache) or an id absent from the set
+    // ⇒ sellable (defer to Steam). Built lazily on the first item so a malformed disk-cached
+    // record throws INSIDE the item try/catch below (H-TRD-024 contains it as one `failed`
+    // row, not a fleet abort). The snapshot is at bot-start rather than at-item-time — the
+    // window is this bot's runtime, Steam stays the backstop (`gone` + INV-B2's authoritative
+    // refresh), and the cache could only change mid-bot via a concurrent refresh anyway.
+    let unsellable: Set<string> | undefined;
+    let unsellableBuilt = false;
+
     for (let i = 0; i < group.items.length; i++) {
       const item = group.items[i];
       const pos = `${i + 1}/${N}`;
@@ -470,8 +489,10 @@ export class MarketService {
       }
 
       // Pre-list guard (INV-B2 / INV-D1 / C3): never list a trade-locked or non-tradable
-      // asset. A locked item must never become an active sell listing.
-      if (!this.isAssetSellable(user, item.assetId)) {
+      // asset. A locked item must never become an active sell listing. The index is built
+      // once (H-TRD-021) on the first item that reaches this guard.
+      if (!unsellableBuilt) { unsellable = this.buildUnsellableIndex(user); unsellableBuilt = true; }
+      if (unsellable?.has(String(item.assetId))) {
         this.job.blocked.push({ username: user, assetId: item.assetId, error: 'trade-locked or not tradable' });
         this.job.done++;
         logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} is trade-locked / not tradable → blocked (not listed)`);
