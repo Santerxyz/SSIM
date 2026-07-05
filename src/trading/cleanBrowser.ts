@@ -206,6 +206,7 @@ export function startProxyRelay(
       buf = Buffer.concat([buf, chunk]);
       const end = buf.indexOf('\r\n\r\n');               // wait for the full request header block
       if (end === -1) { if (buf.length > 65536) client.destroy(); return; }
+      client.pause();                                    // hold client bytes until the later client.pipe(upstream) resumes — a flowing Readable with no 'data' listener discards data
       client.removeListener('data', onData);
 
       const headerBlock = buf.slice(0, end).toString('latin1');
@@ -254,8 +255,11 @@ export function startProxyRelay(
           upstream.on('data', onUp);
         } else {
           // Plain-HTTP (absolute-form) request: inject auth after the request line, replay, splice.
-          const lines = headerBlock.split('\r\n');
-          lines.splice(1, 0, credHeader);
+          // Force Connection: close (dropping any client-sent Proxy-Connection/Connection header) so the
+          // upstream ends after one response — Chromium then opens a FRESH relay connection per request, and
+          // every request re-enters onData and gets Proxy-Authorization (keep-alive reuse would skip auth → 407).
+          const lines = headerBlock.split('\r\n').filter((l, i) => i === 0 || !/^(proxy-)?connection\s*:/i.test(l));
+          lines.splice(1, 0, credHeader, 'Connection: close');
           upstream.write(lines.join('\r\n') + '\r\n\r\n');
           if (rest.length) upstream.write(rest);
           clearTimeout(hsTimer);

@@ -120,3 +120,78 @@ test('H-TRD-058: an upstream flooding CRLF-less garbage is bounded → client ge
     assert.equal(await closedWithin(upstream.sockets[0], 1000), true, 'the upstream socket is destroyed');
   } finally { relay.close(); upstream.stop(); }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-TRD-057 — plain-HTTP (absolute-form) replay path: pause the client while the
+//  upstream connects (a flowing Readable with no 'data' listener drops incoming
+//  body bytes), and force Connection: close so every reused request re-enters the
+//  auth-injection path instead of reaching the upstream credential-less (407).
+// ════════════════════════════════════════════════════════════════════════════
+
+// A fake upstream that records every byte received per accepted socket, replying with a
+// minimal keep-alive-refusing 200 so an absolute-form request completes and the socket closes.
+function recordingUpstream(): Promise<{ port: number; received: string[]; stop: () => void }> {
+  const received: string[] = [];
+  const server = net.createServer((s) => {
+    const idx = received.length;
+    received.push('');
+    s.on('error', () => { /* ignore */ });
+    // reply only once the full request (header block + any declared body) has arrived, then close
+    // (Connection: close semantics) — replying on the header block alone would race a lagging POST body.
+    let replied = false;
+    s.on('data', (d) => {
+      received[idx] += d.toString('latin1');
+      if (replied) return;
+      const he = received[idx].indexOf('\r\n\r\n');
+      if (he === -1) return;
+      const cl = /content-length:\s*(\d+)/i.exec(received[idx].slice(0, he));
+      const bodyLen = received[idx].length - (he + 4);
+      if (cl && bodyLen < Number(cl[1])) return; // wait for the rest of the body
+      replied = true;
+      s.end('HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({
+      port: (server.address() as net.AddressInfo).port,
+      received,
+      stop: () => { try { server.close(); } catch { /* ignore */ } },
+    }));
+  });
+}
+
+test('H-TRD-057: an absolute-form POST whose body arrives after the header block is not truncated', async () => {
+  const upstream = await recordingUpstream();
+  const up = { host: '127.0.0.1', port: upstream.port, username: 'u', password: 'p' };
+  const relay = await startProxyRelay(up, 'test', { handshakeTimeoutMs: 5000 });
+  try {
+    const c = await connect(relay.port);
+    const body = 'name=value&x=1234567890';
+    c.write(`POST http://example.com/submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: ${body.length}\r\n\r\n`);
+    await new Promise((r) => setTimeout(r, 10)); // body bytes lag the header block (the data-loss window)
+    c.write(body);
+    await readAll(c, 1000);
+    assert.equal(upstream.received.length, 1, 'the relay opened one upstream connection');
+    assert.ok(upstream.received[0].endsWith(body), 'the upstream received the complete body written after the header block');
+    assert.match(upstream.received[0], /Proxy-Authorization: Basic /, 'the request carried injected proxy auth');
+  } finally { relay.close(); upstream.stop(); }
+});
+
+test('H-TRD-057: two sequential absolute-form GETs each reach the upstream with Proxy-Authorization (fresh connection per request)', async () => {
+  const upstream = await recordingUpstream();
+  const up = { host: '127.0.0.1', port: upstream.port, username: 'u', password: 'p' };
+  const relay = await startProxyRelay(up, 'test', { handshakeTimeoutMs: 5000 });
+  try {
+    const c1 = await connect(relay.port);
+    c1.write('GET http://example.com/a HTTP/1.1\r\nHost: example.com\r\nProxy-Connection: keep-alive\r\n\r\n');
+    await readAll(c1, 1000); // relay-side connection closes (Connection: close), mirroring Chromium reconnecting
+    const c2 = await connect(relay.port);
+    c2.write('GET http://example.com/b HTTP/1.1\r\nHost: example.com\r\nProxy-Connection: keep-alive\r\n\r\n');
+    await readAll(c2, 1000);
+    assert.equal(upstream.received.length, 2, 'each request opened a NEW upstream connection');
+    assert.match(upstream.received[0], /Proxy-Authorization: Basic /, 'the first request carried injected proxy auth');
+    assert.match(upstream.received[1], /Proxy-Authorization: Basic /, 'the second request also carried injected proxy auth');
+    assert.doesNotMatch(upstream.received[0], /Proxy-Connection:/i, 'the client Proxy-Connection: keep-alive header was stripped');
+    assert.match(upstream.received[0], /Connection: close/, 'the relay forced Connection: close on the upstream request');
+  } finally { relay.close(); upstream.stop(); }
+});
