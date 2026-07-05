@@ -35,6 +35,16 @@ export function wearForFloat(f: number): Wear {
 }
 
 /**
+ * Wears a skin can actually roll given its float range. A trade-up output float spans
+ * [minFloat, maxFloat] (outputFloatValue for avg∈(0,1)), so only wears whose band [lo, hi)
+ * intersects that range are achievable — the others name market items that don't exist.
+ * Endpoint-inclusive (over-inclusion is harmless; under-warming at boundaries is not).
+ */
+export function achievableWears(minFloat: number, maxFloat: number): Wear[] {
+  return WEAR_BANDS.filter((b) => b.lo < maxFloat && b.hi > minFloat).map((b) => b.wear);
+}
+
+/**
  * Estimated input float when the EXACT float is unknown (the pure-web inventory does not expose
  * floats): the midpoint of the item's wear band, clamped to the skin's own [min,max] range. The
  * GC execution path can substitute real floats; previews use this estimate (flagged in the UI).

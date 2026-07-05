@@ -2,7 +2,7 @@ import type { InventoryService } from '../core/InventoryService';
 import type { PricingService } from '../pricing/PricingService';
 import type { GcActionLayer } from './GcActionLayer';
 import { Cs2SchemaService, parseSkinName, type SkinDef } from '../core/Cs2SchemaService';
-import { computeContract, wearMidpoint, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
+import { computeContract, wearMidpoint, achievableWears, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
 import { isSellable } from '../core/MarketModel';
 import { logger } from '../utils/logger';
 
@@ -321,8 +321,9 @@ export class TradeUpService {
     return out;
   }
 
-  /** Queues background price fills for every eligible collection's output skins (all 5 wears) + the
-   *  inputs, so the NEXT calculation has accurate EV (outputs are never in the account inventory). */
+  /** Queues background price fills for every eligible collection's output skins (only the wears each
+   *  skin's float range can roll) + the inputs, so the NEXT calculation has accurate EV (outputs are
+   *  never in the account inventory). */
   private warmOutputPrices(inputs: TuInput[]): void {
     const missing: Array<{ name: string; appid: number }> = [];
     const seen = new Set<string>();
@@ -336,7 +337,7 @@ export class TradeUpService {
     for (const key of collections) {
       const [collection, rarityId, st] = key.split('|');
       for (const o of this.schema.outputsFor(collection, rarityId)) {
-        for (const wear of ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'] as const) {
+        for (const wear of achievableWears(o.minFloat, o.maxFloat)) {
           add(this.schema.marketHashName(o.name, wear, st === '1'));
         }
       }
