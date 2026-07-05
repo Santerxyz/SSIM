@@ -24,7 +24,11 @@ import { logger } from '../utils/logger';
 //
 //  NOT a band-aid: it bounds an unbounded await and uses the documented fallback;
 //  it never retries-to-hide or restarts anything. Timeouts/errors are NOT cached,
-//  so the next call re-attempts the real offset (still bounded).
+//  so the next call re-attempts the real offset (still bounded). A cold fallback
+//  (no cached offset) surfaces the failure `err` with offset 0 rather than a
+//  silent 0, so a consumer that memoizes on success — steamcommunity confirmations
+//  pins _timeOffset for 12h — re-fetches next call instead of pinning our fallback
+//  (H-TRD-090); a warm fallback delivers the real cached offset with err=null.
 // ════════════════════════════════════════════════════════════════════════════
 
 type OffsetCb = (err: Error | null, offset: number, latency?: number) => void;
@@ -66,20 +70,26 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
     const subscribers: OffsetCb[] = [cb];
     inflight = subscribers;
     let settled = false;
-    // A stall/error uses the best-known offset (last cache, else 0) and is NOT cached, so the next call
-    // re-attempts the real value; a real success IS cached. Never surfaces an error (parity with the
-    // callers' own `off = err ? 0 : offset`), so the confirmation proceeds bounded instead of hanging.
+    // A real success IS cached and surfaces err=null. A stall/error falls back: if we hold a real cached
+    // offset we deliver that with err=null (a genuine value — a downstream memo of it is correct); with NO
+    // cache we surface the failure `err` + offset 0, so a consumer that memoizes on success (steamcommunity
+    // confirmations pins _timeOffset for 12h) re-fetches next call instead of pinning our 0. Our own
+    // AccountTrader callers do `off = err ? 0 : offset`, so the no-cache case stays byte-identical (off 0).
+    // Fallbacks are NOT cached, so the next call re-attempts the real value (H-TRD-090).
     // Drains every coalesced subscriber with the identical result, then ends the in-flight window.
-    const done = (offset: number, cacheable: boolean): void => {
+    const done = (err: Error | null, offset: number, cacheable: boolean): void => {
       if (settled) return;
       settled = true;
       if (cacheable) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); }
       inflight = null;
-      for (const sub of subscribers) sub(null, offset, 0);
+      // Warm cache → a real offset with no error; cold fallback → surface the cause so no memo pins our 0.
+      const outErr = cacheable || cachedOffset !== undefined ? null : err;
+      const outOff = cacheable ? offset : (cachedOffset ?? 0);
+      for (const sub of subscribers) sub(outErr, outOff, 0);
     };
     const timer = setTimeout(() => {
       logger.warn(`[steam-totp] QueryTime stalled >${timeoutMs}ms – using offset ${cachedOffset ?? 0} (S6)`);
-      done(cachedOffset ?? 0, false);
+      done(new Error(`QueryTime timed out after ${timeoutMs}ms`), 0, false);
     }, timeoutMs);
     timer.unref?.();
     try {
@@ -89,11 +99,11 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
       original((err, offset) => {
         clearTimeout(timer);
         const ok = !err && Number.isFinite(offset);
-        done(ok ? offset : (cachedOffset ?? 0), ok);
+        done(ok ? null : (err ?? new Error('QueryTime returned a non-finite offset')), ok ? offset : 0, ok);
       });
-    } catch {
+    } catch (e) {
       clearTimeout(timer);
-      done(cachedOffset ?? 0, false);
+      done(e instanceof Error ? e : new Error(String(e)), 0, false);
     }
   };
 }

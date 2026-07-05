@@ -11,14 +11,27 @@ type Cb = (err: Error | null, off: number, latency?: number) => void;
 const call = (fn: (cb: Cb) => void) =>
   new Promise<{ err: Error | null; off: number }>((res) => fn((err, off) => res({ err, off })));
 
-test('S6: a STALLED getTimeOffset falls back to 0 within the timeout (no hang)', async () => {
+test('S6: a stall with NO cache surfaces a timeout error and off 0', async () => {
   let calls = 0;
   const stall = () => { calls++; /* never calls back — the adversarial stall */ };
   const wrapped = makeTimeoutGetOffset(stall, { timeoutMs: 20 });
   const { err, off } = await call(wrapped);
-  assert.equal(err, null, 'a stall is not surfaced as an error (parity with off = err ? 0 : offset)');
+  // Cold fallback surfaces the cause so a memoizing consumer (steamcommunity pins _timeOffset 12h on
+  // success) re-fetches next call instead of pinning our 0. AccountTrader's `off = err ? 0 : offset` → 0.
+  assert.ok(err instanceof Error && /timed out/.test(err.message), 'a no-cache stall surfaces the timeout error');
   assert.equal(off, 0, 'falls back to 0 instead of hanging forever');
   assert.equal(calls, 1);
+});
+
+test('S6: a stall with a warm cache yields err null + the cached offset', async () => {
+  let calls = 0; let mode: 'ok' | 'stall' = 'ok';
+  const impl = (cb: Cb) => { calls++; if (mode === 'ok') cb(null, 42); /* else: never calls back */ };
+  const wrapped = makeTimeoutGetOffset(impl, { timeoutMs: 20, cacheTtlMs: 0 });
+  assert.equal((await call(wrapped)).off, 42, 'first call caches the real offset');
+  mode = 'stall';
+  const { err, off } = await call(wrapped);   // cacheTtlMs 0 → cache expired, re-fetch stalls
+  assert.equal(err, null, 'a warm fallback delivers a real value, so err is null');
+  assert.equal(off, 42, 'the cached offset is surfaced on the stall fallback');
 });
 
 test('S6: a successful offset is CACHED — a 2nd call does not touch the network', async () => {
@@ -30,11 +43,13 @@ test('S6: a successful offset is CACHED — a 2nd call does not touch the networ
   assert.equal(calls, 1, 'the underlying getTimeOffset ran exactly once');
 });
 
-test('S6: an ERROR falls back to 0 and is NOT cached (the next call re-attempts)', async () => {
+test('S6: an ERROR with no cache surfaces the err, falls back to 0, and is NOT cached', async () => {
   let calls = 0;
   const boom = (cb: Cb) => { calls++; cb(new Error('QueryTime 500'), 0); };
   const wrapped = makeTimeoutGetOffset(boom, { timeoutMs: 50 });
-  assert.equal((await call(wrapped)).off, 0);
+  const { err, off } = await call(wrapped);
+  assert.ok(err instanceof Error && /QueryTime 500/.test(err.message), 'the vendor err is surfaced (no memo pins our 0)');
+  assert.equal(off, 0);
   await call(wrapped);
   assert.equal(calls, 2, 'an error/timeout is not cached → re-attempted next time');
 });
