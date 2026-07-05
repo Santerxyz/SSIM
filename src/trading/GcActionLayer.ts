@@ -77,6 +77,7 @@ interface GcLike {
   on(ev: string, cb: (...a: unknown[]) => void): void;
   once(ev: string, cb: (...a: unknown[]) => void): void;
   removeListener(ev: string, cb: (...a: unknown[]) => void): void;
+  removeAllListeners(ev: string): void;                        // present on EventEmitter
   getCasketContents(casketId: string, cb: (err: Error | null, items?: GcItem[]) => void): void;
   addToCasket(casketId: string, itemId: string): void;       // fire-and-forget (no callback)
   removeFromCasket(casketId: string, itemId: string): void;  // fire-and-forget (no callback)
@@ -272,7 +273,19 @@ export class GcActionLayer {
   /** Reads one storage unit's contents (read-only). */
   async getCasketContents(username: string, casketId: string): Promise<GcItem[]> {
     return this.withSession(username, (go) => new Promise<GcItem[]>((resolve, reject) => {
-      go.getCasketContents(casketId, (err, items) => err ? reject(err) : resolve(Array.isArray(items) ? items : []));
+      go.getCasketContents(casketId, (err, items) => {
+        if (err) {
+          // globaloffensive v3.x: the 30s timeout path fires the error callback but never sets `timedOut`
+          // nor detaches its `itemCustomizationNotification` listener (index.js:399-405), so it orphans one
+          // listener + closure on this reused handle (and a late notification would fire callback twice).
+          // We are the sole listener for that event and the inFlight guard means ≤1 read is pending per
+          // handle, so clearing it on the error settle is safe.
+          try { go.removeAllListeners('itemCustomizationNotification'); } catch { /* noop */ }
+          reject(err);
+        } else {
+          resolve(Array.isArray(items) ? items : []);
+        }
+      });
     }));
   }
 
