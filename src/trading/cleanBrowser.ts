@@ -478,6 +478,15 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     }
 
     port = await freePort();
+    // S65 (adjacent surface): --remote-debugging-port opens an UNAUTHENTICATED CDP endpoint on
+    // 127.0.0.1:<port> for the browser's whole lifetime (until the operator closes the window). CDP
+    // has no auth mechanism, so any local process can hit /json/list, attach a WS, and Network.getAllCookies
+    // → exfiltrate steamLoginSecure (strictly stronger than the relay above, which only forwards traffic).
+    // It exists because SSIM needs it for cookie injection (injectSessionOverCdp below) and as the liveness
+    // signal for teardown (armPortWatch). A closed-loop pipe (--remote-debugging-pipe over fds 3/4) would
+    // remove the loopback port, but Edge/Chrome hand off to a DETACHED browser that would not inherit the
+    // pipe — so the port path stays default; a pipe experiment is env-gated (SSIM_BROWSER_PIPE), never on
+    // by default until an Edge hand-off smoke passes. Recorded here as an accepted risk alongside S65.
     const args = [
       `--user-data-dir=${profileDir}`,
       `--remote-debugging-port=${port}`,
