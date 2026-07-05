@@ -377,14 +377,17 @@ process.on('SIGINT',  () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 // ── External-termination breadcrumbs ──────────────────────────────────────────
 // The packaged app is GUI-subsystem (no console), so the old console-close → SIGHUP →
-// hard-kill crash CANNOT occur there. These handlers remain a harmless safety net for the
-// dev/headless console build and for logoff/shutdown: record a breadcrumb and exit cleanly,
-// so any external termination is traceable instead of a "silent vanish".
+// hard-kill crash CANNOT occur there. These handlers remain a safety net for the
+// dev/headless console build and for logoff/shutdown: record a breadcrumb naming the
+// EXTERNAL cause, then route through the SAME bounded graceful path as SIGINT/SIGTERM
+// (H-XCT-006). `shutdown()` is idempotent, flushes the stores + vault, logs out sessions,
+// and has its own 3s hard-exit fallback — so a console-close mid-fleet-op no longer
+// severs sessions or discards a debounced inventory/history/vault write. (releaseInstanceLock
+// runs inside shutdown(); no separate exit(130) — the breadcrumb still records the cause.)
 for (const sig of ['SIGHUP', 'SIGBREAK'] as const) {
   process.on(sig, () => {
     writeCrash(`${sig} (console closed / parent terminated – EXTERNAL, not a crash)`, new Error(sig));
-    try { releaseInstanceLock(); } catch { /* best-effort */ }
-    process.exit(130);
+    void shutdown(sig);
   });
 }
 // Belt-and-braces (#38): release the single-instance lock on ANY process exit so a
