@@ -386,6 +386,7 @@ export class GcActionLayer {
   async craftTradeUp(username: string, p: { inputAssetIds: string[]; inputRarityId: string; stattrak: boolean }):
     Promise<{ submitted: boolean; confirmed: boolean; rejected?: boolean; outputItemId?: string }> {
     if (p.inputAssetIds.length !== 10) throw new Error('a trade-up needs exactly 10 input asset ids');
+    if (new Set(p.inputAssetIds.map(String)).size !== 10) throw new Error('a trade-up needs 10 UNIQUE input asset ids');
     if (!this.craftVerified()) {
       throw new Error('trade-up craft is disabled — set SSIM_GC_VERIFIED=1 after verifying on a test account (irreversible: destroys 10 items)');
     }
