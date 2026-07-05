@@ -5040,7 +5040,7 @@ function pollMass() {
       await refreshActiveViewFromCache();
       // Bubble Steam's ACTUAL failure reasons up to the operator (incl. full-inventory).
       if (job.failed.length) surfaceTradeFailures(job.failed);
-      const verb = job.cancelled ? 'ended' : 'done';
+      const verb = job.stopReason ? `stopped (${job.stopReason})` : (job.cancelled ? 'ended' : 'done');
       toast(`Mass trade ${verb}: ${job.confirmed} confirmed${job.failed.length ? `, ${job.failed.length} failed` : ''}`, job.failed.length ? 'warn' : 'success');
       setTimeout(() => el.massProgress.classList.add('hidden'), 3500);
     } catch (err) {

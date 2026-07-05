@@ -135,6 +135,8 @@ export interface MassTradeJob {
   cancelling?: boolean;
   /** The run ended because it was cancelled (remaining bots were skipped). */
   cancelled?:  boolean;
+  /** Set when the run stopped itself (e.g. the shared receiver's inventory filled). */
+  stopReason?: string;
   total:       number;   // number of sender bots (= offers)
   done:        number;
   sent:        number;
@@ -684,6 +686,16 @@ export class TradeService {
         } catch (err) {
           this.massJob.failed.push({ username: group.username, error: (err as Error).message });
           logger.error(`[mass] ${group.username} failed: ${(err as Error).message}`);
+          // Every group targets the SAME receiver, so a full-inventory rejection dooms every
+          // remaining bot (login + pacing gap + a refused offer each). Stop the run at the first
+          // one, exactly as an operator "End Task" does — the cooperative-cancel checks (667/670)
+          // drain the queue and the epilogue marks cancelled:true. Remedy is free space + re-run.
+          if ((err as { inventoryFull?: boolean }).inventoryFull === true && !this.massCancel) {
+            this.massCancel = true;
+            this.massJob.cancelling = true;
+            this.massJob.stopReason = 'Receiver inventory full — remaining bots skipped';
+            logger.error(`[mass] receiver inventory is full — stopping the run (${queue.length} bot(s) skipped)`);
+          }
         } finally {
           this.massJob.done++;
         }
