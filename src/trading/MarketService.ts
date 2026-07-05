@@ -569,6 +569,9 @@ export class MarketService {
         this.job.confirmed += n;
         logger.info(`[mass-sell] ${user}: ✓ ${n} listing(s) confirmed via 2FA`);
       } catch (err) {
+        // A failed retry chain may still have confirmed some listings before giving
+        // up; count those so `confirmed` reflects the truth (H-TRD-027).
+        this.job.confirmed += (err as { confirmedSoFar?: number }).confirmedSoFar ?? 0;
         logger.error(`[mass-sell] ${user}: confirmation FAILED after retries (${(err as Error).message}) – listings exist but await manual 2FA`);
       }
     }
@@ -602,29 +605,34 @@ export class MarketService {
    * STILL-pending confirmations, so a retry just finishes whatever is left.
    */
   private async confirmWithRetry(
-    trader: { confirmMarketListings(): Promise<number>; username: string },
+    trader: { confirmMarketListings(): Promise<{ confirmed: number; error?: Error }>; username: string },
     user: string,
   ): Promise<number> {
     let total = 0;
     let lastErr: unknown;
     for (let attempt = 0; attempt <= CONFIRM_RETRIES; attempt++) {
+      let err: Error;
       try {
-        const n = await trader.confirmMarketListings();
-        total += n;
-        return total;
-      } catch (err) {
-        lastErr = err;
-        // A partial pass may have confirmed some before failing; a retry picks up
-        // the rest (idempotent). Only retry on transient/server errors.
-        if (isTransient(err) && attempt < CONFIRM_RETRIES) {
-          logger.warn(`[mass-sell] ${user}: 2FA confirm attempt ${attempt + 1}/${CONFIRM_RETRIES + 1} failed (${(err as Error).message}) – retry in ${this.confirmBackoff / 1000}s`);
-          await sleep(this.confirmBackoff);
-          continue;
-        }
-        throw err;
+        const r = await trader.confirmMarketListings();
+        // A partial pass confirms some listings before failing; those count.
+        // The count accumulates across attempts (getConfirmations only returns the
+        // still-pending confirmations, so a retry finishes whatever is left).
+        total += r.confirmed;
+        if (!r.error) return total;
+        err = r.error;                       // mid-pass respond failure — total already banked
+      } catch (rejErr) {
+        err = rejErr instanceof Error ? rejErr : new Error(String(rejErr)); // getConfirmations threw — nothing counted this pass
       }
+      lastErr = err;
+      // Only retry on transient/server errors.
+      if (isTransient(err) && attempt < CONFIRM_RETRIES) {
+        logger.warn(`[mass-sell] ${user}: 2FA confirm attempt ${attempt + 1}/${CONFIRM_RETRIES + 1} failed (${err.message}) – retry in ${this.confirmBackoff / 1000}s`);
+        await sleep(this.confirmBackoff);
+        continue;
+      }
+      throw Object.assign(err, { confirmedSoFar: total });
     }
-    throw lastErr instanceof Error ? lastErr : new Error('confirmation failed');
+    throw Object.assign(lastErr instanceof Error ? lastErr : new Error('confirmation failed'), { confirmedSoFar: total });
   }
 
   /** Rule 1: connectivity pre-flight – probes getListedAssetIds with a couple

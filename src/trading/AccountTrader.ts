@@ -1023,11 +1023,15 @@ export class AccountTrader {
 
   /**
    * Confirms ALL pending market-listing mobile confirmations for this account in
-   * one pass (trade confirmations are deliberately left untouched). Returns the
-   * number of listings confirmed. Mirrors steamcommunity's per-object confirm but
-   * filters to ConfirmationType.MarketListing so a batch of sells is cleared at once.
+   * one pass (trade confirmations are deliberately left untouched). Resolves with
+   * { confirmed } — the number of listings confirmed. Mirrors steamcommunity's
+   * per-object confirm but filters to ConfirmationType.MarketListing so a batch of
+   * sells is cleared at once. A mid-pass respond failure resolves { confirmed, error }
+   * (the count of listings confirmed BEFORE the failure is preserved, so the caller's
+   * retry accumulates honestly); only a getConfirmations failure — where nothing was
+   * counted — rejects.
    */
-  confirmMarketListings(): Promise<number> {
+  confirmMarketListings(): Promise<{ confirmed: number; error?: Error }> {
     const identitySecret = this.session.maFile?.identity_secret;
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot confirm market listings`));
@@ -1036,7 +1040,7 @@ export class AccountTrader {
       getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
     };
 
-    return new Promise<number>((resolve, reject) => {
+    return new Promise<{ confirmed: number; error?: Error }>((resolve, reject) => {
       SteamTotp.getTimeOffset((offErr, offset) => {
         const off = offErr ? 0 : offset;
         const time = SteamTotp.time(off);
@@ -1044,13 +1048,15 @@ export class AccountTrader {
         community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
           if (err) { reject(err); return; }
           const listings = (confs ?? []).filter(c => c?.type === CONF_TYPE_MARKET_LISTING);
-          if (listings.length === 0) { resolve(0); return; }
+          if (listings.length === 0) { resolve({ confirmed: 0 }); return; }
 
           let idx = 0, confirmed = 0;
           let firstErr: Error | null = null;
           const next = (): void => {
             if (idx >= listings.length) {
-              if (firstErr) reject(firstErr); else resolve(confirmed);
+              // A mid-pass respond failure still resolves with the count confirmed
+              // before it, so confirmWithRetry accumulates across attempts.
+              resolve(firstErr ? { confirmed, error: firstErr } : { confirmed });
               return;
             }
             const conf = listings[idx++];

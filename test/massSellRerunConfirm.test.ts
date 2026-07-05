@@ -43,7 +43,7 @@ test('H-TRD-026: crash-rerun — every item already listed still fires the 2FA c
     // so a crash-rerun sees every item as already listed.
     getListedAssetIds: async () => new Set(['a1', 'a2']),
     sellOnMarket: async () => { throw new Error('should not list — everything is already listed'); },
-    confirmMarketListings: async () => { confirmCalls++; return 2; },
+    confirmMarketListings: async () => { confirmCalls++; return { confirmed: 2 }; },
   };
   const s = svc();
   s.trades = { ensureWebSession: async () => trader };
@@ -72,7 +72,7 @@ test('H-TRD-026: fresh listing (empty listedSet) still confirms exactly once —
     sessionState: 'LOGGED_IN',
     getListedAssetIds: async () => new Set([...listed]),
     sellOnMarket: async (a: string) => { listed.add(a); },
-    confirmMarketListings: async () => { confirmCalls++; return 1; },
+    confirmMarketListings: async () => { confirmCalls++; return { confirmed: 1 }; },
   };
   const s = svc();
   s.trades = { ensureWebSession: async () => trader };

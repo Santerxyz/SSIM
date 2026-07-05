@@ -33,7 +33,7 @@ function makeTrader(username: string, spies: Spies) {
     username,
     sellOnMarket: async (assetId: string) => { spies.sold.push(`${username}:${assetId}`); listed.add(assetId); return { listingId: 'L' }; },
     getListedAssetIds: async () => new Set<string>(listed),
-    confirmMarketListings: async () => listed.size,
+    confirmMarketListings: async () => ({ confirmed: listed.size }),
   };
 }
 
