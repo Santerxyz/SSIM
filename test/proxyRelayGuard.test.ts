@@ -45,3 +45,78 @@ test('S65: the relay binds a loopback port (never a routable interface)', async 
   try { assert.ok(relay.port > 0 && relay.port < 65536, 'a loopback port was allocated'); }
   finally { relay.close(); }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-TRD-058 — upstream socket lifecycle: a hung handshake must not pin the conn
+//  cap. Deadline the CONNECT/replay handshake, destroy the upstream on a clean
+//  client close, and bound the upstream header buffer.
+// ════════════════════════════════════════════════════════════════════════════
+
+const readAll = (s: net.Socket, ms: number): Promise<string> =>
+  new Promise((resolve) => {
+    let out = '';
+    s.on('data', (d) => { out += d.toString('latin1'); });
+    s.once('close', () => resolve(out));
+    setTimeout(() => resolve(out), ms).unref?.();
+  });
+
+// A fake upstream proxy that tracks every accepted socket so the test can tear it
+// down deterministically (server.close() alone hangs while a half-open socket lingers).
+function fakeUpstream(onSocket?: (s: net.Socket) => void): Promise<{ port: number; sockets: net.Socket[]; stop: () => void }> {
+  const sockets: net.Socket[] = [];
+  const server = net.createServer((s) => {
+    sockets.push(s);
+    s.on('error', () => { /* ignore */ });
+    s.resume(); // consume inbound (flowing mode) so a peer FIN surfaces as 'close' — a real client always reads
+    onSocket?.(s);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({
+      port: (server.address() as net.AddressInfo).port,
+      sockets,
+      stop: () => { for (const s of sockets) s.destroy(); try { server.close(); } catch { /* ignore */ } },
+    }));
+  });
+}
+
+test('H-TRD-058: a connected-but-unresponsive upstream trips the handshake deadline → client gets 504', async () => {
+  const upstream = await fakeUpstream(); // accept, never respond
+  const up = { host: '127.0.0.1', port: upstream.port, username: 'u', password: 'p' };
+  const relay = await startProxyRelay(up, 'test', { handshakeTimeoutMs: 200 });
+  try {
+    const c = await connect(relay.port);
+    c.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
+    const t0 = Date.now();
+    const resp = await readAll(c, 2000);
+    assert.match(resp, /504 Gateway Timeout/, 'client received a 504 for the hung handshake');
+    assert.ok(Date.now() - t0 < 1500, 'the 504 fired near the deadline, not after a Chromium-scale wait');
+  } finally { relay.close(); upstream.stop(); }
+});
+
+test('H-TRD-058: a client that aborts mid-handshake destroys the upstream socket', async () => {
+  const upstream = await fakeUpstream(); // accept, never respond
+  const up = { host: '127.0.0.1', port: upstream.port, username: 'u', password: 'p' };
+  const relay = await startProxyRelay(up, 'test', { handshakeTimeoutMs: 5000 });
+  try {
+    const c = await connect(relay.port);
+    c.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
+    await new Promise((r) => setTimeout(r, 100)); // let the upstream connection land
+    assert.equal(upstream.sockets.length, 1, 'the relay opened an upstream socket');
+    c.destroy();
+    assert.equal(await closedWithin(upstream.sockets[0], 1000), true, 'the upstream socket closes when the client aborts');
+  } finally { relay.close(); upstream.stop(); }
+});
+
+test('H-TRD-058: an upstream flooding CRLF-less garbage is bounded → client gets 502, upstream destroyed', async () => {
+  const upstream = await fakeUpstream((s) => { s.on('data', () => { s.write(Buffer.alloc(100 * 1024, 0x41)); }); }); // 100KB, no \r\n\r\n
+  const up = { host: '127.0.0.1', port: upstream.port, username: 'u', password: 'p' };
+  const relay = await startProxyRelay(up, 'test', { handshakeTimeoutMs: 5000 });
+  try {
+    const c = await connect(relay.port);
+    c.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
+    const resp = await readAll(c, 2000);
+    assert.match(resp, /502 Bad Gateway/, 'client received a 502 once the upstream buffer bound tripped');
+    assert.equal(upstream.sockets.length, 1, 'the relay opened an upstream socket');
+    assert.equal(await closedWithin(upstream.sockets[0], 1000), true, 'the upstream socket is destroyed');
+  } finally { relay.close(); upstream.stop(); }
+});

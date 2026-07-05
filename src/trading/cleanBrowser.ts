@@ -177,7 +177,7 @@ function freePort(): Promise<number> {
 export function startProxyRelay(
   auth: NonNullable<IsolatedSessionSpec['proxyAuth']>,
   label = 'clean-browser',
-  opts?: { maxConns?: number; firstByteTimeoutMs?: number },
+  opts?: { maxConns?: number; firstByteTimeoutMs?: number; handshakeTimeoutMs?: number },
 ): Promise<{ port: number; close: () => void }> {
   const credHeader = `Proxy-Authorization: Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
 
@@ -214,11 +214,17 @@ export function startProxyRelay(
       const connect = /^CONNECT\s+(\S+)\s+HTTP\/1\.[01]/i.exec(firstLine);
 
       const upstream = net.connect(auth.port, auth.host);
+      // Bound the CONNECT/replay handshake: a connected-but-unresponsive proxy would otherwise
+      // pin both sockets (and an activeConns slot) until Chromium's own timeout gives up.
+      const hsTimer = setTimeout(() => { try { client.end('HTTP/1.1 504 Gateway Timeout\r\n\r\n'); } catch { /* ignore */ } upstream.destroy(); }, opts?.handshakeTimeoutMs ?? 20_000);
+      hsTimer.unref?.();
       upstream.on('error', (e) => {
+        clearTimeout(hsTimer);
         logger.warn(`[${label}] proxy relay: cannot reach upstream proxy ${auth.host}:${auth.port} — ${(e as Error).message}`);
         try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ }
       });
       client.on('error', () => upstream.destroy());
+      client.on('close', () => upstream.destroy());
 
       upstream.once('connect', () => {
         if (connect) {
@@ -228,6 +234,7 @@ export function startProxyRelay(
           let upBuf = Buffer.alloc(0);
           const onUp = (uc: Buffer): void => {
             upBuf = Buffer.concat([upBuf, uc]);
+            if (upBuf.length > 65536) { try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ } upstream.destroy(); return; }
             const he = upBuf.indexOf('\r\n\r\n');
             if (he === -1) return;
             upstream.removeListener('data', onUp);
@@ -241,6 +248,7 @@ export function startProxyRelay(
             const leftover = upBuf.slice(he + 4);
             if (leftover.length) client.write(leftover);   // tunneled bytes that rode in with the 200
             if (rest.length) upstream.write(rest);          // early client bytes (rare for CONNECT)
+            clearTimeout(hsTimer);
             upstream.pipe(client); client.pipe(upstream);
           };
           upstream.on('data', onUp);
@@ -250,6 +258,7 @@ export function startProxyRelay(
           lines.splice(1, 0, credHeader);
           upstream.write(lines.join('\r\n') + '\r\n\r\n');
           if (rest.length) upstream.write(rest);
+          clearTimeout(hsTimer);
           upstream.pipe(client); client.pipe(upstream);
         }
       });
