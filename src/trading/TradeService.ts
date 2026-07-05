@@ -77,6 +77,9 @@ export interface OfferActionResult {
   action:   OfferAction;
   ok:       boolean;
   error?:   string;
+  // 'unconfirmed' = the accept COMMITTED on Steam but the mobile 2FA confirmation failed
+  // (ok:true — the offer is no longer actionable, it only awaits manual mobile confirmation).
+  status?:  'unconfirmed';
 }
 
 // ─── Mass-send orchestration ──────────────────────────────────────────────────
@@ -345,14 +348,23 @@ export class TradeService {
    *  batch worker with one site). The `return await`s are load-bearing: returning the bare
    *  promise would run the finally (decrement) the moment the promise is created, making the
    *  gate false during the very accept+2FA window it exists to cover. */
-  async offerAction(username: string, offerId: string, action: OfferAction): Promise<void> {
+  async offerAction(username: string, offerId: string, action: OfferAction): Promise<'done' | 'unconfirmed'> {
     this.offerActionsInFlight++;
     try {
       const trader = await this.getTrader(username);
-      if (action === 'accept') return await trader.acceptTradeOffer(offerId);
+      // A two-sided accept COMMITS on Steam even when its 2FA confirmation later fails; the trader
+      // reports that as 'unconfirmed' (never rethrown) so the offer is not shown as "failed" — it
+      // is done on Steam and only awaits a manual mobile confirmation (mirrors the send path). The
+      // `await` is load-bearing (see the doc above): the finally decrement must not fire before the
+      // accept+2FA window closes.
+      if (action === 'accept') {
+        const status = await trader.acceptTradeOffer(offerId);
+        return status === 'unconfirmed' ? 'unconfirmed' : 'done';
+      }
       // 'cancel' (our sent offer) and 'decline' (an incoming offer) share one Steam call;
       // the library routes it by the offer's isOurOffer flag.
-      return await trader.cancelOrDeclineOffer(offerId);
+      await trader.cancelOrDeclineOffer(offerId);
+      return 'done';
     } finally {
       this.offerActionsInFlight--;
     }
@@ -405,8 +417,11 @@ export class TradeService {
           for (const t of group) {
             await throttle.pace(); // space this action from every other in-flight one
             try {
-              await this.offerAction(t.username, t.offerId, t.action);
-              results.push({ ...t, ok: true });
+              const status = await this.offerAction(t.username, t.offerId, t.action);
+              // An 'unconfirmed' accept committed on Steam (ok:true) — it awaits a manual mobile
+              // confirmation, not a re-run; carry that distinction onto the row so the UI can
+              // report it separately instead of counting it as a failure.
+              results.push({ ...t, ok: true, ...(status === 'unconfirmed' ? { status } : {}) });
             } catch (err) {
               results.push({ ...t, ok: false, error: (err as Error).message });
               logger.error(`[offers] ${t.username} ${t.action} ${t.offerId} failed: ${(err as Error).message}`);
@@ -744,8 +759,15 @@ export class TradeService {
     // freshly-created promise). Then an update swap (S14) defers between accept and confirmation.
     this.offerActionsInFlight++;
     try {
-      await receiver.acceptOffer(offer);
-      logger.info(`[${receiver.username}] offer ${offerId} accepted`);
+      // A two-sided auto-accept commits on Steam even when its 2FA confirmation later fails;
+      // acceptOffer reports that as 'unconfirmed' (never thrown) so we log it as accepted-but-
+      // awaiting-confirmation rather than as a failure of an accept that actually landed.
+      const status = await receiver.acceptOffer(offer);
+      if (status === 'unconfirmed') {
+        logger.warn(`[${receiver.username}] offer ${offerId} auto-accepted but UNCONFIRMED (awaiting mobile confirmation)`);
+      } else {
+        logger.info(`[${receiver.username}] offer ${offerId} accepted`);
+      }
     } catch (err) {
       logger.error(`[${receiver.username}] auto-accept failed for ${offerId}: ${(err as Error).message}`);
     } finally {

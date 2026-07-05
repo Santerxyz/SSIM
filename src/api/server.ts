@@ -1584,8 +1584,10 @@ export function createApp(deps: ApiDeps): Express {
       return res.status(400).json({ error: `action must be one of ${VALID_OFFER_ACTIONS.join(', ')}` });
     }
     try {
-      await trades.offerAction(username, offerId.trim(), action);
-      res.json({ ok: true, username, offerId: offerId.trim(), action });
+      // 'unconfirmed' = a two-sided accept that COMMITTED on Steam but whose 2FA confirmation
+      // failed; it is not a failure (no 502) — the offer awaits a manual mobile confirmation.
+      const status = await trades.offerAction(username, offerId.trim(), action);
+      res.json({ ok: true, username, offerId: offerId.trim(), action, ...(status === 'unconfirmed' ? { status } : {}) });
     } catch (err) {
       res.status(502).json({ error: (err as Error).message });
     }

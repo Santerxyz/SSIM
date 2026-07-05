@@ -590,11 +590,12 @@ export class AccountTrader {
    * Accepts ONE incoming trade offer. Reuses acceptOffer(), which also clears the
    * mobile 2FA confirmation when the offer has items WE give away (a two-sided swap).
    */
-  async acceptTradeOffer(offerId: string): Promise<void> {
+  async acceptTradeOffer(offerId: string): Promise<'accepted' | 'unconfirmed'> {
     const offer = await this.getOfferById(offerId);
     if (offer.isOurOffer) throw new Error('cannot accept an offer we sent ourselves');
-    await this.acceptOffer(offer);
-    logger.info(`[${this.username}] offer ${offerId} accepted`);
+    const status = await this.acceptOffer(offer);
+    logger.info(`[${this.username}] offer ${offerId} accepted${status === 'unconfirmed' ? ' (UNCONFIRMED)' : ''}`);
+    return status;
   }
 
   getTradeUrl(): Promise<string> {
@@ -654,14 +655,27 @@ export class AccountTrader {
 
   // ── Feature 5: accept an incoming offer (+confirm if we also give items) ──
 
-  async acceptOffer(offer: any): Promise<void> {
+  async acceptOffer(offer: any): Promise<'accepted' | 'unconfirmed'> {
     await new Promise<void>((resolve, reject) => {
       offer.accept((err: Error | null) => (err ? reject(err) : resolve()));
     });
     // Receiving items never needs a mobile confirmation; only giving does.
     if (Array.isArray(offer.itemsToGive) && offer.itemsToGive.length > 0) {
-      await this.confirmOffer(offer.id);
+      // The accept is now COMMITTED on Steam. A throw past this point would propagate as a
+      // retryable 5xx and invite a re-run against an already-accepted offer, so we never
+      // rethrow a confirmation failure here — we report it as 'unconfirmed' for manual review
+      // (mirrors sendTrade's "never throw after committed" money-safety rule).
+      try {
+        await this.confirmOffer(offer.id);
+      } catch (err) {
+        logger.error(
+          `[${this.username}] offer ${offer.id} ACCEPTED but 2FA confirmation failed ` +
+          `(${(err as Error).message}) – left UNCONFIRMED, NOT retrying`,
+        );
+        return 'unconfirmed';
+      }
     }
+    return 'accepted';
   }
 
   // ── Mobile 2FA confirmation via identity_secret ──────────────────────────

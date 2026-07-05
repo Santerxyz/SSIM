@@ -2537,8 +2537,11 @@ async function onSingleOfferAction(e) {
   }))) return;
   setRowBusy(row, true);
   try {
-    await api('/api/trade/offer-action', { method: 'POST', body: JSON.stringify({ username, offerId, action }) });
-    toast(`Offer ${OFFER_VERB[action]}`, 'success');
+    const res = await api('/api/trade/offer-action', { method: 'POST', body: JSON.stringify({ username, offerId, action }) });
+    // 'unconfirmed' = the accept committed on Steam but its 2FA confirmation failed; the offer is
+    // done (remove the row) yet awaits a manual mobile confirmation — not a plain success.
+    if (res && res.status === 'unconfirmed') toast('Offer accepted — awaiting mobile confirmation', 'warn');
+    else toast(`Offer ${OFFER_VERB[action]}`, 'success');
     removeOfferRow(row);
   } catch (err) {
     toast(`${OFFER_LABEL[action]} failed: ${err.message}`, 'error');
@@ -2567,11 +2570,19 @@ async function batchOffers(rows, action) {
     return;
   }
   const byKey = new Map((data.results || []).map((r) => [`${String(r.username).toLowerCase()}|${r.offerId}`, r]));
+  // 'unconfirmed' rows COMMITTED on Steam (ok:true) but their 2FA confirmation failed — they are
+  // no longer actionable (a re-run hits an already-accepted offer), so remove them like a success
+  // and surface the awaiting-mobile-confirmation count separately rather than as a failure.
+  let unconfirmed = 0;
   for (const r of rows) {
     const res = byKey.get(`${r.dataset.username.toLowerCase()}|${r.dataset.offerId}`);
-    if (res && res.ok) removeOfferRow(r); else setRowBusy(r, false);
+    if (res && res.ok) { if (res.status === 'unconfirmed') unconfirmed++; removeOfferRow(r); }
+    else setRowBusy(r, false);
   }
-  toast(`${OFFER_LABEL[action]}: ${data.ok} ok${data.fail ? `, ${data.fail} failed` : ''}`, data.fail ? 'warn' : 'success');
+  const parts = [`${data.ok} ok`];
+  if (unconfirmed) parts.push(`${unconfirmed} await mobile confirmation`);
+  if (data.fail)   parts.push(`${data.fail} failed`);
+  toast(`${OFFER_LABEL[action]}: ${parts.join(', ')}`, data.fail ? 'warn' : (unconfirmed ? 'warn' : 'success'));
   updateOffersSelCounts();
 }
 
