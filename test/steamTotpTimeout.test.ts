@@ -43,6 +43,18 @@ test('S6: a successful offset is CACHED — a 2nd call does not touch the networ
   assert.equal(calls, 1, 'the underlying getTimeOffset ran exactly once');
 });
 
+test('S6: a warm-cache hit calls back asynchronously (keeps the async contract)', async () => {
+  const ok = (cb: Cb) => cb(null, 42);
+  const wrapped = makeTimeoutGetOffset(ok, { timeoutMs: 50 });
+  await call(wrapped);                  // warm the cache
+  let ranBeforeReturn = false; let returned = false;
+  await new Promise<void>((res) => {
+    wrapped((_e, off) => { ranBeforeReturn = !returned; assert.equal(off, 42); res(); });
+    returned = true;                     // the wrapped call has returned; a sync cb would have fired first
+  });
+  assert.equal(ranBeforeReturn, false, 'the warm-cache cb did not fire before the wrapped call returned');
+});
+
 test('S6: an ERROR with no cache surfaces the err, falls back to 0, and is NOT cached', async () => {
   let calls = 0;
   const boom = (cb: Cb) => { calls++; cb(new Error('QueryTime 500'), 0); };

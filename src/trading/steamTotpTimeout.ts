@@ -63,7 +63,10 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
       const wallElapsed = now() - cachedAt;
       const monoElapsed = monotonicNow() - cachedAtMono;
       const stepped = wallElapsed < 0 || Math.abs(wallElapsed - monoElapsed) > 5_000;
-      if (!stepped && wallElapsed < cacheTtlMs) { cb(null, cachedOffset, 0); return; }
+      // Defer the warm-cache dispatch to a microtask so the process-wide patch keeps getTimeOffset's
+      // documented-async contract (the real https round trip always calls back async); capture the value
+      // first so a concurrent cache write can't swap it mid-dispatch (H-TRD-089).
+      if (!stepped && wallElapsed < cacheTtlMs) { const v = cachedOffset; queueMicrotask(() => cb(null, v, 0)); return; }
     }
     // A fetch is already running → subscribe and let its single terminal result fan out to us.
     if (inflight) { inflight.push(cb); return; }
