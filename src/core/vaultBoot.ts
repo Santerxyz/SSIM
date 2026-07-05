@@ -250,9 +250,8 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
  */
 export function quarantineMigratedPlaintext(): void {
   if (!AccountVault.isEnabled()) return;
-  AccountVault.flush();
-  if (!AccountVault.verifyDiskRoundTrip()) {
-    logger.warn('[vault] plaintext quarantine skipped — vault.enc did not verify from disk');
+  if (!AccountVault.flush() || !AccountVault.verifyDiskRoundTrip()) {
+    logger.warn('[vault] plaintext quarantine skipped — vault.enc did not persist/verify from disk');
     return;
   }
   quarantinePlaintextFile(

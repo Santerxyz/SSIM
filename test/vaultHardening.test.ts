@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { AccountVaultImpl, VAULT_NEWER_VERSION_ERROR, type VaultAccount } from '../src/core/AccountVault';
+import { logger } from '../src/utils/logger';
 
 // Each test uses an isolated temp vault file so the singleton's state can't leak across tests.
 let seq = 0;
@@ -146,6 +147,34 @@ test('S5: after recovering from .bak, the .bak still holds the good backup (not 
   const bakCheck = new AccountVaultImpl(bak, bak + '.none');
   assert.doesNotThrow(() => bakCheck.unlockOrCreate('pw'), '.bak must not have been clobbered by the corrupt main');
   assert.equal(bakCheck.getAccount('bot1')?.password, 'pw123', '.bak still holds the good credentials');
+});
+
+// ─── H-ACC-041: a failed persist at flush() returns false, NEVER throws ─────────
+// A locked/read-only vault dir at shutdown must not wedge the graceful-shutdown latch: flush()
+// logs loudly and returns false instead of propagating the writeJsonAtomic throw into shutdown().
+test('H-ACC-041: flush() returns false and does NOT throw when the save fails', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  v.unlockOrCreate('pw');
+  v.setToken('bot1', 'tok'); // something pending
+  (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+
+  const origError = logger.error;
+  let logged = false;
+  (logger as unknown as { error: (m: string) => void }).error = () => { logged = true; };
+  try {
+    assert.equal(v.flush(), false, 'a failed save returns false');
+    assert.doesNotThrow(() => v.flush(), 'the throw is swallowed, never propagated to shutdown()');
+    assert.equal(logged, true, 'the failure is logged loudly at error level');
+  } finally {
+    (logger as unknown as { error: typeof origError }).error = origError;
+  }
+});
+
+test('H-ACC-041: flush() on a locked (never-unlocked) vault returns true (nothing to persist)', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak); // never unlocked → isEnabled() false
+  assert.equal(v.flush(), true, 'no payload → nothing to persist → true, no throw');
 });
 
 test('B33: a WRONG password still fails even if the .bak is healthy', () => {

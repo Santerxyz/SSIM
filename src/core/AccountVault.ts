@@ -229,10 +229,14 @@ export class AccountVaultImpl {
     this.saveTimer.unref?.();
   }
 
-  /** Flush any pending debounced save (call on shutdown). */
-  flush(): void {
+  /** Flush any pending debounced save (call on shutdown). Returns true if persisted (or nothing
+   *  to persist); false if the save threw — the failure is logged loudly but NEVER propagated, so
+   *  a locked/read-only vault dir at exit cannot wedge the graceful-shutdown latch (H-ACC-041). */
+  flush(): boolean {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = undefined; }
-    this.save();
+    if (!this.isEnabled()) return true;
+    try { this.save(); return true; }
+    catch (e) { logger.error(`[vault] flush failed — token/key changes since the last successful save are NOT persisted: ${(e as Error).message}`); return false; }
   }
 
   /**

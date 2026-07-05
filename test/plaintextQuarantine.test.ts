@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import { quarantinePlaintextFile } from '../src/core/vaultBoot';
+import { quarantinePlaintextFile, quarantineMigratedPlaintext } from '../src/core/vaultBoot';
+import { AccountVault } from '../src/core/AccountVault';
+import { dataDir } from '../src/utils/paths';
 
 // ─── B21: quarantine plaintext token/key files once safely in the vault ────────
 // In vault mode the token/key stores read ONLY the vault, so a vaulted entry left in
@@ -50,4 +52,37 @@ test('B21: nothing vaulted → the file is left completely untouched', () => {
   quarantinePlaintextFile(f, 'tokens', 'refresh token', () => undefined);
   assert.equal(fs.readFileSync(f, 'utf8'), before, 'untouched when nothing is safely vaulted');
   assert.equal(fs.existsSync(`${f}.bak`), true, '.bak untouched');
+});
+
+// ─── H-ACC-041: a FAILED flush() must abort the quarantine (never delete the only durable copy) ──
+// verifyDiskRoundTrip only proves *a* payload decrypts, not that disk == memory. Quarantining after
+// a failed flush could delete plaintext that is the sole copy of an in-memory-only token (B21's
+// never-delete-last-copy contract). The gate now short-circuits on a false flush().
+test('H-ACC-041: a failed flush() leaves refresh_tokens.json + csfloat_keys.json byte-identical', () => {
+  // The singleton points at SSIM_HOME/Vault (a throwaway per _setup.cjs). Unlock it so the
+  // quarantine gate is reached (it returns early unless isEnabled()).
+  AccountVault.unlockOrCreate('gate-pw');
+  AccountVault.setToken('alice', 'TA');       // vaulted → would be quarantined if the gate passed
+  AccountVault.setCsFloatKey('alice', 'KA');
+
+  // Byte-equal plaintext copies: these WOULD be drained if quarantine ran.
+  const tokFile = dataDir('refresh_tokens.json');
+  const keyFile = dataDir('csfloat_keys.json');
+  fs.mkdirSync(path.dirname(tokFile), { recursive: true });
+  fs.writeFileSync(tokFile, JSON.stringify({ version: 1, tokens: { alice: 'TA' } }));
+  fs.writeFileSync(keyFile, JSON.stringify({ version: 1, keys: { alice: 'KA' } }));
+  const tokBefore = fs.readFileSync(tokFile, 'utf8');
+  const keyBefore = fs.readFileSync(keyFile, 'utf8');
+
+  const av = AccountVault as unknown as { flush: () => boolean };
+  const origFlush = av.flush.bind(AccountVault);
+  av.flush = () => false; // simulate a locked/read-only vault dir at persist time
+  try {
+    quarantineMigratedPlaintext();
+    assert.equal(fs.readFileSync(tokFile, 'utf8'), tokBefore, 'tokens plaintext untouched after a failed flush');
+    assert.equal(fs.readFileSync(keyFile, 'utf8'), keyBefore, 'keys plaintext untouched after a failed flush');
+  } finally {
+    av.flush = origFlush;
+    try { fs.rmSync(tokFile, { force: true }); fs.rmSync(keyFile, { force: true }); } catch { /* ignore */ }
+  }
 });
