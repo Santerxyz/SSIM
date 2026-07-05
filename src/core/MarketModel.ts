@@ -95,7 +95,7 @@ export function parseMyListings(d: any): ParsedMyListings {
     const desc  = assets?.[String(appId)]?.[ctx]?.[id] ?? {}; // may be absent → {}
     const price = Number(l?.price) || 0;                    // seller-net (minor units)
     const fee   = Number(l?.fee)   || 0;
-    const currency = l?.currencyid != null ? Math.max(0, Number(l.currencyid) - 2000) : 0;
+    const cid = Number(l?.currencyid); const currency = Number.isFinite(cid) ? Math.max(0, cid - 2000) : 0;
     addId(out.assetIdsByApp, appId, id);
     return {
       listingId:         l?.listingid != null ? String(l.listingid) : '',

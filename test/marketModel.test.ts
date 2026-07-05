@@ -161,3 +161,25 @@ test('parseMyListings folds pending listings into the dedup superset (confirmed=
   assert.ok(listedAssetIdsForApp(p, 730).has('333'), 'pending asset is in the no-leak superset');
   assert.equal(listingsForApp(p, 730)[0].confirmed, false);
 });
+
+// ── H-TRD-113: non-numeric currencyid falls back to 0 (the "0 = unknown" contract) ──
+
+test('parseMyListings: a non-numeric currencyid yields currency 0 (not NaN)', () => {
+  const p = parseMyListings({
+    listings: [
+      { listingid: 'L1', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: 'garbage' },
+    ],
+    assets: {},
+  });
+  assert.equal(listingsForApp(p, 730)[0].currency, 0, 'malformed currencyid degrades to the unknown sentinel');
+});
+
+test('parseMyListings: a numeric-string currencyid round-trips (2003 → 3)', () => {
+  const p = parseMyListings({
+    listings: [
+      { listingid: 'L1', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: '2003' },
+    ],
+    assets: {},
+  });
+  assert.equal(listingsForApp(p, 730)[0].currency, 3, 'string currencyid still parses correctly');
+});
