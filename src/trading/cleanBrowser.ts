@@ -285,6 +285,9 @@ async function cdp(ws: WebSocket, id: number, method: string, params: unknown): 
 // We instead watch the browser's own debug port (which survives the hand-off) and tear down when
 // IT disappears, with a process-shutdown backstop so nothing leaks if SSIM exits first.
 const liveTeardowns = new Set<() => void>();
+// Ephemeral profile dirs owned by THIS process (added right after mkdtempSync, removed on teardown).
+// The stale-profile sweep uses this to never touch a profile a live browser from THIS run is still using.
+const liveProfiles = new Set<string>();
 let shutdownHooked = false;
 function hookShutdownOnce(): void {
   if (shutdownHooked) return;
@@ -298,6 +301,27 @@ function hookShutdownOnce(): void {
 }
 
 /**
+ * Best-effort sweep of stale ephemeral profile dirs left in %TEMP% by a PREVIOUS run that died
+ * without running its 'exit' hook (taskkill /F, SIGKILL, the 0xC0000409 native fast-fail) or whose
+ * teardown hit an EBUSY at exit. Each `ssim-clean-*` dir holds this account's LIVE steamLoginSecure
+ * web session, so leaving them at rest bypasses the vault-encryption posture — hence the sweep.
+ * Restricted to the `ssim-clean-` prefix inside os.tmpdir(); profiles this process still owns
+ * (liveProfiles) are skipped. On Windows a still-open browser from a previous run holds file locks,
+ * so `rmSync` throws on that dir and we correctly leave it — only truly abandoned dirs get removed.
+ */
+export function sweepStaleCleanProfiles(): void {
+  const tmp = os.tmpdir();
+  let names: string[];
+  try { names = fs.readdirSync(tmp); } catch { return; } // tmpdir unreadable — nothing to sweep
+  for (const name of names) {
+    if (!name.startsWith('ssim-clean-')) continue;
+    const full = path.join(tmp, name);
+    if (liveProfiles.has(full)) continue;
+    try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* locked by a live browser from a previous run — leave it */ }
+  }
+}
+
+/**
  * Launch the isolated browser for `spec` and inject its cookies. Best-effort: any failure
  * logs + cleans up the ephemeral profile and throws. The browser stays open until the
  * operator closes it (closing discards the ephemeral profile).
@@ -305,7 +329,9 @@ function hookShutdownOnce(): void {
 export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<{ profileDir: string; proxyUsed: string | null; proxyAuthApplied: boolean }> {
   const exe = findChromium();
   if (!exe) throw new Error('no Chromium browser (Edge/Chrome) found to open a clean session — set SSIM_BROWSER_EXE');
+  sweepStaleCleanProfiles(); // clear secret-bearing profile dirs a prior run (crash/SIGKILL/EBUSY) never deleted
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-clean-'));
+  liveProfiles.add(profileDir);
   let relay: { port: number; close: () => void } | null = null;
   let child: ChildProcess | undefined;
   let tornDown = false;
@@ -313,8 +339,15 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     if (tornDown) return;
     tornDown = true;
     liveTeardowns.delete(teardown);
+    liveProfiles.delete(profileDir);
     try { relay?.close(); } catch { /* ignore */ }
-    try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(profileDir, { recursive: true, force: true });
+    } catch {
+      // Edge may still be flushing profile files at teardown (EBUSY on Windows — force does not
+      // override in-use locks); retry once after the browser has fully exited, then leave it to the sweep.
+      setTimeout(() => { try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* give up; next sweep gets it */ } }, 5000).unref?.();
+    }
   };
   try {
     // Resolve the --proxy-server Chromium will use. An AUTHENTICATED proxy is NEVER handed to
