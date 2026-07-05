@@ -348,6 +348,13 @@ export class TradeService {
    * Runs a batch of offer actions through a HARD concurrency-2 pool (Error-15 / rate-limit
    * guard — never scaled). Every target is attempted; failures are reported per-item and
    * never abort the batch. Returns a result row for each input target.
+   *
+   * Like every other fleet-wide login fan-out, this releases the sessions it CREATES: targets
+   * are grouped by account and each worker takes one account's group, snapshots its live-ness
+   * BEFORE the first action, runs that account's actions sequentially, and logs the session out
+   * in a `finally` iff we created it (same guard as the offers read at 323-325). Without this a
+   * "decline/cancel all" across a big environment logs in one session per account and keeps them
+   * all resident until the reaper — the one bulk path that used to leave the fleet accumulating.
    */
   async batchOfferAction(
     targets: OfferActionTarget[],
@@ -355,7 +362,18 @@ export class TradeService {
   ): Promise<OfferActionResult[]> {
     const concurrency = Math.min(OFFER_ACTION_CONCURRENCY, Math.max(1, opts?.concurrency ?? OFFER_ACTION_CONCURRENCY));
     const results: OfferActionResult[] = [];
-    const queue = [...targets];
+    // Group targets by account, preserving first-seen order, so a worker owns ALL of one
+    // account's actions — same-account writes serialize (strictly safer for Error 15) and the
+    // session is released exactly once, only if this batch created it. ≤2 accounts in flight ⇒
+    // ≤2 actions in flight, so OFFER_ACTION_CONCURRENCY (2) still hard-caps action parallelism.
+    const groups = new Map<string, OfferActionTarget[]>();
+    for (const t of targets) {
+      const key = t.username.toLowerCase();
+      const g = groups.get(key);
+      if (g) g.push(t);
+      else groups.set(key, [t]);
+    }
+    const queue = [...groups.values()];
     // Global dispatch pacing (B44): a jittered gap between ANY two actions across both
     // workers, so a large batch of accepts/declines/cancels never bursts a single
     // account's Steam write endpoints (Error-15 / rate-limit guard) — the same reasoning
@@ -364,27 +382,43 @@ export class TradeService {
 
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
-        const t = queue.shift()!;
-        await throttle.pace(); // space this action from every other in-flight one
+        const group = queue.shift()!;
+        const username = group[0].username;
+        // Snapshot live-ness BEFORE we touch the account so we only release sessions WE create —
+        // never one the user already had live (e.g. mid-trade) or logged in concurrently.
+        const wasLiveBefore = this.sessions.isLive(username);
         try {
-          await this.offerAction(t.username, t.offerId, t.action);
-          results.push({ ...t, ok: true });
-        } catch (err) {
-          results.push({ ...t, ok: false, error: (err as Error).message });
-          logger.error(`[offers] ${t.username} ${t.action} ${t.offerId} failed: ${(err as Error).message}`);
+          for (const t of group) {
+            await throttle.pace(); // space this action from every other in-flight one
+            try {
+              await this.offerAction(t.username, t.offerId, t.action);
+              results.push({ ...t, ok: true });
+            } catch (err) {
+              results.push({ ...t, ok: false, error: (err as Error).message });
+              logger.error(`[offers] ${t.username} ${t.action} ${t.offerId} failed: ${(err as Error).message}`);
+            }
+          }
+        } finally {
+          // Release the session this batch created, so a fleet-wide decline/cancel never leaves
+          // the whole environment resident. Best-effort; honours SSIM_RELEASE_READ_SESSIONS=0.
+          if (RELEASE_READ_SESSIONS && !wasLiveBefore && this.sessions.isLive(username)) {
+            await this.sessions.logoutAccount(username).catch(() => undefined);
+          }
         }
       }
     };
 
-    const workers = Math.max(1, Math.min(concurrency, targets.length || 1));
+    const workers = Math.max(1, Math.min(concurrency, groups.size || 1));
     await Promise.all(Array.from({ length: workers }, () => worker()));
     return results;
   }
 
   // ── Bulk-op session release helpers (anti-accumulation) ───────────────────
-  // Shared by every fleet-wide login fan-out (offers read + mass send/sell/buy) so none of
-  // them can leave the whole fleet resident — the resident-session storm that, unbounded, lets
-  // the process be externally killed. Mirrors InventoryService.runRefresh's release.
+  // Shared by every fleet-wide login fan-out (offers read + batch accept/decline/cancel +
+  // mass send/sell/buy) so none of them can leave the whole fleet resident — the resident-session
+  // storm that, unbounded, lets the process be externally killed. Mirrors InventoryService.runRefresh's
+  // release. (batchOfferAction releases inline per-account rather than via snapshotLive/releaseCreatedSessions,
+  // mirroring the offers-read fan-out it shares its per-account structure with.)
 
   /** True when the account currently has a live (or logging-in) session. Lets a bulk op decide
    *  which sessions are ITS OWN to release vs. one the user already had live. */
