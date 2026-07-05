@@ -416,6 +416,11 @@ export function createApp(deps: ApiDeps): Express {
     const { name, proxy, color } = req.body ?? {};
     try {
       const env = accounts.updateEnvironment(req.params.id, { name, proxy: typeof proxy === 'string' && proxy.trim() ? normalizeProxy(proxy) : proxy, color });
+      // A changed environment proxy changes every inheriting account's egress → drop their CSFloat
+      // clients so the next request rebuilds on the new IP (mirrors the per-account PATCH above).
+      if (proxy !== undefined) {
+        for (const a of accounts.getAll().filter(a => a.environmentId === req.params.id)) csfloat.invalidateClient(a.username);
+      }
       res.json(sanitizeEnvironment(env));
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
@@ -996,7 +1001,10 @@ export function createApp(deps: ApiDeps): Express {
     try {
       const updated = accounts.update(account.username, changes);
       // The new proxy only applies on the next login → drop the current session.
-      if (proxyChanged) await sessions.logoutAccount(account.username).catch(() => undefined);
+      if (proxyChanged) {
+        await sessions.logoutAccount(account.username).catch(() => undefined);
+        csfloat.invalidateClient(account.username); // rebuild the CSFloat client on the new egress IP too
+      }
       res.json(sanitizeAccount(updated));
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });

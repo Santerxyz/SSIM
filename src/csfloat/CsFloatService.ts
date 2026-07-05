@@ -63,6 +63,16 @@ export class CsFloatService {
 
   clearKey(username: string): void { this.keys.delete(username); this.invalidate(username); }
 
+  /** Drops the cached per-account client (and the shared pricing client if it is bound to this
+   *  account) so the NEXT request rebuilds on the account's current egress network. Called when an
+   *  operator changes an account/environment proxy — the cache is otherwise keyed only by API key,
+   *  so a proxy edit would keep egressing over the retired IP until restart (INV-A4: effective proxy
+   *  = operator's last set value; the Steam session is already dropped alongside this). */
+  invalidateClient(username: string): void {
+    this.invalidate(username);
+    if (this.pricing && this.pricing.username.toLowerCase() === username.toLowerCase()) this.disposePricing();
+  }
+
   async validateKey(username: string, apiKey: string): Promise<Record<string, unknown>> {
     return new CsFloatClient(apiKey, this.agentFor(username)).me();
   }
