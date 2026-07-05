@@ -79,6 +79,16 @@ export class CsFloatService {
     finally { AgentFactory.destroyIfDisposable(agent); }
   }
 
+  /** Deterministically retire every owned agent (cached per-account clients + the shared pricing
+   *  client) at teardown so a re-license → re-activate cycle does not strand a generation of
+   *  local-IP keepAlive sockets until GC. destroyIfDisposable is quiescence-safe (an in-flight
+   *  request is parked in the reaper), so this never severs a live socket. */
+  stop(): void {
+    for (const c of this.clients.values()) AgentFactory.destroyIfDisposable(c.agent);
+    this.clients.clear();
+    this.disposePricing();
+  }
+
   // ── operations: documented core ──────────────────────────────────────────────
   me(u: string): Promise<Record<string, unknown>> { return this.clientFor(u).me(); }
   search(u: string, params: ListingSearchParams): Promise<{ data: Record<string, unknown>[]; cursor?: string }> { return this.clientFor(u).searchListings(params); }

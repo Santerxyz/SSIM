@@ -169,6 +169,7 @@ async function teardownFullApp(): Promise<void> {
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();
+    deps.csfloat.stop(); // deterministically retire the cached CSFloat agents (else stranded until GC)
     deps.inventory.store.flush();
     deps.inventory.tf2Store.flush();
     deps.inventory.gcStore.flush();
@@ -359,6 +360,7 @@ async function shutdown(signal: string): Promise<void> {
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();
+    deps.csfloat.stop(); // deterministically retire the cached CSFloat agents (else stranded until GC)
     deps.inventory.store.flush();
     deps.inventory.tf2Store.flush();
     deps.inventory.gcStore.flush();
