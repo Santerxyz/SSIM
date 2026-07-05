@@ -183,7 +183,7 @@ function extractTrades(res: unknown): Dict[] {
   return Array.isArray(arr) ? (arr as Dict[]) : [];
 }
 
-function extractDelivery(t: Dict): { tradeUrl?: string; partnerSteamId?: string; assetId?: string } | null {
+export function extractDelivery(t: Dict): { tradeUrl?: string; partnerSteamId?: string; assetId?: string } | null {
   if (!t || typeof t !== 'object') return null;
   const buyer = (t.buyer ?? t.buyer_user ?? {}) as Dict;
   const contract = (t.contract ?? t.listing ?? {}) as Dict;
@@ -198,7 +198,24 @@ function extractDelivery(t: Dict): { tradeUrl?: string; partnerSteamId?: string;
 function pickString(...vals: unknown[]): string | undefined {
   for (const v of vals) {
     if (typeof v === 'string' && v) return v;
-    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    // Accept a numeric id ONLY when it survived JSON.parse without precision loss. A steamID64
+    // (~7.66e16) is always above Number.MAX_SAFE_INTEGER (9.0e15), so a numerically-sourced
+    // buyer_id/steam_id has ALREADY been rounded to a wrong-but-17-digit value before we see it —
+    // String(v) would stringify the corruption and slip past STEAMID64_RE, mis-delivering the asset.
+    // Discard it (→ undefined → the row is skipped, never sent) rather than trust a lossy id.
+    if (typeof v === 'number') {
+      if (Number.isSafeInteger(v)) return String(v);
+      warnUnsafeNumericId(v);
+    }
   }
   return undefined;
+}
+
+// One-shot so a drifted payload does not spam the log: an unsafe-magnitude JSON number for an id
+// means CSFloat must transport that field as a STRING; operators need to see the shape drifted once.
+let warnedUnsafeNumericId = false;
+function warnUnsafeNumericId(v: number): void {
+  if (warnedUnsafeNumericId) return;
+  warnedUnsafeNumericId = true;
+  logger.warn(`[csfloat-auto-accept] a CSFloat payload id arrived as an unsafe-magnitude JSON number (${v}) — its low digits were already lost to JSON.parse rounding; the field must be transported as a string. Discarding it and skipping the affected row.`);
 }
