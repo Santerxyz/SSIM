@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyOpJournal } from '../src/core/MoneyOpJournal';
+import { logger } from '../src/utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  B4 — the cross-restart money-op journal. A CLEANLY completed op (begin→resolve)
@@ -138,6 +139,25 @@ test('H-TRD-107: a transient read failure never erases lingering entries', () =>
   const j3 = new MoneyOpJournal(p);
   assert.ok(j3.findUnresolved('A'), 'A still present — its double-spend memory survived the blip');
   assert.ok(j3.findUnresolved('B'), 'B still present');
+});
+
+// ─── H-TRD-109: a persistent write failure is surfaced ONCE per minute (rate-limited), never thrown ───
+test('H-TRD-109: a failing journal write warns exactly once within 60s and never throws', () => {
+  const p = jpath();
+  const j = new MoneyOpJournal(p);
+  // Force every atomic write to fail (disk-full / EPERM / AV lock class) via the rename() step.
+  mock.method(fs, 'renameSync', () => {
+    const e = new Error('EPERM: operation not permitted, rename');
+    (e as NodeJS.ErrnoException).code = 'EPERM';
+    throw e;
+  });
+  const warn = mock.method(logger, 'warn', () => logger);
+  // Two begins well within the 60s window — the write fails both times, but only ONE warn is surfaced.
+  assert.doesNotThrow(() => j.begin('op1', 'buy'), 'a failed journal write must never break the money op');
+  assert.doesNotThrow(() => j.begin('op2', 'buy'));
+  const jWarns = warn.mock.calls.filter((c) => String(c.arguments[0] ?? '').includes('[money-journal]'));
+  assert.equal(jWarns.length, 1, 'the sustained write failure is rate-limited to one warn per minute');
+  mock.restoreAll();
 });
 
 test('B4: the journal never throws on a corrupt file (degrades to today’s behaviour, not a hazard)', () => {

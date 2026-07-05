@@ -60,6 +60,25 @@ export class MoneyOpJournal {
     return new MoneyOpJournal(dataDir('money-op-journal.json'), DEFAULT_TTL_MS, () => 0, false);
   }
 
+  /** S54/S58: epoch ms (real clock) of the last surfaced fs-failure warn — rate-limits the warn to ≤1/min. */
+  private lastWarnAt = 0;
+
+  /**
+   * Surface a persistent read/write fs failure ONCE per minute — a persistently unwritable/unreadable data/
+   * (EPERM/EACCES after an AV or permissions change, disk full, read-only volume) silently drops the money
+   * path back to pre-B4 behaviour with no cross-restart dedup. A rate-limited warn turns that invisible loss
+   * of the S3/S15 guarantee into a diagnosable one-liner. Uses the REAL clock (not this.now) so injected test
+   * clocks neither suppress nor spam it; self-catching so it never breaks the never-throw contract.
+   */
+  private warn(kind: 'read' | 'write', err: unknown): void {
+    try {
+      const now = Date.now();
+      if (now - this.lastWarnAt < 60_000) return;
+      this.lastWarnAt = now;
+      logger.warn(`[money-journal] ${kind} failed (${(err as NodeJS.ErrnoException)?.code ?? (err as Error)?.message ?? 'unknown'}): cross-restart money-op dedup degraded – ${this.filePath}`);
+    } catch { /* logging must never break the never-throw contract */ }
+  }
+
   /**
    * Read the journal, distinguishing a genuinely-absent/corrupt file (empty is AUTHORITATIVE — the
    * dedup memory really is nothing) from a TRANSIENT fs error on an existing file (empty is a FABRICATION
@@ -76,6 +95,7 @@ export class MoneyOpJournal {
       // ENOENT (raced deletion) is authoritative-empty; any other fs error (EBUSY/EPERM/EACCES/EIO…) is a
       // transient failure on an existing file — degrade to empty for THIS call but never persist it.
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { map: {}, unreliable: false };
+      this.warn('read', err);
       return { map: {}, unreliable: true };
     }
     try {
@@ -99,7 +119,7 @@ export class MoneyOpJournal {
     try {
       if (Object.keys(map).length === 0) { if (fs.existsSync(this.filePath)) fs.rmSync(this.filePath, { force: true }); return; }
       writeJsonAtomic(this.filePath, map, { spaces: 0 });
-    } catch { /* best-effort — a failed journal write must never break the money op */ }
+    } catch (err) { this.warn('write', err); /* best-effort — a failed journal write must never break the money op */ }
   }
 
   /** Record that `opHash` is being INITIATED (before the commit). */
