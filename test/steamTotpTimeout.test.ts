@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeTimeoutGetOffset } from '../src/trading/steamTotpTimeout';
+import { logger } from '../src/utils/logger';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  S6 — getTimeOffset must be timeout-bounded + cached, so a stalled QueryTime
@@ -123,6 +124,26 @@ test('S6: the cache expires after cacheTtlMs (re-fetch)', async () => {
 test('S6: a synchronously-throwing original degrades to 0, never crashes', async () => {
   const wrapped = makeTimeoutGetOffset(() => { throw new Error('boom'); }, { timeoutMs: 50 });
   assert.equal((await call(wrapped)).off, 0);
+});
+
+test('S6: the fast-failure fallback logs a rate-limited warn (once per 60s) naming the err + offset', async () => {
+  // Only the full-stall path used to log; ENOTFOUND/500/malformed fast-fail fallbacks were silent, so
+  // forensics on "offset 0, all confirmations failing" found nothing (H-TRD-093). Drive the error path
+  // twice within 60s with a logger spy → exactly ONE warn, carrying the vendor err message + fallback value.
+  const warned: string[] = [];
+  const realWarn = logger.warn.bind(logger);
+  (logger as unknown as { warn: (m: string) => void }).warn = (m: string) => { warned.push(m); };
+  try {
+    const boom = (cb: Cb) => { cb(new Error('ENOTFOUND api.steampowered.com'), 0); };
+    const wrapped = makeTimeoutGetOffset(boom, { timeoutMs: 50 });   // default now() → Date.now(), first err logs
+    await call(wrapped);
+    await call(wrapped);                                            // second failure < 60s later → suppressed
+    assert.equal(warned.length, 1, 'exactly one warn emitted across two fast failures within 60s');
+    assert.match(warned[0], /QueryTime failed \(ENOTFOUND api\.steampowered\.com\)/, 'names the vendor error');
+    assert.match(warned[0], /using offset 0 \(S6\)/, 'states the fallback offset (0, no cache)');
+  } finally {
+    (logger as unknown as { warn: (m: string) => void }).warn = realWarn;
+  }
 });
 
 test('S6: a wall-clock step invalidates the cached offset', async () => {

@@ -54,6 +54,16 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
   // Single-flight: while one QueryTime fetch is in flight, concurrent cache-misses subscribe to it
   // instead of each firing their own raw https request + their own 10s stall (S6/H-TRD-088).
   let inflight: OffsetCb[] | null = null;
+  // Fast-failure fallbacks (ENOTFOUND/ECONNREFUSED/HTTP-500/malformed/sync throw) settle in ms — only the
+  // full stall path logs, so forensics on "offset 0, all confirmations failing, why?" finds nothing. Emit a
+  // rate-limited (≥60s) warn on the fast paths so the failure mode is attributable without log-flooding a
+  // fleet refresh (S6/H-TRD-093). No secrets in the message.
+  let lastErrLogAt = 0;
+  const logErrFallback = (err: Error): void => {
+    if (now() - lastErrLogAt < 60_000) return;
+    lastErrLogAt = now();
+    logger.warn('[steam-totp] QueryTime failed (' + err.message + ') – using offset ' + (cachedOffset ?? 0) + ' (S6)');
+  };
 
   return (cb: OffsetCb): void => {
     // Fresh cache → answer instantly, no network (the offset is process-stable). A wall-clock step
@@ -108,11 +118,19 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
         // here lets one slow-but-successful response end that regime; the already-delivered fallback is
         // not re-fired — only future calls benefit (H-TRD-091).
         if (ok) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); }
-        done(ok ? null : (err ?? new Error('QueryTime returned a non-finite offset')), ok ? offset : 0, ok);
+        if (!ok) {
+          const outErr = err ?? new Error('QueryTime returned a non-finite offset');
+          if (!settled) logErrFallback(outErr);
+          done(outErr, 0, false);
+        } else {
+          done(null, offset, true);
+        }
       });
     } catch (e) {
       clearTimeout(timer);
-      done(e instanceof Error ? e : new Error(String(e)), 0, false);
+      const outErr = e instanceof Error ? e : new Error(String(e));
+      if (!settled) logErrFallback(outErr);
+      done(outErr, 0, false);
     }
   };
 }
