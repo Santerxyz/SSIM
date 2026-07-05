@@ -89,6 +89,18 @@ test('S39: a self-healed write clears the marker so a later boot is not falsely 
   assert.equal(rebooted.isDegraded(), false, 'a fresh boot after self-heal resumes normally');
 });
 
+// H-FLT-011 — add() must SIGNAL persist durability so the worker stops launching new deliveries on
+// the first non-durable record (instead of after PERSIST_FAIL_LIMIT). TRUE = durable, FALSE = memory-only.
+test('H-FLT-011: add() returns true on a durable persist and false when the write fails', () => {
+  const file = freshDeliveredPath();
+  const store = new CsFloatDeliveredStore(file);
+  assert.equal(store.add('ok-1'), true, 'a durable persist returns true');
+  assert.equal(store.add('ok-1'), true, 'a duplicate is already durably recorded → true');
+  withWriteFailing(() => {
+    assert.equal(store.add('fail-1'), false, 'a thrown write → the id is in memory only → false');
+  });
+});
+
 // F-2 / INV-F1 — never send to an unverified destination (undocumented CSFloat payload).
 test('isValidDeliveryTarget: accepts valid steamID/trade-URL, rejects malformed', () => {
   assert.equal(isValidDeliveryTarget({ assetId: '123', partnerSteamId: '76561198000000000' }), true);

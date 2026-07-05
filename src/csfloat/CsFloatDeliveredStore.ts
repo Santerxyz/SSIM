@@ -68,9 +68,13 @@ export class CsFloatDeliveredStore {
     return this.set.has(id);
   }
 
-  /** Records an id as delivered and persists immediately (atomic). Idempotent. */
-  add(id: string): void {
-    if (!id || this.set.has(id)) return;
+  /** Records an id as delivered and persists immediately (atomic). Idempotent.
+   *  Returns TRUE when the id is durably persisted; FALSE when the write threw (the id is
+   *  in memory only → NOT crash-safe) or the store is already degraded. The caller uses the
+   *  FALSE signal to stop launching new deliveries on the first non-durable record (H-FLT-011),
+   *  tightening the crash-re-delivery exposure to one sale instead of PERSIST_FAIL_LIMIT. */
+  add(id: string): boolean {
+    if (!id || this.set.has(id)) return true; // already durably recorded / nothing to persist
     this.set.add(id);
     this.ids.push(id);
     if (this.ids.length > MAX_IDS) {
@@ -84,6 +88,7 @@ export class CsFloatDeliveredStore {
       // operator on the next boot. Best-effort clear (a failed unlink just leaves a false marker → safe).
       try { if (fsExtra.existsSync(this.MARKER_PATH)) fsExtra.unlinkSync(this.MARKER_PATH); }
       catch (err) { logger.error(`could not clear ${this.MARKER_PATH} after a successful persist: ${(err as Error).message}`); }
+      return !this.degraded; // durable — but if a prior boot latched degraded, the caller must still not deliver
     } catch (err) {
       this.persistFailures++;
       logger.error(`failed to persist ${this.path} (${this.persistFailures}/${CsFloatDeliveredStore.PERSIST_FAIL_LIMIT}): ${(err as Error).message}`);
@@ -99,6 +104,7 @@ export class CsFloatDeliveredStore {
         try { fsExtra.writeFileSync(this.MARKER_PATH, `${new Date().toISOString()} persist_failures=${this.persistFailures}\n`); }
         catch (markerErr) { logger.error(`could not write ${this.MARKER_PATH}: ${(markerErr as Error).message}`); }
       }
+      return false; // the id is in memory only — NOT crash-safe
     }
   }
 }

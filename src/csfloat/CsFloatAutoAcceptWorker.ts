@@ -144,11 +144,19 @@ export class CsFloatAutoAcceptWorker {
       // Mark delivered regardless of confirm status: the offer EXISTS on Steam now, so a
       // re-attempt would create a SECOND real offer for the same sale. An unconfirmed one needs
       // MANUAL 2FA confirmation (surfaced loudly), never an automatic resend.
-      this.delivered.add(id);
+      const persisted = this.delivered.add(id);
       if (sent.status === 'unconfirmed') {
         logger.warn(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} SENT but NOT 2FA-confirmed – confirm it manually in Steam; it will NOT be auto-resent (avoids a duplicate offer).`);
       } else {
         logger.info(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} (${sent.status})`);
+      }
+      if (!persisted) {
+        // H-FLT-011: the delivered-id for a real, already-sent Steam offer was NOT made durable
+        // (disk full / EACCES / AV lock, or the store already latched degraded). Do NOT launch
+        // another delivery for this account this pass — a crash before the store recovers would
+        // re-send every sale whose dedup was never saved. Stop after the first non-durable record.
+        logger.error(`[csfloat-auto-accept] ${username}: trade ${id} was delivered but its delivered-id could NOT be saved – stopping this account's pass to avoid re-delivering sales whose dedup is not durable. Fix the disk/permissions and restart.`);
+        return;
       }
     }
   }
