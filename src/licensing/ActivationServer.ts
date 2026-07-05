@@ -132,5 +132,5 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
 
 // Minimal inline fallback if public/license.html is somehow missing.
 const FALLBACK_HTML = `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;background:#0a0a0f;color:#eee;display:flex;min-height:100vh;align-items:center;justify-content:center">
-<form onsubmit="event.preventDefault();fetch('/api/license/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k.value})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Activated – starting…';setTimeout(()=>location.reload(),2000)}else{s.textContent=d.error}})">
+<form onsubmit="event.preventDefault();fetch('/api/license/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k.value.trim().toUpperCase()})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Activated – starting…';setTimeout(()=>location.reload(),2000)}else{s.textContent=d.error}})">
 <div><h2>SSIM – Activate License</h2><input id="k" placeholder="SSIM-XXXX-XXXX-XXXX-XXXX" style="padding:8px;width:280px"><button>Activate</button><p id="s" style="color:#c084fc"></p></div></form>`;

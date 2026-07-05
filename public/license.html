@@ -63,13 +63,24 @@
     const $ = (id) => document.getElementById(id);
     const msg = $('msg'), btn = $('btn'), key = $('key');
 
+    // Keep the live field value in sync with the uppercase glyphs the CSS shows,
+    // so what the user re-edits matches what will be sent (caret position preserved).
+    key.addEventListener('input', () => {
+      const p = key.selectionStart;
+      key.value = key.value.toUpperCase();
+      try { key.setSelectionRange(p, p); } catch (_) {}
+    });
+
     fetch('/api/license/state').then(r => r.json()).then(d => {
       if (d.hwid) $('hwid').textContent = 'Device ID (HWID): ' + d.hwid;
     }).catch(() => {});
 
     $('form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const value = key.value.trim();
+      // The CSS text-transform:uppercase only restyles the glyphs; key.value stays
+      // as typed. Server keys are uppercase-only (Crockford-base32) and looked up
+      // case-sensitively, so upcase the read value to match what the user sees.
+      const value = key.value.trim().toUpperCase();
       if (!value) { setMsg('err', 'Please enter your license key.'); return; }
       btn.disabled = true;
       setMsg('info', '<span class="spin"></span> Checking license…');
