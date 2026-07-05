@@ -40,8 +40,9 @@ export interface ListedItems {
 
 /**
  * Returns the account's active CS2 market listings (rows + dedup superset).
- * Paginated. Throws only on a hard failure of the FIRST page (so the caller can
- * treat a dead proxy as a real error); later-page hiccups just stop.
+ * Paginated. Throws on ANY page failure (status, unusable body, or network error);
+ * the caller treats a thrown fetch as "listings unread this pass" and carries the
+ * cached listed bucket forward — a partial page set is never committed.
  */
 export async function fetchListedItems(session: ManagedSession): Promise<ListedItems> {
   const cookies = session.webSession?.cookies ?? [];
@@ -65,26 +66,15 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
         Connection:   'close',
       },
     });
-    if (r.status !== 200) {
-      if (page === 0) throw new Error(`market/mylistings HTTP ${r.status}`);
-      break;
-    }
+    if (r.status !== 200) throw new Error(`market/mylistings HTTP ${r.status} (page ${page})`);
     const d = r.data;
-    if (!d || typeof d !== 'object') {
-      if (page === 0) throw new Error('market/mylistings: malformed response');
-      break;
-    }
+    if (!d || typeof d !== 'object') throw new Error(`market/mylistings: malformed response (page ${page})`);
 
     // parseMyListings throws on a non-listings body ({"success":false}/shapeless) so a
     // transient market-subsystem hiccup is never mistaken for "no listings" (which would
-    // wipe the Listed bucket). Page 0 propagates the throw (the caller's listingsOk guard
-    // then carries the cached bucket forward); later pages stop (partial-page semantics).
-    try {
-      mergeParsed(acc, parseMyListings(d));
-    } catch (err) {
-      if (page === 0) throw err;
-      break;
-    }
+    // wipe the Listed bucket). ANY page's throw propagates: the caller's listingsOk guard
+    // then carries the cached bucket forward — a partial page set is never committed.
+    mergeParsed(acc, parseMyListings(d));
 
     const total = Number(d.total_count);
     const listings = Array.isArray(d.listings) ? d.listings : [];
