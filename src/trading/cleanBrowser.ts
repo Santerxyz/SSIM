@@ -276,10 +276,11 @@ function hookShutdownOnce(): void {
   if (shutdownHooked) return;
   shutdownHooked = true;
   const all = (): void => { for (const t of [...liveTeardowns]) { try { t(); } catch { /* ignore */ } } };
+  // Teardown rides the 'exit' hook because every JS-capable termination path in index.ts funnels
+  // through process.exit; paths that run no JS (SIGKILL, native fast-fail) are covered by the
+  // stale-profile sweep (H-TRD-062), not by handlers — so we must NOT install signal handlers here
+  // (they truncated index.ts's graceful shutdown mid-logoutAll and forced exit code 0).
   process.once('exit', all);
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-    try { process.once(sig, () => { all(); process.exit(0); }); } catch { /* signal N/A on this platform */ }
-  }
 }
 
 /**
