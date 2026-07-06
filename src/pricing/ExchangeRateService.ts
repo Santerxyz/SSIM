@@ -17,6 +17,9 @@ export class ExchangeRateService {
   // resets each 12h tick (a fresh retry budget per cycle) and on any success.
   private retryTimer?: NodeJS.Timeout;
   private retryAttempt = 0;
+  // teardown-quiescence: once stop() has run this instance arms no new timers and issues no new I/O; a
+  // refresh() in flight at stop() must not re-arm a retry (or persist) on the torn-down instance.
+  private stopped = false;
   private static readonly RETRY_BASE_MS = 5 * 60 * 1000; // 5,10,20,40 min — all << the 12h interval
   private static readonly MAX_RETRIES   = 4;
   private readonly path: string;
@@ -56,6 +59,7 @@ export class ExchangeRateService {
   }
 
   start(): void {
+    this.stopped = false; // a legitimate stop→start on a reused instance re-arms this instance
     void this.refresh();
     // Each 12h tick resets the short-retry budget so every cycle gets a fresh set of backoff attempts.
     this.timer = setInterval(() => { this.retryAttempt = 0; void this.refresh(); }, REFRESH_MS);
@@ -63,13 +67,15 @@ export class ExchangeRateService {
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    this.stopped = true;
+    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
     this.clearRetry();
   }
 
   private async refresh(): Promise<void> {
     try {
       const resp = await axios.get('https://api.frankfurter.app/latest?from=USD&to=EUR', { timeout: 8_000 });
+      if (this.stopped) return; // teardown ran mid-flight: a late success must not persist() from a dead instance
       const rate = resp.data?.rates?.EUR;
       if (typeof rate !== 'number' || !(rate > 0)) throw new Error('no usable EUR rate in response');
       this.usdToEur = rate;
@@ -78,6 +84,7 @@ export class ExchangeRateService {
       logger.info(`[fx] USD→EUR = ${rate}`);
       this.clearRetry(); // S44: a good refresh cancels any pending short-retry and resets the backoff
     } catch (err) {
+      if (this.stopped) return; // teardown ran mid-flight: a late failure must not re-arm a retry on a dead instance
       logger.warn(`[fx] refresh failed (${(err as Error).message}) – using ${this.usdToEur}`);
       this.scheduleRetry(); // S44: retry in minutes, not 12h
     }
@@ -86,6 +93,7 @@ export class ExchangeRateService {
   /** S44: after a failed refresh, arm ONE short retry with bounded exponential backoff (minutes). Once
    *  MAX_RETRIES is reached we stop until the next 12h tick (which resets the budget) — never a busy loop. */
   private scheduleRetry(): void {
+    if (this.stopped) return;                                           // no new timers after teardown
     if (this.retryTimer) return;                                        // one pending retry at a time
     if (this.retryAttempt >= ExchangeRateService.MAX_RETRIES) return;   // budget spent → wait for the 12h tick
     const delay = ExchangeRateService.RETRY_BASE_MS * 2 ** this.retryAttempt;
