@@ -6,6 +6,12 @@
 //  public key, so you can confirm an OLD client and the NEW client both validate
 //  before you ship the new client.
 //
+//  The NEW-client check verifies `sigKind` over `${latest}:${sha256}:${kind ?? 'backend'}`,
+//  with `kindTag` derived IDENTICALLY to the shipped client in `src/licensing/Updater.ts`
+//  (`verifyUpdateSignature`: `info.kind ?? 'backend'` — coalesce only null/undefined, DO
+//  NOT trim). This tool is an ORACLE for the CLIENT's accept/reject, not the server's, so
+//  it must track Updater.ts, not signing.js. Keep the two in lockstep when either changes.
+//
 //    node build/verify-version-signatures.js <LICENSE_API_URL> <public-key.pem>
 //    e.g. node build/verify-version-signatures.js https://license.ssim.dev keys/public.pem
 //
@@ -33,7 +39,10 @@ get(`${api}/version`, (res) => {
     try { info = JSON.parse(body); } catch { console.error('bad /version JSON:', body.slice(0, 200)); process.exit(1); }
     if (!info || !info.latest) { console.error('no manifest at /version:', body.slice(0, 200)); process.exit(1); }
 
-    const kindTag = info.kind && String(info.kind).trim() ? String(info.kind).trim() : 'backend';
+    // Derive kindTag EXACTLY as the shipped client does (Updater.ts verifyUpdateSignature:
+    // `info.kind ?? 'backend'`) so this gate predicts the CLIENT's decision, not the server's.
+    // Coalesce only null/undefined — do NOT trim, do NOT treat '' as absent.
+    const kindTag = info.kind == null ? 'backend' : String(info.kind);
     const v = (payload, sig) => {
       try { return !!sig && crypto.verify(null, Buffer.from(payload), pub, Buffer.from(sig, 'base64url')); }
       catch { return false; }
@@ -41,10 +50,19 @@ get(`${api}/version`, (res) => {
     const oldOk = v(`${info.latest}:${info.sha256}`, info.sig);                    // deployed/old single-exe client
     const newOk = v(`${info.latest}:${info.sha256}:${kindTag}`, info.sigKind);     // the new kind-aware client
 
-    console.log(`/version  latest=${info.latest}  kind=${info.kind || '(none→backend)'}`);
+    // A non-canonical `kind` (empty, whitespace, or padded) is un-shippable regardless of which
+    // single payload verifies: the SERVER signs the TRIMMED tag while the CLIENT verifies it
+    // VERBATIM, so server and fleet will disagree. Surface it and fail closed.
+    const kindNonCanonical = info.kind != null &&
+      (String(info.kind) === '' || String(info.kind) !== String(info.kind).trim());
+    if (kindNonCanonical) {
+      console.error(`WARN: manifest kind is non-canonical (${JSON.stringify(info.kind)}) — server signs the trimmed tag but the client verifies it verbatim; server and clients will disagree`);
+    }
+
+    console.log(`/version  latest=${info.latest}  kind=${info.kind == null ? '(none→backend)' : JSON.stringify(info.kind)}`);
     console.log(`  OLD client  sig      over latest:sha256             -> ${oldOk ? 'VALID' : 'INVALID/MISSING'}`);
     console.log(`  NEW client  sigKind  over latest:sha256:${kindTag}   -> ${newOk ? 'VALID' : 'INVALID/MISSING'}`);
-    const ok = oldOk && newOk;
+    const ok = oldOk && newOk && !kindNonCanonical;
     console.log(ok
       ? 'RESULT: PASS — both an old client and the new client validate this update. Safe to publish the new client.'
       : 'RESULT: FAIL — do NOT publish the new client yet (the server is not dual-signing correctly).');
