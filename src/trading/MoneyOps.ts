@@ -9,6 +9,9 @@
 //  legitimate SEQUENTIAL repeat is never blocked (that would need client-side
 //  idempotency keys, out of scope here). (D2 / INV-D2.)
 //
+//  Buy orders are market_hash_name-scoped — no assetId exists until the fill — so
+//  the buy path cannot and does not participate.
+//
 //  Pure module state (no imports) → unit-testable in isolation.
 // ════════════════════════════════════════════════════════════════════════════
 
