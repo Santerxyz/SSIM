@@ -83,6 +83,9 @@ function maskedQuestion(query: string): Promise<string> {
  * runs (no TTY) require the SSIM_VAULT_PASSWORD env var. Exits the process on repeated failure.
  */
 export async function unlockVault(): Promise<void> {
+  // A runtime license re-gate calls this again while the vault is still unlocked (teardown flushes
+  // but never locks): short-circuit so we don't re-prompt for a password we already hold in memory.
+  if (AccountVault.isEnabled()) { logger.info('[vault] already unlocked – re-gate skips the prompt'); return; }
   const existing = AccountVault.exists();
 
   // Headless (detached background child / systemd / no TTY): the vault is MANDATORY, so the

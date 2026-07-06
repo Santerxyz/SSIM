@@ -237,10 +237,14 @@ async function gateAndRun(): Promise<void> {
   // Unlock (or create) the portable account vault BEFORE constructing anything that touches
   // credentials. Sidecar (Tauri) mode has no console, so it unlocks via the in-window web portal;
   // dev (CLI prompt) and headless (SSIM_VAULT_PASSWORD) keep using unlockVault().
-  if (IS_SIDECAR_MODE && !process.env.SSIM_VAULT_PASSWORD) {
-    await runUnlockPortal(activePort, HOST);
-  } else {
-    await unlockVault();
+  // A runtime re-gate (onLicenseLost) reaches here with the vault still unlocked — the sidecar env
+  // var is long gone by then, so skip the unlock step entirely rather than route to the portal.
+  if (!AccountVault.isEnabled()) {
+    if (IS_SIDECAR_MODE && !process.env.SSIM_VAULT_PASSWORD) {
+      await runUnlockPortal(activePort, HOST);
+    } else {
+      await unlockVault();
+    }
   }
   await startFullApp();
   LicenseClient.startHeartbeat(licenseHwid);
