@@ -49,6 +49,9 @@ const isBusy = (): boolean => !!deps && (
 // Bounded drain budget shared by shutdown() and teardownFullApp(); the hard-exit fallback
 // and the shell close watchdog (lib.rs) both strictly exceed this so the drain has room.
 const QUIESCE_TIMEOUT_MS = 6000;
+// H-BOOT-001: brief pause before the single re-license re-bind retry, giving the OS / an AV hold
+// time to release the previously-bound port before we dead-end.
+const RELICENSE_REBIND_RETRY_MS = 750;
 
 // ── Single-instance lock (extracted to core/singleInstance.ts for testability) ──
 // See that module: an ATOMIC (fs.open 'wx'), FAIL-SAFE guard that makes a double-run —
@@ -77,6 +80,20 @@ function printBanner(): void {
 
 let licenseHwid = '';
 let relicensing = false; // guard against concurrent re-activation triggers
+// H-BOOT-001: true once the UI port has been bound at least once. FIRST boot dead-ends on a
+// bind failure (nothing to lose); a re-bind during a runtime re-license (onLicenseLost) instead
+// throws BindFailedError so the caller can return to the portal rather than hard-kill the process.
+let everBound = false;
+
+/** A recoverable UI-port bind failure raised on a re-license re-bind (NOT first boot). Signals
+ *  onLicenseLost to retry/return-to-portal instead of process.exit — a momentary EADDRINUSE in the
+ *  sub-second teardown→rebind gap must not kill the operator's window. (H-BOOT-001.) */
+class BindFailedError extends Error {
+  constructor(public readonly code: string | undefined, message: string) {
+    super(message);
+    this.name = 'BindFailedError';
+  }
+}
 
 /** Sidecar mode: the Tauri shell writes "quit" to our stdin when its window closes, so we
  *  shut down gracefully (clean Steam logout) instead of being force-killed. */
@@ -96,8 +113,33 @@ function listenForShellQuit(): void {
   } catch { /* no stdin available → ignore */ }
 }
 
-/** Builds the real app and starts listening. Called ONLY once licensed. */
-async function startFullApp(): Promise<void> {
+/** Bind-failure handler shared by startFullApp. On a re-license re-bind (`!firstBoot`) it THROWS
+ *  BindFailedError so onLicenseLost can return to the portal / retry rather than hard-kill the
+ *  process and every live Steam session. On FIRST boot it keeps the original dead-end behaviour
+ *  BYTE-IDENTICAL (print the lockscreen + schedule exit in 250ms) and returns, so startFullApp's
+ *  caller does not observe a throw on boot. (H-BOOT-001.) */
+function handleListenError(e: NodeJS.ErrnoException, opts: { firstBoot: boolean }): void {
+  writeCrash('SERVER LISTEN ERROR', e); // 250ms exit can outrun winston's async file write
+  if (!opts.firstBoot) {
+    // Recoverable: the previous server just released this port; a transient EADDRINUSE in the
+    // teardown→rebind gap must not dead-end the re-license. Hand the classification to the caller.
+    logger.warn(`re-license re-bind failed on ${HOST}:${activePort} (${e.code ?? e.message}) – returning to caller`);
+    throw new BindFailedError(e.code, e.message);
+  }
+  if (e.code === 'EADDRINUSE') {
+    printLockScreen(`Port ${activePort} is already in use.`, 'Is SSIM already running? Close the other instance, or set PORT=<free>.');
+    logger.error(`server cannot bind ${HOST}:${activePort} – EADDRINUSE (walk exhausted)`);
+  } else {
+    printLockScreen('The server failed to start.', e.message);
+    logger.error(`server listen error: ${e.message}`);
+  }
+  setTimeout(() => process.exit(1), 250);
+}
+
+/** Builds the real app and starts listening. Called ONLY once licensed.
+ *  `firstBoot` is false when re-invoked after a prior successful bind (a runtime re-license):
+ *  a bind failure then THROWS BindFailedError instead of exiting, so the caller can recover. */
+async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }): Promise<void> {
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && HOST !== '::1') {
     logger.warn(
       `SECURITY: SSIM is binding to ${HOST} – the API (credentials, trading, ` +
@@ -133,18 +175,13 @@ async function startFullApp(): Promise<void> {
   try {
     activePort = await listenAndAnnounce(srv, HOST, activePort);
   } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    writeCrash('SERVER LISTEN ERROR', e); // 250ms exit can outrun winston's async file write
-    if (e.code === 'EADDRINUSE') {
-      printLockScreen(`Port ${activePort} is already in use.`, 'Is SSIM already running? Close the other instance, or set PORT=<free>.');
-      logger.error(`server cannot bind ${HOST}:${activePort} – EADDRINUSE (walk exhausted)`);
-    } else {
-      printLockScreen('The server failed to start.', e.message);
-      logger.error(`server listen error: ${e.message}`);
-    }
-    setTimeout(() => process.exit(1), 250);
+    // On first boot handleListenError schedules exit(1) and RETURNS (dead-end, as before) → we
+    // return without arming post-bind services. On a re-license re-bind it THROWS BindFailedError
+    // (recoverable) → propagates to onLicenseLost, which retries / returns to the portal. (H-BOOT-001.)
+    handleListenError(err as NodeJS.ErrnoException, { firstBoot: opts.firstBoot });
     return;
   }
+  everBound = true; // H-BOOT-001: a re-bind after this point can recover instead of hard-exiting
   if (!IS_SIDECAR_MODE) printBanner();
   logger.info(`SSIM server started on ${HOST}:${activePort} (pid ${process.pid})`);
   openUiWindow(`http://localhost:${activePort}`);
@@ -246,7 +283,10 @@ async function gateAndRun(): Promise<void> {
       await unlockVault();
     }
   }
-  await startFullApp();
+  // H-BOOT-001: firstBoot is false once the port has been bound before (a runtime re-license
+  // re-bind) → a transient EADDRINUSE throws BindFailedError for onLicenseLost to recover from,
+  // instead of hard-killing the process.
+  await startFullApp({ firstBoot: !everBound });
   LicenseClient.startHeartbeat(licenseHwid);
   // Periodic (6h) update-availability check + the manual "check/install now" path (C5). CHECK-ONLY on
   // the timer; the only mid-session SWAP is a user-confirmed install, and only while no money op / refresh
@@ -271,7 +311,30 @@ async function onLicenseLost(reason: string): Promise<void> {
   try {
     await teardownFullApp();
     LicenseClient.clearToken(); // force a fresh online check / new key
-    await gateAndRun();
+    try {
+      await gateAndRun();
+    } catch (err) {
+      if (!(err instanceof BindFailedError)) throw err;
+      // H-BOOT-001: the re-bind hit a transient port hold in the sub-second teardown→rebind gap
+      // (OS not yet releasing the listen socket, an AV/EDR briefly holding it). Do NOT dead-end —
+      // that would kill the operator's window on a recoverable re-license. Wait a beat and retry
+      // the bind ONCE (classified failure, not a blind loop — owner no-band-aid rule). If the port
+      // is still held after that, it is a genuine conflict → fall through to the terminal lockscreen.
+      // First tear down the PARTIAL construction the failed startFullApp left armed (createDeps()
+      // already started the exchange + CSFloat workers and built the session manager before the
+      // bind threw) so the retry does not orphan those workers/sockets. teardownFullApp is idempotent.
+      await teardownFullApp();
+      logger.warn(`re-license re-bind failed (${err.code ?? err.message}) – retrying once in ${RELICENSE_REBIND_RETRY_MS}ms`);
+      await new Promise<void>((r) => setTimeout(r, RELICENSE_REBIND_RETRY_MS));
+      try {
+        await gateAndRun();
+      } catch (err2) {
+        if (!(err2 instanceof BindFailedError)) throw err2;
+        printLockScreen('The UI port is still in use.', 'SSIM could not rebind after re-licensing. Free the port (or close the app holding it) and relaunch.');
+        logger.error(`re-license re-bind still failing after retry (${err2.code ?? err2.message}) – dead-ending`);
+        setTimeout(() => process.exit(1), 250);
+      }
+    }
   } finally {
     relicensing = false;
   }
