@@ -298,14 +298,18 @@ export class AccountVaultImpl {
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   getAccount(username: string): VaultAccount | undefined {
-    return this.payload?.accounts[username.toLowerCase()];
+    // Defensive copy: never hand a live reference into the encrypted payload — a caller
+    // mutating the record (e.g. the PATCH route setting v.password) must not touch the store
+    // until it explicitly upserts, so a later-failed edit leaves memory/disk untorn.
+    const rec = this.payload?.accounts[username.toLowerCase()];
+    return rec ? structuredClone(rec) : undefined;
   }
   hasAccount(username: string): boolean { return !!this.getAccount(username); }
 
   /** Add or replace an account's secrets; saves immediately (a credential change). */
   upsertAccount(acc: VaultAccount): void {
     if (!this.payload) throw new Error('vault not unlocked');
-    this.payload.accounts[acc.username.toLowerCase()] = acc;
+    this.payload.accounts[acc.username.toLowerCase()] = structuredClone(acc);
     this.save();
   }
 
@@ -319,7 +323,7 @@ export class AccountVaultImpl {
     if (!acc.maFile?.shared_secret || !acc.password) return false;
     const k = acc.username.toLowerCase();
     if (this.payload.accounts[k]) return false;
-    this.payload.accounts[k] = acc;
+    this.payload.accounts[k] = structuredClone(acc);
     return true;
   }
 
