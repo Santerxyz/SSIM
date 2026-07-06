@@ -9,7 +9,7 @@ import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { vaultDir } from '../utils/paths';
 import { AccountVault } from './AccountVault';
-import { loadMaFileFromDisk } from './maFiles';
+import { loadMaFileFromDisk, resolveMaFilePath } from './maFiles';
 
 const DB_PATH    = vaultDir('accounts.json');
 const DB_VERSION = 4; // v2 folders[]; v3 environments[]; v4 portable maFilePath (bare filename in ./mafiles)
@@ -19,7 +19,10 @@ const DB_VERSION = 4; // v2 folders[]; v3 environments[]; v4 portable maFilePath
  * these are rewritten to the bare filename during the v4 migration – loadMaFile
  * resolves bare names against the consolidated ./mafiles dir, which makes
  * accounts.json survive machine/folder moves. Paths pointing somewhere ELSE
- * (operator keeps maFiles on another drive) are left untouched.
+ * (operator keeps maFiles on another drive) are ALSO basenamed into ./mafiles:
+ * since B23 the loader can only read from the drop zone, so an other-drive path
+ * is already broken — we normalize it and log a one-time "copy into ./mafiles"
+ * rescue message rather than preserve a value that resolves to a wrong/missing file.
  */
 const LEGACY_MAFILE_DIRS = new Set(['mafiles', 'mafiles_unlinked']);
 
@@ -125,11 +128,18 @@ export class AccountManager {
       let migrated = 0;
       for (const acc of db.accounts) {
         if (typeof acc.maFilePath === 'string' && path.isAbsolute(acc.maFilePath)) {
+          // Since B23 the loader (resolveMaFilePath) basenames EVERY path into ./mafiles — an
+          // absolute maFilePath can no longer read outside the drop zone. So normalize ALL
+          // absolute paths to the bare filename the loader actually honors, not just the legacy
+          // dirs. An other-drive path that isn't in ./mafiles is broken; surface it once (rescue
+          // message) instead of persisting a value that silently resolves to a wrong/missing file.
           const parent = path.basename(path.dirname(acc.maFilePath)).toLowerCase();
-          if (LEGACY_MAFILE_DIRS.has(parent)) {
-            acc.maFilePath = path.basename(acc.maFilePath);
-            migrated++;
+          const base = path.basename(acc.maFilePath);
+          if (!LEGACY_MAFILE_DIRS.has(parent) && !fsExtra.existsSync(resolveMaFilePath(base))) {
+            logger.warn(`maFile for ${acc.username} must live in ./mafiles — copy ${base} there and re-import.`);
           }
+          acc.maFilePath = base;
+          migrated++;
         }
       }
       if (migrated) logger.info(`maFilePath migration: ${migrated} account(s) → portable filename in ./mafiles`);

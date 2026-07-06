@@ -34,7 +34,12 @@ export interface AccountConfig {
   id:          string;
   username:    string;
   password:    string;
-  /** Filename inside ./mafiles/  OR  absolute path */
+  /**
+   * Bare filename inside ./mafiles/ (the consolidated drop zone). Directory
+   * components are ALWAYS stripped at load (B23 containment, maFiles.ts
+   * resolveMaFilePath) — absolute paths are not supported and are reinterpreted
+   * as ./mafiles/<basename>.
+   */
   maFilePath:  string;
   /**
    * RESOLVED network – COMPUTED at read-time by AccountManager (from
