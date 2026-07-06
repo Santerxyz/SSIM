@@ -6699,9 +6699,11 @@ function tuPollExec() {
   const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
   const foot = ov.querySelector('[data-foot]');
   clearTimeout(tuState.execTimer);
+  resetPoller('tuExecErr'); // S17: start a clean error-retry window for this execution
   const tick = async () => {
     try {
       const j = await api('/api/tradeup/execute-status');
+      resetPoller('tuExecErr'); // S17: a good poll clears the error-retry window
       const confirmed = (j.results || []).filter(r => r.confirmed).length;
       const line = j.enabled
         ? `Executing ${j.done}/${j.total} · submitted ${j.crafted} (${confirmed} confirmed) · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}`
@@ -6714,7 +6716,17 @@ function tuPollExec() {
         const failMsg = (j.results || []).filter(r => r.error)[0]?.error;
         if (!j.enabled && failMsg) toast(failMsg, 'warn'); else if (j.crafted) toast(`Trade-ups: ${j.crafted} submitted, ${confirmed} confirmed`, 'success');
       }
-    } catch { /* stop polling on error */ }
+    } catch {
+      // S17: a transient status-fetch error must not permanently kill the poller while the trade-up
+      // keeps running server-side — it DESTROYS 10 real items per contract, so a frozen "Executing 2/5"
+      // (its completion toast never firing) is the worst place to silently die. Bounded retry, mirroring
+      // the refresh/mass/sell/casket pollers: keep polling at the same 1.2s cadence until POLL_STALL_MS
+      // of CONTINUOUS errors, then give up with a visible terminal line — shown as status LOST, never as
+      // success (do not fabricate a "done"); the operator must verify the irreversible outcome in-game.
+      if (!pollerStalled('tuExecErr', 0)) { tuState.execTimer = setTimeout(tick, 1200); return; }
+      resetPoller('tuExecErr');
+      if (foot) foot.innerHTML = '<span class="text-amber-400">Lost contact with the job — status stopped; verify in-game.</span>';
+    }
   };
   tick();
 }

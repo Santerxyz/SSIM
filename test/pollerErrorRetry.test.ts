@@ -51,3 +51,27 @@ test('S17: all three pollers wire the bounded retry (fails against the old silen
     assert.ok(APP_JS.includes(`resetPoller('${k}')`), `${k} is reset on a successful poll`);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-FE-011 — the newer Trade-Up (tuPollExec) status poller must get the SAME
+//  bounded error-retry the refresh/mass/sell/casket pollers have, rather than the
+//  old bare `catch { /* stop polling on error */ }` that silently froze the foot at
+//  e.g. "Executing 2/5" on a single transient status blip — with no resumption and
+//  the completion toast never firing, on the irreversible 10-items-destroyed path.
+//  On exceeding POLL_STALL_MS it must write a visible terminal line that reads as
+//  status LOST, never as success.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('H-FE-011: tuPollExec wires the bounded error-retry (fails against the old silent-death catch)', () => {
+  const tuPoll = extractFunction(APP_JS, 'tuPollExec');
+  // Bounded retry at the same 1.2s cadence, then give up — mirrors the fbuy/mass/sell pollers.
+  assert.ok(tuPoll.includes("if (!pollerStalled('tuExecErr', 0)) { tuState.execTimer = setTimeout(tick, 1200); return; }"),
+    'trade-up poller retries within the window instead of dying on the first error');
+  // A good poll clears the error window, and the window is cleared on exceeding the stall bound.
+  assert.ok(tuPoll.includes("resetPoller('tuExecErr')"), 'tuExecErr is reset on a successful poll / after give-up');
+  // The old silent-death catch must be gone.
+  assert.ok(!tuPoll.includes('/* stop polling on error */'), 'the bare silent-death catch is removed');
+  // Terminal state must read as status LOST — never fabricate a "done"/success.
+  assert.ok(/Lost contact with the job[\s\S]*verify in-game/.test(tuPoll),
+    'exceeding the stall window shows a visible "status lost — verify in-game" terminal line');
+});
