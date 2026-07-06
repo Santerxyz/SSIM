@@ -229,20 +229,33 @@ export class MarketService {
     // `shouldStop` (the route flips it on 'close') stops fetching and returns the partial
     // map. A small 3-worker pool over the deduped names caps concurrency well below the
     // mass-sell's own 25 (see runMassSell) while making preview proportional to the batch.
+    // H-PRC-002: additionally give each per-name cascade a 10s budget and stop dispatching
+    // new names once 90s total have elapsed, so the modal RESPONDS before the 120s client
+    // abort under a throttle storm. Undispatched names are returned as null-price rows so
+    // the modal renders the existing per-name retry affordance instead of a dead spinner.
     const unique = [...new Set(names)];
     let idx = 0;
     const shouldStop = opts?.shouldStop;
+    const previewStart = Date.now();
+    const PREVIEW_BUDGET_MS = 90_000;   // stop dispatching new names after 90s total
+    const PER_NAME_BUDGET_MS = 10_000;  // per-name cascade budget (bounds one getSellInfo)
+    let budgetTripped = false;          // 90s cap hit → backfill the undispatched names below
     const worker = async (): Promise<void> => {
       while (idx < unique.length) {
         if (shouldStop?.()) return;
+        if (Date.now() - previewStart >= PREVIEW_BUDGET_MS) { budgetTripped = true; return; }
         const name = unique[idx++];
         // getSellInfo runs its own 3-method cascade internally – one call suffices.
-        const info = await this.pricing.getSellInfo(name, ctx);
+        const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS });
         const buyer = targetBuyerCents(info, strategy);
         out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
       }
     };
     await Promise.all(Array.from({ length: Math.min(3, unique.length) }, () => worker()));
+    // On a 90s budget stop (NOT a client disconnect, where nobody is listening), any name
+    // never dispatched gets an explicit null-price row so the modal shows the per-name retry
+    // affordance instead of omitting it silently.
+    if (budgetTripped) for (const name of unique) if (!(name in out)) out[name] = { buyerCents: null, netCents: null };
     return out;
   }
 
