@@ -69,6 +69,11 @@ export class LocalIpThrottle {
         logger.debug(`[localip-throttle] waiting ${Math.round(wait)}ms before next no-proxy fetch`);
         await sleep(wait);
       }
+      // H-NET-003: re-check `skip` AFTER the cooldown parked us. `refreshOne` reuses a
+      // resident LOGGED_IN session (ensureSession) and so bypasses SessionManager's
+      // shutdown latch — if teardown/cancel flipped during the sleep, abort HERE rather
+      // than originate a Steam fetch on a session that is being destroyed.
+      if (opts?.skip?.()) throw new ThrottleSkippedError();
       this.lastStartAt = Date.now();
       return task();
     });
@@ -86,5 +91,9 @@ export class LocalIpThrottle {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  // H-NET-003: unref the cooldown timer so a parked no-proxy task cannot, on its own,
+  // keep the event loop alive during teardown (the re-license `teardownFullApp()` path
+  // does not `process.exit`). During a normal refresh the awaiting worker/network I/O
+  // keep the loop alive, so timing is unchanged in the common path.
+  return new Promise(resolve => { const t = setTimeout(resolve, ms); t.unref(); });
 }
