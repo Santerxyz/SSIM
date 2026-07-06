@@ -938,7 +938,20 @@ export function createApp(deps: ApiDeps): Express {
     const changes: Partial<AccountConfig> = {};
 
     if (typeof displayName === 'string') changes.displayName = displayName.trim() || undefined;
-    if (typeof maFilePath === 'string' && maFilePath.trim()) changes.maFilePath = maFilePath.trim();
+
+    // maFile: VALIDATE FIRST, on every mode, before any state is touched (INV-A1 / C5, second
+    // write path). A typo'd/invalid filename 400s here instead of persisting silently. Mirror the
+    // attach route's tier semantics — flip a LIMITED account to FULL when the new maFile can confirm
+    // — but, unlike attach-mafile, do NOT 400 on a missing identity_secret: PATCH may legitimately
+    // replace a shared_secret-only maFile (the "can confirm" surface is governed by canConfirm).
+    let newMaFile;
+    if (typeof maFilePath === 'string' && maFilePath.trim()) {
+      try { newMaFile = loadMaFileFromDisk(maFilePath.trim()); }
+      catch (e) { return res.status(400).json({ error: `maFile: ${(e as Error).message}` }); }
+      changes.maFilePath = maFilePath.trim();
+      if (newMaFile.identity_secret && account.tier === 'limited') changes.tier = 'full';
+    }
+    const maFileChanged = !!newMaFile && maFilePath.trim() !== account.maFilePath;
 
     // proxy: absent = unchanged; null = inherit env; '' = force local IP; string = set proxy.
     const proxyChanged = proxy !== undefined;
@@ -961,10 +974,8 @@ export function createApp(deps: ApiDeps): Express {
       }
       if (v) {
         if (typeof password === 'string' && password.length) v.password = password;
-        if (typeof maFilePath === 'string' && maFilePath.trim()) {
-          try { v.maFile = loadMaFileFromDisk(maFilePath.trim()); }
-          catch (e) { return res.status(400).json({ error: `maFile: ${(e as Error).message}` }); }
-        }
+        if (newMaFile) v.maFile = newMaFile; // already validated (400'd) above
+
         if (proxyChanged) {
           v.proxy = (typeof proxy === 'string' && proxy.trim()) ? normalizeProxy(proxy.trim()) : undefined;
         }
@@ -1001,9 +1012,14 @@ export function createApp(deps: ApiDeps): Express {
 
     try {
       const updated = accounts.update(account.username, changes);
-      // The new proxy only applies on the next login → drop the current session.
-      if (proxyChanged) {
+      // A new proxy (next login re-logs-in through it) OR a new maFile (a resident session loads
+      // its maFile ONCE at login → keeps the stale object, so a still-live session can't confirm
+      // with the freshly-attached identity_secret; INV-A1 / C5) only applies on the next login →
+      // drop the current session. Best-effort: a logout hiccup never fails the edit.
+      if (proxyChanged || maFileChanged) {
         await sessions.logoutAccount(account.username).catch(() => undefined);
+      }
+      if (proxyChanged) {
         csfloat.invalidateClient(account.username); // rebuild the CSFloat client on the new egress IP too
       }
       res.json(sanitizeAccount(updated));
