@@ -359,9 +359,6 @@ async function bootstrap(): Promise<void> {
   // Learn the Steam time offset now (fire-and-forget, bounded by the S6 timer) so the login path
   // usually has it before the first credential login — codes survive a skewed local clock.
   primeSteamTotpOffset();
-  // One-time: move vault.enc + accounts.json into the portable Vault/ folder BEFORE anything
-  // reads them (else an existing vault would be ignored and a fresh one created).
-  migrateVaultDir();
   // Single-instance guard: a 2nd SSIM would fight over the port + Steam sessions.
   if (!acquireInstanceLock()) {
     // Leave a trace: a second instance bailing on the lock otherwise exits with NO
@@ -374,6 +371,11 @@ async function bootstrap(): Promise<void> {
     setTimeout(() => process.exit(1), 250);
     return;
   }
+  // One-time: move vault.enc + accounts.json into the portable Vault/ folder BEFORE anything
+  // reads them (else an existing vault would be ignored and a fresh one created). Runs UNDER the
+  // single-instance lock just acquired, so a refused 2nd instance never mutates the vault files
+  // (H-BOOT-022): the credential-file rename is the one disk mutation the lock must cover.
+  migrateVaultDir();
   // Remove a stale data/ssim.port from a prior run so it can never point the shell at a foreign
   // port before this process binds + announces the real one. (BUG 2.)
   clearStalePortFile();
