@@ -1760,6 +1760,7 @@ function invalidateHistory() { historyCache.clear(); }
  */
 function renderHistoryChart(points) {
   const pts = Array.isArray(points) ? points.filter((p) => p && typeof p.t === 'number') : [];
+  const anyPartial = pts.some((p) => p.partial === true);
   if (pts.length < 2) {
     el.historyLegend.innerHTML = '';
     el.historyChart.innerHTML = `<p class="text-center text-slate-600 text-xs py-6">Not enough data points yet – the curve grows with the next refresh.</p>`;
@@ -1819,7 +1820,7 @@ function renderHistoryChart(points) {
       ${yLabels}
       <path d="${areaPath}" fill="url(#hist-fill)"/>
       <path d="${itemsPath}" fill="none" class="hist-line-items" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="${walletPath}" fill="none" class="hist-line-wallet" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="none"/>
+      <path d="${walletPath}" fill="none" class="hist-line-wallet" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="${anyPartial ? '4 3' : 'none'}"/>
       ${dot(x(last.t), y(last.items), 'hist-dot-items')}
       ${dot(x(last.t), y(last.wallet), 'hist-dot-wallet')}
       <text x="${PAD_L}" y="${H - 6}" class="hist-axis" font-size="10">${fmtTime(t0)}</text>
@@ -1831,7 +1832,7 @@ function renderHistoryChart(points) {
     <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--brand-rgb))"></span>
       Items worth <b class="text-slate-200">${fmtCents(last.items)}</b></span>
     <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--success-rgb))"></span>
-      Balance <b class="text-slate-200">${fmtCents(last.wallet)}</b></span>
+      Balance <b class="text-slate-200">${fmtCents(last.wallet)}</b>${last.partial === true ? ` <span class="text-slate-600" title="Some wallet balances are in a currency that cannot be converted to USD — the balance line undercounts the real total.">(incomplete)</span>` : ''}</span>
     <span class="text-slate-600">${pts.length} points</span>`;
 }
 
