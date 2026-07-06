@@ -4013,7 +4013,8 @@ function closeCsFloat() { el.csfloatOverlay.classList.add('hidden'); }
 //  canonical OTP + getConfirmations/respond; this panel only renders + refreshes
 //  from truth (no optimistic-only state). Acts on EXACTLY the selected account.
 // ════════════════════════════════════════════════════════════════════════════
-const SDA = { username: null, otpTimer: null, barTimer: null, code: '·····', confs: [], open: false };
+const SDA = { username: null, otpTimer: null, barTimer: null, code: '·····', confs: [], open: false, otpErr: false };
+const SDA_OTP_RETRY_MS = 5000;
 
 async function openSda(username) {
   SDA.username = username; SDA.open = true; SDA.code = '·····';
@@ -4039,6 +4040,7 @@ async function startSdaOtp(username) {
   try {
     const { code, msRemaining } = await api(`/api/accounts/${encodeURIComponent(username)}/otp`);
     if (!SDA.open || SDA.username !== username) return;
+    SDA.otpErr = false;
     SDA.code = code;
     if (el.sdaOtp) el.sdaOtp.textContent = code;
     const total = 30000;
@@ -4053,9 +4055,15 @@ async function startSdaOtp(username) {
     // Re-fetch the FRESH code a hair past the boundary so the displayed value is never stale.
     SDA.otpTimer = setTimeout(() => { if (SDA.open && SDA.username === username) startSdaOtp(username); }, remaining + 300);
   } catch (e) {
+    if (!SDA.open || SDA.username !== username) return;
     if (el.sdaOtp) el.sdaOtp.textContent = '—';
     if (el.sdaOtpBar) el.sdaOtpBar.style.width = '0%';
-    toast(e.message || 'could not load Steam Guard code', 'error');
+    // Toast once per error streak (not every retry) so a transient blip isn't a toast storm.
+    if (!SDA.otpErr) { SDA.otpErr = true; toast(e.message || 'could not load Steam Guard code', 'error'); }
+    // A single transient failure must NOT kill the auto-roll forever (S17 class): schedule a
+    // bounded, guarded retry so the display self-recovers once the backend returns. The guard
+    // stops the retry the moment the modal closes or the account changes (mirrors the success path).
+    SDA.otpTimer = setTimeout(() => { if (SDA.open && SDA.username === username) startSdaOtp(username); }, SDA_OTP_RETRY_MS);
   }
 }
 
