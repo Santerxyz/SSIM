@@ -138,8 +138,11 @@ function handleListenError(e: NodeJS.ErrnoException, opts: { firstBoot: boolean 
 
 /** Builds the real app and starts listening. Called ONLY once licensed.
  *  `firstBoot` is false when re-invoked after a prior successful bind (a runtime re-license):
- *  a bind failure then THROWS BindFailedError instead of exiting, so the caller can recover. */
-async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }): Promise<void> {
+ *  a bind failure then THROWS BindFailedError instead of exiting, so the caller can recover.
+ *  Returns true once the UI port is bound. On a FIRST-BOOT bind failure handleListenError
+ *  schedules exit(1) and RETURNS (no throw), so this returns false — gateAndRun then stops
+ *  before arming the heartbeat/update scheduler against a server that never listened. (H-BOOT-002.) */
+async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }): Promise<boolean> {
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && HOST !== '::1') {
     logger.warn(
       `SECURITY: SSIM is binding to ${HOST} – the API (credentials, trading, ` +
@@ -176,10 +179,11 @@ async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }):
     activePort = await listenAndAnnounce(srv, HOST, activePort);
   } catch (err) {
     // On first boot handleListenError schedules exit(1) and RETURNS (dead-end, as before) → we
-    // return without arming post-bind services. On a re-license re-bind it THROWS BindFailedError
-    // (recoverable) → propagates to onLicenseLost, which retries / returns to the portal. (H-BOOT-001.)
+    // return false without arming post-bind services. On a re-license re-bind it THROWS
+    // BindFailedError (recoverable) → propagates to onLicenseLost, which retries / returns to the
+    // portal. (H-BOOT-001 / H-BOOT-002.)
     handleListenError(err as NodeJS.ErrnoException, { firstBoot: opts.firstBoot });
-    return;
+    return false;
   }
   everBound = true; // H-BOOT-001: a re-bind after this point can recover instead of hard-exiting
   if (!IS_SIDECAR_MODE) printBanner();
@@ -190,6 +194,7 @@ async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }):
     writeCrash('SERVER RUNTIME ERROR', err);
     logger.error(`server runtime error: ${err.message}`);
   });
+  return true; // bound — gateAndRun may now arm the heartbeat + update scheduler. (H-BOOT-002.)
 }
 
 /** Tears the running app down cleanly and frees the port (for re-activation). */
@@ -286,7 +291,9 @@ async function gateAndRun(): Promise<void> {
   // H-BOOT-001: firstBoot is false once the port has been bound before (a runtime re-license
   // re-bind) → a transient EADDRINUSE throws BindFailedError for onLicenseLost to recover from,
   // instead of hard-killing the process.
-  await startFullApp({ firstBoot: !everBound });
+  // H-BOOT-002: a first-boot bind failure returns false (exit already scheduled) — stop here so the
+  // heartbeat + update scheduler are NEVER armed against a server that never listened.
+  if (!(await startFullApp({ firstBoot: !everBound }))) return;
   LicenseClient.startHeartbeat(licenseHwid);
   // Periodic (6h) update-availability check + the manual "check/install now" path (C5). CHECK-ONLY on
   // the timer; the only mid-session SWAP is a user-confirmed install, and only while no money op / refresh
