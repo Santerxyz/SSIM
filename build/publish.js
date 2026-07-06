@@ -14,6 +14,8 @@
 //                                                    #   for a real release; adds a full artifact download)
 //    npm run publish-update -- --skip-selftest       # escape hatch: publish WITHOUT re-booting the artifact
 //    npm run publish-update -- --no-notes            # escape hatch: publish WITHOUT release notes/announcement
+//    npm run publish-update -- --skip-sig-verify     # escape hatch: publish WITHOUT the served-signature gate
+//                                                    #   (only when LICENSE_PUBLIC_KEY is deliberately absent)
 //
 //  WHICH ONE? If your installed clients are the two-file build (SSIM.exe shell + separate
 //  ssim-backend.exe — i.e. 1.2.0/1.2.1/1.2.2), they can ONLY consume --legacy-backend. A consolidated
@@ -42,8 +44,10 @@
 //    2. UPLOAD INTEGRITY — the local sha256 of the exact bytes uploaded must equal the sha256 the server
 //       stored; a corrupt transfer aborts BEFORE finalize.
 //    3. POST-PUBLISH VERIFICATION — GET /version must then advertise this exact build (latest + sha256 +
-//       url, and kind:'single-exe' on --migrate). --verify-download additionally re-downloads the served
-//       artifact and re-hashes it (true served==built proof).
+//       url, and kind:'single-exe' on --migrate), AND its served signature must verify against the fleet's
+//       LICENSE_PUBLIC_KEY (the only enforced proof the fleet can install it). A missing LICENSE_PUBLIC_KEY
+//       fails CLOSED before login (bypass only with --skip-sig-verify, loud warning). --verify-download
+//       additionally re-downloads the served artifact and re-hashes it (true served==built proof).
 //    4. ROLLBACK — any post-publish failure rolls /version back to the manifest that was live before this
 //       run (POST /admin/api/release/rollback); if the server lacks that route it prints the exact manual
 //       restore values instead of leaving a bad version live.
@@ -115,6 +119,10 @@ const MIGRATE = process.argv.includes('--migrate');
 const ALLOW_DOWNGRADE = process.argv.includes('--allow-downgrade');
 // Release notes are REQUIRED by default (no silent empty announcement); --no-notes is the escape hatch.
 const NO_NOTES = process.argv.includes('--no-notes');
+// The served-signature gate (Gate 3) is the ONLY enforced check that the release's signature validates
+// against the FLEET's public key. It fails CLOSED on a missing LICENSE_PUBLIC_KEY (see the guard below);
+// --skip-sig-verify is the explicit, loud escape hatch for the rare intentional case (mirrors --skip-selftest).
+const SKIP_SIG_VERIFY = process.argv.includes('--skip-sig-verify');
 if (LEGACY && MIGRATE) { console.error('\n✗ --legacy-backend and --migrate are mutually exclusive\n'); process.exit(1); }
 const PRIMARY = LEGACY ? 'ssim-backend.exe' : 'SSIM.exe';
 const KIND = MIGRATE ? 'single-exe' : undefined; // server-echoed manifest hint; only the dual updater reads it
@@ -126,6 +134,12 @@ const FILES = [{ name: PRIMARY }];
 function fail(m) { console.error(`\n✗ ${m}\n`); process.exit(1); }
 if (!API) fail('LICENSE_API_URL (or PUBLISH_API_URL) not set — add it to secrets.local.bat');
 if (!PW) fail('SSIM_ADMIN_PASSWORD not set — add  set "SSIM_ADMIN_PASSWORD=…"  to secrets.local.bat');
+// Fail CLOSED on a missing production public key. Gate 3's served-signature check is, in practice, the
+// only enforced proof that the release's signature validates against the FLEET's key (the server-side
+// EXPECTED_PUBKEY_FPR pin is off by default). publish can run WITHOUT --build, so make-tauri.js's
+// required-secret check never runs here — a shell where secrets.local.bat wasn't sourced would otherwise
+// let Gate 3 silently no-op and publish a fleet-unverifiable signature while reporting success.
+if (!process.env.LICENSE_PUBLIC_KEY && !SKIP_SIG_VERIFY) fail('LICENSE_PUBLIC_KEY not set — cannot verify the served signature validates against the fleet key; add it to secrets.local.bat, or pass --skip-sig-verify to acknowledge the risk');
 
 // ── Release notes ────────────────────────────────────────────────────────────
 // The owner writes the diff-block body (the +/- lines) into RELEASE_NOTES.md; we send it to the
@@ -354,9 +368,11 @@ function request(method, urlStr, { body, raw, cookie, headers, timeoutMs } = {})
       // update that passes every OTHER gate here but that EVERY kind-aware client REJECTS
       // (verifyUpdateSignature fails) → a fleet-wide can't-install with no rollback path. This
       // mirrors build/verify-version-signatures.js so publish.js fails BEFORE going broad.
+      // Reachable with an empty pubPem ONLY via the explicit --skip-sig-verify opt-out (the top-level
+      // guard fails closed otherwise). Warn LOUDLY so the acknowledged risk is never a quiet console.log.
       const pubPem = (process.env.LICENSE_PUBLIC_KEY || '').replace(/\\n/g, '\n');
       if (!pubPem) {
-        console.log('  ⚠ LICENSE_PUBLIC_KEY not set — skipping the served-signature verification (run build/verify-version-signatures.js manually before broad rollout)');
+        console.error('  ⚠⚠ --skip-sig-verify: LICENSE_PUBLIC_KEY not set — SKIPPING the served-signature verification. This is the ONLY enforced check that the release validates against the FLEET key; run build/verify-version-signatures.js manually before broad rollout.');
       } else if (!live.sigKind) {
         issues.push('/version has no sigKind — the kind-aware client cannot verify/install this update');
       } else {

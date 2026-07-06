@@ -44,6 +44,25 @@ test('H-SHL-005: finalize + its parse live inside the issues[]/rollback region',
   assert.match(src, /ECONNREFUSED/, 'a pre-send connection-refused must remain a direct fail() (nothing changed server-side)');
 });
 
+// ─── H-SHL-007: the served-signature gate must fail CLOSED on a missing LICENSE_PUBLIC_KEY ──
+// Gate 3's signature check is the only enforced proof the release validates against the FLEET's key.
+// It used to skip-and-warn (console.log) when LICENSE_PUBLIC_KEY was unset and report success anyway,
+// so a shell that never sourced secrets.local.bat could publish a fleet-unverifiable signature. The fix
+// moves the presence check up beside the API/PW guards to fail CLOSED before login, with an explicit
+// --skip-sig-verify opt-out that restores a LOUD warn-and-proceed for the rare intentional case.
+test('H-SHL-007: missing LICENSE_PUBLIC_KEY fails closed at the top-level guards', () => {
+  const src = readFileSync(PUBLISH, 'utf8');
+  // The guard sits in the same block as the !API / !PW fail()s, before login/stage.
+  assert.match(
+    src,
+    /if \(!process\.env\.LICENSE_PUBLIC_KEY && !SKIP_SIG_VERIFY\) fail\('LICENSE_PUBLIC_KEY not set/,
+    'a missing production public key must fail() before publish unless --skip-sig-verify is passed',
+  );
+  // The Gate-3 skip branch is now reachable only via --skip-sig-verify and warns LOUDLY (console.error).
+  assert.match(src, /const SKIP_SIG_VERIFY = process\.argv\.includes\('--skip-sig-verify'\)/, 'the --skip-sig-verify escape hatch must be defined');
+  assert.match(src, /console\.error\('  ⚠⚠ --skip-sig-verify:/, 'the skip path must warn loudly via console.error, not a quiet console.log');
+});
+
 /**
  * Boot a mock license server: 200 /admin/login, 201 /release/stage (echoing the sha of the bytes it
  * received so Gate-2 matches), and a caller-supplied /release/finalize behaviour. Records whether
