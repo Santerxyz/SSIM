@@ -600,6 +600,10 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
       accounts.addImportedAccount({ username, maFilePath: `${username}.maFile`, environmentId: env, folderId });
       const tok = ext.tokens[k];
       if (typeof tok === 'string' && tok) AccountVault.setToken(username, tok); // carry over the refresh token too
+      // H-ACC-044: carry over the source's per-account CSFloat key (its marketplace credential),
+      // non-destructively — never overwrite a key already local to this farm.
+      const csKey = ext.csfloatKeys[k];
+      if (typeof csKey === 'string' && csKey.trim() && !AccountVault.getCsFloatKey(username)) AccountVault.setCsFloatKey(username, csKey.trim());
     } else {
       skipped++;
     }
@@ -616,6 +620,14 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
     const folderId = explicitFolder ?? ((folderNamePath && folderNamePath.length) ? accounts.ensureFolderPath(env, folderNamePath) : null);
     accounts.addImportedAccount({ username: k, maFilePath: '', environmentId: env, folderId, tier: 'limited' });
     AccountVault.setToken(k, tok);
+    // H-ACC-044: token-only (QR/LIMITED) accounts carry their dedicated egress proxy ONLY in the
+    // source's accountProxies map (no VaultAccount.proxy) — without this carry-over the migrated bot
+    // next logs in over the target's env default / local IP, the exact ban-risk B42 exists to prevent.
+    // Same non-destructive CSFloat-key carry-over as the full-account loop.
+    const tokProxy = ext.accountProxies[k];
+    if (typeof tokProxy === 'string' && tokProxy.trim() && !AccountVault.getAccountProxy(k)) AccountVault.setAccountProxy(k, tokProxy.trim());
+    const tokCsKey = ext.csfloatKeys[k];
+    if (typeof tokCsKey === 'string' && tokCsKey.trim() && !AccountVault.getCsFloatKey(k)) AccountVault.setCsFloatKey(k, tokCsKey.trim());
     imported++;
   }
   if (imported) {

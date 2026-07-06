@@ -75,6 +75,52 @@ test('H-ACC-033: a source vault with null / non-string-username entries skips th
 // its org record must be stamped tier:'limited'. Absent tier is treated as 'full' and the two
 // tier-gated guards (auto-accept enable + delivery worker) key off tier==='limited', so an omitted
 // tier lets an operator turn on auto-deliver for an account that can never confirm the offer.
+// ─── H-ACC-044: the external-vault merge now carries the source's per-account CSFloat keys AND
+// the dedicated proxies of token-only/QR accounts. Previously decryptExternalVault surfaced only
+// accounts+tokens, so a migrated token-only bot silently lost its egress proxy (next login over the
+// target's env default / local IP — the B42 ban-risk) and every imported CSFloat key had to be
+// re-entered by hand with no signal it existed. Carry-over is non-destructive.
+test('H-ACC-044: importExternalVault carries over per-account CSFloat keys + token-only proxies (non-destructive)', () => {
+  cleanVaultDir();
+  try {
+    // Source: one full account (with proxy) + one token-only bot; a CSFloat key + dedicated proxy
+    // for BOTH — built via the real setters (the shape the Verification specifies).
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ssim-extvault-h044-${process.pid}-`));
+    const file = path.join(dir, 'vault.enc');
+    const src = new AccountVaultImpl(file, `${file}.bak`);
+    src.unlockOrCreate('src-pw');
+    src.upsertAccount({ username: 'full1', password: 'p', maFile: { account_name: 'full1', shared_secret: 's' } as never });
+    src.setToken('tok1', 'JWT-REFRESH-TOKEN');
+    src.setCsFloatKey('full1', 'CSKEY-FULL');
+    src.setCsFloatKey('tok1', 'CSKEY-TOK');
+    src.setAccountProxy('tok1', 'http://tok@8.8.8.8:2'); // token-only bot's dedicated egress proxy
+    src.flush();
+    const raw = fs.readFileSync(file, 'utf8');
+
+    AccountVault.unlockOrCreate('local-pw');
+    const accounts = new AccountManager();
+    const env = accounts.defaultEnvironmentId();
+
+    const r = importExternalVault(accounts, raw, 'src-pw', undefined, env, null);
+    assert.ok(r, 'the correct password decrypts the source vault (non-null)');
+    assert.equal(r!.imported, 2, 'both the full account and the token-only bot are imported');
+
+    assert.equal(AccountVault.getCsFloatKey('full1'), 'CSKEY-FULL', 'full account CSFloat key carried over');
+    assert.equal(AccountVault.getCsFloatKey('tok1'), 'CSKEY-TOK', 'token-only CSFloat key carried over');
+    assert.equal(AccountVault.getAccountProxy('tok1'), 'http://tok@8.8.8.8:2', 'token-only dedicated proxy carried over (no more B42 ban-risk)');
+
+    // Re-import: nothing is overwritten and every account is now skipped.
+    const r2 = importExternalVault(accounts, raw, 'src-pw', undefined, env, null);
+    assert.ok(r2, 're-import still decrypts');
+    assert.equal(r2!.imported, 0, 'no new accounts on re-import');
+    assert.equal(r2!.skipped, 2, 'both accounts skipped as already-local');
+    assert.equal(AccountVault.getCsFloatKey('full1'), 'CSKEY-FULL', 'existing CSFloat key not overwritten');
+    assert.equal(AccountVault.getAccountProxy('tok1'), 'http://tok@8.8.8.8:2', 'existing proxy not overwritten');
+  } finally {
+    cleanVaultDir();
+  }
+});
+
 test('H-ACC-034: a token-only source account is imported as tier "limited", not Full', () => {
   cleanVaultDir();
   try {

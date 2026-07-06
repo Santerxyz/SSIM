@@ -346,11 +346,13 @@ export class AccountVaultImpl {
   }
 
   /** Decrypts an EXTERNAL vault.enc (from another device) with the given password, WITHOUT
-   *  touching this process's own vault. Returns its accounts+tokens, or null on wrong
-   *  password / corrupt file. Throws Error(VAULT_NEWER_VERSION_ERROR) when the source file
-   *  was written by a NEWER SSIM (B30/H-ACC-043) so the caller can tell the operator to update
-   *  rather than collapsing it into a password error. Used by "Import SSIM Vault" to merge a farm. */
-  decryptExternalVault(rawContent: string, password: string): { accounts: Record<string, VaultAccount>; tokens: Record<string, string> } | null {
+   *  touching this process's own vault. Returns its accounts + tokens + per-account CSFloat keys
+   *  + per-account (token-only/QR) proxies, or null on wrong password / corrupt file. Throws
+   *  Error(VAULT_NEWER_VERSION_ERROR) when the source file was written by a NEWER SSIM
+   *  (B30/H-ACC-043) so the caller can tell the operator to update rather than collapsing it into
+   *  a password error. Used by "Import SSIM Vault" to merge a farm. `envProxies` is DELIBERATELY
+   *  excluded: source `environmentId`s are meaningless in the target farm (H-ACC-044). */
+  decryptExternalVault(rawContent: string, password: string): { accounts: Record<string, VaultAccount>; tokens: Record<string, string>; csfloatKeys: Record<string, string>; accountProxies: Record<string, string> } | null {
     try {
       const env = this.parseEnvelope(JSON.parse(rawContent));
       if (!env) return null;
@@ -364,7 +366,7 @@ export class AccountVaultImpl {
       decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
       const plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
       const payload = normalizePayload(JSON.parse(plain));
-      return { accounts: payload.accounts, tokens: payload.tokens };
+      return { accounts: payload.accounts, tokens: payload.tokens, csfloatKeys: payload.csfloatKeys, accountProxies: payload.accountProxies };
     } catch (e) {
       if ((e as Error).message === VAULT_NEWER_VERSION_ERROR) throw e; // distinct error survives the generic catch
       return null;
