@@ -195,11 +195,16 @@ export class AccountImportService {
   // ── Status / cancel ─────────────────────────────────────────────────────────
 
   getStatus(sessionId: string): ImportStatus | undefined {
+    // Evaluate expiry on the read path — the frontend's 1.5s poll then fires hard-expiry/TTL cleanup on
+    // time, so an abandoned guard session honestly reports 'expired' instead of 'guard' forever (code
+    // guards never start library polling, so no 'timeout' event moves them off 'guard' on their own).
+    this.prune();
     const rec = this.active.get(sessionId);
     return rec ? this.snapshot(rec) : undefined;
   }
 
   cancel(sessionId: string): void {
+    this.prune();
     const rec = this.active.get(sessionId);
     if (!rec) return;
     // Mark terminal BEFORE deleting so a poll response that lands mid-cancel (steam-session
