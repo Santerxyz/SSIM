@@ -4995,7 +4995,7 @@ async function submitTrade(ev) {
     // own post-trade refresh waits ~8s too), so re-pull the affected accounts after that window
     // to reflect the new truth without a manual refresh. (INV-E1.)
     const affected = target.toUsername ? [from, target.toUsername] : [from];
-    setTimeout(() => { try { startInventoryRefresh({ usernames: affected }); } catch (_) { /* best-effort */ } }, 9000);
+    setTimeout(() => { try { startInventoryRefresh({ usernames: affected, game: state.game }); } catch (_) { /* best-effort */ } }, 9000);
   } catch (err) {
     // Money-safety (#28): a send that failed AFTER dispatch may still have placed an
     // offer. If the backend flagged verifyBeforeRetry, refresh the sender and warn
