@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en" style="background:#0a0a0f;color-scheme:dark">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSIM — Live Logs</title>
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --bg:#0a0a0f; --bar:#13131c; --line:#23232f; --fg:#e6e6f0; --dim:#8a8aa0; --accent:#c084fc;
+    --info:#9ad0ff; --warn:#fbbf6b; --error:#f87171; --debug:#6b6b80; --ts:#5a5a70; --ok:#4ade80;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--fg);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bar);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px}
+  .diamond{width:11px;height:11px;transform:rotate(45deg);background:linear-gradient(135deg,var(--accent),#9333ea);border-radius:2px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--error);box-shadow:0 0 6px currentColor;color:var(--error)}
+  .dot.ok{background:var(--ok);color:var(--ok)}
+  .status{font-size:11px;color:var(--dim)}
+  .spacer{flex:1}
+  .filters{display:flex;gap:4px}
+  .chip{font-size:11px;padding:4px 9px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--dim);cursor:pointer;user-select:none}
+  .chip.on{color:#fff;border-color:transparent;background:#2a2a3a}
+  .chip.lv-error.on{background:rgba(248,113,113,.22);color:#fca5a5}
+  .chip.lv-warn.on{background:rgba(251,191,107,.20);color:#fbbf6b}
+  .chip.lv-info.on{background:rgba(154,208,255,.18);color:#9ad0ff}
+  .chip.lv-debug.on{background:rgba(120,120,140,.22);color:#b7b7c8}
+  input.search{background:#0e0e16;border:1px solid var(--line);border-radius:8px;color:var(--fg);font-size:12px;padding:5px 9px;width:180px;outline:none}
+  input.search:focus{border-color:#9333ea}
+  button.act{font-size:11px;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:#0e0e16;color:var(--fg);cursor:pointer}
+  button.act:hover{border-color:#9333ea}
+  button.act.on{background:linear-gradient(135deg,var(--accent),#9333ea);border-color:transparent;color:#fff}
+  .count{font-size:11px;color:var(--dim);min-width:70px;text-align:right}
+  #log{flex:1;overflow-y:auto;padding:6px 0;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.5}
+  .row{display:flex;gap:10px;padding:1px 12px;white-space:pre-wrap;word-break:break-word}
+  .row:hover{background:#ffffff08}
+  .row .ts{color:var(--ts);flex-shrink:0}
+  .row .lv{flex-shrink:0;width:42px;font-weight:600;text-transform:uppercase;font-size:10.5px;padding-top:1px}
+  .row.error .lv{color:var(--error)} .row.error .msg{color:#fecaca}
+  .row.warn  .lv{color:var(--warn)} .row.warn .msg{color:#fde2b3}
+  .row.info  .lv{color:var(--info)}
+  .row.debug{opacity:.72} .row.debug .lv{color:var(--debug)}
+  .msg{flex:1}
+  .empty{color:var(--dim);text-align:center;padding:40px;font-size:13px}
+  ::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:#2a2a3a;border-radius:6px}
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand"><span class="diamond"></span>SSIM · Live Logs</span>
+    <span class="dot" id="dot" title="connection"></span>
+    <span class="status" id="status">connecting…</span>
+    <span class="spacer"></span>
+    <span class="filters" id="filters">
+      <span class="chip lv-error on" data-lv="error">error</span>
+      <span class="chip lv-warn on"  data-lv="warn">warn</span>
+      <span class="chip lv-info on"  data-lv="info">info</span>
+      <span class="chip lv-debug"    data-lv="debug">debug</span>
+    </span>
+    <input class="search" id="search" placeholder="filter text…" spellcheck="false">
+    <button class="act on" id="follow" title="auto-scroll to newest">▾ Follow</button>
+    <button class="act" id="clear">Clear</button>
+    <span class="count" id="count">0</span>
+  </header>
+  <div id="log"><div class="empty" id="empty">Waiting for log activity…</div></div>
+
+<script>
+  var logEl = document.getElementById('log');
+  var emptyEl = document.getElementById('empty');
+  var dot = document.getElementById('dot'), statusEl = document.getElementById('status');
+  var followBtn = document.getElementById('follow'), countEl = document.getElementById('count');
+  var searchEl = document.getElementById('search');
+  var MAX_ROWS = 3000;            // DOM cap → never grows unbounded
+  var follow = true;
+  var levels = { error:true, warn:true, info:true, debug:false };
+  var search = '';
+  var total = 0;
+
+  function hms(iso){ var d = new Date(iso); return isNaN(d) ? '' : d.toTimeString().slice(0,8); }
+  function visible(level, msg){
+    if (!levels[level]) return false;
+    if (search && msg.toLowerCase().indexOf(search) === -1) return false;
+    return true;
+  }
+  function refreshCount(){
+    var shown = logEl.querySelectorAll('.row:not(.hidden)').length;
+    countEl.textContent = shown + (shown !== total ? ' / ' + total : '') + ' lines';
+  }
+  function addLine(line){
+    if (emptyEl){ emptyEl.remove(); emptyEl = null; }
+    var lv = (line.level || 'info').toLowerCase();
+    if (lv !== 'error' && lv !== 'warn' && lv !== 'debug') lv = 'info';
+    var row = document.createElement('div');
+    row.className = 'row ' + lv + (visible(lv, (line.msg||'').toLowerCase()) ? '' : ' hidden');
+    row.dataset.lv = lv; row.dataset.msg = (line.msg || '').toLowerCase();
+    var ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = hms(line.t);
+    var lvl = document.createElement('span'); lvl.className = 'lv'; lvl.textContent = lv;
+    var msg = document.createElement('span'); msg.className = 'msg'; msg.textContent = line.msg || '';
+    row.appendChild(ts); row.appendChild(lvl); row.appendChild(msg);
+    if (row.classList.contains('hidden')) row.style.display = 'none';
+    logEl.appendChild(row); total++;
+    while (logEl.children.length > MAX_ROWS){ logEl.removeChild(logEl.firstChild); total--; }
+    if (follow) logEl.scrollTop = logEl.scrollHeight;
+    refreshCount();
+  }
+  function reapply(){
+    var rows = logEl.querySelectorAll('.row');
+    for (var i=0;i<rows.length;i++){
+      var r = rows[i];
+      var vis = visible(r.dataset.lv, r.dataset.msg);
+      r.style.display = vis ? '' : 'none';
+      r.classList.toggle('hidden', !vis);   // keep class ⇔ display in sync so refreshCount() stays honest
+    }
+    if (follow) logEl.scrollTop = logEl.scrollHeight;
+    refreshCount();
+  }
+
+  // filters
+  document.getElementById('filters').addEventListener('click', function(e){
+    var c = e.target.closest('.chip'); if (!c) return;
+    var lv = c.dataset.lv; levels[lv] = !levels[lv]; c.classList.toggle('on', levels[lv]); reapply();
+  });
+  searchEl.addEventListener('input', function(){ search = searchEl.value.trim().toLowerCase(); reapply(); });
+  followBtn.addEventListener('click', function(){ follow = !follow; followBtn.classList.toggle('on', follow); if (follow) logEl.scrollTop = logEl.scrollHeight; });
+  document.getElementById('clear').addEventListener('click', function(){ logEl.innerHTML=''; total=0; refreshCount(); });
+  // pause follow when the user scrolls up; resume when back at the bottom
+  logEl.addEventListener('scroll', function(){
+    var atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
+    if (follow !== atBottom){ follow = atBottom; followBtn.classList.toggle('on', follow); }
+  });
+
+  function connect(){
+    var es = new EventSource('/api/logs/stream');
+    es.onopen = function(){ dot.classList.add('ok'); statusEl.textContent = 'live'; };
+    es.onmessage = function(ev){ try { addLine(JSON.parse(ev.data)); } catch(e){} };
+    es.onerror = function(){ dot.classList.remove('ok'); statusEl.textContent = 'reconnecting…'; };
+    // EventSource reconnects automatically (server sends retry: 3000).
+  }
+  connect();
+</script>
+</body>
+</html>

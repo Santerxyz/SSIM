@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en" style="background:#0a0a0f;color-scheme:dark">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSIM — Unlock Vault</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/assets/vendor/fonts.css">
+<style>
+  :root { --bg:#0a0a0f; --card:#15151f; --line:#262633; --fg:#e8e8f0; --dim:#9a9ab0; --accent:#c084fc; --accent2:#9333ea; --err:#f87171; }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #1a1330 0%, var(--bg) 60%);
+    color: var(--fg); display:flex; align-items:center; justify-content:center; min-height:100vh;
+  }
+  .card {
+    width: 380px; max-width: calc(100vw - 32px); background: var(--card);
+    border: 1px solid var(--line); border-radius: 16px; padding: 28px 26px 24px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  .hero { display:flex; flex-direction:column; align-items:center; gap:9px; margin-bottom: 18px; }
+  .logo-wrap { position:relative; width:84px; height:84px; }
+  .logo { position:absolute; inset:8px; width:68px; height:68px; border-radius:50%;
+    filter: drop-shadow(0 0 14px rgba(147,51,234,.45)); }
+  /* Idle: a faint halo ring. On submit (.loading) it becomes a spinning accent arc — the loader. */
+  .ring { position:absolute; inset:0; border-radius:50%; border:2.5px solid rgba(192,132,252,.16); }
+  .logo-wrap.loading .ring { border-color:transparent; border-top-color:var(--accent); border-right-color:var(--accent2);
+    animation: lspin .9s linear infinite; }
+  @keyframes lspin { to { transform:rotate(360deg); } }
+  .hero .cap { color: var(--dim); font-size: 12px; letter-spacing:.4px; text-transform:uppercase; }
+  h1 { font-size: 16px; margin: 4px 0 4px; font-weight: 600; }
+  p.sub { color: var(--dim); font-size: 12.5px; line-height:1.5; margin: 0 0 18px; }
+  label { display:block; font-size: 12px; color: var(--dim); margin: 12px 0 6px; }
+  input {
+    width:100%; padding: 11px 12px; background:#0e0e16; border:1px solid var(--line);
+    border-radius: 10px; color: var(--fg); font-size: 14px; outline:none;
+  }
+  input:focus { border-color: var(--accent2); box-shadow: 0 0 0 3px rgba(168,85,247,.15); }
+  button {
+    width:100%; margin-top: 18px; padding: 11px; border:0; border-radius: 10px; cursor:pointer;
+    background: linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; font-size: 14px; font-weight: 600;
+  }
+  button:disabled { opacity:.6; cursor:default; }
+  .msg { margin-top: 14px; font-size: 12.5px; min-height: 18px; }
+  .msg.err { color: var(--err); }
+  .msg.ok  { color: var(--accent); }
+  .warn { margin-top:14px; font-size:11.5px; color:#caa45a; line-height:1.5; }
+  /* In-button loading spinner: shown the moment a correct password is submitted and kept
+     spinning through the unlock → "starting SSIM" wait, so there's motion, never a static
+     "Unlocking…" line. */
+  .spin { display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:8px;
+    border:2px solid rgba(255,255,255,.35); border-top-color:#fff; border-radius:50%;
+    animation:uspin .7s linear infinite; }
+  @keyframes uspin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation:none; } }
+</style>
+</head>
+<body>
+  <form class="card" id="form" autocomplete="off">
+    <div class="hero">
+      <div class="logo-wrap" id="logoWrap"><div class="ring"></div><img class="logo" src="/assets/logo.png" alt="SSIM"></div>
+      <span class="cap">Secure Vault</span>
+    </div>
+    <h1 id="title">Unlock your vault</h1>
+    <p class="sub" id="sub">Enter your Master Password to start SSIM.</p>
+
+    <label for="pw" id="lblpw">Master Password</label>
+    <input id="pw" type="password" autofocus autocomplete="off" spellcheck="false">
+
+    <div id="confirmWrap" style="display:none">
+      <label for="confirm">Confirm Master Password</label>
+      <input id="confirm" type="password" autocomplete="off" spellcheck="false">
+    </div>
+
+    <!-- Orphan mode (S18): shown only when the server refuses an empty-vault create over an
+         orphaned farm (409 orphaned:true). The operator must tick the acknowledgement to send
+         createEmptyAnyway and deliberately create a NEW empty vault. -->
+    <div id="orphanWrap" style="display:none">
+      <label class="ack" for="orphanAck" style="display:flex;align-items:flex-start;gap:8px;font-size:11.5px;color:#caa45a;line-height:1.5;margin:14px 0 0;cursor:pointer">
+        <input id="orphanAck" type="checkbox" style="width:auto;margin-top:2px;flex:0 0 auto">
+        <span>I understand: a NEW EMPTY vault will be created and my registered accounts stay credential-less until vault.enc is restored.</span>
+      </label>
+    </div>
+
+    <button id="btn" type="submit">Unlock</button>
+    <div class="msg" id="msg"></div>
+    <div class="warn" id="warn" style="display:none">
+      First run: this sets your Master Password. Encryption is required and there is
+      <b>no recovery</b> — keep it safe.
+    </div>
+  </form>
+
+<script>
+  var firstRun = false;
+  var orphanMode = false; // S18: set when the server refuses an empty-vault create over an orphaned farm.
+  var el = function (id) { return document.getElementById(id); };
+
+  // S18: the server refused to silently create an empty vault (vault.enc missing, accounts.json
+  // survives). Switch the page into a deliberate, destructive "create NEW empty vault" mode instead
+  // of the bare error line — the only client path that can send createEmptyAnyway.
+  function enterOrphanMode(errText) {
+    orphanMode = true;
+    el('title').textContent = 'Vault file missing';
+    el('sub').textContent = errText;
+    el('confirmWrap').style.display = 'block';
+    el('warn').style.display = 'none';
+    el('orphanWrap').style.display = 'block';
+    var btn = el('btn');
+    btn.textContent = 'Create NEW empty vault';
+    btn.style.background = 'var(--err)';
+  }
+
+  // Keep-alive ping (legacy Edge-window heartbeat; the Tauri shell now owns shutdown).
+  function ping() { try { fetch('/api/app/ping').catch(function () {}); } catch (e) {} }
+  ping();
+  setInterval(ping, 4000);
+
+  // H-ACC-066: the state probe decides "create" vs "unlock". A transient fetch failure used to be
+  // swallowed silently, leaving firstRun=false — the page then looked like an unlock but a first-run
+  // POST would CREATE a vault from a single unconfirmed entry. Retry 3× (700ms apart); if the state
+  // is still unknown, tell the operator and mark the probe unresolved so submit re-runs it before posting.
+  var stateResolved = false;
+  function applyFirstRun() {
+    el('title').textContent = 'Set your Master Password';
+    el('sub').textContent = 'Create a Master Password to encrypt this vault.';
+    el('confirmWrap').style.display = 'block';
+    el('btn').textContent = 'Create vault';
+    el('warn').style.display = 'block';
+  }
+  function probeState(attemptsLeft) {
+    return fetch('/api/vault/state').then(function (r) { return r.json(); }).then(function (d) {
+      stateResolved = true;
+      firstRun = !d.exists;
+      if (firstRun) applyFirstRun();
+      return true;
+    }).catch(function () {
+      if (attemptsLeft > 1) {
+        return new Promise(function (resolve) {
+          setTimeout(function () { resolve(probeState(attemptsLeft - 1)); }, 700);
+        });
+      }
+      var msg = el('msg');
+      msg.className = 'msg err';
+      msg.textContent = 'Could not determine vault state — check that SSIM is still starting, then try again.';
+      return false;
+    });
+  }
+  probeState(3);
+
+  el('form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    // H-ACC-066: never post while the vault state is unknown (a swallowed probe failure would
+    // otherwise let an unlock attempt CREATE a vault). Re-run the probe first; only submit once
+    // the state is resolved so firstRun (and thus the confirm requirement) is decided from truth.
+    if (!stateResolved) {
+      var m = el('msg'); m.className = 'msg'; m.textContent = 'Checking vault state…';
+      probeState(3).then(function (ok) { if (ok) doSubmit(); });
+      return;
+    }
+    doSubmit();
+  });
+
+  function doSubmit() {
+    var password = el('pw').value;
+    var confirm = (firstRun || orphanMode) ? el('confirm').value : undefined;
+    var msg = el('msg');
+    msg.className = 'msg';
+    if (!password) { msg.className = 'msg err'; msg.textContent = 'A Master Password is required.'; return; }
+    if ((firstRun || orphanMode) && password !== confirm) { msg.className = 'msg err'; msg.textContent = 'The passwords do not match.'; return; }
+    // S18: creating a NEW empty vault over an orphaned farm is destructive — require the acknowledgement.
+    if (orphanMode && el('orphanAck').checked !== true) {
+      msg.className = 'msg err';
+      msg.textContent = 'Tick the acknowledgement to proceed, or restore vault.enc and restart SSIM.';
+      return;
+    }
+
+    var btn = el('btn');
+    var origLabel = btn.textContent;
+    btn.disabled = true;
+    el('logoWrap').classList.add('loading'); // ring spins around the logo while we unlock
+    // Spinner in the button conveys progress — no static "Working…" text.
+    btn.innerHTML = '<span class="spin"></span>' + ((firstRun || orphanMode) ? 'Creating vault…' : 'Unlocking…');
+    msg.className = 'msg'; msg.textContent = '';
+    fetch('/api/vault/unlock', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password, confirm: confirm, createEmptyAnyway: (orphanMode && el('orphanAck').checked === true) ? true : undefined }),
+    }).then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); }).then(function (resp) {
+      var d = resp.d;
+      if (d && d.ok) {
+        // Correct password → keep the spinner running through the hand-off to the
+        // dashboard. The shell will NOT re-navigate (one-shot per spawn), so we must
+        // wait for PROOF the full app has rebound the port before we reload — a blind
+        // fixed timer would reload onto an unbound port (connection-refused) on a slow
+        // boot (large farms). Discriminator: only the portal fabricates vaultLocked:true;
+        // the full app's /api/system/status has no vaultLocked key, so "status answers
+        // without vaultLocked:true" ⇔ the dashboard is live. (H-ACC-067)
+        btn.innerHTML = '<span class="spin"></span>' + (d.created ? 'Vault created — starting…' : 'Starting SSIM…');
+        msg.className = 'msg'; msg.textContent = '';
+        var startedAt = Date.now();
+        var waitForApp = function () {
+          fetch('/api/system/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (s) {
+            if (s && s.vaultLocked !== true) { location.replace('/'); return; }
+            if (Date.now() - startedAt > 60000) { btn.innerHTML = '<span class="spin"></span>Still starting — large farms can take a minute…'; }
+            setTimeout(waitForApp, 500);
+          }).catch(function () {
+            if (Date.now() - startedAt > 60000) { btn.innerHTML = '<span class="spin"></span>Still starting — large farms can take a minute…'; }
+            setTimeout(waitForApp, 500);
+          });
+        };
+        setTimeout(waitForApp, 900);
+      } else {
+        btn.disabled = false;
+        el('logoWrap').classList.remove('loading');
+        // S18: the server refuses an empty-vault create over an orphaned farm (409 orphaned:true).
+        // Enter the deliberate destructive mode rather than dead-ending on the bare error line.
+        if (resp.status === 409 && d && d.orphaned === true) {
+          enterOrphanMode((d && d.error) || 'The vault file (vault.enc) is missing.');
+          msg.className = 'msg'; msg.textContent = '';
+          el('pw').value = ''; el('pw').focus();
+        } else {
+          btn.innerHTML = origLabel;
+          msg.className = 'msg err';
+          msg.textContent = (d && d.error) || 'Unlock failed.';
+          el('pw').value = ''; el('pw').focus();
+        }
+      }
+    }).catch(function () {
+      btn.disabled = false; btn.innerHTML = origLabel;
+      el('logoWrap').classList.remove('loading');
+      msg.className = 'msg err';
+      msg.textContent = 'Could not reach SSIM. Please try again.';
+    });
+  }
+</script>
+</body>
+</html>
