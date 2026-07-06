@@ -4353,14 +4353,17 @@ function csfBuyOrderRow(o) {
 async function csfLoadTrades() {
   el.csfloatBody.innerHTML = csfSkeleton(3);
   try {
-    const [auto, tradesRes] = await Promise.all([ csfApi('/auto-accept').catch(() => ({ enabled: false })), csfApi('/trades?limit=50') ]);
+    // Do NOT coerce a failed /auto-accept fetch to a fake OFF (that made a transient error
+    // indistinguishable from genuinely off, and fed the next PUT a fabricated default). Let a
+    // failure fall to the tab's error surface (csfError) below, exactly like the other CSF tabs.
+    const [auto, tradesRes] = await Promise.all([ csfApi('/auto-accept'), csfApi('/trades?limit=50') ]);
     const trades = csfArr(tradesRes);
     const acc = state.allAccounts.find((a) => a.username === CSF.username);
     const limited = !!(acc && acc.canConfirm === false);
     el.csfloatBody.innerHTML = `
       <div class="surface flex items-center justify-between px-4 py-3 mb-4">
         <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? "Unavailable — this account's maFile has no identity_secret to confirm the Steam delivery. Attach a maFile with one to enable." : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
-        <button data-csf="autoaccept" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
+        <button data-csf="autoaccept" data-enabled="${auto.enabled ? '1' : '0'}" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
       </div>
       ${trades.length ? `<div class="space-y-2">${trades.map(csfTradeRow).join('')}</div>` : csfEmpty('fa-right-left', 'No trades yet.')}`;
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
@@ -4464,7 +4467,9 @@ async function csfToggleExperimental() {
   catch (err) { toast(err.message, 'error'); }
 }
 async function csfToggleAutoAccept(btn) {
-  const cur = btn.textContent.includes('ON');
+  // Derive the current state from data-enabled, which is set only on a successful /auto-accept
+  // fetch (csfLoadTrades) — never from button text, which could reflect a fabricated default.
+  const cur = btn.getAttribute('data-enabled') === '1';
   try { const r = await csfApi('/auto-accept', { method: 'PUT', body: JSON.stringify({ enabled: !cur }) }); toast(`Auto-accept ${r.enabled ? 'enabled' : 'disabled'}`, 'success'); csfSwitchTab('trades'); }
   catch (err) { toast(err.message, 'error'); }
 }
