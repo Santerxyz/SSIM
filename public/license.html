@@ -91,9 +91,31 @@
         });
         const d = await res.json().catch(() => ({}));
         if (res.ok && d.ok) {
-          setMsg('ok', '✓ Activated' + (d.tier ? ' (' + d.tier + ')' : '') + ' – starting SSIM…');
-          // The portal hands over to the real app on the same port; reload into it.
-          setTimeout(() => location.reload(), 2500);
+          setMsg('ok', '<span class="spin"></span> Activated' + (d.tier ? ' (' + d.tier + ')' : '') + ' – starting SSIM…');
+          // The portal hands over to the real app on the SAME port, but the rebind is an
+          // unbounded validate→auto-update→vault→startFullApp chain (a staged 185MB update
+          // can take minutes). A blind fixed timer would reload onto a port that is still
+          // downloading / has exited to swap → a permanent connection-refused page. Poll for
+          // PROOF instead: only the portal fabricates licensed:false (l.67), the full app
+          // answers licensed:true once startFullApp is serving, so "status says licensed:true"
+          // ⇔ the dashboard is live. The shell will NOT re-navigate (one-shot port latch), so
+          // this page's own reload must be readiness-gated. (H-LIC-009; mirrors unlock.html.)
+          const startedAt = Date.now();
+          const waitForApp = () => {
+            fetch('/api/system/status', { cache: 'no-store' }).then(r => r.json()).then(s => {
+              if (s && s.licensed === true) { location.replace('/'); return; }
+              if (Date.now() - startedAt > 45000) {
+                setMsg('info', '<span class="spin"></span> Starting SSIM… (a pending update or large farm can take a minute).');
+              }
+              setTimeout(waitForApp, 700);
+            }).catch(() => {
+              if (Date.now() - startedAt > 45000) {
+                setMsg('info', '<span class="spin"></span> Starting SSIM… (a pending update or large farm can take a minute).');
+              }
+              setTimeout(waitForApp, 700);
+            });
+          };
+          setTimeout(waitForApp, 1200);
         } else {
           setMsg('err', '✗ ' + (d.error || 'Activation failed.'));
           btn.disabled = false;

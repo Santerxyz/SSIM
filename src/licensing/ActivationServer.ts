@@ -84,6 +84,12 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
       res.json({ ok: true, tier: result.payload?.tier ?? null });
 
       // Let the browser receive the response, then free the port + continue boot.
+      // The 800ms close hands the port to gateAndRun's unbounded validate→auto-update→
+      // vault→startFullApp chain (a staged update can take minutes). The page does NOT reload
+      // on a fixed timer — it polls /api/system/status for `licensed:true` (the full app's
+      // marker; the portal fabricates `licensed:false` above) and only then navigates, because
+      // the shell will NOT re-navigate an already-open webview (one-shot port latch,
+      // openUiWindow no-ops packaged), so the page's own reload must be readiness-gated. (H-LIC-009)
       setTimeout(() => {
         try { (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); } catch { /* noop */ }
         server.close(() => resolve());
@@ -137,5 +143,5 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
 
 // Minimal inline fallback if public/license.html is somehow missing.
 const FALLBACK_HTML = `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;background:#0a0a0f;color:#eee;display:flex;min-height:100vh;align-items:center;justify-content:center">
-<form onsubmit="event.preventDefault();fetch('/api/license/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k.value.trim().toUpperCase()})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Activated – starting…';setTimeout(()=>location.reload(),2000)}else{s.textContent=d.error}})">
+<form onsubmit="event.preventDefault();fetch('/api/license/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k.value.trim().toUpperCase()})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Activated – starting…';var w=function(){fetch('/api/system/status',{cache:'no-store'}).then(r=>r.json()).then(x=>{if(x&&x.licensed===true){location.replace('/');return}setTimeout(w,700)}).catch(()=>setTimeout(w,700))};setTimeout(w,1200)}else{s.textContent=d.error}})">
 <div><h2>SSIM – Activate License</h2><input id="k" placeholder="SSIM-XXXX-XXXX-XXXX-XXXX" style="padding:8px;width:280px"><button>Activate</button><p id="s" style="color:#c084fc"></p></div></form>`;
