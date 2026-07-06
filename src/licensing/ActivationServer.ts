@@ -54,10 +54,15 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
       res.json({ activated: false, hwid });
     });
 
-    // Boot-status probe the dashboard's client-guard hits on load. While this
-    // portal is running the app is BY DEFINITION not licensed → the dashboard JS
-    // sees `licensed:false` and redirects itself to the activation screen
-    // (defence-in-depth; the routing above already refuses to serve the dashboard).
+    // Boot-status probe the dashboard's client-guard hits. While this portal is
+    // running the app is BY DEFINITION not licensed → the dashboard JS sees
+    // `licensed:false` and redirects itself to the activation screen. That
+    // self-redirect is enforced BOTH by the boot guard (ensureLicensed, on load)
+    // AND by the live status poll re-gate (app.js watchSystemStatus, ~30s) — the
+    // latter because this server cannot navigate an already-open webview (the
+    // shell's port latch is one-shot and openUiWindow no-ops when packaged), so a
+    // runtime revocation must be caught by the poll, not a server-side push.
+    // (defence-in-depth; the routing above already refuses to serve the dashboard.)
     app.get('/api/system/status', (_req, res) => {
       res.json({ licensed: false, activated: false, hwid, version });
     });

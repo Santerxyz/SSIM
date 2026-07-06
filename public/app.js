@@ -1063,6 +1063,12 @@ async function watchSystemStatus() {
   while (true) {
     let st; try { st = await api('/api/system/status'); } catch { st = null; }
     if (st) {
+      // H-LIC-008: a RUNTIME revocation (or deactivation) makes the backend report `licensed:false`
+      // (server.ts, `licensed:!LicenseClient.isRevoked()`, and the rebound activation portal). The boot
+      // guard (ensureLicensed) only runs once, so this hot poll is the ONLY runtime consumer that can turn
+      // that state into the activation screen. Strict `=== false` mirrors ensureLicensed (S23): a half-up
+      // status that merely OMITS `licensed` must NOT redirect — only an explicit server-stated false does.
+      if (st.licensed === false) { window.location.replace('/'); return; }
       // S34: a user-confirmed install 202s then runs async; a SUCCESS swaps + exits (this page reloads),
       // but a KEPT-CURRENT install just returns. When the server reports no update op in flight anymore,
       // clear the "installing…" state + re-show the badge (instead of showing "installing…" forever), and
