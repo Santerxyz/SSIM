@@ -564,12 +564,13 @@ export class TradeService {
     // Cross-service guard (D2 / INV-D2): refuse if any of these assets is mid-flight in
     // ANOTHER money op (e.g. being listed for sale), then hold them for this op's lifetime.
     const moneyKeys = (params.myItems ?? []).map((i) => moneyKey(fromUsername, i.assetId));
-    const collision = moneyKeys.find((k) => MoneyOps.held(k));
-    if (collision) {
+    // Atomic all-or-nothing claim over every asset in this send: no await sits between the
+    // check and the claim (claimAll is synchronous), so a future async insertion here can't
+    // re-open the same-asset double-act window the old scan-then-forEach left ajar. (D2 / INV-D2.)
+    if (!MoneyOps.claimAll(moneyKeys)) {
       this.inFlight.delete(guardKey);
-      throw new Error('An asset in this trade is already in another money operation (sell/buy) – try again shortly');
+      throw new Error('An asset in this trade is already in another money operation (sell) – try again shortly');
     }
-    moneyKeys.forEach((k) => MoneyOps.claim(k));
     // B4/S15: cross-restart dedup. A LINGERING journal entry means an identical send died mid-flight
     // last run (Steam-side outcome unknown). consultRefusal REFUSES it (KEEPING the entry, so a rapid
     // double-click is refused too) until a deliberate-pause min-age elapses, then ALLOWS + consumes it.
@@ -577,7 +578,7 @@ export class TradeService {
     const priorSend = this.journal.consultRefusal(guardKey);
     if (priorSend) {
       this.inFlight.delete(guardKey);
-      moneyKeys.forEach((k) => MoneyOps.release(k));
+      MoneyOps.releaseAll(moneyKeys);
       // S15: do NOT resolve here — consultRefusal KEEPS the entry so a rapid re-fire is refused too.
       // Marker so the send endpoint answers 409 (honest duplicate-precondition), not a retryable 502.
       const e = new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry in a few seconds to proceed.`) as Error & { moneyOpRefused?: true };
@@ -620,7 +621,7 @@ export class TradeService {
       }
     } finally {
       this.inFlight.delete(guardKey);
-      moneyKeys.forEach((k) => MoneyOps.release(k));
+      MoneyOps.releaseAll(moneyKeys);
       // S3: consume the entry on a clean resolution (success OR a definite failure), but KEEP it when the
       // commit failed transport-ambiguously — so the next attempt is refused once, not duplicated.
       if (!commitMayHaveLanded) this.journal.resolve(guardKey);
