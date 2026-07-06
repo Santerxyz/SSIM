@@ -2346,7 +2346,16 @@ function sanitizeTree(tree: import('../types/account').AccountTree): unknown {
 
 /** Strips the password and redacts proxy credentials (resolved + override). */
 function numQ(v: unknown): number | undefined { const n = Number(v); return Number.isFinite(n) ? n : undefined; }
-function csErr(err: unknown): number { return (err as { status?: number }).status === 429 ? 429 : 400; }
+// H-API-002: classify CSFloat failures so transient upstream/network faults are retryable, not a
+// permanent-looking 400. Preserve rate-limit (429) and genuine client errors (4xx, e.g. 401/403 auth);
+// map upstream 5xx and status-less transport failures (timeout/ECONN*) to a retryable 502 gateway error.
+export function csErr(err: unknown): number {
+  const st = (err as { status?: number }).status;
+  if (st === 429) return 429;
+  if (typeof st === 'number' && st >= 500) return 502;
+  if (typeof st === 'number' && st >= 400) return st;
+  return 502;
+}
 function parseSearch(q: Record<string, unknown>): ListingSearchParams {
   const num = (v: unknown): number | undefined => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
