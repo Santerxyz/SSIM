@@ -305,6 +305,12 @@ export class AccountVaultImpl {
     return rec ? structuredClone(rec) : undefined;
   }
   hasAccount(username: string): boolean { return !!this.getAccount(username); }
+  /** Full-record usernames (lowercase) currently in the vault — for the boot vault→org heal
+   *  (re-link a vaulted account that lost its accounts.json record). H-ACC-011. */
+  listAccountUsernames(): string[] { return this.payload ? Object.keys(this.payload.accounts) : []; }
+  /** Token-only usernames (lowercase) currently in the vault (QR/LIMITED imports whose sole
+   *  credential is the refresh token) — same boot vault→org heal. H-ACC-011. */
+  listTokenUsernames(): string[] { return this.payload ? Object.keys(this.payload.tokens) : []; }
 
   /** Add or replace an account's secrets; saves immediately (a credential change). */
   upsertAccount(acc: VaultAccount): void {

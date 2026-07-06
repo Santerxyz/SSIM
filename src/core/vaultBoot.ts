@@ -225,6 +225,30 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
   } catch (e) { logger.warn(`[vault] CSFloat-key migration skipped: ${(e as Error).message}`); }
 
   AccountVault.save();
+
+  // 3) SELF-HEAL the vault→org direction (H-ACC-011). accounts.json can be lost while vault.enc
+  //    survives (partial restore, AV quarantine of the JSON, an EBUSY strand in migrateVaultDir).
+  //    load() then boots a fresh empty database, and — because every import path refuses an
+  //    already-vaulted username (hasAccount → skipped) — the surviving credentials are unreachable
+  //    from the UI forever. Since the vault holds only ALREADY-CONSENTED accounts, re-registering
+  //    an org record for any vault username with no accounts.json entry is safe (does NOT scan the
+  //    drop zone). Accepted side effect: a crash in the delete route between accounts.remove() and
+  //    AccountVault.removeAccount() (server.ts:1047-1048) resurrects that account here on next boot
+  //    — non-destructive, visible in the warn below, the operator simply deletes it again.
+  const fullNames  = AccountVault.listAccountUsernames();
+  const tokenNames = AccountVault.listTokenUsernames().filter(u => !fullNames.includes(u));
+  const relinked: string[] = [];
+  for (const username of [...fullNames, ...tokenNames]) {
+    if (accounts.existsRaw(username)) continue;
+    if (accounts.defaultEnvironmentId() === '') accounts.createEnvironment('Standard');
+    const maFilePath = tokenNames.includes(username) ? '' : `${username}.maFile`;
+    accounts.addImportedAccount({ username, maFilePath, environmentId: accounts.defaultEnvironmentId(), folderId: null });
+    relinked.push(username);
+  }
+  if (relinked.length > 0) {
+    logger.warn(`[vault] re-linked ${relinked.length} vault account(s) that had no accounts.json record: ${relinked.join(', ')}`);
+  }
+
   accounts.enterVaultMode(); // blank the now-vaulted secrets (incl. env proxies) out of accounts.json
   // Hydrate in-memory env proxies from the vault so every reader (list/edit/resolveNetwork)
   // sees the effective value on THIS and every SUBSEQUENT boot (when the disk copy is blank). B20.
