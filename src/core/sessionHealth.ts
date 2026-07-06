@@ -26,7 +26,21 @@ export function ownsCreatedSession(loginInFlight: boolean, sessionExists: boolea
   return !loginInFlight && !sessionExists;
 }
 
-/** True iff cookies obtained at `obtainedAt` are still within the freshness window. */
+/**
+ * True iff cookies obtained at `obtainedAt` are still within the freshness window.
+ *
+ * Fail-closed on every unmeasurable age: missing/corrupt input (null, non-finite) and
+ * ALSO a FUTURE `obtainedAt` — a backward wall-clock step (NTP correction, manual fix,
+ * dual-boot RTC skew) or a corrupt value makes the age negative, which is unmeasurable,
+ * so the consumer re-establishes/refreshes (an in-place `refreshWebSession` webLogOn on
+ * the same connection/IP — cheap) rather than trusting possibly-dead cookies. We stay on
+ * wall clock deliberately: cookie expiry is real time on Steam's side and monotonic
+ * sources may exclude sleep time, which must count toward cookie age — wall clock +
+ * future-rejection is the trade-off. Accepted residue: a backward step still understates
+ * strictly-positive ages by up to ΔT; on healthy sessions the 20-min proactive refresh
+ * rewrites `obtainedAt` on its own setTimeout cadence (unaffected by wall-clock steps),
+ * bounding the distortion to one refresh interval.
+ */
 export function webCookiesFresh(
   obtainedAt: Date | string | number | undefined | null,
   nowMs: number = Date.now(),
@@ -35,5 +49,6 @@ export function webCookiesFresh(
   if (obtainedAt == null) return false;
   const t = obtainedAt instanceof Date ? obtainedAt.getTime() : new Date(obtainedAt).getTime();
   if (!Number.isFinite(t)) return false;
-  return nowMs - t < maxAgeMs;
+  const age = nowMs - t;
+  return age >= 0 && age < maxAgeMs;
 }
