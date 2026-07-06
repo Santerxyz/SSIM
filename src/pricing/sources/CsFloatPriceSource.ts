@@ -25,8 +25,14 @@ export class CsFloatPriceSource implements PriceSource {
     if (!client) return null;                          // no key configured anywhere
     try {
       const res = await client.searchListings({ market_hash_name: name, sort_by: 'lowest_price', limit: 1, type: 'buy_now' });
-      const first = (res.data || [])[0] as { price?: number } | undefined;
-      return first && typeof first.price === 'number' ? first.price : null;
+      // Validate the 2xx body shape before deriving a price: CsFloatClient casts res.data unchecked
+      // (validateStatus:()=>true), so a 200 HTML interstitial / drifted shape must be a transient THROW
+      // (→ short soft miss), NOT a hard null cached as an authoritative 24h "no price" (S2).
+      if (!res || !Array.isArray(res.data)) throw new Error('FETCH_FAILED_SHAPE');
+      if (res.data.length === 0) return null;            // authoritative: no buy-now listing for this name
+      const p = (res.data[0] as { price?: unknown }).price;
+      if (typeof p !== 'number' || !Number.isFinite(p) || p < 0) throw new Error('FETCH_FAILED_PRICE');
+      return p;
     } catch (e) {
       if ((e as CsFloatError).status === 429) throw new Error('RATE_LIMIT'); // reuse PricingService backoff
       throw e;
