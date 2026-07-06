@@ -1,6 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  MoneyOps — a SHARED, cross-service concurrent-op guard for real money/asset
-//  operations (trade-send, market-list, buy). Each service already has its OWN
+//  operations (trade-send, market-list, offer-accept, trade-up craft, casket
+//  move). Each service already has its OWN
 //  in-flight Set, but those only block a concurrent duplicate WITHIN one service —
 //  a sell (MarketService) and a send (TradeService) of the SAME asset could still
 //  run at once and both act on it. This shared registry blocks a concurrent op on
@@ -25,9 +26,24 @@ export const MoneyOps = {
     inFlight.add(key);
     return true;
   },
-  /** Releases a claim (call in a finally once the op has settled). */
+  /** Synchronous all-or-nothing claim over N keys. Returns false and claims NOTHING if any
+   *  key is already held. Duplicates within `keys` never self-collide — the has-scan runs
+   *  before any add. Use this (not a scan-then-forEach) so the check-and-act stays atomic. */
+  claimAll(keys: string[]): boolean {
+    if (keys.some((k) => inFlight.has(k))) return false;
+    keys.forEach((k) => inFlight.add(k));
+    return true;
+  },
+  /** Releases a claim (call in a finally once the op has settled). Releasing a key you did
+   *  not claim silently drops another op's guard — only ever release keys your own
+   *  claim/claimAll returned true for. */
   release(key: string): void {
     inFlight.delete(key);
+  },
+  /** Releases N claims (call in a finally once the op has settled). Same ownership warning as
+   *  release: only ever release keys your own claim/claimAll returned true for. */
+  releaseAll(keys: string[]): void {
+    keys.forEach((k) => inFlight.delete(k));
   },
   /** True while `key` is claimed. */
   held(key: string): boolean {

@@ -361,8 +361,27 @@ export class TradeService {
       // `await` is load-bearing (see the doc above): the finally decrement must not fire before the
       // accept+2FA window closes.
       if (action === 'accept') {
-        const status = await trader.acceptTradeOffer(offerId);
-        return status === 'unconfirmed' ? 'unconfirmed' : 'done';
+        // Cross-service asset guard (D2 / INV-D2): an offer we accept can give away assets that
+        // are mid-flight in ANOTHER money op (being sold/sent/crafted). Claim them all-or-nothing
+        // just before the accept commits (beforeAccept fires after the isOurOffer check, before
+        // offer.accept — a throw aborts before anything is sent) and release in the finally.
+        let claimedKeys: string[] = [];
+        try {
+          const status = await trader.acceptTradeOffer(offerId, {
+            beforeAccept: (itemsToGive) => {
+              const keys = itemsToGive
+                .filter((i) => i?.assetid)
+                .map((i) => moneyKey(username, String(i.assetid)));
+              if (!MoneyOps.claimAll(keys)) {
+                throw new Error('an item in this offer is busy in another money operation (sell/send/craft) — retry when it settles');
+              }
+              claimedKeys = keys;
+            },
+          });
+          return status === 'unconfirmed' ? 'unconfirmed' : 'done';
+        } finally {
+          claimedKeys.forEach((k) => MoneyOps.release(k));
+        }
       }
       // 'cancel' (our sent offer) and 'decline' (an incoming offer) share one Steam call;
       // the library routes it by the offer's isOurOffer flag.
@@ -765,7 +784,21 @@ export class TradeService {
     // in-flight gauge as offer actions (the return await requirement keeps the finally off the
     // freshly-created promise). Then an update swap (S14) defers between accept and confirmation.
     this.offerActionsInFlight++;
+    // Cross-service asset guard (D2 / INV-D2): this path holds the full offer and calls acceptOffer
+    // directly (it does NOT go through acceptTradeOffer), so guard it inline. Receiver-side
+    // itemsToGive is normally empty (a storage transfer) — claimAll([]) claims nothing and returns
+    // true, so this is a no-op there; on a genuine give it refuses rather than let an asset already
+    // busy in another money op leave the account.
+    let claimedKeys: string[] = [];
     try {
+      const keys = (Array.isArray(offer.itemsToGive) ? offer.itemsToGive : [])
+        .filter((i: any) => i?.assetid)
+        .map((i: any) => moneyKey(receiver.username, String(i.assetid)));
+      if (!MoneyOps.claimAll(keys)) {
+        logger.warn(`[${receiver.username}] internal offer ${offerId} gives an asset busy in another money op — NOT auto-accepted (left pending for manual review)`);
+        return;
+      }
+      claimedKeys = keys;
       // A two-sided auto-accept commits on Steam even when its 2FA confirmation later fails;
       // acceptOffer reports that as 'unconfirmed' (never thrown) so we log it as accepted-but-
       // awaiting-confirmation rather than as a failure of an accept that actually landed.
@@ -778,6 +811,7 @@ export class TradeService {
     } catch (err) {
       logger.error(`[${receiver.username}] auto-accept failed for ${offerId}: ${(err as Error).message}`);
     } finally {
+      MoneyOps.releaseAll(claimedKeys);
       this.offerActionsInFlight--;
     }
   }

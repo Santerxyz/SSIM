@@ -5,6 +5,7 @@ import { GcBusyError } from './GcActionLayer';
 import { Cs2SchemaService, parseSkinName, type SkinDef } from '../core/Cs2SchemaService';
 import { computeContract, wearMidpoint, achievableWears, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
 import { isSellable } from '../core/MarketModel';
+import { MoneyOps, assetKey } from './MoneyOps';
 import { logger } from '../utils/logger';
 
 const CS2_APPID = 730;
@@ -175,44 +176,59 @@ export class TradeUpService {
     for (let i = 0; i < contracts.length; i++) {
       if (this.execCancel) break;
       this.execJob.current = i;
-      // H-TRD-069: a GcBusyError ⇔ the craft was NEVER sent (the per-account slot rejects pre-connect),
-      // so it is 100% safe to wait the holder (storage move / float read) out and re-attempt the SAME
-      // contract — never a masking retry of a submitted craft. Bounded + cancel-aware; done++ fires ONCE.
-      for (let attempt = 1; ; attempt++) {
-        try {
-          const r = await this.gc.craftTradeUp(username, {
-            inputAssetIds: contracts[i].inputAssetIds,
-            inputRarityId: contracts[i].rarityId,
-            stattrak: !!contracts[i].stattrak,
-          });
-          if (r.rejected) {
-            // The GC answered and REFUSED the craft — no items were consumed, nothing produced.
-            this.execJob.failed++;
-            this.execJob.results.push({ index: i, submitted: true, error: 'GC rejected the craft — no items were consumed (check inputs/recipe)' });
-          } else {
-            if (r.confirmed) this.execJob.crafted++; // count only a GC-confirmed craft
-            this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
-          }
-          break;
-        } catch (e) {
-          if (e instanceof GcBusyError && attempt < this.busyRetryMaxAttempts) {
-            if (this.execCancel) {
-              this.execJob.failed++;
-              this.execJob.results.push({ index: i, submitted: false, error: `${e.message} — cancelled while waiting` });
-              break;
-            }
-            await sleep(this.busyRetryWaitMs);
-            continue; // slot may have freed — re-attempt the same contract
-          }
+      // Cross-service asset guard (D2 / INV-D2): a craft IRREVERSIBLY consumes its 10 inputs, so
+      // claim them all-or-nothing before submitting — refuse (never craft) if any input is mid-flight
+      // in another money op (being sold/sent). Release in the finally once this contract settles.
+      const keys = contracts[i].inputAssetIds.map((id) => assetKey(username, id));
+      let claimed = false;
+      try {
+        if (!MoneyOps.claimAll(keys)) {
           this.execJob.failed++;
-          const msg = e instanceof GcBusyError
-            ? 'GC busy for the whole wait window (storage/float op running) — nothing was sent; re-run when it finishes'
-            : (e instanceof Error ? e.message : String(e));
-          this.execJob.results.push({ index: i, submitted: false, error: msg });
-          break;
+          this.execJob.results.push({ index: i, submitted: false, error: 'input asset busy in another money operation (sell/send) — not submitted' });
+          continue;
         }
+        claimed = true;
+        // H-TRD-069: a GcBusyError ⇔ the craft was NEVER sent (the per-account slot rejects pre-connect),
+        // so it is 100% safe to wait the holder (storage move / float read) out and re-attempt the SAME
+        // contract — never a masking retry of a submitted craft. Bounded + cancel-aware; done++ fires ONCE.
+        for (let attempt = 1; ; attempt++) {
+          try {
+            const r = await this.gc.craftTradeUp(username, {
+              inputAssetIds: contracts[i].inputAssetIds,
+              inputRarityId: contracts[i].rarityId,
+              stattrak: !!contracts[i].stattrak,
+            });
+            if (r.rejected) {
+              // The GC answered and REFUSED the craft — no items were consumed, nothing produced.
+              this.execJob.failed++;
+              this.execJob.results.push({ index: i, submitted: true, error: 'GC rejected the craft — no items were consumed (check inputs/recipe)' });
+            } else {
+              if (r.confirmed) this.execJob.crafted++; // count only a GC-confirmed craft
+              this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
+            }
+            break;
+          } catch (e) {
+            if (e instanceof GcBusyError && attempt < this.busyRetryMaxAttempts) {
+              if (this.execCancel) {
+                this.execJob.failed++;
+                this.execJob.results.push({ index: i, submitted: false, error: `${e.message} — cancelled while waiting` });
+                break;
+              }
+              await sleep(this.busyRetryWaitMs);
+              continue; // slot may have freed — re-attempt the same contract
+            }
+            this.execJob.failed++;
+            const msg = e instanceof GcBusyError
+              ? 'GC busy for the whole wait window (storage/float op running) — nothing was sent; re-run when it finishes'
+              : (e instanceof Error ? e.message : String(e));
+            this.execJob.results.push({ index: i, submitted: false, error: msg });
+            break;
+          }
+        }
+      } finally {
+        if (claimed) MoneyOps.releaseAll(keys);
+        this.execJob.done++;
       }
-      this.execJob.done++;
       if (i < contracts.length - 1 && !this.execCancel) await sleep(1_500);
     }
     this.execJob.running = false;

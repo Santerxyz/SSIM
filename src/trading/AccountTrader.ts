@@ -597,9 +597,15 @@ export class AccountTrader {
    * Accepts ONE incoming trade offer. Reuses acceptOffer(), which also clears the
    * mobile 2FA confirmation when the offer has items WE give away (a two-sided swap).
    */
-  async acceptTradeOffer(offerId: string): Promise<'accepted' | 'unconfirmed'> {
+  async acceptTradeOffer(
+    offerId: string,
+    opts?: { beforeAccept?: (itemsToGive: Array<{ assetid?: string }>) => void },
+  ): Promise<'accepted' | 'unconfirmed'> {
     const offer = await this.getOfferById(offerId);
     if (offer.isOurOffer) throw new Error('cannot accept an offer we sent ourselves');
+    // Cross-service asset guard hook (D2 / INV-D2): a throw here aborts BEFORE anything is sent
+    // (e.g. an item in this offer is busy in another money op — sell/send/craft).
+    opts?.beforeAccept?.(Array.isArray(offer.itemsToGive) ? offer.itemsToGive : []);
     const status = await this.acceptOffer(offer);
     logger.info(`[${this.username}] offer ${offerId} accepted${status === 'unconfirmed' ? ' (UNCONFIRMED)' : ''}`);
     return status;

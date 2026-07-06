@@ -1,5 +1,6 @@
 import type { GcActionLayer, GcItem, GcStatus } from './GcActionLayer';
 import type { InventoryService } from '../core/InventoryService';
+import { MoneyOps, assetKey } from './MoneyOps';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -66,11 +67,18 @@ export class CasketService {
     if (this.job.running) throw new Error('a storage move is already running');
     if (!casketId) throw new Error('a storage unit must be selected');
     if (!Array.isArray(itemIds) || itemIds.length === 0) throw new Error('no items selected');
+    // Cross-service asset guard (D2 / INV-D2): a move takes these items out of play for the whole
+    // (budget-scaled, S16) move, so claim them all-or-nothing before starting — refuse if any is
+    // mid-flight in another money op (being sold/sent). Released in runMove's finally.
+    const keys = itemIds.map((id) => assetKey(username, id));
+    if (!MoneyOps.claimAll(keys)) {
+      throw new Error('item(s) busy in another money operation (sell/send) — retry when it settles');
+    }
     this.job = {
       running: true, cancelling: false, cancelled: false, direction, username, casketId,
       total: itemIds.length, done: 0, moved: 0, unconfirmed: 0, failed: 0, failures: [], startedAt: new Date().toISOString(),
     };
-    void this.runMove(username, casketId, [...itemIds], direction);
+    void this.runMove(username, casketId, [...itemIds], direction, keys);
     return this.moveStatus();
   }
 
@@ -79,7 +87,7 @@ export class CasketService {
     return this.moveStatus();
   }
 
-  private async runMove(username: string, casketId: string, itemIds: string[], direction: 'deposit' | 'withdraw'): Promise<void> {
+  private async runMove(username: string, casketId: string, itemIds: string[], direction: 'deposit' | 'withdraw', claimedKeys: string[]): Promise<void> {
     // Bind THIS job so a backstop-detached loop (S16: withTimeout can't cancel fn(go)) writes only into
     // its own orphaned object — never into the NEXT job started after `finally` reopened the gate.
     const job = this.job;
@@ -109,6 +117,8 @@ export class CasketService {
       job.stoppedReason = job.done > 0 ? 'aborted' : 'preflight';
       logger.warn(`[casket] ${username} ${direction} aborted: ${job.error}`);
     } finally {
+      // Cross-service asset guard (D2 / INV-D2): these items are no longer busy in this move.
+      MoneyOps.releaseAll(claimedKeys);
       job.running = false;
       job.cancelling = false;
       job.current = undefined;
