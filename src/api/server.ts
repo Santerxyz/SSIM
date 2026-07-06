@@ -1301,13 +1301,17 @@ export function createApp(deps: ApiDeps): Express {
       const cached = inventory.getCached(account.username, 'tf2');
       if (cached) return res.json(enrichInv(cached));
     }
-    res.json(enrichInv(await inventory.refreshOne(account.username, 'tf2')));
+    const inv = await inventory.refreshOne(account.username, 'tf2');
+    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (TF2 refresh)
+    res.json(enrichInv(inv));
   }));
 
   app.post('/api/inventory-tf2/:username/refresh', asyncHandler(async (req, res) => {
     const account = accounts.get(req.params.username);
     if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
-    res.json(enrichInv(await inventory.refreshOne(account.username, 'tf2')));
+    const inv = await inventory.refreshOne(account.username, 'tf2');
+    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (TF2 refresh)
+    res.json(enrichInv(inv));
   }));
 
   // GET returns the cached inventory INSTANTLY (even if stale). ?refresh=1 forces
