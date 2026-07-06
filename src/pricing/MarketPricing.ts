@@ -161,7 +161,13 @@ export class MarketPricing {
       ...(opts?.httpsAgent ? { httpsAgent: opts.httpsAgent, proxy: false as const } : {}),
       headers: { 'User-Agent': UA_CHROME, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' },
     });
-    if (r.status !== 200 || !r.data || r.data.success !== true) return null;
+    // A non-200 (5xx/403/429/login-wall) or Steam-level failure (missing body / success !== true) is
+    // NOT an authoritative "no price" — it's a transient fetch failure (`success:false` is served under
+    // throttle). THROW so the buy-modal autofill surfaces an honest, retryable error instead of a silent
+    // empty field; the route's asyncHandler converts it to a 500 → the FE error toast. `null` then means
+    // ONLY an authoritative 200 + success:true with no parseable lowest/median. (S2 parity, matches
+    // SteamPriceSource.fetchPriceCents.)
+    if (r.status !== 200 || !r.data || r.data.success !== true) throw new Error(`FETCH_FAILED_${r.status}`);
     return parseSteamMoney(r.data.lowest_price, decimals) ?? parseSteamMoney(r.data.median_price, decimals);
   }
 }
