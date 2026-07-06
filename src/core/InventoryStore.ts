@@ -18,6 +18,12 @@ const MAX_RECORDS: number = (() => {
   return Number.isFinite(raw) && raw >= 100 ? raw : 2000;          // default 2000 / floor 100
 })();
 
+/** A SYNCHRONOUS sleep for the boot-time read retries (the event loop isn't serving during
+ *  the constructor). Atomics.wait blocks the thread without a busy-wait; mirrors singleInstance.ts. */
+function sleepSync(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB blocked → skip the wait */ }
+}
+
 interface InventoryFile {
   version: number;
   /** keyed by lowercase username */
@@ -34,6 +40,13 @@ export class InventoryStore {
   private dirty = false;
   private flushTimer?: NodeJS.Timeout;
   private readonly path: string;
+  /**
+   * Set when load() booted empty because the on-disk file was present but UNREADABLE
+   * (a transient I/O lock, e.g. an AV scanner) rather than malformed. The last good file
+   * is intact on disk; the next flush must preserve it as `<path>.bak` before overwriting,
+   * so a boot-time lock can't silently destroy the whole fleet cache. Cleared after one save.
+   */
+  private preserveNextFlush = false;
   /** Access order for the LRU cap (insertion order = oldest→newest; re-add moves to newest). */
   private readonly lru = new Set<string>();
 
@@ -45,8 +58,17 @@ export class InventoryStore {
   }
 
   private load(): InventoryFile {
-    try {
-      if (fsExtra.existsSync(this.path)) {
+    if (!fsExtra.existsSync(this.path)) return { version: 1, records: {} };
+    // Discriminate the failure class so a transient I/O lock is not mistaken for corruption:
+    //   • parse/shape failure  → the content is genuinely bad; start fresh (refetchable).
+    //   • I/O failure (EBUSY/EPERM/EACCES/EIO — e.g. an AV scanner holding the multi-MB file
+    //     this app rewrites during fills) → the content is FINE, just unreadable right now.
+    //     Boot-only, so a few short synchronous retries are safe (AV locks are sub-second). If
+    //     it stays locked, boot empty but flag the intact file to be preserved as .bak on the
+    //     first write, instead of overwriting the whole fleet cache with a near-empty file.
+    const sleeps = [100, 400, 1000]; // up to 3 retries after the initial attempt
+    for (let attempt = 0; ; attempt++) {
+      try {
         // Validate the on-disk shape before trusting it: a truncated / older /
         // hand-edited file (e.g. `{}`, `null`, an array) would leave `records`
         // undefined and crash every get/set/all at runtime. Mirror
@@ -57,11 +79,23 @@ export class InventoryStore {
           return { version: 1, records: parsed.records };
         }
         logger.warn(`${this.path} has an unexpected shape – starting fresh`);
+        return { version: 1, records: {} };
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (typeof code !== 'string') {                // parse failure (SyntaxError, no code) → content is bad
+          logger.warn(`${this.path} unreadable, starting fresh: ${(err as Error).message}`);
+          return { version: 1, records: {} };
+        }
+        if (attempt < sleeps.length) {                 // I/O failure → retry a locked-but-intact file
+          sleepSync(sleeps[attempt]);
+          continue;
+        }
+        logger.error(`${this.path} unreadable after retries (${code}: ${(err as Error).message}) – `
+          + `booting empty; previous cache will be preserved as .bak on next write`);
+        this.preserveNextFlush = true;
+        return { version: 1, records: {} };
       }
-    } catch (err) {
-      logger.warn(`${this.path} unreadable, starting fresh: ${(err as Error).message}`);
     }
-    return { version: 1, records: {} };
   }
 
   /**
@@ -82,8 +116,11 @@ export class InventoryStore {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = undefined; }
     if (!this.dirty) return;
     try {
-      writeJsonAtomic(this.path, this.data, { spaces: 0 });
+      // If we booted empty over a locked-but-intact file (I/O-degraded load), keep the last
+      // good file as `<path>.bak` before this near-empty first write replaces it — one-shot.
+      writeJsonAtomic(this.path, this.data, { spaces: 0, backup: this.preserveNextFlush });
       this.dirty = false;
+      this.preserveNextFlush = false;
     } catch (err) {
       logger.error(`failed to persist ${this.path}: ${(err as Error).message}`);
     }
