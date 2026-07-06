@@ -84,6 +84,28 @@ test('S35a: a corrupt main AND a corrupt .bak → DEGRADED (no valid backup to r
   assert.equal(new TokenStore(p).isDegraded(), true);
 });
 
+// ─── H-ACC-059: a MISSING main with a surviving .bak recovers (not a silent fresh start) ────────
+test('H-ACC-059: missing main with a VALID .bak recovers from the backup (no silent fresh start)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-tok-'));
+  const p = path.join(dir, 'refresh_tokens.json'); // main NEVER written → missing
+  const bak = `${p}.bak`;
+  fs.writeFileSync(bak, JSON.stringify({ version: 1, tokens: { alice: 'tok-a' } }));
+  const bakBytesBefore = fs.readFileSync(bak, 'utf8');
+  const s = new TokenStore(p);
+  assert.equal(s.isDegraded(), false, 'a valid .bak means the store is NOT degraded');
+  assert.equal(s.get('alice'), 'tok-a', 'tokens recovered from the backup (no fleet re-auth)');
+  assert.equal(fs.existsSync(p), true, 'the main file was repaired on disk');
+  assert.deepEqual(JSON.parse(fs.readFileSync(p, 'utf8')).tokens, { alice: 'tok-a' }, 'main repaired from .bak');
+  assert.equal(fs.readFileSync(bak, 'utf8'), bakBytesBefore, '.bak left byte-identical (backup:false — S5 lesson)');
+});
+
+test('H-ACC-059: missing main with a corrupt .bak → DEGRADED', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-tok-'));
+  const p = path.join(dir, 'refresh_tokens.json'); // main NEVER written → missing
+  fs.writeFileSync(`${p}.bak`, '{ corrupt bak');
+  assert.equal(new TokenStore(p).isDegraded(), true, 'no valid backup to recover → degrade, do not fresh-start');
+});
+
 test('S24: a throwing vault setToken does NOT escape TokenStore.set (no uncaughtException burst)', () => {
   const s = new TokenStore(mk(undefined)); // fresh install → not degraded
   const origEnabled = AccountVault.isEnabled;

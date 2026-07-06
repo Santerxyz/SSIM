@@ -82,10 +82,19 @@ export class TokenStore {
     }
   }
 
+  /** H-ACC-059: a missing main is a fresh install ONLY when there is no sibling .bak. If a .bak survives
+   *  (main deleted by the operator/AV per the degraded-store message, or lost between save generations), it
+   *  still holds the last-good fleet tokens — recover from it rather than booting silently empty and then
+   *  clobbering the .bak two saves later (the S5 clobber). No .bak → genuine fresh install. */
+  private missingMain(): TokenFile {
+    if (fsExtra.existsSync(`${this.filePath}.bak`)) return this.recoverFromBakOrDegrade('is missing');
+    fsExtra.ensureDirSync(path.dirname(this.filePath));
+    return emptyFile(); // fresh install → empty is correct, NOT degraded
+  }
+
   private load(): TokenFile {
     if (!fsExtra.existsSync(this.filePath)) {
-      fsExtra.ensureDirSync(path.dirname(this.filePath));
-      return emptyFile(); // fresh install → empty is correct, NOT degraded
+      return this.missingMain();
     }
     try {
       const tokens = TokenStore.readTokens(TokenStore.readJsonWithRetry(this.filePath) as Partial<TokenFile> | null);
@@ -98,8 +107,7 @@ export class TokenStore {
       // missing-at-boot branch above. Every other throw (incl. transient codes that survived the retry above)
       // is unreadable → try the .bak before degrading (S35a).
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        fsExtra.ensureDirSync(path.dirname(this.filePath));
-        return emptyFile();
+        return this.missingMain(); // H-ACC-059: same .bak check as the missing-at-boot branch
       }
       return this.recoverFromBakOrDegrade(`unreadable (${(err as Error).message})`);
     }
