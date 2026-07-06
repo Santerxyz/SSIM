@@ -47,6 +47,11 @@ function showLockPage(reason: string, detail?: string): void {
     const file = path.join(os.tmpdir(), 'ssim-license-error.html');
     fs.writeFileSync(file, html, 'utf8');
     // Windows: `start "" <file>` opens the default browser, detached.
-    spawn('cmd', ['/c', 'start', '', file], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    const child = spawn('cmd', ['/c', 'start', '', file], { detached: true, stdio: 'ignore', windowsHide: true });
+    // The 'error' listener is mandatory – Node re-throws an unlistened async 'error'
+    // (ENOENT off a stripped PATH, EPERM under AppLocker) as an uncaughtException. The
+    // outer try/catch cannot catch that async emission; the console banner is the fallback.
+    child.on('error', () => { /* browser open failed – console banner is the fallback */ });
+    child.unref();
   } catch { /* best-effort: the console banner is the fallback */ }
 }
