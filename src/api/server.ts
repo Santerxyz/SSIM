@@ -933,7 +933,9 @@ export function createApp(deps: ApiDeps): Express {
     if (enabled && acc.tier === 'limited') {
       return res.status(400).json({ error: 'Limited accounts cannot auto-deliver sales (no maFile to confirm). Attach a maFile to upgrade to Full first.' });
     }
-    csfloat.setAutoAccept(req.params.username, enabled);
+    if (!csfloat.setAutoAccept(req.params.username, enabled)) {
+      return res.status(500).json({ error: 'Setting changed in memory but could not be saved to disk; it will not survive a restart. Check disk space / file permissions on data/app_settings.json.' });
+    }
     res.json({ enabled: csfloat.getAutoAccept(req.params.username) });
   });
 

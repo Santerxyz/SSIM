@@ -64,26 +64,28 @@ class AppSettingsImpl {
     }
   }
 
-  private save(): void {
+  /** Persist to disk. Returns false (and logs) when the write was refused/failed — the mutation is
+   *  memory-only and will NOT survive a restart; callers surface this instead of reporting success. */
+  private save(): boolean {
     if (this.degraded) {
       logger.warn('app_settings.json is degraded — refusing to overwrite; per-account auto-accept toggles will not persist until the file is restored and the app restarted');
-      return;
+      return false;
     }
-    try { writeJsonAtomic(this.filePath, this.file, { spaces: 2, backup: false }); }
-    catch (err) { logger.warn(`could not persist app settings: ${(err as Error).message}`); }
+    try { writeJsonAtomic(this.filePath, this.file, { spaces: 2, backup: false }); return true; }
+    catch (err) { logger.warn(`could not persist app settings: ${(err as Error).message}`); return false; }
   }
 
   getPriceSource(): PriceSource { return this.file.priceSource; }
-  setPriceSource(s: PriceSource): void { this.file.priceSource = s === 'csfloat' ? 'csfloat' : 'steam'; this.save(); }
+  setPriceSource(s: PriceSource): boolean { this.file.priceSource = s === 'csfloat' ? 'csfloat' : 'steam'; return this.save(); }
 
   isCsfloatExperimental(): boolean { return this.file.csfloatExperimental; }
-  setCsfloatExperimental(on: boolean): void { this.file.csfloatExperimental = !!on; this.save(); }
+  setCsfloatExperimental(on: boolean): boolean { this.file.csfloatExperimental = !!on; return this.save(); }
 
   getAutoAccept(username: string): boolean { return !!this.file.csfloatAutoAccept[username.toLowerCase()]; }
-  setAutoAccept(username: string, on: boolean): void {
+  setAutoAccept(username: string, on: boolean): boolean {
     const k = username.toLowerCase();
     if (on) this.file.csfloatAutoAccept[k] = true; else delete this.file.csfloatAutoAccept[k];
-    this.save();
+    return this.save();
   }
   autoAcceptUsernames(): string[] { return Object.keys(this.file.csfloatAutoAccept); }
 }

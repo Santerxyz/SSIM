@@ -108,7 +108,9 @@ export class CsFloatService {
 
   // ── auto-accept toggle (the worker enacts it) ────────────────────────────────
   getAutoAccept(u: string): boolean { return AppSettings.getAutoAccept(u); }
-  setAutoAccept(u: string, on: boolean): void { AppSettings.setAutoAccept(u, on); }
+  /** Returns false when the toggle changed in memory but could not be persisted (the caller surfaces
+   *  a truthful "not saved" error instead of echoing the optimistic value). */
+  setAutoAccept(u: string, on: boolean): boolean { return AppSettings.setAutoAccept(u, on); }
 
   // ── F3: a client for app-wide pricing, using ANY account that has a key ──────
   pricingClient(): CsFloatClient | null {
