@@ -41,6 +41,13 @@ const REFRESH_RETRIES        = 2;
 const RETRY_PAUSE_RATELIMIT  = 35_000;
 const RETRY_PAUSE_TRANSIENT  = 8_000;
 
+// H-XCT-003: ctx2 and ctx16 are read from the SAME Steam per-IP endpoint, so they share ONE
+// rate-limit window. A per-account ThrottleState carries the moment ctx2's last 35s rate-limit
+// wait ended; if ctx16 hits the identical window ctx2 just waited out, it serves only the
+// REMAINDER of that window instead of a fresh full 35s — halving the ~140s worst-case per account.
+// It is per-invocation (allocated in doRefreshOneViaGc), NEVER shared across accounts.
+interface ThrottleState { lastRateLimitWaitEndedAt?: number; }
+
 function isRateLimited(err: unknown): boolean {
   return /429|rate.?limit/i.test((err as Error)?.message ?? '');
 }
@@ -240,7 +247,7 @@ export class InventoryService {
    * scale. A non-transient error (auth, private inventory) still throws immediately. `label` names the leg
    * in the warn line; retries are sequential inside the account's existing refresh slot (no concurrency raise).
    */
-  private async retrying<T>(op: () => Promise<T>, label: string, username: string): Promise<T> {
+  private async retrying<T>(op: () => Promise<T>, label: string, username: string, throttle?: ThrottleState): Promise<T> {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= REFRESH_RETRIES; attempt++) {
       try {
@@ -249,22 +256,32 @@ export class InventoryService {
         lastErr = err;
         const rateLimited = isRateLimited(err);
         if (attempt >= REFRESH_RETRIES || (!rateLimited && !isTransientRefreshError(err))) throw err;
-        const pause = rateLimited ? RETRY_PAUSE_RATELIMIT : RETRY_PAUSE_TRANSIENT;
+        let pause = rateLimited ? RETRY_PAUSE_RATELIMIT : RETRY_PAUSE_TRANSIENT;
+        // H-XCT-003: ctx2 and ctx16 share ONE per-IP window. If a sibling context just waited a
+        // full RETRY_PAUSE_RATELIMIT moments ago, that window is still fresh, so this context need
+        // wait only the time that has ELAPSED since — ≈0 right after the sibling's wait, decaying
+        // back to the full window as that credit ages out. Never a duplicate fresh 35s.
+        if (rateLimited && throttle?.lastRateLimitWaitEndedAt !== undefined) {
+          pause = Math.max(0, Math.min(pause, Date.now() - throttle.lastRateLimitWaitEndedAt));
+        }
         logger.warn(
           `[${username}] ${label} attempt ${attempt + 1}/${REFRESH_RETRIES + 1} failed ` +
           `(${(err as Error).message}) – retrying in ${Math.round(pause / 1000)}s`,
         );
         await this.pause(pause);
+        if (rateLimited && throttle) throttle.lastRateLimitWaitEndedAt = Date.now();
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
-  /** S50: fetch ONE CS2 web-inventory context under the shared retry policy (see `retrying`). */
+  /** S50: fetch ONE CS2 web-inventory context under the shared retry policy (see `retrying`).
+   *  H-XCT-003: `throttle` is shared across an account's ctx2/ctx16 fetches so ctx16 does not
+   *  re-serve a per-IP rate-limit window ctx2 already waited out. */
   private fetchRawRetrying(
-    session: ManagedSession, ctx: number, username: string,
+    session: ManagedSession, ctx: number, username: string, throttle?: ThrottleState,
   ): Promise<Awaited<ReturnType<typeof InventoryManager.fetchRaw>>> {
-    return this.retrying(() => InventoryManager.fetchRaw(session, 'cs2', ctx), `cs2 ctx${ctx} fetch`, username);
+    return this.retrying(() => InventoryManager.fetchRaw(session, 'cs2', ctx), `cs2 ctx${ctx} fetch`, username, throttle);
   }
 
   /** The bounded-backoff wait between retry attempts — a seam so tests can exercise the retry path
@@ -307,8 +324,11 @@ export class InventoryService {
     //    currently-listed items. Names + exact unlock dates come straight from Steam's
     //    own descriptions (owner_descriptions "Tradable/Marketable After …"), so no
     //    schema resolver and no game-client connection are needed.
-    let raw2  = await this.fetchRawRetrying(session, 2, username);  // S50: bounded transient/429 retry
-    let raw16 = await this.fetchRawRetrying(session, 16, username);
+    // H-XCT-003: ctx2 and ctx16 share ONE per-IP rate-limit window; this per-account marker lets
+    // ctx16 serve only the REMAINDER of a window ctx2 already waited out (not a fresh full 35s).
+    const throttle: ThrottleState = {};
+    let raw2  = await this.fetchRawRetrying(session, 2, username, throttle);  // S50: bounded transient/429 retry
+    let raw16 = await this.fetchRawRetrying(session, 16, username, throttle);
     let ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
     let ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
 
