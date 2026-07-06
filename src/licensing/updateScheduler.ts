@@ -3,7 +3,7 @@ import { IS_PACKAGED } from '../utils/paths';
 import { ProcessHealth } from '../core/ProcessHealth';
 import { Updater } from './Updater';
 import {
-  setAvailableUpdate, markChecked, getAvailableUpdate, getBlockedUpdate, getLastCheckedAt, setUpdateOutcome,
+  setAvailableUpdate, markChecked, getAvailableUpdate, getBlockedUpdate, getLastCheckedAt, setUpdateOutcome, getUpdateOutcome,
 } from './updateStatus';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -109,9 +109,16 @@ export async function checkOnly(source: string): Promise<UpdateCheckView> {
     const checked = await Updater.check(current);
     if (checked.status === 'update') {
       setAvailableUpdate({ version: checked.info.latest, notes: checked.info.notes, publishedAt: checked.info.publishedAt });
+      // S53 residue: a successful check that FINDS a newer version proves the server was reachable, so a
+      // lingering 'check-failed' is now stale. Overwrite ONLY that poisoned marker (guard), so a real boot-time
+      // swap outcome (swap-blocked / deferred-busy / selftest-* / ok) still riding the heartbeat is never clobbered.
+      // 'up-to-date' is the least-wrong STABLE value: it means "reachable, NOT stranded by a check failure" — the
+      // only thing the C4 stranded-fleet histogram sizes (runUpdate's 'update' branch records no outcome either).
+      if (getUpdateOutcome() === 'check-failed') setUpdateOutcome('up-to-date');
       logger.info(`[update] ${source} check: v${checked.info.latest} available (current v${current})`);
     } else if (checked.status === 'current') {
       setAvailableUpdate(undefined);
+      setUpdateOutcome('up-to-date'); // symmetric with runUpdate: a successful check clears any stale 'check-failed'
     } else {
       // S53: a failed CHECK is NOT "up to date". Keep the last-known available-update (don't clear it) and
       // record the distinct outcome so telemetry / the stranded-fleet histogram counts this check.
