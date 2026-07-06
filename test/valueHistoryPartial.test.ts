@@ -49,3 +49,42 @@ test('S66: an EUR wallet converts via the live rate and is NOT partial', () => {
   assert.equal(p.partial, undefined);
   assert.equal(p.wallet, 10000);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-INV-021 — the multi-series aggregate() path stripped the S66 `partial` flag,
+//  so the global-master curve (≥2 environments selected) could never be flagged
+//  incomplete. A contributing point's `partial: true` now propagates to the
+//  aggregated timestamp (and to later timestamps while it is carried forward).
+// ════════════════════════════════════════════════════════════════════════════
+
+function seed(series: Record<string, any[]>): ValueHistoryService {
+  const accounts = { getEnvironments: () => [], getByEnvironment: () => [] };
+  const store = { get: () => undefined };
+  const tf2Store = { get: () => undefined };
+  const pricing = { enrich: () => { /* no-op */ }, status: notFilling };
+  const exchange = { getUsdToEur: () => 0.9 };
+  const svc = new ValueHistoryService(accounts as never, store as never, tf2Store as never, pricing as never, exchange as never);
+  (svc as unknown as { data: { version: number; series: Record<string, any[]> } }).data = { version: 1, series };
+  return svc;
+}
+
+test('H-INV-021: aggregate propagates a contributing series\' partial flag (and carries it forward)', () => {
+  const svc = seed({
+    a: [{ t: 1, items: 100, wallet: 10, partial: true }, { t: 3, items: 100, wallet: 10, partial: true }],
+    b: [{ t: 1, items: 200, wallet: 20 }, { t: 2, items: 200, wallet: 20 }],
+  });
+  const out = svc.aggregate(['a', 'b']);
+  const at = (t: number) => out.find((p) => p.t === t);
+  assert.equal(at(1)!.partial, true, 'A is partial at t1 → aggregated point is partial');
+  assert.equal(at(2)!.partial, true, "A's partial point is carried forward at t2 → still partial");
+  assert.equal(at(1)!.items, 300, 'sums both series');
+});
+
+test('H-INV-021: aggregate leaves timestamps with no partial contributor unflagged', () => {
+  const svc = seed({
+    a: [{ t: 1, items: 100, wallet: 10 }, { t: 2, items: 100, wallet: 10 }],
+    b: [{ t: 1, items: 200, wallet: 20 }, { t: 2, items: 200, wallet: 20 }],
+  });
+  const out = svc.aggregate(['a', 'b']);
+  for (const p of out) assert.equal(p.partial, undefined, 'no contributing point is partial → no flag');
+});

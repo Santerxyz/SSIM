@@ -170,16 +170,16 @@ export class ValueHistoryService {
     const cursors = series.map(() => 0); // per-series carry-forward index (timestamps ascending)
     const out: HistoryPoint[] = [];
     for (const t of timestamps) {
-      let items = 0, wallet = 0;
+      let items = 0, wallet = 0, partial = false;
       for (let s = 0; s < series.length; s++) {
         const arr = series[s];
         let i = cursors[s];
         while (i + 1 < arr.length && arr[i + 1].t <= t) i++;
         cursors[s] = i;
         const p = arr[i];
-        if (p && p.t <= t) { items += p.items; wallet += p.wallet; } // before first point → 0
+        if (p && p.t <= t) { items += p.items; wallet += p.wallet; if (p.partial) partial = true; } // before first point → 0
       }
-      out.push({ t, items, wallet });
+      out.push(partial ? { t, items, wallet, partial: true } : { t, items, wallet });
     }
     return out.length > MAX_POINTS_PER_SERIES ? out.slice(out.length - MAX_POINTS_PER_SERIES) : out;
   }
