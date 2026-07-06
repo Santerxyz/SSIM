@@ -75,6 +75,16 @@
       <input id="confirm" type="password" autocomplete="off" spellcheck="false">
     </div>
 
+    <!-- Orphan mode (S18): shown only when the server refuses an empty-vault create over an
+         orphaned farm (409 orphaned:true). The operator must tick the acknowledgement to send
+         createEmptyAnyway and deliberately create a NEW empty vault. -->
+    <div id="orphanWrap" style="display:none">
+      <label class="ack" for="orphanAck" style="display:flex;align-items:flex-start;gap:8px;font-size:11.5px;color:#caa45a;line-height:1.5;margin:14px 0 0;cursor:pointer">
+        <input id="orphanAck" type="checkbox" style="width:auto;margin-top:2px;flex:0 0 auto">
+        <span>I understand: a NEW EMPTY vault will be created and my registered accounts stay credential-less until vault.enc is restored.</span>
+      </label>
+    </div>
+
     <button id="btn" type="submit">Unlock</button>
     <div class="msg" id="msg"></div>
     <div class="warn" id="warn" style="display:none">
@@ -85,7 +95,23 @@
 
 <script>
   var firstRun = false;
+  var orphanMode = false; // S18: set when the server refuses an empty-vault create over an orphaned farm.
   var el = function (id) { return document.getElementById(id); };
+
+  // S18: the server refused to silently create an empty vault (vault.enc missing, accounts.json
+  // survives). Switch the page into a deliberate, destructive "create NEW empty vault" mode instead
+  // of the bare error line — the only client path that can send createEmptyAnyway.
+  function enterOrphanMode(errText) {
+    orphanMode = true;
+    el('title').textContent = 'Vault file missing';
+    el('sub').textContent = errText;
+    el('confirmWrap').style.display = 'block';
+    el('warn').style.display = 'none';
+    el('orphanWrap').style.display = 'block';
+    var btn = el('btn');
+    btn.textContent = 'Create NEW empty vault';
+    btn.style.background = 'var(--err)';
+  }
 
   // Keep-alive ping (legacy Edge-window heartbeat; the Tauri shell now owns shutdown).
   function ping() { try { fetch('/api/app/ping').catch(function () {}); } catch (e) {} }
@@ -106,23 +132,30 @@
   el('form').addEventListener('submit', function (e) {
     e.preventDefault();
     var password = el('pw').value;
-    var confirm = firstRun ? el('confirm').value : undefined;
+    var confirm = (firstRun || orphanMode) ? el('confirm').value : undefined;
     var msg = el('msg');
     msg.className = 'msg';
     if (!password) { msg.className = 'msg err'; msg.textContent = 'A Master Password is required.'; return; }
-    if (firstRun && password !== confirm) { msg.className = 'msg err'; msg.textContent = 'The passwords do not match.'; return; }
+    if ((firstRun || orphanMode) && password !== confirm) { msg.className = 'msg err'; msg.textContent = 'The passwords do not match.'; return; }
+    // S18: creating a NEW empty vault over an orphaned farm is destructive — require the acknowledgement.
+    if (orphanMode && el('orphanAck').checked !== true) {
+      msg.className = 'msg err';
+      msg.textContent = 'Tick the acknowledgement to proceed, or restore vault.enc and restart SSIM.';
+      return;
+    }
 
     var btn = el('btn');
     var origLabel = btn.textContent;
     btn.disabled = true;
     el('logoWrap').classList.add('loading'); // ring spins around the logo while we unlock
     // Spinner in the button conveys progress — no static "Working…" text.
-    btn.innerHTML = '<span class="spin"></span>' + (firstRun ? 'Creating vault…' : 'Unlocking…');
+    btn.innerHTML = '<span class="spin"></span>' + ((firstRun || orphanMode) ? 'Creating vault…' : 'Unlocking…');
     msg.className = 'msg'; msg.textContent = '';
     fetch('/api/vault/unlock', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: password, confirm: confirm }),
-    }).then(function (r) { return r.json(); }).then(function (d) {
+      body: JSON.stringify({ password: password, confirm: confirm, createEmptyAnyway: (orphanMode && el('orphanAck').checked === true) ? true : undefined }),
+    }).then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); }).then(function (resp) {
+      var d = resp.d;
       if (d && d.ok) {
         // Correct password → keep the spinner running through the hand-off to the
         // dashboard (the backend takes a moment to start the full app before reload).
@@ -130,11 +163,20 @@
         msg.className = 'msg'; msg.textContent = '';
         setTimeout(function () { location.reload(); }, 2300);
       } else {
-        btn.disabled = false; btn.innerHTML = origLabel;
+        btn.disabled = false;
         el('logoWrap').classList.remove('loading');
-        msg.className = 'msg err';
-        msg.textContent = (d && d.error) || 'Unlock failed.';
-        el('pw').value = ''; el('pw').focus();
+        // S18: the server refuses an empty-vault create over an orphaned farm (409 orphaned:true).
+        // Enter the deliberate destructive mode rather than dead-ending on the bare error line.
+        if (resp.status === 409 && d && d.orphaned === true) {
+          enterOrphanMode((d && d.error) || 'The vault file (vault.enc) is missing.');
+          msg.className = 'msg'; msg.textContent = '';
+          el('pw').value = ''; el('pw').focus();
+        } else {
+          btn.innerHTML = origLabel;
+          msg.className = 'msg err';
+          msg.textContent = (d && d.error) || 'Unlock failed.';
+          el('pw').value = ''; el('pw').focus();
+        }
       }
     }).catch(function () {
       btn.disabled = false; btn.innerHTML = origLabel;

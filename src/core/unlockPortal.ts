@@ -144,6 +144,8 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
 }
 
 // Minimal inline fallback if public/unlock.html is somehow missing from the bundle.
+// Read-only by design (bundle-defect emergency page): it only surfaces d.error; the S18
+// destructive orphan-vault override (createEmptyAnyway) deliberately requires the real page.
 const FALLBACK_HTML = `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;background:#0a0a0f;color:#eee;display:flex;min-height:100vh;align-items:center;justify-content:center">
 <form onsubmit="event.preventDefault();fetch('/api/vault/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p.value})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Unlocking - starting SSIM...';setTimeout(()=>location.reload(),2200)}else{s.textContent=d.error}})">
 <div><h2>SSIM - Unlock Vault</h2><input id="p" type="password" placeholder="Master Password" style="padding:8px;width:280px"><button>Unlock</button><p id="s" style="color:#c084fc"></p></div></form>`;
