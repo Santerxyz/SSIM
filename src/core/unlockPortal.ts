@@ -60,6 +60,10 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
     });
 
     let failed = 0; // brute-force throttle (loopback-only, but defence in depth)
+    // Serialize unlock attempts so the escalating delay is real: each queued attempt reads `failed`
+    // only AFTER its predecessor has settled, so N parallel wrong-password POSTs can't all sample the
+    // same window and run scrypt back-to-back (attempt k waits min(2000, k*400)ms after attempt k-1).
+    let attemptQueue: Promise<unknown> = Promise.resolve();
 
     // Legacy heartbeat endpoint (kept BEFORE the /api/* lock-out so the page ping never 404s);
     // now a harmless no-op — the Tauri shell owns lifecycle.
@@ -102,11 +106,17 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
         return res.status(400).json({ ok: false, error: 'The passwords do not match.' });
       }
 
-      // Grow a small delay with each failed attempt (scrypt + loopback already gate).
-      if (failed > 0) await sleep(Math.min(2_000, failed * 400));
+      // Grow a small delay with each failed attempt (scrypt + loopback already gate). The delay lives
+      // INSIDE the serialized attempt so it reads `failed` after the prior attempt settled, not at entry.
+      const attempt = async () => {
+        if (failed > 0) await sleep(Math.min(2_000, failed * 400));
+        return AccountVault.unlockOrCreate(password, { createEmptyAnyway: body.createEmptyAnyway === true });
+      };
+      const result = attemptQueue.then(attempt, attempt);
+      attemptQueue = result.then(() => undefined, () => undefined);
 
       try {
-        const { created } = AccountVault.unlockOrCreate(password, { createEmptyAnyway: body.createEmptyAnyway === true });
+        const { created } = await result;
         logger.info(`[vault] ${created ? 'created' : 'unlocked'} via app-window unlock portal`);
         res.json({ ok: true, created });
         // Let the page receive the response, then free the port + continue boot. The page does NOT
