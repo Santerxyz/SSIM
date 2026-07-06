@@ -3,7 +3,7 @@ import path from 'path';
 import readline from 'readline';
 import type { AccountManager } from './AccountManager';
 import type { MaFile } from '../types/account';
-import { AccountVault } from './AccountVault';
+import { AccountVault, VAULT_NEWER_VERSION_ERROR } from './AccountVault';
 import type { VaultAccount, AccountVaultImpl } from './AccountVault';
 import { loadMaFileFromDisk, readCredentialsFile, listDropZoneMaFiles, parseAccountsCsv } from './maFiles';
 import { logger } from '../utils/logger';
@@ -167,7 +167,14 @@ export async function unlockVault(): Promise<void> {
       logger.info(`[vault] ${existing ? 'unlocked' : 'created'} via ${viaDetached ? 'detached handoff' : 'SSIM_VAULT_PASSWORD'}`);
       return;
     }
-    catch { logger.error('[vault] SSIM_VAULT_PASSWORD did not unlock the existing vault – aborting'); process.exit(1); }
+    catch (e) {
+      // H-ACC-025: name the real cause instead of collapsing every failure into "wrong password".
+      const msg = (e as Error).message;
+      if (msg === VAULT_NEWER_VERSION_ERROR) logger.error('[vault] vault.enc was written by a NEWER SSIM version – update SSIM first, do not recreate the vault');
+      else if (msg === 'WRONG_PASSWORD') logger.error('[vault] SSIM_VAULT_PASSWORD did not unlock the existing vault – aborting');
+      else logger.error(`[vault] vault ${existing ? 'unlock' : 'creation'} failed: ${msg}`);
+      process.exit(1);
+    }
   }
 
   // Make the prompt unmissable (the launcher opens the browser only AFTER this succeeds).
@@ -229,9 +236,14 @@ export async function unlockVault(): Promise<void> {
       unlockExistingVault(pw);
       return;
     } catch (e) {
+      const msg = (e as Error).message;
       // eslint-disable-next-line no-console
-      if ((e as Error).message === 'WRONG_PASSWORD') console.error('  Incorrect Master Password. Try again.\n');
-      else { console.error(`  ${(e as Error).message}`); process.exit(1); }
+      if (msg === 'WRONG_PASSWORD') console.error('  Incorrect Master Password. Try again.\n');
+      // H-ACC-025: a newer-vault refusal must not print the bare VAULT_NEWER_VERSION token.
+      // eslint-disable-next-line no-console
+      else if (msg === VAULT_NEWER_VERSION_ERROR) { console.error('  vault.enc was written by a NEWER SSIM version — update SSIM first, do not recreate the vault.'); process.exit(1); }
+      // eslint-disable-next-line no-console
+      else { console.error(`  ${msg}`); process.exit(1); }
     }
   }
   // eslint-disable-next-line no-console
