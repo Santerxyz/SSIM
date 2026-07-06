@@ -3,6 +3,12 @@
 Branch: `redesign/frontend-v2` (off `fix/reliability-remediation` = the hardened v1.3.5 line + all P1/P2/P3 fixes).
 Goal: ship the **masterpiece design** as the real, functional app frontend, then compile the exe. Owner is all-in.
 
+## RELEASE VERSION → **1.4.0** (owner-set for the new frontend)
+Bump 1.3.5 → **1.4.0** as part of the **Compile** step, BEFORE `build:tauri`, in exactly two files:
+- `package.json:3` `"version"` — the SINGLE SOURCE OF TRUTH (`src/index.ts:27` reads `pkg.version`; the backend serves it; the UI footer shows it at runtime).
+- `src-tauri/tauri.conf.json:4` `"version"` — the exe/window metadata. (NOTE: this file has pre-existing uncommitted edits — set version to 1.4.0 without disturbing them.)
+Invariant to preserve in the new UI: the footer version is read from the API/`data.version` (legacy `app.js:6527`), NEVER hardcoded — so it auto-shows v1.4.0. Do the bump at compile time (not during dev). Publishing the 1.4.0 update manifest is the owner's separate web-panel step — compile only, do not publish.
+
 ## RESUME PROTOCOL
 At the start of any session (incl. after compaction): read this file, continue at the first unfinished item; never rebuild finished views. Resume phrase: *"Continue the redesign per redesign/00_PROGRESS.md."* Work is on branch `redesign/frontend-v2`; commit per view/milestone. The live app frontend (`public/`) is only cut over at the very end after verification — the immutable legacy copy in `redesign/legacy_public/` is the rollback (see ROLLBACK.md).
 
@@ -28,7 +34,7 @@ The port keeps the legacy **function** (API calls, state, handlers, invariants) 
 - [ ] Phase 3 — views wired to backend, riskiest-data first: app shell/nav → master/fleet → account detail + inventory grid → pricing → market & orders → trade-offers → mass-buy → ban checker → casket/trade-up → CSFloat → import → settings → Live Logs (logs.html) → unlock.html → license.html → splash.html
 - [ ] Phase 4 — verification: contract audit (API_CONTRACT row-by-row), parity audit (PARITY row-by-row), invariant audit (VERIFICATION.md), live run against the backend (NO money actions — those go to LIVE_TEST_CHECKLIST.md), perf sanity at 500+ accounts
 - [ ] Cutover — replace `public/` with the new frontend (legacy_public/ = rollback), `npm run build && npm test`, smoke-test the live app
-- [ ] Compile — `npm run build:tauri` → SSIM.exe (needs secrets.local.bat for the fail-closed bake; present)
+- [ ] Compile — **bump version 1.3.5 → 1.4.0** (package.json + src-tauri/tauri.conf.json; see RELEASE VERSION above), then `npm run build:tauri` → SSIM.exe (needs secrets.local.bat for the fail-closed bake; present). Do NOT publish (owner's web-panel step).
 
 ## DELIVERABLES (redesign/)
 `00_PROGRESS.md`, `API_CONTRACT.md`, `PARITY.md`, `DESIGN_SYSTEM.md`, `PORT_PLAN.md`, `CHANGES.md` (deliberate flow changes), `VERIFICATION.md`, `LIVE_TEST_CHECKLIST.md`, `OWNER_NOTES.md`, `ROLLBACK.md`, `legacy_public/` (untouched), `design_source.html`.
