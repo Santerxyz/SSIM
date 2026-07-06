@@ -183,7 +183,9 @@ export class Cs2SchemaService {
   }
 }
 
-function numOr(v: unknown, d: number): number { const n = Number(v); return Number.isFinite(n) ? n : d; }
+// Type-honest: a null/'' field must yield the declared default, NOT Number(null)===0.
+// ByMykel emits floats as JSON numbers, so numeric-string tolerance is not needed.
+function numOr(v: unknown, d: number): number { return typeof v === 'number' && Number.isFinite(v) ? v : d; }
 
 /** Process-wide singleton (mirrors PricingService / ExchangeRateService). */
 export const cs2Schema = new Cs2SchemaService();

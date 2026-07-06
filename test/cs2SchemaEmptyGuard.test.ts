@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { Cs2SchemaService } from '../src/core/Cs2SchemaService';
+import { wearMidpoint } from '../src/trading/tradeupMath';
 import { dataDir } from '../src/utils/paths';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -110,4 +111,48 @@ test('H-INV-031: a collections[0] object WITH a string name still pools under th
   ]);
   const def = svc.lookup('M4A4 | Obj');
   assert.equal(def!.collection, 'The Object Collection', 'object.name is still extracted');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-INV-033 — numOr must be type-honest. Number(null)===0 is finite, so the old
+//  numOr returned 0 (not the declared default) for a null/'' float field: a null
+//  max_float became 0 instead of 1, collapsing the whole float band to a fabricated
+//  0.00 god-roll on the number a user destroys 10 items over. The fix returns the
+//  default for anything that is not a finite JS number.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('H-INV-033: a null min_float/max_float falls back to the declared defaults [0,1]', () => {
+  const svc = new Cs2SchemaService();
+  svc.index([
+    { name: 'AK-47 | Nullfloat', rarity: { id: 'rarity_rare_weapon' }, collections: ['The Test Collection'], min_float: null, max_float: null },
+  ]);
+  const def = svc.lookup('AK-47 | Nullfloat');
+  assert.ok(def, 'the row is still indexed');
+  assert.equal(def!.minFloat, 0, 'null min_float → declared default 0, not Number(null)===0-by-accident');
+  assert.equal(def!.maxFloat, 1, 'null max_float → declared default 1, not the fabricated 0');
+});
+
+test('H-INV-033: an empty-string max_float falls back to the default 1', () => {
+  const svc = new Cs2SchemaService();
+  svc.index([
+    { name: 'M4A1-S | Emptyfloat', rarity: { id: 'rarity_rare_weapon' }, collections: ['The Test Collection'], min_float: 0, max_float: '' },
+  ]);
+  const def = svc.lookup('M4A1-S | Emptyfloat');
+  assert.equal(def!.maxFloat, 1, "'' max_float → default 1, not Number('')===0");
+});
+
+test('H-INV-033: a real numeric max_float is preserved unchanged', () => {
+  const svc = new Cs2SchemaService();
+  svc.index([
+    { name: 'AWP | Realfloat', rarity: { id: 'rarity_rare_weapon' }, collections: ['The Test Collection'], min_float: 0, max_float: 0.38 },
+  ]);
+  const def = svc.lookup('AWP | Realfloat');
+  assert.equal(def!.maxFloat, 0.38, 'a finite number passes through untouched');
+});
+
+test('H-INV-033: the restored [0,1] band yields a real FT midpoint, not a fabricated 0', () => {
+  // With the poisoned {0,0} band wearMidpoint would return 0 for every wear; the
+  // restored [0,1] band produces the true Field-Tested midpoint.
+  assert.ok(wearMidpoint('Field-Tested', 0, 1) > 0, 'FT midpoint over [0,1] is non-zero');
+  assert.equal(wearMidpoint('Field-Tested', 0, 0), 0, 'the poisoned {0,0} band collapses to 0 (the defect this guards)');
 });
