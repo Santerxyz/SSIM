@@ -3,6 +3,7 @@ import path from 'path';
 import type { AccountManager } from './AccountManager';
 import type { MaFile } from '../types/account';
 import { AccountVault } from './AccountVault';
+import type { VaultAccount } from './AccountVault';
 import { loadMaFileFromDisk, readCredentialsFile, listDropZoneMaFiles, parseAccountsCsv } from './maFiles';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
@@ -477,7 +478,16 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
   let imported = 0;
   let skipped = 0;
   for (const [k, acc] of Object.entries(ext.accounts)) {
-    const username = acc?.username || k;
+    // decryptExternalVault CASTS payload.accounts verbatim (AccountVault.ts:497) — an entry may be
+    // null / a non-object / carry a non-string username or password (a hand-edited, corrupt or
+    // crafted source vault). Guard the shape BEFORE any deref: the map KEY is the canonical username
+    // and is used only when the entry omits its own; a PRESENT non-string username is a corrupt row
+    // (it would otherwise win the old `acc?.username || k` fallback and TypeError at
+    // hasAccount(u).toLowerCase()), so it is rejected as unusable rather than silently key-renamed.
+    const rawU = (acc && typeof acc === 'object') ? (acc as VaultAccount).username : undefined;
+    const u = (rawU === undefined || rawU === '') ? k : rawU;
+    if (!acc || typeof acc !== 'object' || typeof (acc as VaultAccount).password !== 'string' || typeof u !== 'string') { skipped++; continue; } // unusable-row
+    const username = u;
     if (!username || AccountVault.hasAccount(username) || accounts.existsRaw(username)) { skipped++; continue; }
     if (AccountVault.importAccount({ username, password: acc.password, maFile: acc.maFile, proxy: acc.proxy })) {
       imported++;

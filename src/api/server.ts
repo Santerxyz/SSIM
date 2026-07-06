@@ -2063,9 +2063,13 @@ export function createApp(deps: ApiDeps): Express {
     // folder is chosen, the source's folder organisation is recreated in the target environment.
     // An explicit folderId from the modal takes precedence (all bots land in that one folder).
     const orgJson = typeof accountsJson === 'string' && accountsJson.trim() ? accountsJson : undefined;
-    const r = importExternalVault(accounts, vault, password, orgJson, environmentId, folderId ?? null);
-    if (r === null) return res.status(401).json({ error: 'wrong password, or this is not an SSIM vault file' });
-    res.json(r);
+    try {
+      const r = importExternalVault(accounts, vault, password, orgJson, environmentId, folderId ?? null);
+      if (r === null) return res.status(401).json({ error: 'wrong password, or this is not an SSIM vault file' });
+      res.json(r);
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
   });
 
   // Lists *.maFile in ./mafiles/ that are not yet registered to an account.
