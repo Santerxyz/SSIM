@@ -3,7 +3,7 @@ import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
 import { SessionState, type ManagedSession, type WebSession } from '../types/session';
 import { AgentFactory } from '../network/AgentFactory';
-import { loadMaFile, buildLogOnOptions, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
+import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
 import { webCookiesFresh, ownsCreatedSession } from './sessionHealth';
@@ -303,18 +303,19 @@ export class SessionManager extends EventEmitter {
         return await this.attemptLogin(account, { refreshToken: storedToken }, maFile, 'token');
       } catch (err) {
         const kind = (err as LoginError).loginErrorKind ?? 'connection';
-        if (kind === 'auth' && onTokenAuthFailure(!!maFile) === 'delete-and-retry') {
-          // STRONG evidence the token is bad AND we have a maFile fallback → delete the
-          // token and re-login via credentials.
+        if (kind === 'auth' && onTokenAuthFailure({ hasMaFile: !!maFile, hasPassword: !!resolvePassword(account) }) === 'delete-and-retry') {
+          // STRONG evidence the token is bad AND we have a usable credential fallback
+          // (maFile + password) → delete the token and re-login via credentials.
           logger.warn(`[${account.username}] refresh token is INVALID (${(err as Error).message}) – deleting token, full login`);
           this.tokenStore.delete(account.username);
           await this.destroySession(key);
           // …fall through to the credential login below.
         } else if (kind === 'auth') {
-          // Token-only account (no maFile): the refresh token is its SOLE credential.
-          // PRESERVE it — a misclassified/transient 'auth' verdict must never permanently
-          // strand the account — and surface a re-import requirement. (INV-A2 / C8.)
-          logger.error(`[${account.username}] token login failed (auth) with no maFile fallback – token PRESERVED; account needs re-import (QR/credentials)`);
+          // No usable credential fallback (needs maFile + password): the refresh token is
+          // this account's SOLE credential. PRESERVE it — a misclassified/transient 'auth'
+          // verdict must never permanently strand the account — and surface a re-import
+          // requirement. (INV-A2 / C8.)
+          logger.error(`[${account.username}] token login failed (auth) with no usable credential fallback (needs maFile + password) – token PRESERVED; account needs re-import (QR/credentials)`);
           throw err;
         } else {
           // Connection/proxy problem after all retries → the token is almost

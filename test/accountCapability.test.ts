@@ -17,6 +17,12 @@ test('canConfirm: legacy/plaintext mode falls back to the tier label', () => {
 
 // C8 / INV-A2 — never delete a token-only account's SOLE credential on an auth verdict.
 test('onTokenAuthFailure: token-only (no maFile) account preserves its token', () => {
-  assert.equal(onTokenAuthFailure(false), 'preserve-and-fail');
-  assert.equal(onTokenAuthFailure(true),  'delete-and-retry');
+  assert.equal(onTokenAuthFailure({ hasMaFile: false, hasPassword: false }), 'preserve-and-fail');
+  assert.equal(onTokenAuthFailure({ hasMaFile: true,  hasPassword: true  }), 'delete-and-retry');
+});
+
+// H-ACC-085 — a password-less (QR-imported, maFile-attached) account must NOT have its sole
+// refresh token deleted: the maFile alone cannot log in (empty password → auth failure).
+test('onTokenAuthFailure: maFile present but no password preserves the token', () => {
+  assert.equal(onTokenAuthFailure({ hasMaFile: true, hasPassword: false }), 'preserve-and-fail');
 });

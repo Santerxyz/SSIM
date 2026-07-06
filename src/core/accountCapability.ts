@@ -33,13 +33,16 @@ export type TokenAuthFailureAction = 'delete-and-retry' | 'preserve-and-fail';
 
 /**
  * What to do when a stored-refresh-token login fails with an 'auth' verdict:
- *   • the account has a maFile (credential fallback) → delete the bad token and retry
- *     via credentials.
- *   • no maFile (token-only LIMITED account) → the token is the SOLE credential;
- *     PRESERVE it and fail this round (a misclassified/transient 'auth' must not
- *     permanently destroy the only way in). The operator re-imports via QR/credentials.
+ *   • a credential fallback exists — a maFile (for TOTP; shared_secret is guaranteed
+ *     by both load paths) AND a password — → delete the bad token and retry via
+ *     credentials.
+ *   • no usable credential fallback (no maFile, OR a password-less account — e.g. a
+ *     QR-imported account whose only maFile was attached without a password) → the
+ *     refresh token is the SOLE credential; PRESERVE it and fail this round (a
+ *     misclassified/transient 'auth' must not permanently destroy the only way in).
+ *     The operator re-imports via QR/credentials.
  * (INV-A2 / C8.)
  */
-export function onTokenAuthFailure(hasMaFileFallback: boolean): TokenAuthFailureAction {
-  return hasMaFileFallback ? 'delete-and-retry' : 'preserve-and-fail';
+export function onTokenAuthFailure(fallback: { hasMaFile: boolean; hasPassword: boolean }): TokenAuthFailureAction {
+  return fallback.hasMaFile && fallback.hasPassword ? 'delete-and-retry' : 'preserve-and-fail';
 }
