@@ -130,14 +130,24 @@ export interface MaFile {
   uri?:             string;
   server_time?:     number;
   token_gid?:       string;
-  steamid?:         string;
+  /**
+   * SDA writes these as raw JSON numbers exceeding Number.MAX_SAFE_INTEGER — the numeric form is
+   * ALREADY precision-corrupted by JSON.parse and must never be converted to a string or used as an id.
+   * Only a `typeof === 'string'` value matching /^7656\d{13}$/ is trustworthy; resolve ids per
+   * BanService.resolveSteamId (raw-text regex / filename / live session).
+   */
+  steamid?:         string | number;
+  /**
+   * @deprecated dead SDA web-session data — nothing in src/ reads it; parse-time normalization deletes
+   * it (H-ACC-073); typed only to describe legacy vault records.
+   */
   Session?: {
     SessionID?:        string;
     SteamLogin?:       string;
     SteamLoginSecure?: string;
     WebCookie?:        string;
     OAuthToken?:       string;
-    SteamID?:          string;
+    SteamID?:          string | number;
   };
 }
 
