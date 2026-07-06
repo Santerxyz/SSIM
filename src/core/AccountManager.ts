@@ -146,7 +146,7 @@ export class AccountManager {
     return db;
   }
 
-  private save(): void {
+  private save(opts?: { backup?: boolean }): void {
     this.db.updatedAt = new Date().toISOString();
     // In VAULT MODE never persist a password or a credential-bearing proxy to accounts.json
     // — BUT only blank an account that is ACTUALLY in the vault. An account that could NOT be
@@ -177,7 +177,7 @@ export class AccountManager {
     // `secretFree` detects the steady state without a disk read: no vaulted account holds a
     // password in memory. (An unmigrated account's plaintext is already in accounts.json anyway.)
     const secretFree = !this.db.accounts.some(a => a.password && AccountVault.hasAccount(a.username));
-    writeJsonAtomic(DB_PATH, toWrite, { spaces: 2, backup: vault ? secretFree : true });
+    writeJsonAtomic(DB_PATH, toWrite, { spaces: 2, backup: opts?.backup ?? (vault ? secretFree : true) });
     logger.debug('accounts.json saved');
   }
 
@@ -217,8 +217,17 @@ export class AccountManager {
       if (env.proxy && env.proxy.trim() && AccountVault.importEnvProxy(env.id, env.proxy.trim())) envProxiesMoved++;
     }
     if (envProxiesMoved > 0) { AccountVault.save(); logger.info(`[vault] migrated ${envProxiesMoved} environment proxy/proxies into the vault`); }
-    this.save();
-    try { const bak = `${DB_PATH}.bak`; if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); } catch { /* best-effort */ }
+    // Purge FIRST, then save with backup:false — otherwise the save() would copy the PRE-blank
+    // plaintext main into accounts.json.bak (the heuristic reads in-memory passwords, which are
+    // already blanked above, so it would wrongly back up the still-plaintext DISK). Purging first
+    // also removes any plaintext-mode or migrate-time .bak left earlier in this boot. Kill-point
+    // matrix: die before purge → old .bak persists but is warned + retried next boot (enterVaultMode
+    // runs unconditionally every vault-mode boot); die between purge and save → plaintext main intact
+    // (non-destructive guarantee), no .bak; die after save → disk secret-free, no .bak. A NEW
+    // plaintext .bak is never created.
+    try { const bak = `${DB_PATH}.bak`; if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); }
+    catch (e) { logger.warn(`[vault] could not remove plaintext accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
+    this.save({ backup: false });
   }
 
   // ── Network resolution (computed, never persisted) ───────────────────────────
