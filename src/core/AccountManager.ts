@@ -463,7 +463,18 @@ export class AccountManager {
     const account = this.rawGet(username);
     if (!account || account.steamId === steamId) return;
     account.steamId = steamId;
-    this.save();
+    // H-ACC-019: rememberSteamId is called bare inside steam-user's 'loggedOn' emit chain, so a
+    // throwing save() (writeJsonAtomic keeps its throw contract; renameSync EPERM/EBUSY under AV is
+    // the classic Windows case) would become an uncaughtException and, during a mass first-login,
+    // tick the money-ops breaker. The steamId is a write-through CACHE: it stays set in memory, is
+    // served correctly this session, and persists with the next successful save — so a disk hiccup
+    // must not cross into the emit chain. Degrade to warn-and-continue (same as S24 for TokenStore).
+    try {
+      this.save();
+    } catch (e) {
+      logger.warn(`[${account.username}] steamId cache persist failed (kept in memory; persists with the next save): ${(e as Error).message}`);
+      return;
+    }
     logger.debug(`[${account.username}] cached SteamID ${steamId}`);
   }
 
