@@ -18,6 +18,8 @@ const state = {
   tf2Inventories: {},           // username → TF2 inventory (lazy-loaded on first toggle)
   wallets: {},                  // lcUser → { wallet:{currency,balance}, ts } – GLOBAL Steam wallet, NEWEST across games
   tf2Loaded: false,             // whether the TF2 cache has been fetched at least once
+  tf2LoadError: null,           // H-FE-001: error message if the first TF2 fetch failed – a failed load must
+                                //           render as a distinct error+Retry panel, never as an empty inventory
   game: 'cs2',                  // 'cs2' | 'tf2' – which inventory the views show
   globalEnvs: new Set(),        // selected environment ids for the Global Master
   aggItems: [],                 // last aggregated items WITH owners (folder-master selection source)
@@ -528,19 +530,30 @@ async function setGame(game) {
   state.game = game;
   clearSelection();
   updateGameToggle();
-  if (game === 'tf2' && !state.tf2Loaded) {
-    try {
-      const invMap = await api('/api/inventory-tf2');
-      state.tf2Inventories = {};
-      for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
-      state.tf2Loaded = true;
-      // S29: this first TF2 load enriches + queues a server-side price fill for the cold TF2 cache, but
-      // nothing watched it (boot/refresh/source-switch all start a watch; this path did not) → TF2 prices
-      // stayed "…" until an unrelated trigger. Start the watch so prices + totals fill in live (mirrors init()).
-      void watchPriceFill(refreshActiveViewFromCache);
-    } catch (err) { toast(err.message, 'error'); }
-  }
+  if (game === 'tf2' && !state.tf2Loaded) await loadTf2Inventories();
   renderMain();
+}
+
+/** H-FE-001: the cold TF2 fetch (over the fleet's flaky proxies) is the app's flakiest load. On success it
+ *  fills state.tf2Inventories + starts the price-fill watch; on FAILURE it records state.tf2LoadError so the
+ *  render path shows a distinct "couldn't load TF2 — Retry" panel instead of a silently-empty inventory (a
+ *  failed load masquerading as a legitimate empty state — the S4/S13 UI-truth class at the display layer).
+ *  Also invoked by the Retry button in renderTf2LoadError. Keeps state.game='tf2' so the toggle stays honest. */
+async function loadTf2Inventories() {
+  try {
+    const invMap = await api('/api/inventory-tf2');
+    state.tf2Inventories = {};
+    for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
+    state.tf2Loaded = true;
+    state.tf2LoadError = null;
+    // S29: this first TF2 load enriches + queues a server-side price fill for the cold TF2 cache, but
+    // nothing watched it (boot/refresh/source-switch all start a watch; this path did not) → TF2 prices
+    // stayed "…" until an unrelated trigger. Start the watch so prices + totals fill in live (mirrors init()).
+    void watchPriceFill(refreshActiveViewFromCache);
+  } catch (err) {
+    state.tf2LoadError = err.message;
+    toast(err.message, 'error');
+  }
 }
 
 function updateGameToggle() {
@@ -608,6 +621,7 @@ async function refreshActiveViewFromCache() {
       state.tf2Inventories = {};
       for (const k of Object.keys(invMap || {})) storeTf2Inv(invMap[k]);
       state.tf2Loaded = true;
+      state.tf2LoadError = null;   // H-FE-001: a successful TF2 load heals any prior load-error panel
     } else {
       const invMap = await api('/api/inventory');
       state.inventories = {};
@@ -1682,6 +1696,9 @@ function renderBreadcrumb() {
 function renderMain() {
   if (state.screen !== 'inventory') return;
   renderBreadcrumb();
+  // H-FE-001: the cold TF2 fetch failed → show a distinct error+Retry panel, NOT an empty inventory. A failed
+  // load must never masquerade as a legitimate empty state (S4/S13 UI-truth class). Cleared on a successful load.
+  if (state.game === 'tf2' && !state.tf2Loaded && state.tf2LoadError) { renderTf2LoadError(); return; }
   el.globalFilter.classList.toggle('hidden', state.invMode !== 'global');
   // The worth/wallet curve lives in the env-master + global-master views, for BOTH games
   // (the curve tracks the ACTIVE game's worth — TF2 items are priced against appid 440).
@@ -1697,6 +1714,38 @@ function renderMain() {
   if (state.invMode === 'folder')     return renderFolderMaster();
   if (state.invMode === 'selection')  return renderSelectionMaster();
   return renderAccountView();
+}
+
+/** H-FE-001: the TF2 cache failed its first fetch → render a distinct error panel with a Retry button in place of
+ *  the (empty) inventory body, so a failed load is never mistaken for a genuinely empty fleet. Retry re-runs the
+ *  same /api/inventory-tf2 load; on success loadTf2Inventories clears tf2LoadError and renderMain paints the real view. */
+function renderTf2LoadError() {
+  // Hide every inventory surface so only the error panel shows (mirrors renderNoAccount's teardown).
+  el.itemsWrap?.classList.add('hidden');
+  el.emptyState?.classList.add('hidden');
+  el.invLoading?.classList.add('hidden');
+  el.ordersWrap?.classList.add('hidden');
+  el.gcCatTabs?.classList.add('hidden');
+  el.facetBar?.classList.add('hidden');
+  el.globalFilter?.classList.add('hidden');
+  el.historyWrap?.classList.add('hidden');
+  el.mainHeader.innerHTML = `
+    <div class="h-full flex flex-col items-center justify-center text-center py-16">
+      <div class="w-20 h-20 rounded-2xl bg-slate-900 border border-rose-900/60 flex items-center justify-center mb-5">
+        <i class="fa-solid fa-triangle-exclamation text-3xl text-rose-400"></i>
+      </div>
+      <p class="text-slate-200 font-semibold">Couldn't load TF2 inventories</p>
+      <p class="text-slate-500 text-sm mt-1 max-w-md">${escapeHtml(state.tf2LoadError || 'The TF2 inventory fetch failed.')}</p>
+      <button id="btn-tf2-retry"
+        class="mt-5 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-light text-white text-sm font-bold transition inline-flex items-center gap-2">
+        <i class="fa-solid fa-rotate"></i><span>Retry</span></button>
+    </div>`;
+  const rb = $('btn-tf2-retry');
+  if (rb) rb.addEventListener('click', async () => {
+    rb.disabled = true; rb.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i><span>Retrying…</span>';
+    await loadTf2Inventories();
+    renderMain();   // success → clears the panel and paints the real view; failure → re-renders this panel
+  });
 }
 
 function setStatLabels(itemsLabel, lockedLabel, showLockWarn = false) {
@@ -3541,6 +3590,7 @@ function pollRefresh() {
         state.tf2Inventories = {};
         for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
         state.tf2Loaded = true;
+        state.tf2LoadError = null;   // H-FE-001: a successful TF2 refresh heals any prior load-error panel
       } else {
         const invMap = await api('/api/inventory');
         state.inventories = {};
