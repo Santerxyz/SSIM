@@ -100,7 +100,11 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
         const { created } = AccountVault.unlockOrCreate(password, { createEmptyAnyway: body.createEmptyAnyway === true });
         logger.info(`[vault] ${created ? 'created' : 'unlocked'} via app-window unlock portal`);
         res.json({ ok: true, created });
-        // Let the page receive the response, then free the port + continue boot.
+        // Let the page receive the response, then free the port + continue boot. The page does NOT
+        // reload on a fixed timer — the Tauri shell will NOT re-navigate (one-shot per spawn), so a
+        // blind reload could hit the port before startFullApp rebinds it. The page instead polls
+        // /api/system/status and reloads only once the full app answers (no vaultLocked:true) — see
+        // unlock.html waitForApp (H-ACC-067). So the close→rebind gap here is readiness-gated, not raced.
         setTimeout(() => {
           try { (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); } catch { /* noop */ }
           server.close(() => resolve());
@@ -147,5 +151,5 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
 // Read-only by design (bundle-defect emergency page): it only surfaces d.error; the S18
 // destructive orphan-vault override (createEmptyAnyway) deliberately requires the real page.
 const FALLBACK_HTML = `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;background:#0a0a0f;color:#eee;display:flex;min-height:100vh;align-items:center;justify-content:center">
-<form onsubmit="event.preventDefault();fetch('/api/vault/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p.value})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Unlocking - starting SSIM...';setTimeout(()=>location.reload(),2200)}else{s.textContent=d.error}})">
+<form onsubmit="event.preventDefault();fetch('/api/vault/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p.value})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Unlocking - starting SSIM...';var w=function(){fetch('/api/system/status',{cache:'no-store'}).then(r=>r.json()).then(x=>{if(x&&x.vaultLocked!==true){location.replace('/');return}setTimeout(w,500)}).catch(()=>setTimeout(w,500))};setTimeout(w,900)}else{s.textContent=d.error}})">
 <div><h2>SSIM - Unlock Vault</h2><input id="p" type="password" placeholder="Master Password" style="padding:8px;width:280px"><button>Unlock</button><p id="s" style="color:#c084fc"></p></div></form>`;

@@ -158,10 +158,26 @@
       var d = resp.d;
       if (d && d.ok) {
         // Correct password → keep the spinner running through the hand-off to the
-        // dashboard (the backend takes a moment to start the full app before reload).
+        // dashboard. The shell will NOT re-navigate (one-shot per spawn), so we must
+        // wait for PROOF the full app has rebound the port before we reload — a blind
+        // fixed timer would reload onto an unbound port (connection-refused) on a slow
+        // boot (large farms). Discriminator: only the portal fabricates vaultLocked:true;
+        // the full app's /api/system/status has no vaultLocked key, so "status answers
+        // without vaultLocked:true" ⇔ the dashboard is live. (H-ACC-067)
         btn.innerHTML = '<span class="spin"></span>' + (d.created ? 'Vault created — starting…' : 'Starting SSIM…');
         msg.className = 'msg'; msg.textContent = '';
-        setTimeout(function () { location.reload(); }, 2300);
+        var startedAt = Date.now();
+        var waitForApp = function () {
+          fetch('/api/system/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (s) {
+            if (s && s.vaultLocked !== true) { location.replace('/'); return; }
+            if (Date.now() - startedAt > 60000) { btn.innerHTML = '<span class="spin"></span>Still starting — large farms can take a minute…'; }
+            setTimeout(waitForApp, 500);
+          }).catch(function () {
+            if (Date.now() - startedAt > 60000) { btn.innerHTML = '<span class="spin"></span>Still starting — large farms can take a minute…'; }
+            setTimeout(waitForApp, 500);
+          });
+        };
+        setTimeout(waitForApp, 900);
       } else {
         btn.disabled = false;
         el('logoWrap').classList.remove('loading');
