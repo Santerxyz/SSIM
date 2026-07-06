@@ -87,8 +87,10 @@ try {
         : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       const out = mask(s);
       if (written > SINK_MAX_BYTES) {
-        try { fs.renameSync(stderrTrace, stderrTrace + '.1'); } catch { /* rename raced — ignore */ }
-        written = 0;
+        let rolled = false;
+        try { fs.renameSync(stderrTrace, stderrTrace + '.1'); rolled = true; }
+        catch { /* file locked / rename raced — leave counter high so we retry next write */ }
+        if (rolled) written = 0;
       }
       fs.appendFileSync(stderrTrace, out);
       written += Buffer.byteLength(out);
