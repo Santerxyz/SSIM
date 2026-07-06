@@ -14,6 +14,9 @@ import type { Wear } from '../trading/tradeupMath';
 
 const SCHEMA_FILE = dataDir('cs2-skins.json');
 const BYMYKEL_URL = 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json';
+// The live schema indexes ~thousands of skins from a 4.7MB file; 500 is an
+// order-of-magnitude floor (an empty [] or format-drifted array indexes to ~0).
+const MIN_SCHEMA_SKINS = 500;
 
 /**
  * The WEAPON trade-up ladder: each rarity tier → the tier a contract of it PRODUCES.
@@ -82,14 +85,32 @@ export class Cs2SchemaService {
     let raw: unknown;
     try { if (fsExtra.existsSync(SCHEMA_FILE)) raw = fsExtra.readJsonSync(SCHEMA_FILE); }
     catch (e) { logger.warn(`[schema] local cs2-skins.json unreadable: ${(e as Error).message}`); }
-    if (!Array.isArray(raw)) {
-      logger.info('[schema] fetching CS2 skin schema from ByMykel…');
-      const r = await axios.get(BYMYKEL_URL, { timeout: 20_000, validateStatus: () => true });
-      if (r.status !== 200 || !Array.isArray(r.data)) throw new Error(`CS2 schema fetch failed (HTTP ${r.status})`);
-      raw = r.data;
-      try { writeJsonAtomic(SCHEMA_FILE, raw, { spaces: 0 }); } catch { /* cache is best-effort */ }
+    if (Array.isArray(raw)) {
+      // Disk cache: only trust it if it actually indexes a usable schema. An empty [] or a
+      // format-drifted file (upstream shape change) indexes to ~0 skins and would otherwise be
+      // authoritative forever — refetch instead of trusting the poisoned cache.
+      this.index(raw as unknown[]);
+      if (this.byBaseName.size >= MIN_SCHEMA_SKINS) {
+        this.loaded = true;
+        logger.info(`[schema] loaded ${this.byBaseName.size} skins across ${this.byCollectionRarity.size} collections`);
+        return;
+      }
+      logger.warn(`[schema] cached cs2-skins.json unusable (${this.byBaseName.size} skins indexed) — refetching`);
     }
-    this.index(raw as unknown[]);
+    logger.info('[schema] fetching CS2 skin schema from ByMykel…');
+    const r = await axios.get(BYMYKEL_URL, { timeout: 20_000, validateStatus: () => true });
+    if (r.status !== 200 || !Array.isArray(r.data)) throw new Error(`CS2 schema fetch failed (HTTP ${r.status})`);
+    this.index(r.data as unknown[]);
+    if (this.byBaseName.size < MIN_SCHEMA_SKINS) {
+      // A well-formed but empty/drifted 200 must NOT be persisted — that is the infinite-TTL
+      // poison. Clear the indexes, stay unloaded, and surface a visible, retryable error.
+      const n = this.byBaseName.size;
+      this.byBaseName.clear();
+      this.byCollectionRarity.clear();
+      this.loaded = false;
+      throw new Error(`CS2 schema unusable (${n} skins parsed)`);
+    }
+    try { writeJsonAtomic(SCHEMA_FILE, r.data, { spaces: 0 }); } catch { /* cache is best-effort */ }
     this.loaded = true;
     logger.info(`[schema] loaded ${this.byBaseName.size} skins across ${this.byCollectionRarity.size} collections`);
   }
