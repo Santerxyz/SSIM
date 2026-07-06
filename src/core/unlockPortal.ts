@@ -1,7 +1,7 @@
 import fs from 'fs';
 import http from 'http';
 import express from 'express';
-import { AccountVault } from './AccountVault';
+import { AccountVault, VAULT_READ_ERROR_PREFIX } from './AccountVault';
 import { looksLikeOrphanedVaultInstall } from './vaultBoot';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
@@ -108,7 +108,11 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
       } catch (e) {
         failed++;
         const raw = (e as Error).message;
-        const msg = raw === 'WRONG_PASSWORD' ? 'Incorrect Master Password.' : raw;
+        // A VAULT_READ_ERROR:* is a TRANSIENT fs error (vault.enc locked by antivirus / mid-restore),
+        // not a bad password — tell the operator to retry rather than surfacing the raw code (H-ACC-037).
+        const msg = raw === 'WRONG_PASSWORD' ? 'Incorrect Master Password.'
+          : raw.startsWith(VAULT_READ_ERROR_PREFIX) ? 'The vault file is locked by another program (antivirus?) — retry in a moment.'
+          : raw;
         logger.warn(`[vault] app-window unlock attempt failed: ${msg}`);
         res.status(400).json({ ok: false, error: msg });
       }

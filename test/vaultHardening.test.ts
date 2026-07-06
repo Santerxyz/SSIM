@@ -247,6 +247,61 @@ test('H-ACC-036: the import path (decryptExternalVault) returns null for an absu
   assert.ok(Date.now() - t < 500, 'refused before any scrypt call');
 });
 
+// ─── H-ACC-037: .bak recovery covers the COMMON corruption shapes, not just bad ciphertext ──
+// External corruption (AV mangling, disk fault, partial restore, a user edit) usually yields
+// UNPARSEABLE bytes or a mis-shaped envelope — not a pristine JSON envelope with only a bad GCM
+// ciphertext. Recovery must trigger on those too; a genuine corrupt-both must still fail as corrupt.
+function seedRecoverableVault(): { file: string; bak: string } {
+  const { file, bak } = tmpVault();
+  const v1 = new AccountVaultImpl(file, bak);
+  v1.unlockOrCreate('pw');
+  v1.upsertAccount(ACCT);        // save writes vault.enc AND a .bak of the prior state
+  v1.setToken('bot1', 'tok-1');  // another save → .bak now holds the account
+  v1.flush();
+  assert.ok(fs.existsSync(bak), 'a real .bak exists after multiple saves');
+  return { file, bak };
+}
+
+test('H-ACC-037(a): unparseable vault.enc (garbage JSON) recovers from a healthy .bak', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.writeFileSync(file, 'garbage{{{'); // SyntaxError on readJsonSync → corrupt, recoverable
+  const v2 = new AccountVaultImpl(file, bak);
+  const r = v2.unlockOrCreate('pw');
+  assert.equal(r.created, false, 'recovered, not recreated');
+  assert.equal(v2.getAccount('bot1')?.password, 'pw123', 'recovered the account from the backup');
+  // vault.enc was rewritten healthy → it re-decrypts.
+  assert.doesNotThrow(() => new AccountVaultImpl(file, bak + '.none').unlockOrCreate('pw'));
+});
+
+test('H-ACC-037(b): a mis-shaped envelope (wrong magic) recovers from a healthy .bak', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.writeFileSync(file, JSON.stringify({ magic: 'nope' })); // parses, but parseEnvelope rejects it
+  const v2 = new AccountVaultImpl(file, bak);
+  assert.doesNotThrow(() => v2.unlockOrCreate('pw'), 'a corrupt envelope recovers, not a raw throw');
+  assert.equal(v2.getAccount('bot1')?.password, 'pw123', 'recovered the account from the backup');
+});
+
+test('H-ACC-037(c): both vault.enc AND .bak corrupt fail as corrupt (NOT WRONG_PASSWORD)', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.writeFileSync(file, 'garbage{{{');
+  fs.writeFileSync(bak, 'garbage{{{');
+  assert.throws(
+    () => new AccountVaultImpl(file, bak).unlockOrCreate('pw'),
+    /corrupt/,
+    'corrupt-both is reported as corrupt',
+  );
+  assert.throws(
+    () => new AccountVaultImpl(file, bak).unlockOrCreate('pw'),
+    (e: Error) => !/WRONG_PASSWORD/.test(e.message),
+    'must NOT be lied about as a wrong password',
+  );
+});
+
+test('H-ACC-037(d): healthy files + wrong password still fail as WRONG_PASSWORD (UX unchanged)', () => {
+  const { file, bak } = seedRecoverableVault();
+  assert.throws(() => new AccountVaultImpl(file, bak).unlockOrCreate('nope'), /WRONG_PASSWORD/);
+});
+
 test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   const { file, bak } = tmpVault();
   const v1 = new AccountVaultImpl(file, bak);

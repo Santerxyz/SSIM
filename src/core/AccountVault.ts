@@ -32,6 +32,15 @@ const VAULT_VERSION = 1;
 /** Distinct error a caller can detect to show "update SSIM first" instead of the
  *  wrong-password screen (B30). */
 export const VAULT_NEWER_VERSION_ERROR = 'VAULT_NEWER_VERSION';
+/** Message for an UNREADABLE/mis-shaped vault envelope (unparseable JSON, wrong magic, out-of-bounds
+ *  KDF params, garbage scrypt cost). A recoverable corruption shape: the catch in unlockOrCreate
+ *  probes the .bak for it exactly like a GCM auth failure (H-ACC-037). */
+const VAULT_CORRUPT_ERROR = 'vault.enc is corrupt or not an SSIM vault';
+/** Prefix for a TRANSIENT fs error reading vault.enc (EBUSY/EPERM/EACCES/ENOENT/EMFILE — an AV lock,
+ *  a race with a restore, a permissions blip). The file itself may be intact, so this NEVER triggers
+ *  .bak recovery (recovering an intact-but-locked main from a one-generation-older .bak would silently
+ *  lose the newest generation); it is retryable (H-ACC-037). */
+export const VAULT_READ_ERROR_PREFIX = 'VAULT_READ_ERROR:';
 // scrypt cost: N=2^15 (~tens of ms / derivation) — strong vs. brute force, fine for
 // a once-per-boot unlock. maxmem raised to fit N (≈128·N·r ≈ 33 MB).
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, keylen: 32, maxmem: 96 * 1024 * 1024 };
@@ -135,12 +144,24 @@ export class AccountVaultImpl {
    *   • Error('WRONG_PASSWORD')       — GCM auth failed (wrong key OR a corrupt ciphertext)
    *   • Error(VAULT_NEWER_VERSION…)   — the file's version is newer than this binary (B30)
    *   • Error('vault.enc is corrupt') — not an SSIM vault / unreadable envelope
+   *   • Error('VAULT_READ_ERROR:<code>') — a TRANSIENT fs error (AV lock / permissions); retryable,
+   *     never a .bak-recovery trigger (H-ACC-037)
    */
   private decryptFile(vaultPath: string, password: string): { key: Buffer; salt: Buffer; plain: string } {
-    const file = fsExtra.readJsonSync(vaultPath) as VaultFileFormat;
+    // A read that throws is either a TRANSIENT fs error (EBUSY/EPERM/… — AV lock / partial restore:
+    // the file may be intact, so DON'T recover from an older .bak) or unparseable/truncated JSON
+    // (a genuine corruption shape → recoverable from .bak). Classify the two apart (H-ACC-037).
+    let file: VaultFileFormat;
+    try {
+      file = fsExtra.readJsonSync(vaultPath) as VaultFileFormat;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code) throw new Error(`${VAULT_READ_ERROR_PREFIX}${code}`);
+      throw new Error(VAULT_CORRUPT_ERROR); // SyntaxError (unparseable/truncated) → corrupt, recoverable
+    }
     const env = this.parseEnvelope(file);
     if (!env) {
-      throw new Error('vault.enc is corrupt or not an SSIM vault');
+      throw new Error(VAULT_CORRUPT_ERROR);
     }
     // Envelope version gate (B30): a file written by a NEWER SSIM must be refused with a
     // DISTINCT error (never decrypted-then-rewritten, which would strip its newer sections).
@@ -148,7 +169,14 @@ export class AccountVaultImpl {
       throw new Error(VAULT_NEWER_VERSION_ERROR);
     }
     const salt = env.salt;
-    const key = this.deriveKey(password, salt, env.params);
+    // scrypt can throw on garbage header cost params that slip the clamp (or an internal limit) —
+    // treat that as a corrupt envelope (recoverable from .bak), consistent with H-ACC-036's clamp.
+    let key: Buffer;
+    try {
+      key = this.deriveKey(password, salt, env.params);
+    } catch {
+      throw new Error(VAULT_CORRUPT_ERROR);
+    }
     let plain: string;
     try {
       const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
@@ -173,14 +201,17 @@ export class AccountVaultImpl {
       try {
         ({ key, salt, plain } = this.decryptFile(this.vaultFile, password));
       } catch (err) {
-        // A GCM failure means EITHER a wrong password OR a corrupt main file. Distinguish
-        // them with the .bak (B33): if the SAME password decrypts vault.enc.bak, the FILE
-        // is bad (not the password) → recover from the backup and restore it. Only when the
-        // .bak ALSO fails (or doesn't exist) is it a genuine wrong password. A newer-version
-        // refusal is NOT a decrypt failure and is rethrown as-is.
-        if ((err as Error).message !== 'WRONG_PASSWORD') throw err;
+        // A decrypt failure is either a wrong password OR a corrupt main file (bad ciphertext,
+        // unparseable JSON, mis-shaped/garbage-KDF envelope). Both are recoverable: if the SAME
+        // password decrypts vault.enc.bak, the FILE is bad (not the password) → recover from the
+        // backup and restore it. Only when the .bak ALSO fails (or doesn't exist) is it a genuine
+        // wrong password. A newer-version refusal and a TRANSIENT read error (VAULT_READ_ERROR:*,
+        // AV lock — the intact main must NOT be replaced by an older .bak) are NOT decrypt
+        // failures and are rethrown as-is (H-ACC-037).
+        const em = (err as Error).message;
+        if (em !== 'WRONG_PASSWORD' && em !== VAULT_CORRUPT_ERROR) throw err;
         const rec = this.tryRecoverFromBak(password);
-        if (!rec) throw err; // both main and .bak fail the same password → wrong password
+        if (!rec) throw err; // both main and .bak fail → genuine wrong password / corrupt-both
         logger.error('[vault] vault.enc failed to decrypt but vault.enc.bak did — the main file is CORRUPT (password is correct). Recovering from the backup.');
         this.payload = rec.payload; this.key = rec.key; this.salt = rec.salt;
         // S5: rewrite a healthy vault.enc WITHOUT a backup pass. The default backup:true would first
