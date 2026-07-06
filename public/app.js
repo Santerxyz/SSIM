@@ -804,6 +804,7 @@ const REPRICE_NO_PROGRESS_MS = 15 * 60_000;
 // multi-MB stringify server-side, plus a full renderMain/renderSidebar client-side). A fill advances
 // ~1 name/3.5s, so the old "re-pull on every advance" hammered the event loop ~every 2.5s poll for the
 // whole fill. Coalesce to at most one re-pull per this interval; the final drain still pulls immediately.
+// Keep in sync with src/pricing/repriceReconciler.ts MIN_REPULL_MS (repriceDecision models this gate).
 const REPRICE_MIN_REPULL_MS = 10_000;
 /** Decide whether the fill-watch should re-pull now: always on drain (queue empty), else only when the
  *  fill advanced AND at least REPRICE_MIN_REPULL_MS has elapsed since the last re-pull. (S10) */

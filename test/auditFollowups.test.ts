@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { CsFloatDeliveredStore } from '../src/csfloat/CsFloatDeliveredStore';
-import { repriceDecision } from '../src/pricing/repriceReconciler';
+import { repriceDecision, MIN_REPULL_MS } from '../src/pricing/repriceReconciler';
 
 // ─── Fresh-install single-instance lock: acquiring must create the data dir ────
 // (Regression: the atomic 'wx' lock threw ENOENT on a fresh install where data/ did
@@ -50,7 +50,9 @@ test('delivered-store: a valid file loads its ids and is not degraded', () => {
 // ─── Reprice reconciler: a fetched RESET (new fill generation) re-baselines ────
 test('reconciler: fetched dropping below lastPulled (new generation) re-pulls', () => {
   // We'd already pulled at 200; the backend starts a new run() and fetched resets to 30.
-  const d = repriceDecision({ lastPulled: 200, lastProgressAt: 0 }, { fetched: 30, running: true, queued: 5 }, 1000);
+  // `now` is ≥ MIN_REPULL_MS past the last re-pull (lastRepulledAt defaults to 0) so the S10 coalescing
+  // gate does not suppress the re-baselined advance.
+  const d = repriceDecision({ lastPulled: 200, lastProgressAt: 0 }, { fetched: 30, running: true, queued: 5 }, MIN_REPULL_MS + 1000);
   assert.equal(d.repull, true, 'the new generation must be re-pulled, not ignored until it passes 200');
   assert.equal(d.state.lastPulled, 30);
 });

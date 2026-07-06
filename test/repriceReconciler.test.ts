@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { repriceDecision, NO_PROGRESS_TIMEOUT_MS, type RepriceState } from '../src/pricing/repriceReconciler';
+import { repriceDecision, NO_PROGRESS_TIMEOUT_MS, MIN_REPULL_MS, type RepriceState } from '../src/pricing/repriceReconciler';
 
 // ─── P6 / INV-E1: the reprice reconciler re-pulls on progress and stops on drain,
 //     with NO fixed deadline (a long fill still reaches the UI). ────────────────
@@ -8,11 +8,31 @@ import { repriceDecision, NO_PROGRESS_TIMEOUT_MS, type RepriceState } from '../s
 const fresh = (now = 0): RepriceState => ({ lastPulled: 0, lastProgressAt: now });
 
 test('re-pulls when fetched advances, records progress, keeps watching while busy', () => {
-  const d = repriceDecision(fresh(1000), { fetched: 5, running: true, queued: 3 }, 2000);
-  assert.equal(d.repull, true, 'new prices landed → re-pull');
+  // `now` is ≥ MIN_REPULL_MS past the last re-pull (lastRepulledAt defaults to 0), so the S10
+  // coalescing gate lets this advance re-pull.
+  const d = repriceDecision(fresh(1000), { fetched: 5, running: true, queued: 3 }, MIN_REPULL_MS + 2000);
+  assert.equal(d.repull, true, 'new prices landed (past the coalesce window) → re-pull');
   assert.equal(d.stop, false, 'still busy → keep watching');
   assert.equal(d.state.lastPulled, 5);
-  assert.equal(d.state.lastProgressAt, 2000);
+  assert.equal(d.state.lastProgressAt, MIN_REPULL_MS + 2000);
+  assert.equal(d.state.lastRepulledAt, MIN_REPULL_MS + 2000, 'the re-pull timestamp advanced');
+});
+
+test('S10: a second fetched advance within MIN_REPULL_MS is coalesced (no re-pull), no stop', () => {
+  // First advance re-pulls (far past the window); carry its state forward.
+  const first = repriceDecision(fresh(0), { fetched: 5, running: true, queued: 3 }, 100_000);
+  assert.equal(first.repull, true, 'first advance re-pulls');
+  assert.equal(first.state.lastRepulledAt, 100_000);
+  // A second advance only 500ms later — still busy — must NOT re-pull (S10 whole-fleet coalescing),
+  // and must NOT stop (progress is still being made).
+  const second = repriceDecision(first.state, { fetched: 8, running: true, queued: 1 }, 100_500);
+  assert.equal(second.repull, false, 'advance within MIN_REPULL_MS → coalesced, no re-pull');
+  assert.equal(second.stop, false, 'still progressing → keep watching');
+  assert.equal(second.state.lastPulled, 8, 'the new fetched count is still recorded');
+  assert.equal(second.state.lastRepulledAt, 100_000, 'the re-pull timestamp is unchanged (no re-pull happened)');
+  // Once MIN_REPULL_MS has elapsed since the last re-pull, the next advance re-pulls again.
+  const third = repriceDecision(second.state, { fetched: 9, running: true, queued: 0 }, 100_000 + MIN_REPULL_MS);
+  assert.equal(third.repull, true, 'past the coalesce window again → re-pull resumes');
 });
 
 test('does NOT re-pull when fetched has not advanced (still busy)', () => {
