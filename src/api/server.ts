@@ -54,6 +54,11 @@ const MAFILES_DIR = maFilesDir();
 const POST_TRADE_REFRESH_MS = 8_000; // wait for Steam to actually move the items before refetching
 const LOG_TAIL_BYTES = 512 * 1024;   // per-account logs modal reads only the tail (non-blocking)
 
+// One-time warn de-dupe for malformed protectedUntil values (H-ACC-090): keyed by
+// username+"\0"+value so a NEW bad hand-edit warns once, not every request. Grows only
+// on a first-seen malformed value (a hand-edit event, not a hot path); a restart clears it.
+const warnedBadProtectedUntil = new Set<string>();
+
 // ── Money-operation route matcher (circuit-breaker gate, #16 / B13) ────────────
 // Every POST that spends money, moves an asset, or approves a pending confirmation
 // must be refused while ProcessHealth has money ops quarantined (possibly-corrupt
@@ -166,12 +171,25 @@ export function createApp(deps: ApiDeps): Express {
    */
   const applyManualLock = (inv: AccountInventory): AccountInventory => {
     const acc = accounts.get(inv.username);
-    const until = acc?.protectedUntil ? new Date(acc.protectedUntil) : null;
-    if (until && until.getTime() > Date.now()) {
-      const iso = until.toISOString();
+    const raw = acc?.protectedUntil;
+    if (!raw) return inv;
+    const t = Date.parse(raw);
+    if (Number.isNaN(t)) {
+      // Malformed hand-edit (e.g. German-locale "31.12.2026"): the protection the
+      // operator meant to set is NOT active. Fail open (indefinite fail-closed would
+      // silently freeze legitimate operations), but say so once so it's not silent.
+      const key = `${inv.username}\0${raw}`;
+      if (!warnedBadProtectedUntil.has(key)) {
+        warnedBadProtectedUntil.add(key);
+        logger.warn(`[${inv.username}] protectedUntil "${raw}" is not a parseable date — manual protection is NOT active (use ISO 8601, e.g. 2026-12-31)`);
+      }
+      return inv;
+    }
+    if (t > Date.now()) {
+      const iso = new Date(t).toISOString();
       for (const it of inv.items) {
         const cur = it.tradeLockExpiry ? new Date(it.tradeLockExpiry) : null;
-        if (!cur || until > cur) it.tradeLockExpiry = iso as unknown as Date;
+        if (!cur || t > cur.getTime()) it.tradeLockExpiry = iso as unknown as Date;
       }
     }
     return inv;

@@ -86,7 +86,8 @@ export interface AccountConfig {
    * (Trade Protection) is NOT exposed via any web inventory API, so the user can
    * set this per account to mark ALL of its items as locked until the given date.
    * When in the future it overrides the per-asset auto-tracking for display.
-   * Empty/absent/past = no manual protection.
+   * Empty/absent/past = no manual protection. Malformed (unparseable) values are
+   * treated as NO protection and logged as a warning at read time — use ISO 8601.
    */
   protectedUntil?: string;
   /**
