@@ -29,7 +29,7 @@ The port keeps the legacy **function** (API calls, state, handlers, invariants) 
 
 ## PHASES
 - [x] Phase 0 — setup: branch, `redesign/legacy_public/` (rollback), `redesign/design_source.html`, this tracker, ROLLBACK.md
-- [ ] Phase 1 — extraction contracts: `API_CONTRACT.md` (every backend call), `PARITY.md` (every user-facing capability w/ legacy refs), `DESIGN_SYSTEM.md` (masterpiece tokens/components/IA/view layouts), `PORT_PLAN.md` (view-by-view build order mapping function→design)
+- [x] Phase 1 — extraction contracts: API_CONTRACT (100 endpoints, 11 polls), PARITY (~636 rows / 26+ 💰), DESIGN_SYSTEM (69 tokens, ~60 components, 25 overlays), PORT_PLAN (713 lines — re-skin strategy, cap-token preserved verbatim). Committed 1b34a4d.
 - [ ] Phase 2 — design system + primitives in new `public/` (tokens, buttons, inputs, tables, modals, toasts, badges, tabs, tooltips, confirm, skeletons, the Live Logs launcher + layering)
 - [ ] Phase 3 — views wired to backend, riskiest-data first: app shell/nav → master/fleet → account detail + inventory grid → pricing → market & orders → trade-offers → mass-buy → ban checker → casket/trade-up → CSFloat → import → settings → Live Logs (logs.html) → unlock.html → license.html → splash.html
 - [ ] Phase 4 — verification: contract audit (API_CONTRACT row-by-row), parity audit (PARITY row-by-row), invariant audit (VERIFICATION.md), live run against the backend (NO money actions — those go to LIVE_TEST_CHECKLIST.md), perf sanity at 500+ accounts

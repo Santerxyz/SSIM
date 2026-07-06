@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" style="background:#0a0a0f;color-scheme:dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SSIM – Activate License</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/assets/vendor/fonts.css" />
+  <style>
+    /* License activation portal — re-skinned to the masterpiece .portal-card design.
+       Self-contained inline tokens, OFFLINE (vendored font only, no CDN). Mirrors the
+       unlock.html portal chrome for visual consistency across the pre-app gates. */
+    :root {
+      --bg:#0a0a0f; --card:#15151f; --card-2:#12111a; --line:#2c2937;
+      --glass-border:rgba(44,41,55,.7); --fg:#dddbe6; --dim:#928da3;
+      --dim-2:#6b6678; --brand:#9333ea; --brand-d:#7e22ce; --brand-l:#c084fc;
+      --err:#f43f5e; --ok:#34d399;
+    }
+    * { box-sizing:border-box; }
+    html,body { height:100%; margin:0; }
+    body {
+      font-family:'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing:antialiased;
+      color:var(--fg);
+      background:
+        radial-gradient(1100px 640px at 50% -12%, rgba(147,51,234,.16), #0a0a0f 60%);
+      display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px;
+    }
+    /* Rich gradient card + glass hairline border + violet-tinted elevation + top edge-light. */
+    .card {
+      position:relative; width:400px; max-width:calc(100vw - 32px);
+      background: linear-gradient(180deg, rgba(30,28,41,.5), #12111a), #12111a;
+      border:1px solid var(--glass-border); border-radius:16px;
+      box-shadow: 0 28px 80px -24px rgba(147,51,234,.32), 0 12px 40px rgba(0,0,0,.62);
+      padding:30px 28px 24px;
+    }
+    .card::before {
+      content:''; position:absolute; inset:0 0 auto 0; height:1px;
+      background: linear-gradient(90deg, transparent, rgba(192,132,252,.6), transparent);
+    }
+    /* Logo + halo. Idle = pulsing purple glow; on submit (.loading) the ring becomes a
+       spinning accent arc — the loader. */
+    .logo-wrap { position:relative; width:78px; height:78px; margin:0 auto 14px; }
+    .ring { position:absolute; inset:0; border-radius:50%; border:2.5px solid rgba(192,132,252,.18); }
+    .logo-wrap.loading .ring {
+      border-color:transparent; border-top-color:var(--brand-l); border-right-color:var(--brand);
+      animation: lspin .9s linear infinite;
+    }
+    @keyframes lspin { to { transform:rotate(360deg); } }
+    .logo { position:absolute; inset:0; width:78px; height:78px; border-radius:50%;
+      filter: drop-shadow(0 0 16px rgba(147,51,234,.5)); }
+    .logo-wrap:not(.loading) .logo { animation: halo 2.6s ease-in-out infinite; }
+    @keyframes halo {
+      0%,100% { filter: drop-shadow(0 0 10px rgba(147,51,234,.45)); }
+      50%      { filter: drop-shadow(0 0 22px rgba(147,51,234,.7)); }
+    }
+    h1 { font-size:16px; font-weight:700; text-align:center; margin:6px 0 0; color:#fff; }
+    p.sub { color:var(--dim); font-size:13px; line-height:1.5; text-align:center; margin:4px 0 18px; }
+    label { display:block; font-size:12px; font-weight:600; color:var(--dim); margin-bottom:.375rem; }
+    input {
+      width:100%; padding:11px 12px; background:#0a0a0f; border:1px solid #46424f;
+      border-radius:10px; color:var(--fg); font-size:15px; letter-spacing:.5px;
+      font-family:ui-monospace, monospace; text-transform:uppercase; outline:none;
+      transition:border-color .16s, box-shadow .16s;
+    }
+    input::placeholder { color:var(--dim-2); text-transform:none; letter-spacing:normal;
+      font-family:'Inter', system-ui, sans-serif; }
+    input:hover:not(:focus) { border-color:#6b6678; }
+    input:focus { border-color:var(--brand); box-shadow:0 0 0 2px rgba(147,51,234,.5); }
+    button {
+      width:100%; margin-top:16px; padding:12px; border:0; border-radius:12px; cursor:pointer;
+      color:#fff; font-size:15px; font-weight:600;
+      background-image: linear-gradient(135deg, var(--brand), var(--brand-d));
+      box-shadow: inset 0 1px 0 rgba(192,132,252,.35), 0 0 14px -4px rgba(147,51,234,.55), 0 1px 2px rgba(0,0,0,.4);
+      transition: filter .16s, box-shadow .16s, transform .12s;
+    }
+    button:hover:not(:disabled) {
+      filter: brightness(1.06);
+      box-shadow: inset 0 1px 0 rgba(192,132,252,.45), 0 0 24px -6px rgba(147,51,234,.6), 0 8px 24px -10px rgba(0,0,0,.6);
+    }
+    button:active:not(:disabled) { transform: translateY(1px) scale(.99); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .msg { margin-top:14px; font-size:13px; min-height:18px; text-align:center; }
+    .msg.err { color:var(--err); }
+    .msg.ok { color:var(--ok); }
+    .msg.info { color:var(--brand-l); }
+    .hwid { margin-top:22px; padding-top:16px; border-top:1px solid var(--line);
+      font-size:10px; color:var(--dim-2); word-break:break-all; font-family:ui-monospace, monospace; }
+    .spin { display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.35);
+      border-top-color:#fff; border-radius:50%; animation:lspin .7s linear infinite;
+      vertical-align:-2px; margin-right:8px; }
+    @media (prefers-reduced-motion: reduce) { .spin, .logo, .logo-wrap.loading .ring { animation:none; } }
+  </style>
+</head>
+<body>
+  <form class="card" id="form">
+    <div class="logo-wrap" id="logoWrap"><div class="ring"></div><img class="logo" src="/assets/logo.png" alt="SSIM" /></div>
+    <h1>Activate SSIM</h1>
+    <p class="sub">Please enter your license key to unlock the Santer Steam Inventory Manager.</p>
+
+    <label for="key">License key</label>
+    <input id="key" placeholder="SSIM-XXXX-XXXX-XXXX-XXXX" autocomplete="off" autofocus
+      pattern="[A-Za-z0-9-]+" spellcheck="false" />
+
+    <button id="btn" type="submit">Activate</button>
+    <div class="msg" id="msg"></div>
+
+    <div class="hwid" id="hwid"></div>
+  </form>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const msg = $('msg'), btn = $('btn'), key = $('key');
+
+    // Keep the live field value in sync with the uppercase glyphs the CSS shows,
+    // so what the user re-edits matches what will be sent (caret position preserved).
+    key.addEventListener('input', () => {
+      const p = key.selectionStart;
+      key.value = key.value.toUpperCase();
+      try { key.setSelectionRange(p, p); } catch (_) {}
+    });
+
+    fetch('/api/license/state').then(r => r.json()).then(d => {
+      if (d.hwid) $('hwid').textContent = 'Device ID (HWID): ' + d.hwid;
+    }).catch(() => {});
+
+    $('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      // The CSS text-transform:uppercase only restyles the glyphs; key.value stays
+      // as typed. Server keys are uppercase-only (Crockford-base32) and looked up
+      // case-sensitively, so upcase the read value to match what the user sees.
+      const value = key.value.trim().toUpperCase();
+      if (!value) { setMsg('err', 'Please enter your license key.'); return; }
+      btn.disabled = true;
+      $('logoWrap').classList.add('loading'); // ring spins around the logo while we check
+      setMsg('info', '<span class="spin"></span> Checking license…');
+      try {
+        const res = await fetch('/api/license/activate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: value }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.ok) {
+          setMsg('ok', '<span class="spin"></span> Activated' + (d.tier ? ' (' + d.tier + ')' : '') + ' – starting SSIM…');
+          // The portal hands over to the real app on the SAME port, but the rebind is an
+          // unbounded validate→auto-update→vault→startFullApp chain (a staged 185MB update
+          // can take minutes). A blind fixed timer would reload onto a port that is still
+          // downloading / has exited to swap → a permanent connection-refused page. Poll for
+          // PROOF instead: only the portal fabricates licensed:false (l.67), the full app
+          // answers licensed:true once startFullApp is serving, so "status says licensed:true"
+          // ⇔ the dashboard is live. The shell will NOT re-navigate (one-shot port latch), so
+          // this page's own reload must be readiness-gated. (H-LIC-009; mirrors unlock.html.)
+          const startedAt = Date.now();
+          const waitForApp = () => {
+            fetch('/api/system/status', { cache: 'no-store' }).then(r => r.json()).then(s => {
+              if (s && s.licensed === true) { location.replace('/'); return; }
+              if (Date.now() - startedAt > 45000) {
+                setMsg('info', '<span class="spin"></span> Starting SSIM… (a pending update or large farm can take a minute).');
+              }
+              setTimeout(waitForApp, 700);
+            }).catch(() => {
+              if (Date.now() - startedAt > 45000) {
+                setMsg('info', '<span class="spin"></span> Starting SSIM… (a pending update or large farm can take a minute).');
+              }
+              setTimeout(waitForApp, 700);
+            });
+          };
+          setTimeout(waitForApp, 1200);
+        } else {
+          setMsg('err', '✗ ' + (d.error || 'Activation failed.'));
+          btn.disabled = false;
+          $('logoWrap').classList.remove('loading');
+        }
+      } catch (err) {
+        setMsg('err', '✗ Server unreachable.');
+        btn.disabled = false;
+        $('logoWrap').classList.remove('loading');
+      }
+    });
+
+    function setMsg(kind, html) { msg.className = 'msg ' + kind; msg.innerHTML = html; }
+  </script>
+</body>
+</html>
