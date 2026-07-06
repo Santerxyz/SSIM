@@ -25,6 +25,17 @@ test('H-SHL-005: request() carries a bounded, reject-on-timeout deadline', () =>
   assert.match(src, /timeoutMs: 600_000/, 'the ~185 MB stage upload must pass a larger deadline');
 });
 
+// ─── H-SHL-006: the Gate-3 served-sha download must also bound a stalled connection ──
+// sha256OfUrl() streams the full ~185 MB served artifact during Gate-3. Its lib.get had no socket
+// timeout, so a half-open download (proxy drop mid-stream) parked the publish forever — the same
+// no-timeout root as request(). The fix arms req.setTimeout → destroy → reject with a labelled error.
+test('H-SHL-006: sha256OfUrl arms a reject-on-timeout deadline on its streaming GET', () => {
+  const src = readFileSync(PUBLISH, 'utf8');
+  const fn = src.slice(src.indexOf('function sha256OfUrl'), src.indexOf('function rollback'));
+  assert.match(fn, /req\.setTimeout\(/, 'the served-sha download must arm a socket timeout');
+  assert.match(fn, /req\.destroy\(new Error\(`request timeout/, 'a stalled download must destroy → reject with a labelled error, never hang');
+});
+
 test('H-SHL-005: finalize + its parse live inside the issues[]/rollback region', () => {
   const src = readFileSync(PUBLISH, 'utf8');
   // A post-send finalize failure pushes into issues[] (→ rollback) rather than bailing via bare fail().

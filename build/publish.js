@@ -177,18 +177,26 @@ function selfTestArtifact(exePath) {
   return { ok, report: (marker || stdout).trim() };
 }
 
-/** sha256 (hex) of the bytes served at a URL — streams, never buffers the whole exe. No redirect-follow. */
+/**
+ * sha256 (hex) of the bytes served at a URL — streams, never buffers the whole exe. No redirect-follow.
+ * Same stalled-connection hazard as request(): this streams the full ~185 MB served artifact during
+ * Gate-3, so a half-open socket (proxy drop mid-download, server accepting but never sending) would
+ * park the publish here forever. The socket setTimeout bounds idle time between chunks and destroys →
+ * rejects with a labelled error (600 s, matching the stage upload's deadline) rather than hanging.
+ */
 function sha256OfUrl(urlStr) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const lib = u.protocol === 'https:' ? https : http;
-    lib.get(u, (res) => {
+    const req = lib.get(u, (res) => {
       if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode} fetching ${urlStr}`)); }
       const h = crypto.createHash('sha256');
       res.on('data', (c) => h.update(c));
       res.on('end', () => resolve(h.digest('hex')));
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.setTimeout(600_000, () => req.destroy(new Error(`request timeout (600000ms): GET ${urlStr}`)));
+    req.on('error', reject);
   });
 }
 
