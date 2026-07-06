@@ -110,6 +110,9 @@ export class AccountImportService {
       rec.state = 'error';
       rec.error = (err as Error).message;
       rec.finishedAt = Date.now();
+      // A QR session may already be polling (e.g. toDataURL threw after startWithQR resolved) —
+      // cancel it so it stops immediately instead of at the library's 120s timeout.
+      try { session.cancelLoginAttempt(); } catch { /* settled */ }
       logger.error(`[import ${id.slice(0, 8)}] QR start failed: ${rec.error}`);
     }
     return this.snapshot(rec);
@@ -145,8 +148,19 @@ export class AccountImportService {
     this.active.set(id, rec);
     this.wireEvents(rec);
 
-    // startWithCredentials rejects on bad password / rate-limit — let it bubble to the route.
-    const result = await session.startWithCredentials({ accountName, password: p.password });
+    // startWithCredentials rejects on bad password / rate-limit — finish the rec and cancel the
+    // login attempt (else it keeps a capacity slot / keeps polling for the full window) before
+    // rethrowing so the route's RateLimit→429 mapping still fires.
+    let result;
+    try {
+      result = await session.startWithCredentials({ accountName, password: p.password });
+    } catch (err) {
+      rec.state = 'error';
+      rec.error = (err as Error).message;
+      rec.finishedAt = Date.now();
+      try { session.cancelLoginAttempt(); } catch { /* settled */ }
+      throw err;
+    }
     if (result.actionRequired) {
       const codeAction = (result.validActions ?? []).find(
         a => a.type === EAuthSessionGuardType.DeviceCode || a.type === EAuthSessionGuardType.EmailCode,
