@@ -30,6 +30,12 @@ const ZIP = path.join(RELEASE_DIR, `SSIM-${VERSION}.zip`);
 
 const fail = (m) => { console.error(`\n✗ ${m}\n`); process.exit(1); };
 
+// Escape a path for safe interpolation inside a SINGLE-QUOTED PowerShell string literal:
+// a single quote is the only char that can terminate/reframe the literal, and PS doubles it
+// to escape. Paired with -LiteralPath, this makes the zip/scan robust to a checkout under a
+// path containing ' [ ] * ? (wildcard/quote-fragile chars the build script doesn't control).
+const psq = (p) => p.replace(/'/g, "''");
+
 // 1. Precondition — the Tauri build must have produced the single SSIM.exe.
 if (!fs.existsSync(path.join(SRC, 'SSIM.exe'))) fail('SSIM.exe not found in release-tauri/SSIM — run `npm run build:tauri` first.');
 
@@ -68,12 +74,12 @@ fs.writeFileSync(path.join(APP, 'START.txt'), [
 console.log('▸ compressing → ' + path.relative(ROOT, ZIP));
 fs.removeSync(ZIP);
 execFileSync('powershell', ['-NoProfile', '-Command',
-  `Compress-Archive -Path '${APP}' -DestinationPath '${ZIP}' -Force`], { stdio: 'inherit' });
+  `Compress-Archive -LiteralPath '${psq(APP)}' -DestinationPath '${psq(ZIP)}' -Force`], { stdio: 'inherit' });
 
 // 7. SECURITY SCAN — enumerate every zip entry; FAIL on any secret/user-data pattern.
 const listing = execFileSync('powershell', ['-NoProfile', '-Command',
   `Add-Type -AssemblyName System.IO.Compression.FileSystem; ` +
-  `$z=[System.IO.Compression.ZipFile]::OpenRead('${ZIP}'); ` +
+  `$z=[System.IO.Compression.ZipFile]::OpenRead('${psq(ZIP)}'); ` +
   `$z.Entries | ForEach-Object { '{0}|{1}' -f $_.FullName, $_.Length }; $z.Dispose()`],
   { encoding: 'utf8' });
 const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
