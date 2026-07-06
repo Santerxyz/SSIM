@@ -316,8 +316,11 @@ export class InventoryService {
       if (cachedOwned) {
         logger.warn(`[${username}] inventory contexts returned 0 assets while cache holds items – retrying inventory read once`);
         await sleep(2_000);
-        raw2  = await InventoryManager.fetchRaw(session, 'cs2', 2);
-        raw16 = await InventoryManager.fetchRaw(session, 'cs2', 16);
+        // H-INV-004: the confirmation re-read gets the SAME bounded transient/429 retry as the
+        // primary fetches (S50) — a single blip here (likely mid-429-storm) no longer fails the
+        // whole account for the pass; a non-transient error still throws immediately.
+        raw2  = await this.fetchRawRetrying(session, 2, username);
+        raw16 = await this.fetchRawRetrying(session, 16, username);
         ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
         ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
         authoritativeEmpty = raw2.total_inventory_count === 0 && raw16.total_inventory_count === 0;
