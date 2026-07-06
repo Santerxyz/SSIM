@@ -7,7 +7,7 @@ import { listenAndAnnounce, clearStalePortFile, clearOwnPortFile } from './utils
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
-import { HwidService } from './licensing/HwidService';
+import { HwidService, HwidUnavailableError } from './licensing/HwidService';
 import { LicenseClient } from './licensing/LicenseClient';
 import { Updater } from './licensing/Updater';
 import { consumeCrashMarker } from './utils/crashMarker';
@@ -52,6 +52,10 @@ const QUIESCE_TIMEOUT_MS = 6000;
 // H-BOOT-001: brief pause before the single re-license re-bind retry, giving the OS / an AV hold
 // time to release the previously-bound port before we dead-end.
 const RELICENSE_REBIND_RETRY_MS = 750;
+// H-LIC-016: back-off between retries when the hardware fingerprint is momentarily degraded (a
+// transient machineId read / MAC churn on first boot). We NEVER bind a seat to a degraded id — that
+// burns a second seat on the next healthy boot — so we wait for the factors to recover instead.
+const HWID_RETRY_MS = 2000;
 
 // ── Single-instance lock (extracted to core/singleInstance.ts for testability) ──
 // See that module: an ATOMIC (fs.open 'wx'), FAIL-SAFE guard that makes a double-run —
@@ -352,6 +356,29 @@ async function onLicenseLost(reason: string): Promise<void> {
 // until the local HWID + license key validate against the remote backend.
 // If unlicensed (or revoked at runtime), we don't dead-end – we run a friendly
 // web portal so the user can paste a key. Once valid, the real app takes over.
+/**
+ * H-LIC-016: resolve the licensing HWID, WAITING OUT a transient factor failure rather than binding a
+ * seat to a degraded fingerprint. getHwid() throws HwidUnavailableError on the pre-pin path when a live
+ * factor read failed (machineId/MAC sentinel); that id would be recomputed on the next healthy boot →
+ * HWID mismatch → re-activate → a SECOND seat consumed. So we retry on a short back-off until the
+ * fingerprint is healthy enough to also be pinned — never proceeding into the license gate with a
+ * degraded id, never exiting, never pinning. A pinned or healthy id returns on the first attempt.
+ */
+async function resolveHwid(): Promise<string> {
+  for (;;) {
+    try {
+      return HwidService.getHwid();
+    } catch (err) {
+      if (!(err instanceof HwidUnavailableError)) throw err;
+      // Honest signal: this is a TRANSIENT hardware-read wait, NOT a license failure — do not render the
+      // "LICENSE DENIED" lockscreen (that would mislabel a self-healing condition). The warning below is
+      // the operational trace; the loop recovers automatically the moment the factors read cleanly.
+      logger.warn(`hardware fingerprint unavailable (${err.message}) – waiting ${HWID_RETRY_MS}ms then retrying (a seat is never bound to a degraded id)`);
+      await new Promise<void>((r) => setTimeout(r, HWID_RETRY_MS));
+    }
+  }
+}
+
 async function bootstrap(): Promise<void> {
   // S6: bound steam-totp's getTimeOffset (no vendor timeout) + cache the offset, so a stalled QueryTime
   // can never wedge every confirmation/money path until restart. Process-wide, before any money op.
@@ -392,7 +419,9 @@ async function bootstrap(): Promise<void> {
     setPriorCrash({ at: priorCrash.at, code: priorCrash.code, signal: priorCrash.signal, logTail: priorCrash.logTail });
     logger.warn(`SSIM crashed on the previous run at ${new Date(priorCrash.at).toISOString()} (code=${priorCrash.code ?? '?'}) – surfacing a banner; see logs/shell.log`);
   }
-  licenseHwid = HwidService.getHwid();
+  // H-LIC-016: wait out a transient factor failure before we ever transact — a degraded, un-pinnable id
+  // must not be bound to a seat (it would burn a second seat on the next healthy boot).
+  licenseHwid = await resolveHwid();
   logger.info(`license gate: validating seat for hwid ${licenseHwid.slice(0, 12)}…`);
   // Runtime revocation → re-activation flow instead of hard exit.
   LicenseClient.onRevocation((reason) => void onLicenseLost(reason));

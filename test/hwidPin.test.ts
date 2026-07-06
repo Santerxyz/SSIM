@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { getHwid, readPinnedHwid, writePinnedHwid, _resetHwidCache } from '../src/licensing/HwidService';
+import { getHwid, readPinnedHwid, writePinnedHwid, _resetHwidCache, HwidUnavailableError, type HwidFactors } from '../src/licensing/HwidService';
 import { dataDir } from '../src/utils/paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,5 +36,43 @@ test('S27: readPinnedHwid rejects a missing or malformed pin (never a false id)'
   assert.equal(readPinnedHwid(), undefined, 'missing → undefined');
   writePinnedHwid('not-a-valid-hwid');
   assert.equal(readPinnedHwid(), undefined, 'malformed → undefined (recompute rather than trust garbage)');
+  fs.rmSync(pinFile(), { force: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-LIC-016 — the un-pinned, degraded-first-boot window: if a live factor read
+//  fails (machineId/MAC sentinel) and no pin exists yet, getHwid() must NOT hand
+//  back the degraded HMAC as the licensing identity (binding it would burn a second
+//  seat on the next healthy boot). It signals unavailable and writes no pin, so the
+//  caller can wait for the fingerprint to recover before ever transacting.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const healthy = (): HwidFactors => ({
+  machineId: 'real-machine-id', hostname: 'host', mac: 'aa:bb:cc:dd:ee:ff',
+  cpu: 'cpu', platform: 'win32', arch: 'x64',
+});
+
+test('S27-residue: a degraded fingerprint (no-machine-id) is NOT bound as the seat identity, no pin written', () => {
+  fs.rmSync(pinFile(), { force: true });
+  _resetHwidCache();
+  assert.throws(() => getHwid(() => ({ ...healthy(), machineId: 'no-machine-id' })), HwidUnavailableError,
+    'a degraded id must signal unavailable, never return a 64-hex id');
+  assert.equal(readPinnedHwid(), undefined, 'a degraded fingerprint is never pinned');
+  assert.equal(fs.existsSync(pinFile()), false, 'writePinnedHwid was not called on the degraded path');
+});
+
+test('S27-residue: a degraded MAC (no-mac) also signals unavailable, no pin written', () => {
+  fs.rmSync(pinFile(), { force: true });
+  _resetHwidCache();
+  assert.throws(() => getHwid(() => ({ ...healthy(), mac: 'no-mac' })), HwidUnavailableError);
+  assert.equal(fs.existsSync(pinFile()), false, 'no pin on the degraded-MAC path');
+});
+
+test('S27-residue: a HEALTHY fingerprint returns a 64-hex id and pins it (the recovered boot)', () => {
+  fs.rmSync(pinFile(), { force: true });
+  _resetHwidCache();
+  const id = getHwid(healthy);
+  assert.match(id, HEX64, 'a healthy fingerprint yields a real id');
+  assert.equal(readPinnedHwid(), id, 'a healthy id is pinned so it never drifts');
   fs.rmSync(pinFile(), { force: true });
 });

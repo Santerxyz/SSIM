@@ -47,6 +47,18 @@ export interface HwidFactors {
 
 let cached: string | undefined;
 
+/**
+ * H-LIC-016: raised by getHwid() when the fingerprint is too DEGRADED to bind a seat — no pin exists yet
+ * AND a live factor read failed (machineId or MAC came back as a sentinel). Binding a seat to such an id
+ * would burn a second seat on the next healthy boot (the degraded id was never pinned, so the healthy boot
+ * recomputes the real one → HWID mismatch → re-activate → seat_limit 409). The caller treats this as a
+ * TRANSIENT boot failure (retry), never a license failure — a seat is only bound to an id healthy enough
+ * to also be pinned.
+ */
+export class HwidUnavailableError extends Error {
+  constructor() { super('hardware fingerprint unavailable (a machine factor could not be read)'); this.name = 'HwidUnavailableError'; }
+}
+
 /** First non-internal, non-zero MAC address (stable per NIC). */
 function firstMac(): string {
   const ifaces = os.networkInterfaces();
@@ -81,19 +93,26 @@ export function getRawFactors(): HwidFactors {
 /**
  * Deterministic, salted 64-hex hardware id for this machine.
  * Memoized – the underlying signals do not change while the process runs.
+ * `readFactors` is injectable for tests (defaults to the real getRawFactors).
+ * Throws HwidUnavailableError on the pre-pin path when a live factor is degraded (see H-LIC-016).
  */
-export function getHwid(): string {
+export function getHwid(readFactors: () => HwidFactors = getRawFactors): string {
   if (cached) return cached;
   // S27: a PINNED hwid wins — this is the whole fix, it keeps the id stable across MAC/machineId churn.
   const pinned = readPinnedHwid();
   if (pinned) { cached = pinned; return pinned; }
-  const f = getRawFactors();
+  const f = readFactors();
+  // H-LIC-016: no pin yet AND a factor is degraded → do NOT hand back the degraded HMAC as the licensing
+  // identity. Binding a seat to it burns a second seat on the next healthy boot (that boot recomputes the
+  // real id → HWID mismatch → re-activate → seat_limit 409). The id we transact with MUST equal the id we
+  // would pin — so refuse here and let the caller retry until the fingerprint is healthy enough to pin.
+  if (f.machineId === 'no-machine-id' || f.mac === 'no-mac') throw new HwidUnavailableError();
   // The first computation is BYTE-IDENTICAL to the legacy one, so a deployed machine keeps its existing
   // seat; the pin then keeps it stable forever after. Only pin a HEALTHY fingerprint (real machineId AND
   // MAC) so a TRANSIENT failure never pins a bad id — a later healthy boot pins the correct one.
   const material = [f.machineId, f.hostname, f.mac, f.cpu, f.platform, f.arch].join('|');
   const hwid = crypto.createHmac('sha256', HWID_PEPPER).update(material).digest('hex');
-  if (f.machineId !== 'no-machine-id' && f.mac !== 'no-mac') writePinnedHwid(hwid);
+  writePinnedHwid(hwid);
   cached = hwid;
   return cached;
 }
