@@ -75,7 +75,7 @@ export class InventoryStore {
         // ValueHistoryService's guard and start fresh on any malformed shape
         // (this cache is fully refetchable from Steam, so discarding it is safe).
         const parsed = fsExtra.readJsonSync(this.path) as Partial<InventoryFile> | null;
-        if (parsed && typeof parsed.records === 'object' && parsed.records) {
+        if (parsed && typeof parsed.records === 'object' && parsed.records && !Array.isArray(parsed.records)) {
           return { version: 1, records: parsed.records };
         }
         logger.warn(`${this.path} has an unexpected shape – starting fresh`);
