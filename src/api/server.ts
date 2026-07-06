@@ -1350,7 +1350,11 @@ export function createApp(deps: ApiDeps): Express {
     const u = req.params.username;
     if (!accounts.get(u)) return res.status(404).json({ error: 'account not found' });
     const sess = sessions.getSession(u);
-    const live = sess?.wallet?.hasWallet ? { currency: sess.wallet.currency, balance: sess.wallet.balance } : undefined;
+    // Tri-state (DIRECTIVES #2): a live session that fired a wallet event is authoritative even when
+    // empty — normalise the refreshed-empty case to a real 0 (matching InventoryService's attach rule)
+    // instead of dropping it and falling back to a possibly-stale funded cache.
+    const sw = sess?.wallet;
+    const live = sw ? { currency: sw.currency, balance: sw.hasWallet ? sw.balance : 0 } : undefined;
     const cached = inventory.getCached(u, 'cs2')?.wallet ?? inventory.getCached(u, 'tf2')?.wallet;
     const wallet = live ?? cached ?? null;
     res.json({ wallet, source: live ? 'session' : cached ? 'cache' : 'none' });
