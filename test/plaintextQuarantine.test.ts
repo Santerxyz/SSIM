@@ -54,6 +54,22 @@ test('B21: nothing vaulted → the file is left completely untouched', () => {
   assert.equal(fs.existsSync(`${f}.bak`), true, '.bak untouched');
 });
 
+// ─── H-ACC-035: the partial-keep path must scrub the .bak too (it holds the just-quarantined secrets) ──
+// The .bak is a one-generation copy of the LAST full write, so it still carries every token —
+// including the ones the main-file rewrite just removed. A partial keep must reconcile the .bak
+// or the quarantined secret survives in plaintext at rest indefinitely.
+test('H-ACC-035: a partial keep scrubs the quarantined secret from the .bak sibling', () => {
+  const f = tmpFile({ version: 1, tokens: { a: 'TA', b: 'TB' } });
+  const vault = new Map([['a', 'TA']]); // b never vaulted → partial keep
+  quarantinePlaintextFile(f, 'tokens', 'refresh token', (u) => vault.get(u));
+  const after = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.deepEqual(after.tokens, { b: 'TB' }, 'main file keeps only the not-yet-vaulted entry');
+  assert.equal(fs.existsSync(`${f}.bak`), true, '.bak preserved (still holds the recoverable entry)');
+  const bakText = fs.readFileSync(`${f}.bak`, 'utf8');
+  assert.ok(!bakText.includes('TA'), 'the quarantined secret is gone from the .bak');
+  assert.deepEqual(JSON.parse(bakText).tokens, { b: 'TB' }, '.bak mirrors the kept-only map');
+});
+
 // ─── H-ACC-041: a FAILED flush() must abort the quarantine (never delete the only durable copy) ──
 // verifyDiskRoundTrip only proves *a* payload decrypts, not that disk == memory. Quarantining after
 // a failed flush could delete plaintext that is the sole copy of an in-memory-only token (B21's

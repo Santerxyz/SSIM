@@ -317,6 +317,14 @@ export function quarantinePlaintextFile(
       // S37: ATOMIC write — this module's contract is "never delete the last copy", so a power-cut
       // mid-rewrite must not tear the kept-secrets file (temp→fsync→rename).
       writeJsonAtomic(file, { ...parsed, [section]: kept }, { spaces: 2, mode: 0o600 });
+      // H-ACC-035: the pre-existing .bak is a one-generation copy of the LAST full write, so it still
+      // holds the just-quarantined secrets. Rewrite it to the same kept-only map (no nested backup)
+      // so the delete branch's "no vaulted secret survives in plaintext at rest" contract also holds
+      // here. Best-effort — the main file is already clean.
+      const bak = `${file}.bak`;
+      if (fsExtra.existsSync(bak)) {
+        try { writeJsonAtomic(bak, { ...parsed, [section]: kept }, { spaces: 2, mode: 0o600 }); } catch { /* best-effort; main file is already clean */ }
+      }
       logger.warn(`[vault] quarantined ${removed} plaintext ${label}(s) from ${path.basename(file)}; kept ${Object.keys(kept).length} not-yet-vaulted entry/entries`);
     }
   } catch (e) {
