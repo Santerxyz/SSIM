@@ -79,6 +79,31 @@ fn log_shell(msg: &str) {
     }
 }
 
+/// Install a process-wide panic hook that routes a boot-time (or any) shell panic into logs/shell.log
+/// — the exact file the crash banner points users at (":16-17, :703"). Under the release `windows`
+/// subsystem there is no attached console, so the default handler's stderr write is discarded and a
+/// panic during shell construction (e.g. `.expect("error while building the SSIM shell")` below, or a
+/// panic inside `generate_context!()` / `WebviewWindowBuilder::build()`) would exit SILENTLY with no
+/// on-disk or on-screen evidence. This makes that failure a logged `FATAL panic:` line instead.
+/// Diagnostics ONLY — the process still exits after the hook runs (no respawn; owner no-band-aid
+/// directive). Best-effort and must never itself panic (mirrors log_shell's contract).
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        // Downcast the payload to its message; &str and String are the common shapes.
+        let msg = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let loc = panic_info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        log_shell(&format!("FATAL panic: {msg} at {loc}"));
+    }));
+}
+
 /// Read the last `max_bytes` of logs/shell.log (the backend's captured stderr / last words) for the
 /// crash marker banner + the optional webhook. Best-effort; returns "" on any error.
 fn shell_log_tail(max_bytes: usize) -> String {
@@ -884,5 +909,13 @@ mod tests {
         assert!(fresh > 0, "the new line still landed in the fresh shell.log");
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    // H-SHL-003: install_panic_hook is callable and idempotent — installing it twice must not panic
+    // (main() calls it once before run(); the guard is that a re-install can never itself brick boot).
+    #[test]
+    fn install_panic_hook_is_idempotent() {
+        install_panic_hook();
+        install_panic_hook(); // re-installing the hook must not panic
     }
 }
