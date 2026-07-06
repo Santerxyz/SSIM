@@ -86,6 +86,51 @@ test('S11: LOGGING_IN is still never reaped (the DISCONNECTED/ERROR addition did
   } finally { sm.shutdown(); }
 });
 
+// ─── H-ACC-002: the destroy loop re-validates against the LIVE map ──────────────
+// The victims list is snapshotted before the per-victim await gap. A session markUsed'd (the anti-reap
+// signal) or re-logged-in (a fresh session swapped into the key) AFTER the scan but BEFORE its turn must
+// be skipped at the destroy site, not torn down mid-op.
+
+function rawSession(username: string, ageMinutes: number, state = SessionState.LOGGED_IN) {
+  const client = { logOff() { /* noop */ }, on() { /* noop */ }, removeAllListeners() { /* noop */ } };
+  return {
+    account: { username }, client, httpsAgent: {}, state, loginAttempts: 1,
+    lastActivityAt: new Date(Date.now() - ageMinutes * 60_000),
+  };
+}
+
+test('H-ACC-002: a session markUsed after the scan (during the gap) survives the reaper', async () => {
+  const sm = new SessionManager();
+  try {
+    const destroyed: string[] = [];
+    // On the FIRST destroy, mark the second victim used — the stale list must not tear it down.
+    sm.on('sessionDestroyed', (u: string) => {
+      destroyed.push(u.toLowerCase());
+      if (destroyed.length === 1) sm.markUsed('victimb');
+    });
+    put(sm, 'victima', 45);
+    put(sm, 'victimb', 45);
+    await (sm as unknown as { reapIdleSessions: (n?: number) => Promise<void> }).reapIdleSessions();
+    assert.ok(sm.getSession('victimb'), 'a session marked-used in the gap is skipped, not reaped');
+  } finally { sm.shutdown(); }
+});
+
+test('H-ACC-002: a fresh session swapped into a victim key during the gap is NOT destroyed', async () => {
+  const sm = new SessionManager();
+  try {
+    const sessions = (sm as unknown as { sessions: Map<string, unknown> }).sessions;
+    const replacement = rawSession('victimd', 0); // brand-new, active now
+    sm.on('sessionDestroyed', (u: string) => {
+      // On the first destroy, swap a fresh session object into the second victim's key (a re-login).
+      if (u.toLowerCase() === 'victimc') sessions.set('victimd', replacement);
+    });
+    put(sm, 'victimc', 45);
+    put(sm, 'victimd', 45); // scanned as a victim, then replaced in the gap
+    await (sm as unknown as { reapIdleSessions: (n?: number) => Promise<void> }).reapIdleSessions();
+    assert.strictEqual(sessions.get('victimd'), replacement, 'the reaper identity-check spares the replacement session');
+  } finally { sm.shutdown(); }
+});
+
 test('shutdown() stops the reaper timer (no leak on re-license)', () => {
   const sm = new SessionManager();
   assert.doesNotThrow(() => sm.shutdown());

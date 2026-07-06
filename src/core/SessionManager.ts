@@ -152,7 +152,7 @@ export class SessionManager extends EventEmitter {
   /** Logs out LOGGED_IN sessions untouched for longer than the idle TTL, freeing resident slots.
    *  Skips any account with an in-flight login. Serialized-ish (best-effort; failures ignored). */
   private async reapIdleSessions(now: number = Date.now()): Promise<void> {
-    const victims: string[] = [];
+    const victims: Array<{ key: string; session: ManagedSession }> = [];
     for (const [key, s] of this.sessions) {
       if (this.loginsInFlight.has(key)) continue;               // a login is mid-flight → leave it
       // S11: reap SETTLED-live sessions AND settled-dead ones (DISCONNECTED/ERROR). The disconnected/error
@@ -163,10 +163,22 @@ export class SessionManager extends EventEmitter {
         || s.state === SessionState.DISCONNECTED || s.state === SessionState.ERROR;
       if (!reapable) continue;
       const last = s.lastActivityAt?.getTime() ?? s.loggedInAt?.getTime() ?? 0;
-      if (now - last >= IDLE_SESSION_TTL_MS) victims.push(s.account.username);
+      if (now - last >= IDLE_SESSION_TTL_MS) victims.push({ key, session: s });
     }
-    for (const username of victims) {
-      try { await this.logoutAccount(username); logger.info(`[${username}] idle session reaped (>${Math.round(IDLE_SESSION_TTL_MS / 60000)}min unused) – slot freed`); }
+    // H-ACC-002: re-validate identity+idleness at the destroy site against the LIVE map — the victims list
+    // was snapshotted before the per-victim await gap, so a session markUsed'd (the anti-reap signal) or
+    // re-logged-in (a fresh session swapped into the key) AFTER the scan but BEFORE its turn must be skipped,
+    // not torn down mid-op. The checks and the destroy run with NO await between them → race-free on the one
+    // thread. Call destroySession DIRECTLY, not logoutAccount, whose await-in-flight-then-destroy would
+    // re-open the very gap this closes (and could tear down a replacement session).
+    for (const { key, session } of victims) {
+      const username = session.account.username;
+      if (this.loginsInFlight.has(key)) continue;               // a re-login started in the gap → leave it
+      const cur = this.sessions.get(key);
+      if (cur !== session) continue;                            // replaced (or already gone) → not our victim
+      const last = cur.lastActivityAt?.getTime() ?? cur.loggedInAt?.getTime() ?? 0;
+      if (Date.now() - last < IDLE_SESSION_TTL_MS) continue;    // markUsed'd in the gap → rescued
+      try { await this.destroySession(key); logger.info(`[${username}] idle session reaped (>${Math.round(IDLE_SESSION_TTL_MS / 60000)}min unused) – slot freed`); }
       catch (err) { logger.warn(`[${username}] idle-session reap failed: ${(err as Error).message}`); }
     }
   }
