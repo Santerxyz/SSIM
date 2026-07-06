@@ -148,7 +148,6 @@ interface CommunityWithKey {
 }
 
 export class BanService {
-  private apiKeyFrom?: string;
   /** Single live ban-check job (polled by the UI). A whole-fleet cold check can exceed the client's
    *  120s request budget, so the run is detached and the modal polls `status()` instead of awaiting
    *  the whole POST (which would time out the modal while the backend kept working). `result` is
@@ -263,6 +262,10 @@ export class BanService {
       }
     }
 
+    // Diagnostic ONLY: which key source served this run. A run-local var (not instance state) so a
+    // run that resolved no target reports `undefined` instead of the previous run's value, a rejected
+    // per-env key doesn't null it mid-run, and two concurrent checks can't overwrite each other's.
+    let keySource: 'env' | 'per-env' | undefined;
     const targets = [...bySteamId.keys()];
     if (targets.length > 0) {
       // ── F3c: PER-ENVIRONMENT key scoping ──────────────────────────────────────
@@ -272,16 +275,17 @@ export class BanService {
       // at BANS_PER_KEY accounts/key and rotated across same-env keys — never cross-env.
       const overrideKey = (process.env.STEAM_WEB_API_KEY ?? '').trim();
       if (overrideKey) {
-        this.apiKeyFrom = 'env';
+        keySource = 'env';
         const batches: string[][] = [];
         for (let i = 0; i < targets.length; i += BANS_BATCH) batches.push(targets.slice(i, i + BANS_BATCH));
         await mapLimit(batches, BAN_CHECK_CONCURRENCY, (batch) => this.fetchChunk(overrideKey, batch, bySteamId, undefined, progress));
-        return this.finalize(infos);
+        return this.finalize(infos, keySource);
       }
+      keySource = 'per-env';
       await this.checkPerEnvironment(accs, bySteamId, progress);
     }
 
-    return this.finalize(infos);
+    return this.finalize(infos, keySource);
   }
 
   /**
@@ -311,7 +315,6 @@ export class BanService {
     // Acquire keys per env (sized to what that env needs), sourced ONLY from that env's accounts.
     // Threaded ACROSS environments (BAN_CHECK_CONCURRENCY): several envs mint at once, but each env
     // still mints sequentially WITHIN itself, so concurrent logins stay bounded (≈ the concurrency).
-    this.apiKeyFrom = 'per-env';
     const acquired = await mapLimit([...targetsByEnv], BAN_CHECK_CONCURRENCY, async ([envId, sids]) => {
       const needed = Math.ceil(sids.length / BANS_PER_KEY);
       const keys = await this.acquireEnvKeys(envId, envUsernames.get(envId) ?? [], needed);
@@ -477,7 +480,7 @@ export class BanService {
   // ── Categorisation ───────────────────────────────────────────────────────────
 
   /** Assigns each account's category buckets and computes the totals. */
-  private finalize(infos: AccountBanInfo[]): BanCheckResult {
+  private finalize(infos: AccountBanInfo[], apiKeyFrom?: string): BanCheckResult {
     const totals: BanCheckTotals = { total: infos.length, clean: 0, vac: 0, game: 0, community: 0, economy: 0, error: 0 };
     for (const info of infos) {
       if (info.error) { info.categories = []; totals.error++; continue; }
@@ -489,7 +492,7 @@ export class BanService {
       if (cats.length === 0)    { cats.push('clean');     totals.clean++; }
       info.categories = cats;
     }
-    return { accounts: infos, totals, apiKeyFrom: this.apiKeyFrom };
+    return { accounts: infos, totals, apiKeyFrom };
   }
 
   // ── SteamID resolution (no login required) ───────────────────────────────────
@@ -634,7 +637,8 @@ export class BanService {
       `?key=${encodeURIComponent(apiKey)}&steamids=${steamIds.join(',')}`;
     const r = await axios.get(url, { timeout: 15_000, proxy: false, validateStatus: () => true });
     if (r.status === 401 || r.status === 403) {
-      if (this.apiKeyFrom !== 'env') { this.apiKeyFrom = undefined; } // per-env cache eviction is fetchChunk's onKeyRejected
+      // Per-env cache eviction is fetchChunk's onKeyRejected (keyed off the keyRejected tag below);
+      // the env-override key is never cached (fetchChunk passes no callback), so nothing to evict here.
       throw Object.assign(new Error('Steam rejected the Web API key'), { transient: false, keyRejected: true });
     }
     if (r.status === 429 || r.status >= 500) {
