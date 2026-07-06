@@ -1,7 +1,7 @@
 import EventEmitter from 'events';
 import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
-import { SessionState, type ManagedSession, type WebSession } from '../types/session';
+import { SessionState, type ManagedSession, type WebSession, type SessionManagerEvents } from '../types/session';
 import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
@@ -112,6 +112,19 @@ function classifyLoginError(err: LoginError): LoginErrorKind {
 }
 
 // ─── SessionManager ───────────────────────────────────────────────────────────
+
+// Declaration merging wires the hand-written SessionManagerEvents contract onto the
+// class's inherited EventEmitter surface: this.emit and every external on/once/off
+// subscriber are now type-checked against SessionManagerEvents instead of bare
+// (event: string, ...args: any[]). Renaming an event, changing an argument, or
+// altering a payload type becomes a compile error instead of a runtime break.
+// Listeners that declare fewer parameters than the signature stay assignable.
+export interface SessionManager {
+  on<K extends keyof SessionManagerEvents>(event: K, listener: SessionManagerEvents[K]): this;
+  once<K extends keyof SessionManagerEvents>(event: K, listener: SessionManagerEvents[K]): this;
+  off<K extends keyof SessionManagerEvents>(event: K, listener: SessionManagerEvents[K]): this;
+  emit<K extends keyof SessionManagerEvents>(event: K, ...args: Parameters<SessionManagerEvents[K]>): boolean;
+}
 
 export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, ManagedSession>();
