@@ -736,10 +736,25 @@ function fmtWallet(w) {
   if (!Number.isFinite(num)) return '—';
   return fmtMoneyMinor(walletMinor({ currency: w.currency, balance: num }), w.currency);
 }
-/** Parse a typed major amount ("2,15"/"2.15") → minor units of currency `code`. */
+/** Parse a typed major amount ("2,15"/"2.15"/"1.500,00") → minor units of currency `code`.
+ *  Disambiguates decimal-vs-grouping ONLY when unambiguous; a lone separator stays the
+ *  decimal point (today's safe under-parse), so no input ever parses HIGHER than typed. */
+function normalizeMajor(str) {
+  const s = String(str ?? '').replace(/[\s']/g, ''); // strip whitespace + apostrophe/Swiss group marks
+  const hasDot = s.indexOf('.') >= 0, hasComma = s.indexOf(',') >= 0;
+  if (hasDot && hasComma) {
+    // Both present: the LAST-occurring separator is the decimal; the other is grouping.
+    const dec = s.lastIndexOf('.') > s.lastIndexOf(',') ? '.' : ',';
+    const grp = dec === '.' ? ',' : '.';
+    return s.split(grp).join('').replace(dec, '.');
+  }
+  const sep = hasDot ? '.' : hasComma ? ',' : '';
+  if (sep && s.indexOf(sep) !== s.lastIndexOf(sep)) return s.split(sep).join(''); // 2+ of same sep → all grouping
+  return s.replace(',', '.'); // zero or one separator → treat as the decimal point (unchanged from today)
+}
 function parseMajorToMinor(str, code) {
   const c = curInfo(code);
-  const v = parseFloat(String(str ?? '').replace(',', '.').trim());
+  const v = parseFloat(normalizeMajor(str));
   return Number.isFinite(v) && v > 0 ? Math.round(v * Math.pow(10, c.d)) : null;
 }
 
