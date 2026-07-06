@@ -141,6 +141,17 @@ export class ValueHistoryService {
     }
   }
 
+  /** Real teardown (H-INV-027): disarm the S67 `fillWatch` interval and drop any deferred snapshot
+   *  before the final flush. `flush()` alone leaves `fillWatch` armed, so on a runtime license-loss
+   *  re-gate (teardownFullApp → new ValueHistoryService in the SAME process) the OLD instance's zombie
+   *  tick would fire and clobber the new instance's freshly-loaded history. A pending point dropped at
+   *  teardown is recreated on the next refresh — cheaper than letting it fire on a dead `deps`. */
+  shutdown(): void {
+    if (this.fillWatch) { clearInterval(this.fillWatch); this.fillWatch = undefined; }
+    this.pending = undefined;
+    this.flush();
+  }
+
   // ── Reads ────────────────────────────────────────────────────────────────────
 
   /** Chronological points of a series ('global' or an environment id), per game. The TF2

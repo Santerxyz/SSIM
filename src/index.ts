@@ -173,7 +173,7 @@ async function teardownFullApp(): Promise<void> {
     deps.inventory.store.flush();
     deps.inventory.tf2Store.flush();
     deps.inventory.gcStore.flush();
-    deps.history.flush();
+    deps.history.shutdown();
     AccountVault.flush();
     deps.sessions.shutdown(); // stop the idle-session reaper (B40) before discarding the manager
     await deps.sessions.logoutAll().catch(() => undefined);
@@ -371,7 +371,7 @@ async function shutdown(signal: string): Promise<void> {
     deps.inventory.store.flush();
     deps.inventory.tf2Store.flush();
     deps.inventory.gcStore.flush();
-    deps.history.flush();
+    deps.history.shutdown();
     AccountVault.flush();
     deps.sessions.shutdown(); // stop the idle-session reaper (B40) before discarding the manager
     await deps.sessions.logoutAll().catch(() => undefined);
