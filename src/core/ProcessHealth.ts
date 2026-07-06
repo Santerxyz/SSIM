@@ -30,6 +30,7 @@ export const ProcessHealth = {
   recordUncaught(detail: string): void {
     const safeDetail = redactSecrets(String(detail)); // proxy creds in a failed-request Error must not reach the open status GETs
     const now = Date.now();
+    if (blocked) return; // latched: reason is final until reset(); skip all post-latch array churn (write-only once tripped)
     recent = recent.filter((t) => now - t < BURST_WINDOW_MS);
     recent.push(now);
     if (!blocked && recent.length >= BURST_THRESHOLD) {
