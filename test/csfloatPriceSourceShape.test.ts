@@ -48,3 +48,10 @@ test('a non-CS2 appid is authoritatively null without touching the client', asyn
   const src = sourceReturning({ data: [{ price: 4200 }] });
   assert.equal(await src.fetchPriceCents('Mann Co. Supply Crate Key', 440), null);
 });
+
+test('S2/S13: no client at dequeue (key cleared mid-fill) THROWS for a CS2 name, not a hard null', async () => {
+  const noClient = new CsFloatPriceSource({ pricingClient: () => null } as any);
+  await assert.rejects(() => noClient.fetchPriceCents('AK-47 | Redline (Field-Tested)', 730), /FETCH_FAILED/);
+  // the appid gate is authoritative and runs before the client check — TF2 still resolves null
+  assert.equal(await noClient.fetchPriceCents('Mann Co. Supply Crate Key', 440), null);
+});
