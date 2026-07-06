@@ -86,6 +86,7 @@ export class InventoryManager {
     let   totalCount    = 0;
     let   sawTotal      = false; // did Steam ever send total_inventory_count? (absent ≠ authoritative 0)
     let   hitPageCap    = false; // true if we stopped while Steam still had more pages
+    let   midPageFail   = false; // true if a page ≥1 came back unusable / the cursor stalled (partial read)
 
     for (let page = 0; page < MAX_INVENTORY_PAGES; page++) {
       const url =
@@ -155,8 +156,12 @@ export class InventoryManager {
         logger.error(`[${username}] inventory page 0 body is NOT an authoritative Steam response (success!=1) – treating as a FETCH FAILURE, not an empty inventory  body=${snippet}`);
         throw new Error(`[${username}] inventory page 0 unusable (not success:1): ${snippet}`);
       }
-      if (!body || body.success === 0) {
-        // Later pages only (page 0 is handled above): a break preserves the pages already fetched (#33).
+      if (page > 0 && !authoritative) {
+        // Later pages only (page 0 is handled above by the throw): an unusable body (null / HTML /
+        // {success:0} / {}) must NOT masquerade as the complete inventory — a break preserves the
+        // pages already fetched (#33) but flags the result PARTIAL so the fuller-cache guard fires.
+        logger.warn(`[${username}] inventory page ${page} body not authoritative (${describeBody(body)}) – keeping ${assets.length} assets fetched so far, result marked PARTIAL`);
+        midPageFail = true;
         break;
       }
 
@@ -169,6 +174,13 @@ export class InventoryManager {
         if (page === MAX_INVENTORY_PAGES - 1) { hitPageCap = true; break; } // more pages exist but we hit the cap
         startAssetId = body.last_assetid;
         continue;
+      }
+      // Reaching here with more_items still truthy means Steam claims more pages but the cursor did
+      // not advance (missing / repeated last_assetid) → a stuck cursor. Stop, but flag PARTIAL so the
+      // half read does not clobber the fuller cache as authoritative.
+      if (body.more_items) {
+        logger.warn(`[${username}] inventory pagination cursor stalled after page ${page} (more_items set, last_assetid=${body.last_assetid ?? '<none>'}) – keeping ${assets.length} assets fetched so far, result marked PARTIAL`);
+        midPageFail = true;
       }
       break;
     }
@@ -187,7 +199,7 @@ export class InventoryManager {
     );
     // Preserve the distinction between an EXPLICIT total_inventory_count:0 (authoritative empty,
     // used downstream to converge a genuinely-emptied cache) and an OMITTED field (unknown → protect).
-    return { assets, descriptions: [...descByKey.values()], total_inventory_count: sawTotal ? totalCount : undefined, success: 1, truncated: hitPageCap };
+    return { assets, descriptions: [...descByKey.values()], total_inventory_count: sawTotal ? totalCount : undefined, success: 1, truncated: hitPageCap || midPageFail };
   }
 
   // ── 2) Parse raw assets + descriptions → CS2Item[] ──────────────────────────
