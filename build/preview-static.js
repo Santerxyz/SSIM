@@ -16,7 +16,9 @@ const MIME = {
 };
 
 http.createServer((req, res) => {
-  const urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
+  let urlPath;
+  try { urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]); }
+  catch { res.writeHead(400, { 'Content-Type': 'text/plain' }); res.end('bad request'); return; }
   let file = path.normalize(path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath));
   if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
   fs.readFile(file, (err, data) => {
