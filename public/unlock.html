@@ -118,19 +118,52 @@
   ping();
   setInterval(ping, 4000);
 
-  fetch('/api/vault/state').then(function (r) { return r.json(); }).then(function (d) {
-    firstRun = !d.exists;
-    if (firstRun) {
-      el('title').textContent = 'Set your Master Password';
-      el('sub').textContent = 'Create a Master Password to encrypt this vault.';
-      el('confirmWrap').style.display = 'block';
-      el('btn').textContent = 'Create vault';
-      el('warn').style.display = 'block';
-    }
-  }).catch(function () {});
+  // H-ACC-066: the state probe decides "create" vs "unlock". A transient fetch failure used to be
+  // swallowed silently, leaving firstRun=false — the page then looked like an unlock but a first-run
+  // POST would CREATE a vault from a single unconfirmed entry. Retry 3× (700ms apart); if the state
+  // is still unknown, tell the operator and mark the probe unresolved so submit re-runs it before posting.
+  var stateResolved = false;
+  function applyFirstRun() {
+    el('title').textContent = 'Set your Master Password';
+    el('sub').textContent = 'Create a Master Password to encrypt this vault.';
+    el('confirmWrap').style.display = 'block';
+    el('btn').textContent = 'Create vault';
+    el('warn').style.display = 'block';
+  }
+  function probeState(attemptsLeft) {
+    return fetch('/api/vault/state').then(function (r) { return r.json(); }).then(function (d) {
+      stateResolved = true;
+      firstRun = !d.exists;
+      if (firstRun) applyFirstRun();
+      return true;
+    }).catch(function () {
+      if (attemptsLeft > 1) {
+        return new Promise(function (resolve) {
+          setTimeout(function () { resolve(probeState(attemptsLeft - 1)); }, 700);
+        });
+      }
+      var msg = el('msg');
+      msg.className = 'msg err';
+      msg.textContent = 'Could not determine vault state — check that SSIM is still starting, then try again.';
+      return false;
+    });
+  }
+  probeState(3);
 
   el('form').addEventListener('submit', function (e) {
     e.preventDefault();
+    // H-ACC-066: never post while the vault state is unknown (a swallowed probe failure would
+    // otherwise let an unlock attempt CREATE a vault). Re-run the probe first; only submit once
+    // the state is resolved so firstRun (and thus the confirm requirement) is decided from truth.
+    if (!stateResolved) {
+      var m = el('msg'); m.className = 'msg'; m.textContent = 'Checking vault state…';
+      probeState(3).then(function (ok) { if (ok) doSubmit(); });
+      return;
+    }
+    doSubmit();
+  });
+
+  function doSubmit() {
     var password = el('pw').value;
     var confirm = (firstRun || orphanMode) ? el('confirm').value : undefined;
     var msg = el('msg');
@@ -200,7 +233,7 @@
       msg.className = 'msg err';
       msg.textContent = 'Could not reach SSIM. Please try again.';
     });
-  });
+  }
 </script>
 </body>
 </html>

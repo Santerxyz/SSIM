@@ -102,8 +102,14 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
           error: 'Registered accounts exist but the vault file (vault.enc) is missing — likely a partial restore, an antivirus quarantine, or an unmounted drive. Creating a new vault now would leave every account credential-less. Restore vault.enc (a local vault.enc.bak with the same Master Password is auto-restored) or fix SSIM_HOME and reopen SSIM, or explicitly confirm creating a new empty vault.',
         });
       }
-      if (!exists && confirm !== undefined && confirm !== password) {
-        return res.status(400).json({ ok: false, error: 'The passwords do not match.' });
+      // H-ACC-066: a FIRST-RUN create (no vault.enc) must double-check the password server-side.
+      // The double-entry rule was previously enforced only when the client volunteered a `confirm`
+      // field, so any client state that sent none (single-input FALLBACK_HTML, a probe-failed
+      // unlock.html stuck in unlock-mode) could CREATE a vault from one unconfirmed entry — a paste
+      // typo would lock the vault behind an unknown password (no recovery). Require confirm on creates.
+      if (!exists) {
+        if (typeof confirm !== 'string') return res.status(400).json({ ok: false, error: 'First run: confirm the new Master Password (reload the unlock page if no confirm field is shown).' });
+        if (confirm !== password) return res.status(400).json({ ok: false, error: 'The passwords do not match.' });
       }
 
       // Grow a small delay with each failed attempt (scrypt + loopback already gate). The delay lives
@@ -170,5 +176,5 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
 // Read-only by design (bundle-defect emergency page): it only surfaces d.error; the S18
 // destructive orphan-vault override (createEmptyAnyway) deliberately requires the real page.
 const FALLBACK_HTML = `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;background:#0a0a0f;color:#eee;display:flex;min-height:100vh;align-items:center;justify-content:center">
-<form onsubmit="event.preventDefault();fetch('/api/vault/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p.value})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Unlocking - starting SSIM...';var w=function(){fetch('/api/system/status',{cache:'no-store'}).then(r=>r.json()).then(x=>{if(x&&x.vaultLocked!==true){location.replace('/');return}setTimeout(w,500)}).catch(()=>setTimeout(w,500))};setTimeout(w,900)}else{s.textContent=d.error}})">
-<div><h2>SSIM - Unlock Vault</h2><input id="p" type="password" placeholder="Master Password" style="padding:8px;width:280px"><button>Unlock</button><p id="s" style="color:#c084fc"></p></div></form>`;
+<form onsubmit="event.preventDefault();fetch('/api/vault/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p.value,confirm:c.value||undefined})}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='Unlocking - starting SSIM...';var w=function(){fetch('/api/system/status',{cache:'no-store'}).then(r=>r.json()).then(x=>{if(x&&x.vaultLocked!==true){location.replace('/');return}setTimeout(w,500)}).catch(()=>setTimeout(w,500))};setTimeout(w,900)}else{s.textContent=d.error}})">
+<div><h2>SSIM - Unlock Vault</h2><input id="p" type="password" placeholder="Master Password" style="padding:8px;width:280px"><br><input id="c" type="password" placeholder="Confirm (first run only)" style="padding:8px;width:280px;margin-top:8px"><br><button style="margin-top:8px">Unlock</button><p id="s" style="color:#c084fc"></p></div></form>`;
