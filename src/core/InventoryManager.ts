@@ -120,12 +120,19 @@ export class InventoryManager {
       // SAME open connection (no full re-login, no IP hop) and retry THIS page once.
       if (res.status !== 200 && res.status !== 429) {
         logger.warn(`[${username}] inventory call (page ${page}) returned HTTP ${res.status} – refreshing web session and retrying once`);
+        // Only the cookie renewal is guarded: on refresh failure we keep the old `res` and fall
+        // through to the status checks. The retried request runs OUTSIDE the try so a transport
+        // rejection (ETIMEDOUT/ECONNRESET) propagates to the caller and is classified transient
+        // by fetchRawRetrying — instead of being swallowed here, leaving `res` on the stale status
+        // and throwing a lying "private inventory (HTTP 403)" the S50 retry ladder never retries.
+        let refreshed = false;
         try {
           await refreshWebSession(session);
-          res = await doRequest();
+          refreshed = true;
         } catch (refreshErr) {
           logger.warn(`[${username}] silent web-session refresh failed: ${(refreshErr as Error).message}`);
         }
+        if (refreshed) res = await doRequest();
       }
 
       if (res.status === 429) {
