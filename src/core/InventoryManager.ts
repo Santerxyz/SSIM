@@ -275,7 +275,8 @@ export class InventoryManager {
    * Collapses duplicate items into stacks. Two items only stack when they share
    * the SAME market_hash_name AND the SAME trade-lock expiry – items locked until
    * different dates must remain separate stacks. Each stack carries quantity and
-   * the full list of underlying asset IDs.
+   * the full list of underlying asset IDs. Accepts both single items and
+   * already-stacked inputs (quantity>1) — merging is quantity-aware.
    */
   static stack(items: CS2Item[]): CS2Item[] {
     const stacks = new Map<string, CS2Item>();
@@ -290,8 +291,8 @@ export class InventoryManager {
 
       const existing = stacks.get(key);
       if (existing) {
-        existing.quantity += 1;
-        existing.assetIds.push(item.assetId);
+        existing.quantity += item.quantity;
+        existing.assetIds.push(...item.assetIds);
       } else {
         // Clone so we never mutate the caller's input item.
         stacks.set(key, { ...item, assetIds: [...item.assetIds] });
