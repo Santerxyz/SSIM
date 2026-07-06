@@ -99,3 +99,53 @@ test('H-INV-019: only the newest 2 preserved copies are kept (older ones pruned)
   assert.equal(fs.existsSync(dataDir('value_history.json.corrupt-1000000000002')), false, 'second-oldest pruned');
   cleanHistory();
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-INV-020 — a corrupt-but-parseable file (top-level `series` is an object, but a
+//  series value is a non-array, or a point is malformed) used to flow straight into
+//  append() and throw `arr.push is not a function` inside refresh routes / the bare
+//  fill-watch setInterval. load() now SANITIZES: non-array series → [], only well-
+//  formed points survive, and the `partial` honesty flag is preserved.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('H-INV-020: a non-array series is sanitized to [] and malformed points are dropped, partial preserved', () => {
+  cleanHistory();
+  fs.writeFileSync(HISTORY, JSON.stringify({
+    version: 1,
+    series: {
+      good: [{ t: 1, items: 2, wallet: 3 }],
+      bad: 'x',
+      mixed: [{ t: 'y' }, { t: 5, items: 1, wallet: 0, partial: true }],
+    },
+  }));
+
+  const svc = makeService();
+
+  assert.equal(svc.get('good').length, 1, 'a well-formed series is kept intact');
+  assert.deepEqual(svc.get('bad'), [], 'a non-array series is sanitized to []');
+  assert.equal(svc.get('mixed').length, 1, 'only the one valid point of the mixed series survives');
+  const p = svc.get('mixed')[0];
+  assert.equal(p.t, 5);
+  assert.equal(p.partial, true, 'the partial honesty flag is carried through sanitation');
+  assert.equal(preservedCopies().length, 0, 'a parseable file is sanitized in place, not preserved as corrupt');
+  cleanHistory();
+});
+
+test('H-INV-020: snapshotAll over sanitized history does not throw (the append() crash site is guarded)', () => {
+  cleanHistory();
+  fs.writeFileSync(HISTORY, JSON.stringify({ version: 1, series: { e1: 'not-an-array' } }));
+
+  const [accounts, , tf2Store, pricing, exchange] = noopDeps();
+  const inv = { username: 'bot1', wallet: { currency: 1, balance: 0 }, totalValueUsd: 5000, items: [] };
+  const seededAccounts = { getEnvironments: () => [{ id: 'e1' }], getByEnvironment: () => [{ username: 'bot1' }] };
+  const seededStore = { get: () => inv };
+  const seededPricing = { totalsOf: () => ({ totalCents: 5000, missing: [], softNull: 0 }), status: pricing.status };
+  const svc = new ValueHistoryService(
+    seededAccounts as never, seededStore as never, tf2Store as never, seededPricing as never, exchange as never,
+  );
+  void accounts;
+
+  assert.doesNotThrow(() => svc.snapshotAll('test', 'cs2'), 'a sanitized (now-array) series appends cleanly');
+  assert.equal(svc.get('e1').length, 1, 'the snapshot appended one point to the previously-corrupt series');
+  cleanHistory();
+});

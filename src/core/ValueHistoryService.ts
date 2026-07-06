@@ -87,7 +87,7 @@ export class ValueHistoryService {
     try {
       if (fsExtra.existsSync(HISTORY_PATH)) {
         const parsed = fsExtra.readJsonSync(HISTORY_PATH) as HistoryFile;
-        if (parsed && typeof parsed.series === 'object') return { version: 1, series: parsed.series ?? {} };
+        if (parsed && typeof parsed.series === 'object') return { version: 1, series: this.sanitizeSeries(parsed.series ?? {}) };
         // File exists but the shape is wrong (`{}`, `null`, an array, a missing `series`). Unlike
         // InventoryStore, value history is NOT refetchable — the only record of the past — so preserve
         // the current bytes before starting fresh (S12/S5 clobber class).
@@ -99,6 +99,37 @@ export class ValueHistoryService {
       this.preserveHistory((err as Error).message);
     }
     return { version: 1, series: {} };
+  }
+
+  /** H-INV-020: the top-level `series` check passing does NOT prove each series is an array of
+   *  valid points — a hand-edited file or partial disk corruption that still parses can leave a
+   *  string/number/object where an array belongs, which later throws inside `append()` (`arr.push`
+   *  is not a function) on the very next refresh, 500ing single-refresh routes and feeding the
+   *  money breaker via the bare-setInterval fill-watch. Keep only array series, and within each
+   *  only well-formed points (finite `t`, numeric `items`/`wallet`); carry the `partial` honesty
+   *  flag through, drop any other extras. Warn ONCE with the dropped counts if anything was cut. */
+  private sanitizeSeries(series: Record<string, HistoryPoint[]>): Record<string, HistoryPoint[]> {
+    const clean: Record<string, HistoryPoint[]> = {};
+    let droppedSeries = 0, droppedPoints = 0;
+    for (const [id, arr] of Object.entries(series)) {
+      if (!Array.isArray(arr)) { droppedSeries++; continue; }
+      const points: HistoryPoint[] = [];
+      for (const p of arr) {
+        if (p && typeof p.t === 'number' && Number.isFinite(p.t)
+            && typeof p.items === 'number' && typeof p.wallet === 'number') {
+          points.push(p.partial === true
+            ? { t: p.t, items: p.items, wallet: p.wallet, partial: true }
+            : { t: p.t, items: p.items, wallet: p.wallet });
+        } else {
+          droppedPoints++;
+        }
+      }
+      clean[id] = points;
+    }
+    if (droppedSeries > 0 || droppedPoints > 0) {
+      logger.warn(`value_history.json sanitized on load: dropped ${droppedSeries} non-array series and ${droppedPoints} malformed point(s)`);
+    }
+    return clean;
   }
 
   /** Best-effort: copy the current (unreadable/malformed) value_history.json to a
