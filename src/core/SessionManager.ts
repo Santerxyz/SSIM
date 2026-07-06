@@ -422,9 +422,18 @@ export class SessionManager extends EventEmitter {
 
     // ── Per-account network isolation ──────────────────────────────────────
     // httpsAgent is stored on the session and reused by the InventoryManager.
-    // AccountManager always attaches a resolved `network` (env proxy or override);
-    // fall back to local IP if it's somehow missing.
-    const network = account.network ?? { type: 'localip' as const, value: '0.0.0.0' };
+    // AccountManager ALWAYS attaches a resolved `network` (env proxy or override) via
+    // withNetwork on every query path. A missing `network` means a caller hand-built an
+    // AccountConfig and bypassed that layer — REFUSE rather than fail open to the host IP,
+    // which would log a proxy-isolated farm account in from the operator's real IP with no
+    // error (Steam then links the account to the home IP). Mirrors the server.ts:724 refusal.
+    if (!account.network) {
+      throw Object.assign(
+        new Error(`${account.username}: no resolved network attached (caller bypassed AccountManager.withNetwork) – refusing to log in without the account's proxy/binding`),
+        { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true }, // S49: deterministic config error → not retried in-slot
+      );
+    }
+    const network = account.network;
     const { steamUserOptions, httpsAgent } = AgentFactory.create(network);
 
     // ── Create a fresh, isolated SteamUser instance ────────────────────────
