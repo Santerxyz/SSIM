@@ -134,33 +134,33 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-042 | Folder node: chevron toggle (collapse/expand), folder/folder-open icon, name (click → folder-master), subtree count (mono); indentation `8 + depth*14`px | app.js:1432–1458 | | |
-| P-043 | Folder name click → `openFolderMaster(id)`; active folder text = brand | app.js:1444–1445, 1570, 1949–1957 | | |
-| P-044 | Move folder **up** arrow (disabled if first, hover-reveal) → `reorderFolder(id,'up')` | app.js:1447–1448, 1559 | | |
-| P-045 | Move folder **down** arrow (disabled if last) → `reorderFolder(id,'down')` | app.js:1449–1450, 1560 | | |
-| P-046 | Folder "Check bans for all accounts in this folder" shield → `checkFolderBans(id)` | app.js:1451, 1564 | | |
-| P-047 | "Create subfolder" folder-plus → `openFolderModal({mode:'create',parentId})` | app.js:1452, 1561 | | |
-| P-048 | "Rename" pen → `openFolderModal({mode:'rename',id,name})` | app.js:1453, 1562 | | |
-| P-049 | "Delete folder (contents move up)" trash → `deleteFolder(id,name)` | app.js:1454, 1563 | | |
-| P-050 | Folder collapse state persisted in localStorage (`cs2.collapsed`) via `toggleFolder` | app.js:52–56, 1658–1662 | | |
+| P-042 | Folder node: chevron toggle (collapse/expand), folder/folder-open icon, name (click → folder-master), subtree count (mono); indentation `8 + depth*14`px | app.js:1432–1458 | | ✅ done · app.js:1430–1461 (DS folder header, .row-actions) |
+| P-043 | Folder name click → `openFolderMaster(id)`; active folder text = brand | app.js:1444–1445, 1570, 1949–1957 | | ✅ done · app.js:1442 (data-folder, text-brand-light active) |
+| P-044 | Move folder **up** arrow (disabled if first, hover-reveal) → `reorderFolder(id,'up')` | app.js:1447–1448, 1559 | | ✅ done · app.js:1445 (data-folderup, btn-icon-sm) |
+| P-045 | Move folder **down** arrow (disabled if last) → `reorderFolder(id,'down')` | app.js:1449–1450, 1560 | | ✅ done · app.js:1447 (data-folderdown) |
+| P-046 | Folder "Check bans for all accounts in this folder" shield → `checkFolderBans(id)` | app.js:1451, 1564 | | ✅ done · app.js:1449 (data-banfolder) |
+| P-047 | "Create subfolder" folder-plus → `openFolderModal({mode:'create',parentId})` | app.js:1452, 1561 | | ✅ done · app.js:1450 (data-addsub) |
+| P-048 | "Rename" pen → `openFolderModal({mode:'rename',id,name})` | app.js:1453, 1562 | | ✅ done · app.js:1451 (data-rename, data-name) |
+| P-049 | "Delete folder (contents move up)" trash → `deleteFolder(id,name)` | app.js:1454, 1563 | | ✅ done · app.js:1452 (data-delfolder, danger icon) |
+| P-050 | Folder collapse state persisted in localStorage (`cs2.collapsed`) via `toggleFolder` | app.js:52–56, 1658–1662 | | ✅ done · app.js:1657 (unchanged; toggle re-skinned) |
 
 ### B.3 Sidebar tree — account rows (app.js render)
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-051 | Account row: multi-select checkbox `[data-selacct]` (low opacity until hover/check) → `toggleAccountSelect` | app.js:1486–1489, 1574–1577, 1609–1615 | | |
-| P-052 | Account button: user icon + displayName (or username) + username subline; active row = brand ring + `is-active`; click → `selectAccount(username)` | app.js:1490–1503, 1470–1471 | | |
-| P-053 | "LTD" badge when `canConfirm===false` (no identity_secret, amber): tooltip explains buy/cancel work, sell/trade need maFile | app.js:1499 | | |
-| P-054 | Per-account balance chip `.acct-balance`: STRICT states — real wallet → value (incl 0); refreshed+no wallet → `0,00` in fleet currency; never refreshed → `—`; fades out on row hover (`fmtWallet`/`fmtMoneyMinor(0,fleetCurrency())`) | app.js:1475–1500, 1581–1594 | | |
-| P-055 | Hover action: **Edit** account pen → `openEditAccount(username)` | app.js:1505–1506, 1569 | | |
-| P-056 | Hover action: **Move** folder-tree → `openMoveModal(username)` | app.js:1507–1508, 1568 | | |
-| P-057 | Hover action: **Check bans** shield → `checkAccountBans(username)` | app.js:1509–1510, 1565 | | |
-| P-058 | Hover action: **Hide/Show** eye/eye-slash → `toggleHide(username,isHidden)` | app.js:1511–1513, 1567 | | |
-| P-059 | Hover action: **Attach maFile** (only when `canConfirm===false`, emerald shield) → `openAttachMaFile(username)` | app.js:1514–1515, 1566 | | |
-| P-060 | Search/quick-filter switches sidebar to FLAT cross-folder list; balance-sort alone keeps tree & only reorders within folders; empty → "No matching accounts." | app.js:1526–1537, 1460–1468 | | |
-| P-061 | Empty list fallback: "No accounts." | app.js:1538 | | |
-| P-062 | ONE delegated click/change listener per container (no per-row rebinding) via `setupDelegation` (PERF-01) | app.js:1553–1604 | | |
-| P-063 | `patchSidebarBalances()`: updates only balance chips (no rebuild, scroll preserved) | app.js:1579–1595 | | |
+| P-051 | Account row: multi-select checkbox `[data-selacct]` (low opacity until hover/check) → `toggleAccountSelect` | app.js:1486–1489, 1574–1577, 1609–1615 | | ✅ done · app.js:1485 (data-selacct, .acct-check opacity-40) |
+| P-052 | Account button: user icon + displayName (or username) + username subline; active row = brand ring + `is-active`; click → `selectAccount(username)` | app.js:1490–1503, 1470–1471 | | ✅ done · app.js:1488–1500 (.account-btn.is-active, .avatar) |
+| P-053 | "LTD" badge when `canConfirm===false` (no identity_secret, amber): tooltip explains buy/cancel work, sell/trade need maFile | app.js:1499 | | ✅ done · app.js:1497 (.pill pill--ltd) |
+| P-054 | Per-account balance chip `.acct-balance`: STRICT states — real wallet → value (incl 0); refreshed+no wallet → `0,00` in fleet currency; never refreshed → `—`; fades out on row hover (`fmtWallet`/`fmtMoneyMinor(0,fleetCurrency())`) | app.js:1475–1500, 1581–1594 | | ✅ done · app.js:1473–1498, 1581–1594 (tri-state verbatim) |
+| P-055 | Hover action: **Edit** account pen → `openEditAccount(username)` | app.js:1505–1506, 1569 | | ✅ done · app.js:1503 (data-edit, .edit-btn) |
+| P-056 | Hover action: **Move** folder-tree → `openMoveModal(username)` | app.js:1507–1508, 1568 | | ✅ done · app.js:1505 (data-move, .move-btn) |
+| P-057 | Hover action: **Check bans** shield → `checkAccountBans(username)` | app.js:1509–1510, 1565 | | ✅ done · app.js:1507 (data-bancheck, .bancheck-btn) |
+| P-058 | Hover action: **Hide/Show** eye/eye-slash → `toggleHide(username,isHidden)` | app.js:1511–1513, 1567 | | ✅ done · app.js:1509 (data-hide, data-hidden, .hide-btn) |
+| P-059 | Hover action: **Attach maFile** (only when `canConfirm===false`, emerald shield) → `openAttachMaFile(username)` | app.js:1514–1515, 1566 | | ✅ done · app.js:1512 (data-attach, .attach-btn success icon) |
+| P-060 | Search/quick-filter switches sidebar to FLAT cross-folder list; balance-sort alone keeps tree & only reorders within folders; empty → "No matching accounts." | app.js:1526–1537, 1460–1468 | | ✅ done · app.js:1524–1537 (unchanged; empty re-skinned) |
+| P-061 | Empty list fallback: "No accounts." | app.js:1538 | | ✅ done · app.js:1536 (t12 text-slate-600) |
+| P-062 | ONE delegated click/change listener per container (no per-row rebinding) via `setupDelegation` (PERF-01) | app.js:1553–1604 | | ✅ done · app.js:1554–1602 (delegation untouched) |
+| P-063 | `patchSidebarBalances()`: updates only balance chips (no rebuild, scroll preserved) | app.js:1579–1595 | | ✅ done · app.js:1579–1593 (chip-only patch untouched) |
 
 ---
 
@@ -168,9 +168,9 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-064 | Any ticked account ⇒ auto-enter "Selection Master" (live-aggregated); all unticked ⇒ restore exact prior view (`preSelection` snapshot) via `syncSelectionView` | app.js:1606–1643 | | |
-| P-065 | "Select all" — ticks every account in active env, shows master | app.js:1645–1650, 2054 | | |
-| P-066 | "Clear" — unticks all, reverts to pre-selection view | app.js:1652–1656, 2055 | | |
+| P-064 | Any ticked account ⇒ auto-enter "Selection Master" (live-aggregated); all unticked ⇒ restore exact prior view (`preSelection` snapshot) via `syncSelectionView` | app.js:1606–1643 | | ✅ done · app.js:1618–1641 (logic untouched; row checkbox re-skinned) |
+| P-065 | "Select all" — ticks every account in active env, shows master | app.js:1645–1650, 2054 | | ✅ done · app.js:1644–1648 (selectAllAccounts untouched) |
+| P-066 | "Clear" — unticks all, reverts to pre-selection view | app.js:1652–1656, 2055 | | ✅ done · app.js:1651–1654 (clearSelectionAndRevert untouched) |
 
 ---
 

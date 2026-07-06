@@ -1434,22 +1434,25 @@ function renderFolderNode(node, depth, sibIndex = 0, sibCount = 1) {
   const count = subtreeCount(node);
   const isFirst = sibIndex === 0;
   const isLast = sibIndex === sibCount - 1;
+  const activeFolder = state.invMode === 'folder' && state.activeFolder === id;
   const header = `
     <div class="folder-header group flex items-center gap-1.5 pr-2 py-1.5 rounded-lg hover:bg-slate-800/50 transition" style="padding-left:${pad}px">
-      <button data-toggle="${escapeAttr(id)}" class="w-4 h-4 flex items-center justify-center text-slate-500 hover:text-slate-300 shrink-0">
-        <i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} text-3xs"></i></button>
-      <i class="fa-solid ${collapsed ? 'fa-folder' : 'fa-folder-open'} text-violet-400/80 text-xs shrink-0"></i>
+      <button data-toggle="${escapeAttr(id)}" class="w-4 h-4 flex items-center justify-center text-slate-500 hover:text-slate-300 shrink-0" aria-label="${collapsed ? 'Expand' : 'Collapse'} folder ${escapeAttr(name)}">
+        <i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} t10"></i></button>
+      <i class="fa-solid ${collapsed ? 'fa-folder' : 'fa-folder-open'} text-brand t12 shrink-0"></i>
       <span data-folder="${escapeAttr(id)}" title="Open folder master (aggregated inventory)"
-        class="text-sm font-semibold truncate flex-1 cursor-pointer ${state.invMode === 'folder' && state.activeFolder === id ? 'text-brand' : 'text-slate-300 hover:text-white'}">${escapeHtml(name)}</span>
-      <span class="text-3xs text-slate-600 font-mono mr-1">${count}</span>
-      <button ${isFirst ? 'disabled' : `data-folderup="${escapeAttr(id)}"`} title="Move folder up"
-        class="opacity-0 group-hover:opacity-100 transition w-4 text-center ${isFirst ? 'text-slate-700 cursor-default' : 'text-slate-500 hover:text-white'}"><i class="fa-solid fa-angle-up text-2xs"></i></button>
-      <button ${isLast ? 'disabled' : `data-folderdown="${escapeAttr(id)}"`} title="Move folder down"
-        class="opacity-0 group-hover:opacity-100 transition w-4 text-center ${isLast ? 'text-slate-700 cursor-default' : 'text-slate-500 hover:text-white'}"><i class="fa-solid fa-angle-down text-2xs"></i></button>
-      <button data-banfolder="${escapeAttr(id)}" title="Check bans for all accounts in this folder" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-brand transition w-5 text-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>
-      <button data-addsub="${escapeAttr(id)}" title="Create subfolder" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-brand transition w-5 text-center"><i class="fa-solid fa-folder-plus text-2xs"></i></button>
-      <button data-rename="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Rename" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white transition w-5 text-center"><i class="fa-solid fa-pen text-2xs"></i></button>
-      <button data-delfolder="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Delete folder (contents move up)" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 transition w-5 text-center"><i class="fa-solid fa-trash text-2xs"></i></button>
+        class="t12 font-semibold truncate flex-1 cursor-pointer ${activeFolder ? 'text-brand-light' : 'text-slate-300 hover:text-white'}">${escapeHtml(name)}</span>
+      <span class="t10 font-mono text-slate-600 mr-1">${count}</span>
+      <span class="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <button ${isFirst ? 'disabled' : `data-folderup="${escapeAttr(id)}"`} title="Move folder up" aria-label="Move folder ${escapeAttr(name)} up"
+          class="btn btn-icon-sm btn-ghost ${isFirst ? 'opacity-40' : ''}"><i class="fa-solid fa-angle-up t10"></i></button>
+        <button ${isLast ? 'disabled' : `data-folderdown="${escapeAttr(id)}"`} title="Move folder down" aria-label="Move folder ${escapeAttr(name)} down"
+          class="btn btn-icon-sm btn-ghost ${isLast ? 'opacity-40' : ''}"><i class="fa-solid fa-angle-down t10"></i></button>
+        <button data-banfolder="${escapeAttr(id)}" title="Check bans for all accounts in this folder" aria-label="Check bans for folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
+        <button data-addsub="${escapeAttr(id)}" title="Create subfolder" aria-label="Create subfolder in ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-folder-plus t10"></i></button>
+        <button data-rename="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Rename" aria-label="Rename folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-pen t10"></i></button>
+        <button data-delfolder="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Delete folder (contents move up)" aria-label="Delete folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-trash-can t10" style="color:rgb(var(--danger-rgb))"></i></button>
+      </span>
     </div>`;
   const body = collapsed ? '' : renderNodes(node.children, depth + 1) + renderAccounts(node.accounts, depth + 1);
   return `<div class="folder-node">${header}${body}</div>`;
@@ -1480,37 +1483,37 @@ function renderAccountRow(acc, depth) {
   // the balance fades out and the mini action buttons fade in over the same right-hand slot,
   // so they never truncate the name nor overlap the balance. P1 states (—/0,00/value) unchanged.
   return `
-    <div class="account-row group relative flex items-stretch ${selected ? 'bg-brand/5 rounded-lg' : ''}" style="padding-left:${pad}px">
+    <div class="account-row group relative flex items-stretch ${selected ? 'bg-brand/5 rounded-xl' : ''}" style="padding-left:${pad}px">
       <label class="acct-check-wrap flex items-center pl-1 pr-1.5 shrink-0 cursor-pointer" title="Select for multi-account actions (Mass Buy/Sell/Trade + master)">
         <input type="checkbox" data-selacct="${escapeAttr(acc.username)}" ${selected ? 'checked' : ''}
           aria-label="Select ${escapeAttr(acc.username)} for multi-account actions"
-          class="acct-check w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-brand cursor-pointer ${selected ? '' : 'opacity-40 group-hover:opacity-100'}"></label>
+          class="acct-check w-4 h-4 rounded accent-brand cursor-pointer ${selected ? '' : 'opacity-40'}"></label>
       <button data-username="${escapeAttr(acc.username)}"
-        class="account-btn flex-1 min-w-0 text-left pr-3 py-2.5 rounded-lg transition flex items-center gap-3
-               ${active ? 'is-active bg-brand/15 ring-1 ring-brand/40' : 'hover:bg-slate-800'} ${acc.hidden ? 'opacity-50' : ''}">
-        <div class="w-8 h-8 rounded-md bg-slate-800 flex items-center justify-center shrink-0">
-          <i class="fa-solid fa-user text-xs ${active ? 'text-brand' : 'text-slate-500'}"></i></div>
+        class="account-btn flex-1 min-w-0 text-left pr-3 py-2 rounded-xl border border-transparent transition flex items-center gap-2.5
+               ${active ? 'is-active' : 'hover:bg-slate-800/60'} ${acc.hidden ? 'opacity-50' : ''}">
+        <span class="avatar shrink-0" style="width:2rem;height:2rem">
+          <i class="fa-solid fa-user t11 ${active ? 'text-brand-light' : ''}"></i></span>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1.5">
-            <p class="text-sm font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-300'}">
-              ${escapeHtml(acc.displayName || acc.username)}</p>
-            ${acc.canConfirm === false ? `<span class="shrink-0 text-3xs font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Cannot confirm trades — its maFile has no identity_secret (or none is attached). Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need one. Attach a maFile to fix.">LTD</span>` : ''}
-            <span class="acct-balance ml-auto shrink-0 text-2xs font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
+            <span class="t13 font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-200'}">
+              ${escapeHtml(acc.displayName || acc.username)}</span>
+            ${acc.canConfirm === false ? `<span class="pill pill--ltd t10 shrink-0" style="padding:0 .4rem" title="Cannot confirm trades — its maFile has no identity_secret (or none is attached). Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need one. Attach a maFile to fix.">LTD</span>` : ''}
+            <span class="acct-balance ml-auto shrink-0 t11 font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
           </div>
-          <p class="text-2xs text-slate-500 truncate">${escapeHtml(acc.username)}</p></div>
+          <p class="t10 text-slate-500 truncate font-mono">${escapeHtml(acc.username)}</p></div>
       </button>
-      <div class="acct-actions absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      <div class="acct-actions row-actions absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
         <button data-edit="${escapeAttr(acc.username)}" title="Edit account" aria-label="Edit ${escapeAttr(acc.username)}"
-          class="edit-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid fa-pen text-2xs"></i></button>
+          class="edit-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-pen t10"></i></button>
         <button data-move="${escapeAttr(acc.username)}" title="Move" aria-label="Move ${escapeAttr(acc.username)}"
-          class="move-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid fa-folder-tree text-2xs"></i></button>
+          class="move-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-folder-tree t10"></i></button>
         <button data-bancheck="${escapeAttr(acc.username)}" title="Check bans" aria-label="Check bans for ${escapeAttr(acc.username)}"
-          class="bancheck-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>
+          class="bancheck-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
         <button data-hide="${escapeAttr(acc.username)}" data-hidden="${acc.hidden ? '1' : '0'}"
           title="${acc.hidden ? 'Show' : 'Hide'}" aria-label="${acc.hidden ? 'Show' : 'Hide'} ${escapeAttr(acc.username)}"
-          class="hide-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} text-2xs"></i></button>
+          class="hide-btn btn btn-icon-sm btn-ghost"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} t10"></i></button>
         ${acc.canConfirm === false ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
-          class="attach-btn w-6 h-6 rounded-md bg-slate-900/95 text-emerald-400 hover:text-white hover:bg-emerald-700 transition flex items-center justify-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>` : ''}
+          class="attach-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10" style="color:rgb(var(--success-rgb))"></i></button>` : ''}
       </div>
     </div>`;
 }
@@ -1529,11 +1532,11 @@ function renderSidebar() {
     if (sorting) matches = sortAccountsByBalance(matches, state.accountSort === 'balance-asc' ? 'asc' : 'desc');
     html = matches.length
       ? matches.map((a) => renderAccountRow(a, 0)).join('')
-      : `<p class="text-sm text-slate-600 px-3 py-4 text-center">No matching accounts.</p>`;
+      : `<p class="t12 text-slate-600 px-3 py-6 text-center">No matching accounts.</p>`;
   } else {
     html = renderNodes(state.tree.folders, 0) + renderAccounts(state.tree.accounts, 0);
   }
-  el.accountList.innerHTML = html || `<p class="text-sm text-slate-600 px-3 py-4 text-center">No accounts.</p>`;
+  el.accountList.innerHTML = html || `<p class="t12 text-slate-600 px-3 py-6 text-center">No accounts.</p>`;
   // PERF-01: events are delegated once (setupDelegation) — no per-row re-binding here.
 
   const hiddenCount = envAccounts().filter((a) => a.hidden).length;

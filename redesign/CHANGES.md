@@ -112,3 +112,39 @@ Deliberate DECISION (design-source deviation, not an IA change):
    shimmer tiles (glow strip + header row + 2×2 stat placeholders + button placeholder) so the
    loading state matches the re-skinned tile. Count (6), gating, and `el.envTiles.innerHTML`
    write unchanged.
+
+---
+
+## V3 — Sidebar tree: folder nodes + account rows + multi-select re-skin (`new_public/app.js` `renderFolderNode` + `renderAccountRow`)  ·  2026-07-06
+
+**Net IA/flow change: NONE.** The `renderFolderNode(node,…)` and `renderAccountRow(acc,depth)`
+template markup was re-authored to the masterpiece DS look while every handler hook stays
+byte-identical. Preserved exactly: `data-toggle`, `data-folder`, `data-folderup`,
+`data-folderdown`, `data-banfolder`, `data-addsub`, `data-rename`+`data-name`,
+`data-delfolder`+`data-name` (folders); `data-selacct`, `data-username`, `data-edit`,
+`data-move`, `data-bancheck`, `data-hide`+`data-hidden`, `data-attach` (accounts); and the
+delegation class hooks `.acct-check`/`.acct-check-wrap`, `.account-btn`, `.acct-balance`,
+`.acct-actions`, `.edit-btn`/`.move-btn`/`.bancheck-btn`/`.hide-btn`/`.attach-btn`. The legacy
+separate-sibling structure (checkbox `<label>` OUTSIDE the `.account-btn` `<button>`) is KEPT —
+required because `onSidebarClick` returns early on `.acct-check-wrap` and `onSidebarChange`
+handles the checkbox; nesting it inside the button (as the prototype does) would break both the
+delegation and valid HTML. `renderNodes`/`renderAccounts` recursion, the `pad = 8 + depth*14`
+indentation, `subtreeCount`, collapse state, balance-sort, flat-filter mode, `patchSidebarBalances`,
+and `setupDelegation` are all untouched.
+
+Applied DS classes: `.account-row`/`.account-btn`/`.is-active` (glowing left rail via the
+inline `<style>` DS), `.avatar` tile for the user icon, `.pill pill--ltd` for the LTD badge,
+`.row-actions` hover-reveal wrapper, `.btn btn-icon-sm btn-ghost` for every row/folder action
+button, and the `t10–t13` type scale.
+
+Deliberate DECISION (design-source deviation, not an IA change):
+
+1. **The prototype's per-account session status dot (`.dot--${a.session}`, `design_source.html:1564`)
+   was NOT ported.** It reads a mock `session:'online'|'offline'|'error'` field that the frozen
+   backend / legacy account object does not carry (verified: no session/online/loggedIn field on
+   real accounts; the legacy sidebar row has no status dot either — P-052 describes only
+   icon+name+username). Rendering a dot would fabricate connection state the data does not contain
+   (invariant 8 / honesty). So the row adopts the neutral `.avatar` tile look but omits the
+   data-less dot — a faithful re-skin, no invented signal. Balance tri-state on `.acct-balance`
+   (`known` = `!!wallet || refreshed`; value / `0,00` / `—`) is preserved verbatim (invariant 1,
+   P-054); `patchSidebarBalances` still updates only that chip.
