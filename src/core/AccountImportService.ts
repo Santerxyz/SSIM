@@ -188,6 +188,12 @@ export class AccountImportService {
   cancel(sessionId: string): void {
     const rec = this.active.get(sessionId);
     if (!rec) return;
+    // Mark terminal BEFORE deleting so a poll response that lands mid-cancel (steam-session
+    // emits 'authenticated' after its network await with no post-await cancel re-check) cannot
+    // finalize on a rec we've already discarded — the 'authenticated'/'error' guards observe finishedAt.
+    rec.state = 'error';
+    rec.error = 'cancelled';
+    rec.finishedAt = Date.now();
     try { rec.session.cancelLoginAttempt(); } catch { /* already settled */ }
     this.active.delete(sessionId);
     logger.info(`[import ${sessionId.slice(0, 8)}] cancelled`);
@@ -199,6 +205,7 @@ export class AccountImportService {
     const tag = rec.id.slice(0, 8);
     // An 'error' listener is mandatory — Node throws on an unhandled 'error' event.
     rec.session.on('error', (err: Error) => {
+      if (rec.finishedAt) return;   // a late poll error must not overwrite 'imported'/'expired'/cancelled
       rec.state = 'error';
       rec.error = err.message;
       rec.finishedAt = Date.now();
@@ -214,6 +221,7 @@ export class AccountImportService {
       if (rec.state === 'waiting') rec.state = 'scanned';
     });
     rec.session.on('authenticated', () => {
+      if (rec.finishedAt || !this.active.has(rec.id)) return;   // cancelled/expired/errored → never finalize
       rec.state = 'approved';
       this.finalizeImport(rec).catch((err) => {
         rec.state = 'error';
