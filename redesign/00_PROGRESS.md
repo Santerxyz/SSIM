@@ -31,7 +31,8 @@ The port keeps the legacy **function** (API calls, state, handlers, invariants) 
 - [x] Phase 0 — setup: branch, `redesign/legacy_public/` (rollback), `redesign/design_source.html`, this tracker, ROLLBACK.md
 - [x] Phase 1 — extraction contracts: API_CONTRACT (100 endpoints, 11 polls), PARITY (~636 rows / 26+ 💰), DESIGN_SYSTEM (69 tokens, ~60 components, 25 overlays), PORT_PLAN (713 lines — re-skin strategy, cap-token preserved verbatim). Committed 1b34a4d.
 - [ ] Phase 2 — design system + primitives in new `public/` (tokens, buttons, inputs, tables, modals, toasts, badges, tabs, tooltips, confirm, skeletons, the Live Logs launcher + layering)
-- [ ] Phase 3 — views wired to backend, riskiest-data first: app shell/nav → master/fleet → account detail + inventory grid → pricing → market & orders → trade-offers → mass-buy → ban checker → casket/trade-up → CSFloat → import → settings → Live Logs (logs.html) → unlock.html → license.html → splash.html
+- [~] Phase 2 — DS + app shell + portals ✅ (V1, V20–V23) committed dce6517: index.html re-skinned, 292 ids preserved, offline, app.js untouched.
+- [ ] Phase 3 — re-skin view render functions V2–V19 in new_public/app.js (serial, idempotent via `_P3_DONE.md`, node --check gate per view). Running: run wf_db25f871-59f. Order: V2 env tiles → V3 sidebar → V4 account+inventory grid → V5 fleet masters → V6 inv header/refresh → V7 chart → V8 orders → V9 offers → V10 buy → V11 mass-buy → V12 sell → V13 send → V14 bans → V15 casket/tradeup → V16 CSFloat → V17 account modals → V18 import → V19 settings.
 - [ ] Phase 4 — verification: contract audit (API_CONTRACT row-by-row), parity audit (PARITY row-by-row), invariant audit (VERIFICATION.md), live run against the backend (NO money actions — those go to LIVE_TEST_CHECKLIST.md), perf sanity at 500+ accounts
 - [ ] Cutover — replace `public/` with the new frontend (legacy_public/ = rollback), `npm run build && npm test`, smoke-test the live app
 - [ ] Compile — **bump version 1.3.5 → 1.4.0** (package.json + src-tauri/tauri.conf.json; see RELEASE VERSION above), then `npm run build:tauri` → SSIM.exe (needs secrets.local.bat for the fail-closed bake; present). Do NOT publish (owner's web-panel step).
@@ -39,5 +40,10 @@ The port keeps the legacy **function** (API calls, state, handlers, invariants) 
 ## DELIVERABLES (redesign/)
 `00_PROGRESS.md`, `API_CONTRACT.md`, `PARITY.md`, `DESIGN_SYSTEM.md`, `PORT_PLAN.md`, `CHANGES.md` (deliberate flow changes), `VERIFICATION.md`, `LIVE_TEST_CHECKLIST.md`, `OWNER_NOTES.md`, `ROLLBACK.md`, `legacy_public/` (untouched), `design_source.html`.
 
+## PAUSED at V4 (2026-07-06) — quota; shipping hardened v1.3.6 this week instead
+Owner hit 99% weekly quota. Phase 3 re-skinned **V2, V3, V4** (committed c498059/0ee7d3d/14fab0c) before pause; V5–V19 pending. `new_public/` is a HALF-skin (new shell+portals+V2–V4, old markup for V5–V19) — NOT shippable. Decision: **compile the COMPLETE hardened build (fix/reliability-remediation) as v1.3.6 and ship this week** (old design, all 281 P1/P2/P3 fixes, 946 tests green). The new design (this branch) **resumes next quota window** and ships as **v1.4.0**.
+**RESUME next window:** `git checkout redesign/frontend-v2`, then relaunch Phase 3 (idempotency via `_P3_DONE.md` skips V2–V4) → V5…V19 → Phase 4 verify → cutover → compile v1.4.0. Rollback unaffected (legacy_public/ + fix/reliability-remediation).
+
 ## Session log
 - 2026-07-06 · Phase 0 done: branched redesign/frontend-v2, legacy backed up, masterpiece = design_source.html, strategy = re-skin/preserve-function. Phase 1 extraction launched.
+- 2026-07-06 · Phases 1–2 done (contracts + DS/shell/portals). Phase 3 started, reached V4/18, then PAUSED at 99% quota. Shipping hardened v1.3.6 this week; redesign resumes as v1.4.0 next window.
