@@ -205,10 +205,15 @@ export class AccountManager {
    *  Only touches accounts that ACTUALLY made it into the vault — a non-vaulted account keeps
    *  its plaintext credential so it is never destroyed. Also purges the stale plaintext .bak. */
   enterVaultMode(): void {
+    // Count the records this pass ACTUALLY blanked (a non-empty password cleared, or a
+    // proxy-type override stripped) — enterVaultMode runs on EVERY vault-mode boot (index.ts
+    // → vaultBoot.ts:228), but only the write that flips a plaintext secret to blank is a real
+    // TRANSITION; a steady-state boot (everything already blank) must touch nothing. (H-ACC-020)
+    let blanked = 0;
     for (const acc of this.db.accounts) {
       if (!AccountVault.hasAccount(acc.username)) continue; // not vaulted → keep plaintext (recoverable)
-      acc.password = '';
-      if (acc.networkOverride?.type === 'proxy') acc.networkOverride = undefined;
+      if (acc.password) { acc.password = ''; blanked++; }
+      if (acc.networkOverride?.type === 'proxy') { acc.networkOverride = undefined; blanked++; }
     }
     // Migrate every credential-bearing ENV proxy into the vault (B20); save() then blanks the
     // plaintext copy for envs whose proxy is now provably vaulted (non-destructive).
@@ -217,17 +222,50 @@ export class AccountManager {
       if (env.proxy && env.proxy.trim() && AccountVault.importEnvProxy(env.id, env.proxy.trim())) envProxiesMoved++;
     }
     if (envProxiesMoved > 0) { AccountVault.save(); logger.info(`[vault] migrated ${envProxiesMoved} environment proxy/proxies into the vault`); }
-    // Purge FIRST, then save with backup:false — otherwise the save() would copy the PRE-blank
-    // plaintext main into accounts.json.bak (the heuristic reads in-memory passwords, which are
-    // already blanked above, so it would wrongly back up the still-plaintext DISK). Purging first
-    // also removes any plaintext-mode or migrate-time .bak left earlier in this boot. Kill-point
-    // matrix: die before purge → old .bak persists but is warned + retried next boot (enterVaultMode
-    // runs unconditionally every vault-mode boot); die between purge and save → plaintext main intact
-    // (non-destructive guarantee), no .bak; die after save → disk secret-free, no .bak. A NEW
-    // plaintext .bak is never created.
-    try { const bak = `${DB_PATH}.bak`; if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); }
-    catch (e) { logger.warn(`[vault] could not remove plaintext accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
-    this.save({ backup: false });
+    const bak = `${DB_PATH}.bak`;
+    if (blanked > 0 || envProxiesMoved > 0) {
+      // TRANSITION boot — H-ACC-015's sequence verbatim. Purge FIRST, then save with backup:false
+      // — otherwise the save() would copy the PRE-blank plaintext main into accounts.json.bak (the
+      // heuristic reads in-memory passwords, which are already blanked above, so it would wrongly
+      // back up the still-plaintext DISK). Purging first also removes any plaintext-mode or
+      // migrate-time .bak left earlier in this boot. Kill-point matrix: die before purge → old .bak
+      // persists but is warned + retried next boot; die between purge and save → plaintext main
+      // intact (non-destructive guarantee), no .bak; die after save → disk secret-free, no .bak.
+      try { if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); }
+      catch (e) { logger.warn(`[vault] could not remove plaintext accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
+      this.save({ backup: false });
+      return;
+    }
+    // STEADY-STATE boot — nothing changed, so NO save (the pointless updatedAt bump / rewrite is
+    // dropped) and NO unconditional purge. A .bak that is a STALE pre-transition plaintext backup
+    // is retired here (this preserves -15's "a failed purge is retried next boot" property); a .bak
+    // whose secrets are NOT provably in the vault is a recoverable rollback copy and is LEFT IN
+    // PLACE (same byte-equality doctrine as quarantineMigratedPlaintext, vaultBoot.ts, B21). Matrix:
+    // steady boot → main and a non-stale .bak untouched; transition boot → -15's guarantees verbatim;
+    // transition purge failed → retried by this sentinel on subsequent boots until gone.
+    let bakDb: AccountsDatabase;
+    try { bakDb = fsExtra.readJsonSync(bak) as AccountsDatabase; }
+    catch { return; } // absent or unreadable → leave it in place (nothing to prove stale)
+    let plaintextSecrets = 0;
+    let allVaulted = true;
+    for (const acc of bakDb.accounts ?? []) {
+      if (!acc.password) continue;
+      plaintextSecrets++;
+      if (AccountVault.getAccount(acc.username)?.password !== acc.password) allVaulted = false;
+    }
+    for (const env of bakDb.environments ?? []) {
+      const p = env.proxy?.trim();
+      if (!p) continue;
+      plaintextSecrets++;
+      if (AccountVault.getEnvProxy(env.id) !== p) allVaulted = false;
+    }
+    // Purge ONLY a .bak that holds plaintext AND every plaintext secret is byte-equal to the vault
+    // (provably stale). A secret-free .bak, or one holding any not-vaulted / mismatched secret
+    // (a recoverable orphan), is a legitimate rollback copy — never destroyed.
+    if (plaintextSecrets > 0 && allVaulted) {
+      try { fsExtra.removeSync(bak); }
+      catch (e) { logger.warn(`[vault] could not remove stale plaintext accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
+    }
   }
 
   // ── Network resolution (computed, never persisted) ───────────────────────────
