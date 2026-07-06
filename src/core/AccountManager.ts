@@ -60,7 +60,29 @@ export class AccountManager {
       // and trip the vault→org self-heal against real data (S4/S7). (H-ACC-013.)
       db = this.recoverFromBak(err as Error);
     }
+    // H-ACC-014: the file parsed but its shape is unusable — `accounts` missing/non-array (every
+    // later .some/.map throws a TypeError far from the cause) or `version` missing/non-numeric (a
+    // hand-merge artifact where `undefined < 3` is false → migrate() silently skips forever). Do
+    // NOT coerce accounts to [] (fabricated emptiness, S4 class) or default version (guessing risks
+    // re-running/skipping migrations against unknown state) — route into the same H-ACC-013
+    // recovery machinery (try .bak → quarantine → loud failure) as a torn write.
+    if (!AccountManager.isValidDbShape(db)) {
+      db = this.recoverFromBak(new Error('accounts.json is missing its `accounts` array or a numeric `version`'));
+    }
     return this.migrate(db);
+  }
+
+  /**
+   * H-ACC-014: minimal load-time shape gate. A parseable file whose `accounts` is not an array,
+   * or whose `version` is not a finite number, is unusable — treat it as corrupt (recover from
+   * .bak or fail loud) rather than let it reach migrate()/save() and throw a bare TypeError, or
+   * pass every version-gated migration on `undefined < N === false`.
+   */
+  private static isValidDbShape(db: unknown): db is AccountsDatabase {
+    return !!db && typeof db === 'object'
+      && Array.isArray((db as AccountsDatabase).accounts)
+      && typeof (db as AccountsDatabase).version === 'number'
+      && Number.isFinite((db as AccountsDatabase).version);
   }
 
   /**
@@ -77,6 +99,11 @@ export class AccountManager {
     let recovered: AccountsDatabase;
     try {
       recovered = fsExtra.readJsonSync(bak) as AccountsDatabase;
+      // The .bak must itself be a usable database — a shape-invalid backup (H-ACC-014) is no better
+      // than a torn one; do not swap one broken shape for another.
+      if (!AccountManager.isValidDbShape(recovered)) {
+        throw new Error('the backup is missing its `accounts` array or a numeric `version`');
+      }
     } catch (bakErr) {
       throw new Error(
         `accounts.json is corrupt (${err.message}) and ${bak} could not recover it (${(bakErr as Error).message}). ` +

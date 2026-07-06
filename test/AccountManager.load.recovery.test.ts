@@ -92,3 +92,58 @@ test('H-ACC-013: a valid accounts.json boots normally (baseline — recovery is 
   assert.equal(quarantined.length, 0, 'a healthy load quarantines nothing');
   cleanVaultDir();
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-ACC-014 — a file that PARSES but whose shape is unusable must route into the
+//  same recovery machinery, not reach migrate()/save() (bare TypeError far from the
+//  cause) or silently skip every version-gated migration on `undefined < N`.
+//    • `accounts` key missing (parseable) + good .bak → recover from .bak
+//    • same with no .bak → named throw, no fresh database
+//    • `version` non-numeric (e.g. "4" as a string) → corrupt path
+//  MUST NOT coerce accounts to [] (S4 fabricated emptiness) or default version.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('H-ACC-014: accounts.json missing its `accounts` key (parseable) with a valid .bak recovers from the .bak', () => {
+  cleanVaultDir();
+  const noAccounts = JSON.stringify({ version: 4, environments: [], folders: [] });
+  fs.writeFileSync(DB, noAccounts);
+  fs.writeFileSync(BAK, validDb('AlphaBot', 'BravoBot'));
+
+  const accounts = new AccountManager();
+
+  assert.equal(accounts.count(), 2, 'the fleet is recovered from the .bak, not coerced to an empty array (S4)');
+  assert.equal(accounts.existsRaw('AlphaBot'), true);
+  assert.equal(accounts.existsRaw('BravoBot'), true);
+  const quarantined = fs.readdirSync(vaultDir()).filter(f => f.startsWith('accounts.json.corrupt-'));
+  assert.equal(quarantined.length, 1, 'the shape-invalid original is quarantined as accounts.json.corrupt-*');
+  assert.equal(fs.readFileSync(vaultDir(quarantined[0]), 'utf8'), noAccounts, 'the quarantined copy is the untouched original bytes');
+  cleanVaultDir();
+});
+
+test('H-ACC-014: accounts.json missing its `accounts` key with NO .bak fails loud and creates no fresh database', () => {
+  cleanVaultDir();
+  const noAccounts = JSON.stringify({ version: 4, environments: [], folders: [] });
+  fs.writeFileSync(DB, noAccounts);
+  assert.equal(fs.existsSync(BAK), false, 'precondition: no backup present');
+
+  assert.throws(() => new AccountManager(), /corrupt/i, 'boot must fail loud, not fabricate an empty fleet or crash with a bare TypeError');
+
+  assert.equal(fs.readFileSync(DB, 'utf8'), noAccounts, 'the shape-invalid file is left in place for the operator to recover');
+  const quarantined = fs.readdirSync(vaultDir()).filter(f => f.startsWith('accounts.json.corrupt-'));
+  assert.equal(quarantined.length, 0, 'nothing is quarantined when recovery is impossible');
+  cleanVaultDir();
+});
+
+test('H-ACC-014: accounts.json with a non-numeric `version` (string "4") routes into the corrupt path', () => {
+  cleanVaultDir();
+  const stringVersion = JSON.stringify({
+    version: '4', environments: [], folders: [], accounts: [],
+  });
+  fs.writeFileSync(DB, stringVersion);
+  assert.equal(fs.existsSync(BAK), false, 'precondition: no backup present');
+
+  assert.throws(() => new AccountManager(), /corrupt/i, 'a non-numeric version is treated as corrupt (undefined< comparisons would silently skip every migration)');
+
+  assert.equal(fs.readFileSync(DB, 'utf8'), stringVersion, 'the shape-invalid file is left in place');
+  cleanVaultDir();
+});
