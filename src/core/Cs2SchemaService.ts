@@ -125,7 +125,8 @@ export class Cs2SchemaService {
       if (!name || typeof rarityId !== 'string') continue;
       const collections = Array.isArray(s?.collections) ? s.collections as Array<Record<string, unknown> | string> : [];
       const first = collections[0];
-      const collection = first ? String((first as { name?: unknown })?.name ?? first ?? '') : '';
+      const nm = (first as { name?: unknown })?.name;
+      const collection = typeof first === 'string' ? first.trim() : typeof nm === 'string' ? nm.trim() : '';
       const def: SkinDef = {
         name, rarityId, collection,
         minFloat: numOr(s?.min_float, 0),
