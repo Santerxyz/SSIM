@@ -77,6 +77,10 @@ const VERSION = require(path.join(ROOT, 'package.json')).version;
 // match the bot's. Unset → announce is skipped (the bot's /version poll still catches the release).
 const BOT_ANNOUNCE_URL = (process.env.BOT_ANNOUNCE_URL || '').replace(/\/+$/, '');
 const ANNOUNCE_HMAC_SECRET = process.env.ANNOUNCE_HMAC_SECRET || '';
+// Per-request response deadline (ms) for every non-stage call. 120 s default; a stalled connection
+// (server accepts but never responds) aborts here instead of parking the publish forever. Overridable
+// only to tune/test — the ~185 MB stage upload passes its own larger value at the call site.
+const REQUEST_TIMEOUT_MS = Number(process.env.PUBLISH_REQUEST_TIMEOUT_MS) || 120_000;
 
 // ── Publish target ───────────────────────────────────────────────────────────
 // Two kinds of client are in the wild, and they consume INCOMPATIBLE artifacts:
@@ -218,8 +222,14 @@ async function announce({ version, url, notes, publishedAt }) {
   }
 }
 
-/** Minimal cookie-aware HTTP(S) request → { status, headers, body }. Extra `headers` merge last. */
-function request(method, urlStr, { body, raw, cookie, headers } = {}) {
+/**
+ * Minimal cookie-aware HTTP(S) request → { status, headers, body }. Extra `headers` merge last.
+ * `timeoutMs` bounds the whole exchange: a stalled connection (server accepts but never responds,
+ * or the response read hangs) rejects with a labelled error instead of parking the publish forever.
+ * Defaults to REQUEST_TIMEOUT_MS (120 s); the ~185 MB `stage` upload passes a larger value. Timeouts
+ * destroy → reject, never resolve to a fake success, so a lost finalize response reaches rollback (H-SHL-005).
+ */
+function request(method, urlStr, { body, raw, cookie, headers, timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const lib = u.protocol === 'https:' ? https : http;
@@ -236,6 +246,8 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
       const chunks = []; res.on('data', (c) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
     });
+    const deadline = timeoutMs || REQUEST_TIMEOUT_MS;
+    req.setTimeout(deadline, () => req.destroy(new Error(`request timeout (${deadline}ms): ${method} ${urlStr}`)));
     req.on('error', reject);
     if (data) req.write(data);
     req.end();
@@ -274,7 +286,7 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
   let primarySha = '';
   for (const f of FILES) {
     const bytes = fs.readFileSync(path.join(DIR, f.name));
-    const r = await request('POST', `${API}/admin/api/release/stage?version=${VERSION}&name=${encodeURIComponent(f.name)}`, { raw: true, body: bytes, cookie });
+    const r = await request('POST', `${API}/admin/api/release/stage?version=${VERSION}&name=${encodeURIComponent(f.name)}`, { raw: true, body: bytes, cookie, timeoutMs: 600_000 });
     if (r.status !== 201) fail(`stage ${f.name} failed (HTTP ${r.status}) — is the server running the updated code? ${r.body}`);
     const j = JSON.parse(r.body);
     // Gate 2: prove the server stored EXACTLY the bytes we sent (no truncation/corruption in transit).
@@ -292,18 +304,35 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
   if (KIND) finalizeBody.kind = KIND; // server must echo this into GET /version for the dual updater to read it
   if (ALLOW_DOWNGRADE) finalizeBody.allowDowngrade = true; // accept re-finalizing the same/older version (manifest refresh)
   if (NOTES) finalizeBody.notes = NOTES; // → version.json.notes + changelog (display text, unsigned)
-  const fin = await request('POST', `${API}/admin/api/release/finalize`, { cookie, body: finalizeBody });
-  if (fin.status !== 201) fail(`finalize failed (HTTP ${fin.status}): ${fin.body}`);
-  const info = JSON.parse(fin.body);
-  console.log(`\n✓ published v${VERSION} — live for auto-update (${LEGACY ? 'legacy two-file' : 'single-exe'}: ${info.files.map((f) => f.name).join(', ')})`);
-  if (info.notNewerThanPrevious) {
-    console.log(`  ⚠ v${VERSION} is NOT newer than the previous publish (v${info.previousVersion}) — existing clients will NOT pick it up.`);
+
+  // finalize makes version.json LIVE server-side BEFORE it returns 201 — so from the moment the
+  // request bytes leave, the manifest may already be live. Any failure AFTER the request was sent
+  // (a lost/hung response, or a 201 with an unparseable body) must therefore route to the SAME
+  // rollback path as a Gate-3 failure, not bail via bare fail() with an unverified manifest stranded
+  // live. Only a pre-send failure (connection refused before any bytes) is safe to fail() directly.
+  const issues = [];
+  let liveManifest = null;
+  let info = null;
+  try {
+    const fin = await request('POST', `${API}/admin/api/release/finalize`, { cookie, body: finalizeBody });
+    if (fin.status !== 201) throw new Error(`finalize failed (HTTP ${fin.status}): ${fin.body}`);
+    info = JSON.parse(fin.body);
+  } catch (e) {
+    // ECONNREFUSED before any bytes went out → nothing changed server-side; fail() is safe.
+    if (e && e.code === 'ECONNREFUSED') fail(`finalize failed (connection refused, manifest unchanged): ${e.message}`);
+    issues.push(`finalize outcome UNKNOWN — the manifest may already be live: ${e.message}. Rolling back to the pre-run manifest.`);
+  }
+  if (info) {
+    console.log(`\n✓ published v${VERSION} — live for auto-update (${LEGACY ? 'legacy two-file' : 'single-exe'}: ${info.files.map((f) => f.name).join(', ')})`);
+    if (info.notNewerThanPrevious) {
+      console.log(`  ⚠ v${VERSION} is NOT newer than the previous publish (v${info.previousVersion}) — existing clients will NOT pick it up.`);
+    }
   }
 
   // ── Gate 3: post-publish verification (the served manifest == this build) ─────
-  const issues = [];
-  let liveManifest = null;
-  try {
+  // Skip the served-manifest checks when finalize already failed (info is null); the finalize issue
+  // above already routes to rollback via the issues[] path below.
+  if (info) try {
     const pv = await request('GET', `${API}/version`);
     if (pv.status !== 200) issues.push(`GET /version returned HTTP ${pv.status}`);
     else {
