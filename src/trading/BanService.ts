@@ -363,12 +363,12 @@ export class BanService {
         if (info && !info.error) info.error = 'Steam returned no ban record';
       }
     } catch (err) {
-      const msg = `Ban lookup failed: ${(err as Error).message}`;
+      const msg = `Ban lookup failed: ${redactSecrets((err as Error).message)}`;
       for (const sid of batch) {
         const info = bySteamId.get(sid);
         if (info && !info.error) info.error = msg;
       }
-      logger.warn(`[bans] ${redactSecrets(msg)}`);
+      logger.warn(`[bans] ${msg}`);
     }
   }
 
@@ -477,7 +477,7 @@ export class BanService {
           }
           else info.error = 'Logged in but no SteamID was returned';
         } catch (err) {
-          info.error = `Login failed: ${(err as Error).message}`;
+          info.error = `Login failed: ${redactSecrets((err as Error).message)}`;
           logger.warn(`[bans] ${account.username}: SteamID login-resolve failed (${(err as Error).message})`);
         } finally {
           // Release the session this resolve created — chained to the login promise, so a login that
