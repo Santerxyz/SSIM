@@ -52,6 +52,48 @@ test('S66: an EUR wallet converts via the live rate and is NOT partial', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+//  H-INV-024 — a record with NO wallet (never wallet-refreshed, tri-state "—") was
+//  silently counted as 0 in the wallet curve with no flag, coercing unknown→0. The
+//  point is now FLAGGED `partial` when a wallet is absent/malformed; a real refreshed
+//  balance of 0 (hasWallet=false → {currency, balance: 0}) stays an exact, unflagged 0.
+// ════════════════════════════════════════════════════════════════════════════
+
+function makeWithWallet(wallet: unknown): ValueHistoryService {
+  const inv = { username: 'bot1', wallet, totalValueUsd: 5000, items: [] };
+  const accounts = { getEnvironments: () => [{ id: 'e1' }], getByEnvironment: () => [{ username: 'bot1' }] };
+  const store = { get: () => inv };
+  const tf2Store = { get: () => undefined };
+  const pricing = { totalsOf: () => ({ totalCents: 5000, missing: [], softNull: 0 }), status: notFilling };
+  const exchange = { getUsdToEur: () => 0.9 };
+  return new ValueHistoryService(accounts as never, store as never, tf2Store as never, pricing as never, exchange as never);
+}
+
+test('H-INV-024: a record with NO wallet FLAGS the point partial (unknown, not a silent 0)', () => {
+  const svc = makeWithWallet(undefined); // never wallet-refreshed — the tri-state "—" case
+  svc.snapshotAll('test', 'cs2');
+  const p = lastPoint(svc);
+  assert.equal(p.partial, true, 'an absent wallet marks the point partial');
+  assert.equal(p.wallet, 0, 'contributes 0 — but the point is now flagged as incomplete');
+  assert.equal(p.items, 5000, 'items are unaffected');
+});
+
+test('H-INV-024: a refreshed empty wallet (hasWallet=false → balance 0) is an exact, UNFLAGGED 0', () => {
+  const svc = makeWithWallet({ currency: 1, balance: 0 }); // Directive 2: real 0, must stay unflagged
+  svc.snapshotAll('test', 'cs2');
+  const p = lastPoint(svc);
+  assert.equal(p.partial, undefined, 'a real refreshed 0 balance is exact — no partial flag');
+  assert.equal(p.wallet, 0, 'sums as a genuine 0');
+});
+
+test('H-INV-024: a funded USD wallet is exact and UNFLAGGED', () => {
+  const svc = makeWithWallet({ currency: 1, balance: 100 });
+  svc.snapshotAll('test', 'cs2');
+  const p = lastPoint(svc);
+  assert.equal(p.partial, undefined, 'a funded, convertible wallet is exact — no partial flag');
+  assert.equal(p.wallet, 10000, 'USD balance 100 → 10000 cents');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 //  H-INV-021 — the multi-series aggregate() path stripped the S66 `partial` flag,
 //  so the global-master curve (≥2 environments selected) could never be flagged
 //  incomplete. A contributing point's `partial: true` now propagates to the

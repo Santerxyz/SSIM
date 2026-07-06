@@ -301,7 +301,11 @@ export class ValueHistoryService {
         const cents = this.walletUsdCents(w);
         // S66: a wallet we couldn't convert (non-USD/EUR) but that HAS a real balance means `wallet` is
         // undercounted for this point — flag it partial rather than silently plotting a too-low total.
-        if (cents == null && w && typeof w.balance === 'number' && w.balance > 0) partial = true;
+        // H-INV-024: an ABSENT/malformed wallet (never wallet-refreshed, tri-state "—") is unknown, not 0 —
+        // flag it too so unknown never coerces to a silent 0. The hasWallet=false → balance 0 case has a
+        // real numeric balance and converts to an exact 0, so it stays unflagged (Directive 2 tri-state).
+        if (!w || typeof w.balance !== 'number') partial = true;
+        else if (cents == null && w.balance > 0) partial = true;
         wallet += cents ?? 0;
       }
       if (loaded === 0) continue; // nothing cached → no meaningful point
