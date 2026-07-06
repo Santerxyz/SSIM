@@ -48,6 +48,11 @@ struct AppState {
     capability: Mutex<Option<String>>,
 }
 
+/// Byte cap for logs/shell.log before it rolls to shell.log.1 (one generation of history). Mirrors
+/// the backend JS sinks' 5 MB roll (src/utils/rollLog.ts `rollIfLarge`, S47) — the shell's shell.log
+/// had the identical unbounded-growth exposure on chatty/long-lived installs and was left uncapped.
+const SHELL_LOG_MAX_BYTES: u64 = 5_000_000;
+
 /// Append a timestamped line to <ssim_home>/logs/shell.log. This is the SHELL-side death record:
 /// the backend's exit code/signal and any stderr it emitted before dying — captured here because
 /// the backend's own JS handlers cannot see an external kill, and tauri-plugin-shell was previously
@@ -55,11 +60,20 @@ struct AppState {
 fn log_shell(msg: &str) {
     let dir = ssim_home().join("logs");
     let _ = std::fs::create_dir_all(&dir);
+    // S47-parity roll: bound shell.log's disk footprint. Before appending, if it has grown past the
+    // cap, best-effort rename it to shell.log.1 (one generation). Ignore the Result — a raced rename
+    // just means another line lands in the fresh file. shell_log_tail reads whatever the live file holds.
+    let log_path = dir.join("shell.log");
+    if let Ok(meta) = std::fs::metadata(&log_path) {
+        if meta.len() > SHELL_LOG_MAX_BYTES {
+            let _ = std::fs::rename(&log_path, dir.join("shell.log.1"));
+        }
+    }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("shell.log")) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
         use std::io::Write;
         let _ = f.write_all(format!("[{ts}] {msg}\n").as_bytes());
     }
@@ -846,5 +860,29 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ssim-sweep-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         sweep_stale_backend_tmp(&dir); // must not panic
+    }
+
+    // H-SHL-001: log_shell rolls shell.log to shell.log.1 once it grows past SHELL_LOG_MAX_BYTES
+    // (S47-parity, one generation), so a chatty backend cannot grow it without bound.
+    #[test]
+    fn shell_log_rolls_past_cap() {
+        let home = std::env::temp_dir().join(format!("ssim-shelllog-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let logs = home.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        // Pre-seed shell.log just over the cap so the NEXT log_shell triggers the roll.
+        let log_path = logs.join("shell.log");
+        std::fs::write(&log_path, vec![b'x'; (SHELL_LOG_MAX_BYTES + 1) as usize]).unwrap();
+
+        std::env::set_var("SSIM_HOME", &home);
+        log_shell("post-cap line");
+        std::env::remove_var("SSIM_HOME");
+
+        assert!(logs.join("shell.log.1").exists(), "the over-cap log is rolled to shell.log.1");
+        let fresh = std::fs::metadata(&log_path).unwrap().len();
+        assert!(fresh < SHELL_LOG_MAX_BYTES, "shell.log is fresh (below the cap) after the roll");
+        assert!(fresh > 0, "the new line still landed in the fresh shell.log");
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
