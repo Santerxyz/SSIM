@@ -11,6 +11,7 @@ import type { AccountInventory, CS2Item, GameId } from '../types/inventory';
 import { logger } from '../utils/logger';
 import { dataDir } from '../utils/paths';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
+import { classifyNetworkError } from '../utils/errorClass';
 
 // Refresh concurrency scales DYNAMICALLY with the batch size (scaleConcurrency:
 // 1 worker / 5 accounts, floor 5, ceiling 25) so 500 accounts run ~25-wide instead of a
@@ -48,13 +49,16 @@ const RETRY_PAUSE_TRANSIENT  = 8_000;
 // It is per-invocation (allocated in doRefreshOneViaGc), NEVER shared across accounts.
 interface ThrottleState { lastRateLimitWaitEndedAt?: number; }
 
+// H-XCT-001: both verdicts now come from the ONE shared taxonomy (src/utils/errorClass)
+// so a broken-pipe/aborted-connection blip is classified identically on refresh, sell,
+// and the money-commit path. The per-bucket ACTION (long 429 pause vs short transient
+// pause, retry-vs-fail) below is unchanged.
 function isRateLimited(err: unknown): boolean {
-  return /429|rate.?limit/i.test((err as Error)?.message ?? '');
+  return classifyNetworkError(err).rateLimited;
 }
 
 function isTransientRefreshError(err: unknown): boolean {
-  const m = ((err as Error)?.message ?? '').toLowerCase();
-  return /timeout|timed out|econnreset|esockettimedout|socket hang up|econnrefused|enetunreach|ehostunreach|etimedout|network|noconnection|tunnel|proxy|aborted|http 5\d\d|bad gateway|service unavailable/.test(m);
+  return classifyNetworkError(err).transient;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));

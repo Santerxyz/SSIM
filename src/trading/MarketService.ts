@@ -6,6 +6,7 @@ import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { logger } from '../utils/logger';
+import { classifyNetworkError } from '../utils/errorClass';
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
 // ceiling 25). Per-bot anti-spam pacing (item/bot delays) still applies inside each worker.
@@ -35,10 +36,15 @@ export function sellWalletBlocked(walletCurrency: number | undefined): boolean {
   return walletCurrency != null && walletCurrency !== EUR_CURRENCY;
 }
 
-/** Classifies a Steam/network error as transient (retry) vs. hard (give up). */
+/**
+ * Classifies a Steam/network error as transient (retry) vs. hard (give up).
+ * H-XCT-001: the verdict comes from the ONE shared taxonomy (src/utils/errorClass),
+ * so the same broken-pipe/proxy blip retries here, on refresh, and on the money-commit
+ * path alike. `transient` folds in the 429/rate-limit tokens (a sell retry treats both
+ * the same); the retry-count cap below is unchanged.
+ */
 function isTransient(err: unknown): boolean {
-  const m = ((err as Error)?.message ?? '').toLowerCase();
-  return /timeout|timed out|econnreset|esockettimedout|socket hang up|econnrefused|enetunreach|ehostunreach|etimedout|network|noconnection|eresult 3|429|too many|rate.?limit|http( error)? 5\d\d|error 50\d|bad gateway|gateway time-?out|service unavailable|temporarily|tunnel|proxy|aborted/.test(m);
+  return classifyNetworkError(err).transient;
 }
 
 /** A "the listing already exists" style rejection → the item IS listed (phantom). Exported for tests. */

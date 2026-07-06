@@ -19,10 +19,12 @@
 //
 //  Pure + side-effect-free; the DO-NOT-TOUCH createBuyOrder finalize re-POST is
 //  never involved (this only reads the error it already throws).
+//
+//  The transport-string verdict comes from the shared taxonomy (H-XCT-001); the
+//  verifyBeforeRetry / numeric-eresult semantics stay here.
 // ════════════════════════════════════════════════════════════════════════════
 
-const TRANSPORT_AMBIGUOUS =
-  /econnreset|etimedout|esockettimedout|socket hang ?up|timed?\s*out|timeout|econnaborted|epipe|\baborted\b|no response|http (error )?5\d\d\b/i;
+import { classifyNetworkError } from '../utils/errorClass';
 
 const AMBIGUOUS_ERESULTS = new Set([16]); // EResult.Timeout — Steam's trade backend timed out; the offer may have been created anyway
 
@@ -31,5 +33,5 @@ export function isAmbiguousCommitFailure(err: unknown): boolean {
   if (!e || typeof e !== 'object') return false;
   if (e.verifyBeforeRetry === true) return true;             // explicit "the order may already exist"
   if (typeof e.eresult === 'number') return AMBIGUOUS_ERESULTS.has(e.eresult); // Steam answered → the op did not land, except the ambiguous-by-definition codes
-  return TRANSPORT_AMBIGUOUS.test(`${e.code ?? ''} ${e.message ?? ''}`);
+  return classifyNetworkError(e).ambiguousCommit;
 }
