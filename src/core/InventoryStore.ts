@@ -155,9 +155,18 @@ export class InventoryStore {
     // #13: don't let a slower/older concurrent fetch (e.g. a refresh-all worker) clobber a
     // newer snapshot (e.g. a buy-verification forceRefresh). Both are valid; newest wins.
     // (Falls through to set when either fetchedAt is missing — preserves prior behavior.)
-    if (existing?.fetchedAt && inventory.fetchedAt
-        && new Date(existing.fetchedAt).getTime() > new Date(inventory.fetchedAt).getTime()) {
-      return;
+    if (existing?.fetchedAt && inventory.fetchedAt) {
+      const existingT = new Date(existing.fetchedAt).getTime();
+      // A stored stamp beyond plausible skew is provably from a clock that has since stepped
+      // back (NTP correction, resume-from-sleep, manual change). Trusting it would silently
+      // refuse every genuine fetch for up to that Δ, returning stale cache as "refreshed".
+      // Accept the incoming write in that case; keep the strict-newer refusal otherwise.
+      if (existingT > Date.now() + 60_000) {
+        logger.warn(`[inv-cache] stored record for ${key} is future-dated by `
+          + `${Math.round((existingT - Date.now()) / 1000)}s (clock step?) – accepting fresh snapshot`);
+      } else if (existingT > new Date(inventory.fetchedAt).getTime()) {
+        return;
+      }
     }
     this.data.records[key] = inventory;
     this.lru.delete(key); this.lru.add(key); // most-recently-used
