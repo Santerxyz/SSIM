@@ -3,6 +3,7 @@ import type { AccountConfig, MaFile } from '../types/account';
 import { logger } from '../utils/logger';
 import { AccountVault } from './AccountVault';
 import { loadMaFileFromDisk } from './maFiles';
+import { getSteamTotpOffsetSeconds } from '../trading/steamTotpTimeout';
 
 // ─── maFile loading ────────────────────────────────────────────────────────────
 
@@ -34,17 +35,21 @@ export function loadMaFile(account: AccountConfig): MaFile {
 /**
  * Generates a fresh TOTP code from the given shared_secret.
  * TOTP codes rotate every 30 s; call this immediately before use.
+ * Corrects for local-vs-Steam clock skew with the same authoritative offset the S6 layer maintains
+ * for every confirmation/money path, so credential logins survive a skewed local clock (offset 0 until
+ * one is learned → byte-identical to the raw-clock behaviour).
  */
 export function generateTotpCode(sharedSecret: string): string {
-  return SteamTotp.generateAuthCode(sharedSecret);
+  return SteamTotp.generateAuthCode(sharedSecret, getSteamTotpOffsetSeconds());
 }
 
 /**
  * Returns milliseconds until the current TOTP code expires.
  * Useful for scheduling retries after a "wrong code" error.
+ * Uses the Steam-corrected epoch so the window boundary matches the code above.
  */
 export function msUntilNextTotp(): number {
-  const epoch = Math.floor(Date.now() / 1000);
+  const epoch = Math.floor(Date.now() / 1000) + getSteamTotpOffsetSeconds();
   return (30 - (epoch % 30)) * 1000;
 }
 

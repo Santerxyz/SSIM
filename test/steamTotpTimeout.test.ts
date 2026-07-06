@@ -146,6 +146,28 @@ test('S6: the fast-failure fallback logs a rate-limited warn (once per 60s) nami
   }
 });
 
+test('H-ACC-079: onRealOffset fires with a real offset; stall/error paths do NOT fire it', async () => {
+  // The login path mirrors the same authoritative Steam offset the money paths trust. A real (cacheable)
+  // success must fire onRealOffset; a stall or a vendor error must never poison the mirror.
+  const seen: number[] = [];
+  const ok = (cb: Cb) => cb(null, 42);
+  const wrappedOk = makeTimeoutGetOffset(ok, { timeoutMs: 50, onRealOffset: (o) => seen.push(o) });
+  await call(wrappedOk);
+  assert.deepEqual(seen, [42], 'a real offset fired onRealOffset exactly once with the value');
+
+  const stallSeen: number[] = [];
+  const stall = () => { /* never calls back */ };
+  const wrappedStall = makeTimeoutGetOffset(stall, { timeoutMs: 20, onRealOffset: (o) => stallSeen.push(o) });
+  await call(wrappedStall);
+  assert.deepEqual(stallSeen, [], 'a stall fallback never fires onRealOffset');
+
+  const errSeen: number[] = [];
+  const boom = (cb: Cb) => cb(new Error('QueryTime 500'), 0);
+  const wrappedErr = makeTimeoutGetOffset(boom, { timeoutMs: 50, onRealOffset: (o) => errSeen.push(o) });
+  await call(wrappedErr);
+  assert.deepEqual(errSeen, [], 'an error fallback never fires onRealOffset');
+});
+
 test('S6: a wall-clock step invalidates the cached offset', async () => {
   let wall = 1000; let mono = 1000; let calls = 0;
   const ok = (cb: Cb) => { calls++; cb(null, 7); };

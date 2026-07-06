@@ -39,6 +39,9 @@ export interface TotpTimeoutOpts {
   cacheTtlMs?: number;
   now?: () => number;
   monotonicNow?: () => number;
+  /** Fired with a REAL (cacheable) offset each time one is learned — lets the login path mirror the
+   *  same authoritative Steam clock the money paths already trust. Never fired on a stall/error. */
+  onRealOffset?: (offsetSec: number) => void;
 }
 
 /** Wrap a getTimeOffset(cb) with a timeout + per-process offset cache. Pure/testable — the caller
@@ -93,7 +96,7 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
     const done = (err: Error | null, offset: number, cacheable: boolean): void => {
       if (settled) return;
       settled = true;
-      if (cacheable) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); }
+      if (cacheable) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); opts.onRealOffset?.(offset); }
       inflight = null;
       // Warm cache → a real offset with no error; cold fallback → surface the cause so no memo pins our 0.
       const outErr = cacheable || cachedOffset !== undefined ? null : err;
@@ -137,13 +140,39 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
 
 let installed = false;
 
+// Process-wide mirror of the last REAL Steam time offset the S6 layer learned (seconds). The login
+// path (LoginFlow.generateTotpCode / msUntilNextTotp, the SDA OTP route) reads this so credential
+// logins and displayed codes survive local-vs-Steam clock skew exactly like the money paths already do.
+// Offset never learned (network down / QueryTime stalled) → stays 0 → byte-identical to the old raw-clock
+// behaviour; no error is surfaced (parity with S6's documented fallback).
+let lastKnownOffsetSec = 0;
+
+/** The last REAL Steam time offset in seconds (0 until one is learned; the finiteness guard excludes a
+ *  bogus vendor offset poisoning the mirror). Feed to SteamTotp.generateAuthCode(secret, offset). */
+export function getSteamTotpOffsetSeconds(): number {
+  return Number.isFinite(lastKnownOffsetSec) ? lastKnownOffsetSec : 0;
+}
+
+/** Learn the offset once, fire-and-forget, so it is usually known before the first login (a stalled prime
+ *  carries the same lingering-socket exposure as today's first confirmation call — no new class). Call
+ *  after installSteamTotpTimeout so the patched, timeout-bounded getTimeOffset is used. */
+export function primeSteamTotpOffset(): void {
+  const totp = SteamTotp as unknown as { getTimeOffset: GetOffset };
+  totp.getTimeOffset(() => { /* fire-and-forget: onRealOffset populates the mirror; error/stall → stays 0 */ });
+}
+
 /** Patch the real steam-totp.getTimeOffset process-wide. Idempotent. Call once at boot. */
 export function installSteamTotpTimeout(opts?: TotpTimeoutOpts): void {
   if (installed) return;
   installed = true;
+  const callerOnRealOffset = opts?.onRealOffset;
+  const wired: TotpTimeoutOpts = {
+    ...opts,
+    onRealOffset: (offsetSec: number) => { lastKnownOffsetSec = offsetSec; callerOnRealOffset?.(offsetSec); },
+  };
   const totp = SteamTotp as unknown as { getTimeOffset: GetOffset };
   const original = totp.getTimeOffset.bind(totp);
-  totp.getTimeOffset = makeTimeoutGetOffset(original, opts);
+  totp.getTimeOffset = makeTimeoutGetOffset(original, wired);
   const t = opts?.timeoutMs ?? 10_000;
   logger.info(`[steam-totp] getTimeOffset wrapped with a ${t}ms timeout + per-process cache (S6)`);
 }

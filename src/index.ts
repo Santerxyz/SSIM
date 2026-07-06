@@ -21,7 +21,7 @@ import { runUnlockPortal } from './core/unlockPortal';
 import { ProcessHealth } from './core/ProcessHealth';
 import { AccountVault } from './core/AccountVault';
 import { unlockVault, migrateAccountsIntoVault } from './core/vaultBoot';
-import { installSteamTotpTimeout } from './trading/steamTotpTimeout';
+import { installSteamTotpTimeout, primeSteamTotpOffset } from './trading/steamTotpTimeout';
 import { quiesceMoneyOps } from './utils/quiesce';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../package.json') as { version: string };
@@ -286,6 +286,9 @@ async function bootstrap(): Promise<void> {
   // S6: bound steam-totp's getTimeOffset (no vendor timeout) + cache the offset, so a stalled QueryTime
   // can never wedge every confirmation/money path until restart. Process-wide, before any money op.
   installSteamTotpTimeout();
+  // Learn the Steam time offset now (fire-and-forget, bounded by the S6 timer) so the login path
+  // usually has it before the first credential login — codes survive a skewed local clock.
+  primeSteamTotpOffset();
   // One-time: move vault.enc + accounts.json into the portable Vault/ folder BEFORE anything
   // reads them (else an existing vault would be ignored and a fresh one created).
   migrateVaultDir();
