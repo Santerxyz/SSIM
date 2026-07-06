@@ -225,7 +225,7 @@ export class AccountVaultImpl {
   /** Debounced save for high-frequency writes (token churn during mass login). */
   private scheduleSave(): void {
     if (this.saveTimer) return;
-    this.saveTimer = setTimeout(() => { this.saveTimer = undefined; this.save(); }, 1_500);
+    this.saveTimer = setTimeout(() => { this.saveTimer = undefined; try { this.save(); } catch (e) { logger.warn(`[vault] debounced save failed — token/CSFloat-key changes since the last successful save remain unpersisted until the next save or the shutdown flush: ${(e as Error).message}`); } }, 1_500);
     this.saveTimer.unref?.();
   }
 

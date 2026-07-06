@@ -177,6 +177,45 @@ test('H-ACC-041: flush() on a locked (never-unlocked) vault returns true (nothin
   assert.equal(v.flush(), true, 'no payload → nothing to persist → true, no throw');
 });
 
+// ─── H-ACC-040: a failed DEBOUNCED save is swallowed, NEVER an uncaughtException ──
+// A rotation (non-first-mint) token write takes scheduleSave() → a bare 1.5s setTimeout. If the
+// deferred save() throws (AV-lock/disk-full during login churn) the throw becomes a global
+// uncaughtException → 3-in-60s latches the money-ops breaker. The timer callback must catch it,
+// warn, and leave the payload dirty-in-memory (recovered by the next mutation or the shutdown flush).
+test('H-ACC-040: a throwing debounced save is caught (no uncaughtException), state recovers on next save', async () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  v.unlockOrCreate('pw');
+  v.setToken('bot1', 'a'); // first-mint → synchronous save, no debounce
+
+  const uncaught: Error[] = [];
+  const onUncaught = (e: Error) => uncaught.push(e);
+  process.on('uncaughtException', onUncaught);
+  const origWarn = logger.warn;
+  let warned = false;
+  (logger as unknown as { warn: (m: string) => void }).warn = () => { warned = true; };
+  try {
+    // Override the persist to throw, then trigger a ROTATION (existing token) → scheduleSave debounce.
+    (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+    v.setToken('bot1', 'b');
+    await new Promise((r) => setTimeout(r, 1_700)); // let the 1.5s debounce fire
+    assert.equal(uncaught.length, 0, 'the debounced throw must NOT escape as an uncaughtException');
+    assert.equal(warned, true, 'the failure is logged loudly at warn level');
+  } finally {
+    process.removeListener('uncaughtException', onUncaught);
+    (logger as unknown as { warn: typeof origWarn }).warn = origWarn;
+  }
+
+  // 'b' is dirty-in-memory only (the throw was swallowed). The stated contract: a subsequent
+  // successful mutation + flush persists the latest value, recovered on reopen.
+  delete (v as unknown as { save?: () => void }).save; // restore the real prototype save
+  v.setToken('bot1', 'c');
+  v.flush();
+  const v2 = new AccountVaultImpl(file, bak);
+  v2.unlockOrCreate('pw');
+  assert.equal(v2.getToken('bot1'), 'c', 'the next successful save recovers the dirty in-memory state');
+});
+
 test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   const { file, bak } = tmpVault();
   const v1 = new AccountVaultImpl(file, bak);
