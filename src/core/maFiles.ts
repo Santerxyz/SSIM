@@ -137,7 +137,7 @@ function parseCsvLine(line: string): string[] {
     if (inQuotes) {
       if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQuotes = false; }
       else cur += c;
-    } else if (c === '"') { inQuotes = true; }
+    } else if (c === '"' && cur === '') { inQuotes = true; }
     else if (c === ',') { out.push(cur); cur = ''; }
     else cur += c;
   }
