@@ -110,6 +110,23 @@ export interface BanCheckResult {
   apiKeyFrom?: string;
 }
 
+/** Live progress of the single ban-check job (the UI polls this). */
+export interface BanJobProgress {
+  total:        number; // resolved-to-known accounts in the run
+  resolved:     number; // SteamID-resolve phase completions
+  keysAcquired: number; // env key acquisitions completed
+  checked:      number; // GetPlayerBans records fetched (across chunks)
+}
+
+/** Snapshot of the ban-check job (delivered once via `status()`; `result` retained until next start). */
+export interface BanJobStatus {
+  running:   boolean;
+  startedAt: number;
+  progress:  BanJobProgress;
+  result?:   BanCheckResult;
+  error?:    string;
+}
+
 /** Raw GetPlayerBans player record (only the fields we use). */
 interface SteamBanRecord {
   SteamId?:          string;
@@ -132,6 +149,14 @@ interface CommunityWithKey {
 
 export class BanService {
   private apiKeyFrom?: string;
+  /** Single live ban-check job (polled by the UI). A whole-fleet cold check can exceed the client's
+   *  120s request budget, so the run is detached and the modal polls `status()` instead of awaiting
+   *  the whole POST (which would time out the modal while the backend kept working). `result` is
+   *  retained until the next `startCheck`, so a poll that lands after completion still receives it. */
+  private job: BanJobStatus = {
+    running: false, startedAt: 0,
+    progress: { total: 0, resolved: 0, keysAcquired: 0, checked: 0 },
+  };
   /** Per-environment Web API key cache (process-lifetime). A key is evicted only when Steam
    *  rejects it (401/403), after which the next run re-acquires one for that env. */
   private readonly envKeys = new Map<string, string[]>();
@@ -147,11 +172,42 @@ export class BanService {
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /**
+   * Starts the ban check as a DETACHED job and returns immediately. Single-flight: throws if a job
+   * is already running. The whole run (which can exceed the client's 120s request budget on a cold
+   * fleet) executes in the background; the caller polls `status()`. The S33 finalizer clears
+   * `running` and records any thrown error on every exit path, so a crash never latches the job.
+   */
+  startCheck(usernames: string[]): void {
+    if (this.job.running) throw new Error('A ban check is already running');
+    this.job = {
+      running: true, startedAt: Date.now(),
+      progress: { total: 0, resolved: 0, keysAcquired: 0, checked: 0 },
+    };
+    void this.checkBans(usernames, this.job.progress)
+      .then((result) => { this.job.result = result; })
+      .catch((err) => {
+        this.job.error = redactSecrets((err as Error).message);
+        logger.error(`[bans] check job crashed – ${this.job.error}`);
+      })
+      .finally(() => { this.job.running = false; });
+  }
+
+  /** Snapshot of the live ban-check job. `result` is delivered once complete and retained until the
+   *  next `startCheck`, so a poll landing after the run finishes still gets it. */
+  status(): BanJobStatus {
+    return {
+      running: this.job.running, startedAt: this.job.startedAt,
+      progress: { ...this.job.progress }, result: this.job.result, error: this.job.error,
+    };
+  }
+
+  /**
    * Checks every given account for all Steam ban types and returns the
    * categorised result. Per-account failures (no SteamID, Steam didn't return a
    * record) surface as `error` on that account and NEVER abort the others.
+   * `progress` (when given, via `startCheck`) is incremented in place so the UI can poll live counts.
    */
-  async checkBans(usernames: string[]): Promise<BanCheckResult> {
+  async checkBans(usernames: string[], progress?: BanJobProgress): Promise<BanCheckResult> {
     // De-dupe (case-insensitively) + resolve to known accounts, preserving order.
     const seen = new Set<string>();
     const accs: AccountConfig[] = [];
@@ -163,12 +219,14 @@ export class BanService {
       seen.add(key);
       accs.push(acc);
     }
+    if (progress) progress.total = accs.length;
 
     const infos: AccountBanInfo[] = [];
     const bySteamId = new Map<string, AccountBanInfo>();
     const unresolved: Array<{ account: AccountConfig; info: AccountBanInfo }> = [];
     for (const acc of accs) {
       const steamId = this.resolveSteamId(acc);
+      if (progress) progress.resolved++;
       const info: AccountBanInfo = {
         username: acc.username, displayName: acc.displayName, steamId,
         vacBanned: false, vacCount: 0, gameBanned: false, gameCount: 0,
@@ -217,10 +275,10 @@ export class BanService {
         this.apiKeyFrom = 'env';
         const batches: string[][] = [];
         for (let i = 0; i < targets.length; i += BANS_BATCH) batches.push(targets.slice(i, i + BANS_BATCH));
-        await mapLimit(batches, BAN_CHECK_CONCURRENCY, (batch) => this.fetchChunk(overrideKey, batch, bySteamId));
+        await mapLimit(batches, BAN_CHECK_CONCURRENCY, (batch) => this.fetchChunk(overrideKey, batch, bySteamId, undefined, progress));
         return this.finalize(infos);
       }
-      await this.checkPerEnvironment(accs, bySteamId);
+      await this.checkPerEnvironment(accs, bySteamId, progress);
     }
 
     return this.finalize(infos);
@@ -232,7 +290,7 @@ export class BanService {
    * 20-per-key chunks with strict per-env isolation. Accounts an env can't cover (more accounts
    * than 20 × the keys it could provide) are surfaced with a clear, actionable error.
    */
-  private async checkPerEnvironment(accs: AccountConfig[], bySteamId: Map<string, AccountBanInfo>): Promise<void> {
+  private async checkPerEnvironment(accs: AccountConfig[], bySteamId: Map<string, AccountBanInfo>, progress?: BanJobProgress): Promise<void> {
     // envId → all usernames in it (potential key sources); and the resolved (steamId,env) targets.
     const envUsernames = new Map<string, string[]>();
     for (const acc of accs) {
@@ -257,6 +315,7 @@ export class BanService {
     const acquired = await mapLimit([...targetsByEnv], BAN_CHECK_CONCURRENCY, async ([envId, sids]) => {
       const needed = Math.ceil(sids.length / BANS_PER_KEY);
       const keys = await this.acquireEnvKeys(envId, envUsernames.get(envId) ?? [], needed);
+      if (progress) progress.keysAcquired += keys.length;
       return [envId, keys] as [string, string[]];
     });
     const keysByEnv = new Map<string, string[]>(acquired);
@@ -273,7 +332,7 @@ export class BanService {
       await this.fetchChunk(key, a.steamIds, bySteamId, () => {
         const arr = this.envKeys.get(a.envId);
         if (arr) this.envKeys.set(a.envId, arr.filter((k) => k !== key));
-      });
+      }, progress);
     });
     // Surface uncovered accounts (env had more accounts than its keys could cover, or none).
     for (const u of uncovered) {
@@ -356,6 +415,7 @@ export class BanService {
     batch: string[],
     bySteamId: Map<string, AccountBanInfo>,
     onKeyRejected?: () => void,
+    progress?: BanJobProgress,
   ): Promise<void> {
     if (batch.length === 0) return;
     try {
@@ -387,6 +447,8 @@ export class BanService {
         if (info && !info.error) info.error = msg;
       }
       logger.warn(`[bans] ${msg}`);
+    } finally {
+      if (progress) progress.checked += batch.length; // chunk processed (fetched or errored) → advance
     }
   }
 

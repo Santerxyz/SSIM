@@ -1923,7 +1923,11 @@ export function createApp(deps: ApiDeps): Express {
   // via ISteamUser/GetPlayerBans and returns them categorised. Read-only; per-account
   // failures surface as { error } rows and never abort the others. Scoped to the
   // submitted usernames only (single account, a folder's accounts, or a multi-selection).
-  app.post('/api/bans/check', asyncHandler(async (req, res) => {
+  //
+  // H-TRD-033: a cold whole-fleet check (sequential per-env key mints) can far exceed the client's
+  // 120s request budget, so we START a detached job and return 202 immediately; the UI polls
+  // /api/bans/status. Single-flight — a second request while one runs gets 409, no pile-up.
+  app.post('/api/bans/check', (req: Request, res: Response) => {
     const { usernames } = req.body ?? {};
     if (!Array.isArray(usernames) || usernames.length === 0) {
       return res.status(400).json({ error: 'usernames must be a non-empty array' });
@@ -1931,12 +1935,20 @@ export function createApp(deps: ApiDeps): Express {
     const known = usernames.filter((u: unknown): u is string => typeof u === 'string' && !!accounts.get(u));
     if (known.length === 0) return res.status(400).json({ error: 'no known accounts in usernames' });
 
-    const result = await bans.checkBans(known);
-    logger.info(`[bans] checked ${result.totals.total} account(s): ` +
-      `clean=${result.totals.clean} vac=${result.totals.vac} game=${result.totals.game} ` +
-      `community=${result.totals.community} economy=${result.totals.economy} error=${result.totals.error}`);
-    res.json(result);
-  }));
+    try {
+      bans.startCheck(known);
+      logger.info(`[bans] started check for ${known.length} account(s)`);
+      res.status(202).json({ started: true });
+    } catch (err) {
+      res.status(409).json({ error: (err as Error).message });
+    }
+  });
+
+  // GET /api/bans/status — live snapshot of the running/last ban-check job (read-only). The result
+  // is retained until the next check, so a poll landing after completion still receives it.
+  app.get('/api/bans/status', (_req: Request, res: Response) => {
+    res.json(bans.status());
+  });
 
   // ════════════════════════════════════════════════════════════════════════
   //  Feature 1 – Automated Max-Profit Trade-Ups (single account only)

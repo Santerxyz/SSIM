@@ -31,6 +31,7 @@ const state = {
   moveUsername: null,
   moveUsernames: null,   // batch multi-select move scope (array of usernames)
   banResult: null,       // last Ban Checker result { accounts, totals } for the results modal
+  banTimer: null,        // H-TRD-033: setTimeout handle for the ban-check status poll loop
   editUsername: null,
   editProxyInitial: '',         // raw saved proxy the edit field was pre-filled with (change-detection)
   editUseEnvInitial: true,      // was "Use environment proxy" on when the edit modal opened (change-detection)
@@ -4662,27 +4663,74 @@ const BAN_CATS = [
   { key: 'error',     label: 'Lookup Failed',         icon: 'fa-triangle-exclamation', text: 'text-slate-400',  badge: 'bg-slate-600/30 text-slate-300',     movable: false },
 ];
 
-/** Opens the Ban Checker for a set of accounts and renders the result modal. */
+/** Opens the Ban Checker for a set of accounts and renders the result modal.
+ *  H-TRD-033: a cold whole-fleet check can run past the client's 120s request budget, so we START a
+ *  detached backend job (202) then POLL /api/bans/status until it delivers a result — the modal shows
+ *  advancing progress and completes even when the run exceeds two minutes, and a second start while one
+ *  is running gets the 409 toast instead of piling a concurrent run on top. */
 async function openBanChecker(usernames, scopeLabel) {
   const list = [...new Set((usernames || []).filter(Boolean))];
   if (list.length === 0) { toast('No accounts to check', 'warn'); return; }
   state.banResult = null;
+  clearTimeout(state.banTimer);
   el.banScope.textContent = scopeLabel ? `· ${scopeLabel}` : `· ${list.length} account(s)`;
-  el.banSummary.innerHTML = `<div class="text-sm text-slate-400 flex items-center gap-2"><i class="fa-solid fa-spinner cs2-spin"></i>Checking ${list.length} account(s) for Steam bans…</div>`;
+  el.banSummary.innerHTML = `<div class="text-sm text-slate-400 flex items-center gap-2"><i class="fa-solid fa-spinner cs2-spin"></i>Starting ban check for ${list.length} account(s)…</div>`;
   el.banBody.innerHTML = '';
   el.banOverlay.classList.remove('hidden');   // → FB-04 onModalOpen
-  let res;
   try {
-    res = await api('/api/bans/check', { method: 'POST', body: JSON.stringify({ usernames: list }) });
+    await api('/api/bans/check', { method: 'POST', body: JSON.stringify({ usernames: list }) });
   } catch (err) {
+    // A 409 (already running) is an expected single-flight rejection — surface it plainly and toast.
+    if (err.status === 409) toast(err.message || 'A ban check is already running', 'warn');
     el.banSummary.innerHTML = `<div class="text-sm text-rose-400"><i class="fa-solid fa-circle-exclamation mr-1.5"></i>${escapeHtml(err.message)}</div>`;
     return;
   }
-  state.banResult = res;
-  renderBanResult(res);
+  resetPoller('ban'); resetPoller('banErr'); // clean stall windows for this run (#27)
+  pollBanCheck();
 }
 
-function closeBan() { state.banResult = null; el.banOverlay.classList.add('hidden'); }
+/** Polls the detached ban-check job every 1.5s, rendering live progress until a result/error arrives.
+ *  S17: a transient status-fetch error retries (bounded) rather than killing the poll while the job runs. */
+function pollBanCheck() {
+  clearTimeout(state.banTimer);
+  state.banTimer = setTimeout(async () => {
+    let job;
+    try { job = await api('/api/bans/status'); resetPoller('banErr'); }
+    catch (err) {
+      // Bound the error-retry loop: stop after POLL_STALL_MS of continuous status errors (S17).
+      if (pollerStalled('banErr', 0)) {
+        resetPoller('banErr');
+        el.banSummary.innerHTML = `<div class="text-sm text-rose-400"><i class="fa-solid fa-circle-exclamation mr-1.5"></i>${escapeHtml(err.message || 'Lost contact with the ban check')}</div>`;
+        return;
+      }
+      state.banTimer = setTimeout(pollBanCheck, 1500); return;
+    }
+    if (job.result) { resetPoller('ban'); state.banResult = job.result; renderBanResult(job.result); return; }
+    if (!job.running && job.error) {
+      resetPoller('ban');
+      el.banSummary.innerHTML = `<div class="text-sm text-rose-400"><i class="fa-solid fa-circle-exclamation mr-1.5"></i>${escapeHtml(job.error)}</div>`;
+      return;
+    }
+    // Still running — show which phase we're in and advance the stall guard on any counter movement.
+    const p = job.progress || {};
+    const done = (p.resolved || 0) + (p.keysAcquired || 0) + (p.checked || 0);
+    if (pollerStalled('ban', done)) {
+      resetPoller('ban');
+      el.banSummary.innerHTML = `<div class="text-sm text-amber-400"><i class="fa-solid fa-triangle-exclamation mr-1.5"></i>The ban check appears stuck (no progress) — stopping the live updater. Check the server.</div>`;
+      return;
+    }
+    const total = p.total || 0;
+    const label = (p.checked || 0) > 0
+      ? `Checked ${p.checked} of ${total}…`
+      : (p.keysAcquired || 0) > 0
+        ? `Acquiring keys… (${p.keysAcquired} ready)`
+        : `Resolving SteamIDs… (${p.resolved || 0} of ${total})`;
+    el.banSummary.innerHTML = `<div class="text-sm text-slate-400 flex items-center gap-2"><i class="fa-solid fa-spinner cs2-spin"></i>${escapeHtml(label)}</div>`;
+    pollBanCheck();
+  }, 1500);
+}
+
+function closeBan() { state.banResult = null; clearTimeout(state.banTimer); el.banOverlay.classList.add('hidden'); }
 
 /** Account-level trigger (single account from the sidebar row). */
 function checkAccountBans(username) {
