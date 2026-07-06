@@ -15,7 +15,9 @@ import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../util
 //  When SSIM runs as a windowed app there is no console to type the password into,
 //  so we briefly serve an unlock page on the SAME port the dashboard will use (the
 //  exact pattern the license activation portal already uses). The password is taken
-//  over LOOPBACK ONLY, used to unlock/create the encrypted vault, and then this
+//  over loopback BY DEFAULT (HOST=127.0.0.1); a HOST override (e.g. 0.0.0.0) exposes
+//  the Master-Password form to the network and is warned at startup. It is used to
+//  unlock/create the encrypted vault, and then this
 //  portal shuts down so the full dashboard can take the port. The vault key is
 //  derived + held server-side exactly as before — only the INPUT method changed.
 // ════════════════════════════════════════════════════════════════════════════
@@ -39,6 +41,13 @@ function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout
  */
 export function runUnlockPortal(port: number, host: string): Promise<void> {
   return new Promise<void>((resolve) => {
+    if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+      logger.warn(
+        `SECURITY: the vault unlock portal is binding to ${host} – the Master ` +
+        `Password form becomes reachable from the network over cleartext HTTP. ` +
+        `Only do this on a fully trusted, firewalled host.`,
+      );
+    }
     const app = express();
     app.use(express.json());
     // Serve ONLY /assets here (logo/fonts) — never the whole public/ dir, so the
