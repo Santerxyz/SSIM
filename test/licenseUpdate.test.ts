@@ -5,6 +5,7 @@ import { buildSwapScript } from '../src/licensing/Updater';
 
 const GRACE = 72 * 3600_000;
 const SKEW  = 5 * 60_000;
+const DAY   = 24 * 3600_000;
 
 // C13 / INV-G2 — the clock anchor must never advance from the local clock.
 test('nextClockMeta: anchors advance ONLY on server-confirmed contact (no local-clock poisoning)', () => {
@@ -40,6 +41,20 @@ test('S26: anchoring to the SERVER time (not a forward-wrong local clock) keeps 
   const healthy = nextClockMeta(undefined, REAL, true);
   assert.notEqual(offlineGraceDecision(REAL, healthy, GRACE, SKEW), 'rollback-refused',
     'the server-time anchor never poisons the high-water mark, so a corrected clock still gets grace');
+});
+
+// H-LIC-022 — a forward-wrong SERVER clock poisons maxSeenMs into the future; a later correct
+// authoritative contact must HEAL the mark down so a valid offline user is not locked out for years.
+test('nextClockMeta: an authoritative contact heals a future-poisoned maxSeenMs down', () => {
+  const poisoned = { lastOnlineMs: 1_000, maxSeenMs: 9_999_999_999 };
+  const healed = nextClockMeta(poisoned, 2_000, true, DAY);
+  assert.equal(healed.maxSeenMs, 2_000);
+  assert.notEqual(offlineGraceDecision(3_000, healed, GRACE, SKEW), 'rollback-refused');
+});
+
+// H-LIC-022 — the raise direction still ratchets up on a normal forward contact.
+test('nextClockMeta: an authoritative contact still ratchets maxSeenMs up', () => {
+  assert.equal(nextClockMeta({ lastOnlineMs: 1000, maxSeenMs: 1000 }, 5000, true, DAY).maxSeenMs, 5000);
 });
 
 // C14 / INV-G3 — the orphan-delete must run ONLY after a confirmed successful swap.

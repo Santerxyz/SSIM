@@ -136,6 +136,10 @@ export function clearToken(): void {
 // pepper so a casual hand-edit of the file is rejected (raises cost; not unbreakable).
 const LICENSE_META_FILE = 'license.meta.json';
 const CLOCK_SKEW_MS = 5 * 60 * 1000; // tolerate minor NTP corrections
+// A server time farther ahead than this of the local clock is not a value we anchor to: a
+// forward-wrong upstream clock (NTP step / VM host drift) would otherwise ratchet maxSeenMs
+// into the future. Belt-and-suspenders for the heal-down in nextClockMeta (H-LIC-022).
+const SERVER_TIME_MAX_FUTURE_MS = 24 * 60 * 60 * 1000;
 
 interface LicenseMeta { lastOnlineMs: number; maxSeenMs: number; }
 
@@ -176,7 +180,12 @@ function markOnline(serverTimeMs?: number): void {
   // told us its time; anchoring from Date.now() is the exact S26 poison (a markerless/pre-S26-server 200
   // is precisely the case where the local clock must not be trusted). No serverTime → do not advance.
   if (typeof serverTimeMs !== 'number' || !Number.isFinite(serverTimeMs) || serverTimeMs <= 0) return;
-  writeMeta(nextClockMeta(readMeta(), serverTimeMs, true));
+  // H-LIC-022: refuse to anchor to an implausibly-far-future server time (> a day ahead of the
+  // local clock). It would only ratchet maxSeenMs into the future and lock out a valid offline
+  // user; there is no rollback-protection value in a far-future mark. The heal-down in
+  // nextClockMeta recovers an already-poisoned mark; this stops fresh poisoning at the raise.
+  if (serverTimeMs > Date.now() + SERVER_TIME_MAX_FUTURE_MS) return;
+  writeMeta(nextClockMeta(readMeta(), serverTimeMs, true, SERVER_TIME_MAX_FUTURE_MS));
   licenseRevoked = false; // a successful server contact means the seat is live
 }
 
