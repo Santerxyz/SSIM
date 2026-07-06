@@ -114,7 +114,14 @@ export class PricingService {
       const e = this.cache.get(this.cacheKey(item.marketHashName, appid, sid));
       const fresh = e && this.isFresh(e);
       if (!fresh) { item.price = undefined; missing.push({ name: item.marketHashName, appid }); }
-      else { item.price = e!.cents ?? undefined; if (e!.cents) total += e!.cents * item.quantity; }
+      else {
+        // Tri-state (INV-E1, price analogue of DIRECTIVES #2): an AUTHORITATIVE no-price
+        // (cents===null && !soft) → null ("—"); a transient error-miss (cents===null && soft)
+        // → undefined ("…", still effectively pending); a real price → the number.
+        const cents = e!.cents;
+        item.price = cents == null ? (e!.soft ? undefined : null) : cents;
+        if (cents) total += cents * item.quantity;
+      }
     }
     inv.totalValueUsd = total;
     return missing;
