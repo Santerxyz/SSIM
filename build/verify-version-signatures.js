@@ -31,7 +31,7 @@ if (!api || !pubPath) {
 const pub = fs.readFileSync(pubPath, 'utf8');
 const get = api.startsWith('http://') ? http.get : https.get;
 
-get(`${api}/version`, (res) => {
+const req = get(`${api}/version`, (res) => {
   let body = '';
   res.on('data', (d) => (body += d));
   res.on('end', () => {
@@ -69,3 +69,13 @@ get(`${api}/version`, (res) => {
     process.exit(ok ? 0 : 1);
   });
 }).on('error', (e) => { console.error('fetch error:', e.message); process.exit(1); });
+
+// Fail CLOSED on a stalled server: a half-open connection or a hung TLS handshake
+// never fires 'end' or 'error', so without this the gate blocks forever with no
+// exit code — indistinguishable to the operator from "still verifying." process.exit
+// is terminal, so the 'error' handler that req.destroy() may fire cannot double-exit.
+req.setTimeout(15000, () => {
+  console.error('timeout: no /version response within 15s — server unreachable or stalled');
+  req.destroy();
+  process.exit(1);
+});
