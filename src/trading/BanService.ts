@@ -300,36 +300,41 @@ export class BanService {
       // the account live only for the one getWebApiKey/createWebApiKey call below.
       const wasLiveBefore = this.sessions.isLive(username);
       if (willLogin) logins++; // count the ATTEMPT up front so a timeout still respects the login cap
+      // Whole per-account mint (login + key fetch/create). Hoisted so the release can chain to THIS
+      // promise: a stalled call is abandoned by the ~20s budget below (the account provides no key,
+      // instead of hanging the run), but the session release still fires the moment OUR mint settles.
+      const mint = (async () => {
+        const trader = await this.trades.getTrader(username); // logs in if needed
+        const community = trader.community as unknown as CommunityWithKey;
+        let k = await this.getExistingKey(community);
+        if (!k) k = await this.createKey(community, this.identitySecretOf(username));
+        return k;
+      })();
       try {
-        // Whole per-account mint (login + key fetch/create) under ONE ~20s budget: a stalled Steam
-        // call is abandoned and the account simply provides no key, instead of hanging the run.
-        const key = await withTimeout((async () => {
-          const trader = await this.trades.getTrader(username); // logs in if needed
-          const community = trader.community as unknown as CommunityWithKey;
-          let k = await this.getExistingKey(community);
-          if (!k) k = await this.createKey(community, this.identitySecretOf(username));
-          return k;
-        })(), KEY_MINT_TIMEOUT_MS, `${username} key mint`);
+        const key = await withTimeout(mint, KEY_MINT_TIMEOUT_MS, `${username} key mint`);
         if (key) keys.push(key);
       } catch (err) {
         logger.warn(`[bans] env ${envId}: ${username} could not provide a key (${(err as Error).message})`);
       } finally {
-        // Release the session this key-mint created (now + after the budget, in case a timed-out
-        // login lands late), so a multi-env check never leaves sessions resident. Best-effort.
-        if (!wasLiveBefore) this.releaseSoon(username);
+        // Release the session this key-mint created — chained to the mint promise, so a login that
+        // lands after our timeout releases when IT settles, not at a blind later instant. Best-effort.
+        if (!wasLiveBefore) this.releaseWhenSettled(username, mint);
       }
     }
     logger.info(`[bans] env ${envId}: acquired ${keys.length}/${needed} key(s) (${logins} login(s))`);
     return keys;
   }
 
-  /** Release a session WE created to mint a key — now if it's already live, and again after the
-   *  mint budget, so a login that lands AFTER we stopped waiting (timeout) can't leave a resident
-   *  session (the resident-session accumulation the refresh-storm hardening guards against). */
-  private releaseSoon(username: string): void {
+  /** Release a session WE created to mint a key — chained to OUR OWN login/mint promise, not a blind
+   *  wall-clock timer. On the happy/failed path `op` is already settled so `drop` runs on the next
+   *  microtask (identical to the old immediate drop); on the timeout path the release fires the
+   *  moment OUR login/mint actually lands (or fails) — including a semaphore-queued login that lands
+   *  long after our timeout — so it can never yank a session another flow just created, and never
+   *  leaves the post-horizon leak a fixed 20s timer misses. If `op` never settles, the idle reaper
+   *  (S11) reclaims the session — a bounded outcome, not the old timer's blind blast radius. */
+  private releaseWhenSettled(username: string, op: Promise<unknown>): void {
     const drop = (): void => { if (this.sessions.isLive(username)) void this.sessions.logoutAccount(username).catch(() => undefined); };
-    drop();
-    setTimeout(drop, KEY_MINT_TIMEOUT_MS).unref();
+    void op.then(drop, drop);
   }
 
   /** Fetches one chunk of SteamIDs with `apiKey` and folds the results into `bySteamId`.
@@ -457,9 +462,12 @@ export class BanService {
         const { account, info } = queue.shift()!;
         // The SteamID is read synchronously right after login, so this login is ours to release.
         const wasLiveBefore = this.sessions.isLive(account.username);
+        // Hoisted so the release chains to THIS login promise (not a blind timer): a login that lands
+        // after our timeout releases when it settles, and can't yank a session another flow started.
+        const login = this.trades.getTrader(account.username); // logs in if needed (+ persists a refresh token)
         try {
           // ~20s budget so a stuck login can't hang the resolve pass either.
-          await withTimeout(this.trades.getTrader(account.username), KEY_MINT_TIMEOUT_MS, `${account.username} login`); // logs in if needed (+ persists a refresh token)
+          await withTimeout(login, KEY_MINT_TIMEOUT_MS, `${account.username} login`);
           const sid = this.sessions.getSession(account.username)?.steamId;
           if (sid && STEAMID64.test(sid)) {
             const prev = bySteamId.get(sid);
@@ -472,9 +480,9 @@ export class BanService {
           info.error = `Login failed: ${(err as Error).message}`;
           logger.warn(`[bans] ${account.username}: SteamID login-resolve failed (${(err as Error).message})`);
         } finally {
-          // Release the session this resolve created (now + after the budget, in case a timed-out
-          // login lands late) so a big CSV-import check never leaves sessions resident. Best-effort.
-          if (!wasLiveBefore) this.releaseSoon(account.username);
+          // Release the session this resolve created — chained to the login promise, so a login that
+          // lands after our timeout releases when IT settles, not at a blind later instant. Best-effort.
+          if (!wasLiveBefore) this.releaseWhenSettled(account.username, login);
         }
       }
     };
