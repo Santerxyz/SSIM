@@ -328,8 +328,18 @@ export class ValueHistoryService {
   private append(seriesId: string, t: number, items: number, wallet: number, partial = false): void {
     const arr = this.data.series[seriesId] ?? (this.data.series[seriesId] = []);
     const last = arr[arr.length - 1];
-    if (last && t - last.t < MIN_INTERVAL_MS) {
+    const dt = last ? t - last.t : Infinity;
+    if (last && dt >= 0 && dt < MIN_INTERVAL_MS) {
       last.t = t; last.items = items; last.wallet = wallet;
+      if (partial) last.partial = true; else delete last.partial; // S66: keep the flag accurate on coalesce
+      return;
+    }
+    if (last && dt < 0) {
+      // H-INV-025: wall-clock stepped BACKWARD (NTP correction, VM/laptop resume). A recorded timestamp
+      // never moves backward — merge values into the last point but KEEP last.t, or the series would go
+      // non-chronological (breaking aggregate()'s cursor and the chart's span math). Self-heals once the
+      // clock passes last.t + MIN_INTERVAL_MS: normal appends resume, no data dropped.
+      last.items = items; last.wallet = wallet;
       if (partial) last.partial = true; else delete last.partial; // S66: keep the flag accurate on coalesce
       return;
     }
