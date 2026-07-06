@@ -2,7 +2,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { spawn, execFile } from 'child_process';
+import { spawn, execFile, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import fsExtra from 'fs-extra';
 import axios from 'axios';
@@ -658,12 +658,18 @@ export function buildSwapScript(o: {
   );
 }
 
+/** Launcher factory — the real `spawn` in production; injectable so a test can drive the WSH-blocked
+ *  ('error') path without a real wscript.exe (mirrors selfTestNewExe's injected runner). */
+export type SpawnLauncher = (cmd: string, args: string[]) => ChildProcess;
+const realLauncher: SpawnLauncher = (cmd, args) =>
+  spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+
 /**
  * 5. Write the swap script + launch it (hidden, detached) so it can replace us after we exit. Picks the
  * swap SHAPE from the runtime environment + manifest, so this single client serves the deployed two-file
  * fleet, the single-exe build, and the one-time migration between them.
  */
-function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean; reason: string } {
+export function swapAndRelaunch(newExe: string, info: VersionInfo, launcher: SpawnLauncher = realLauncher): Promise<{ updated: boolean; reason: string }> {
   const stamp = Date.now();
   const bat = path.join(os.tmpdir(), `ssim_updater_${stamp}.bat`);
   const vbs = path.join(os.tmpdir(), `ssim_updater_${stamp}.vbs`);
@@ -710,14 +716,30 @@ function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean;
   fsExtra.writeFileSync(bat, script);
   // Hidden + detached launcher: window style 0 = invisible, False = don't wait.
   fsExtra.writeFileSync(vbs, `CreateObject("WScript.Shell").Run "cmd /c ""${bat}""", 0, False\r\n`);
-  spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  // Tell the shell this is an UPDATE, not a crash → quit cleanly so the file frees up. The single-exe
-  // shell acts on this; the old two-file shell ignores it (it already follows its sidecar out on exit).
-  emitUpdate('SSIM_UPDATING');
-  logger.info(`update staged (${mode}) – swap script launched, exiting for replacement`);
-  // Give WScript a moment to spin the bat up as an independent process before we vanish (do NOT unref).
-  setTimeout(() => process.exit(0), 800);
-  return { updated: true, reason: 'swapping' };
+  // S9/hardening: WSH (wscript.exe) is disabled/removed on hardened & EDR-managed fleets (the same class
+  // this app already fights). A ChildProcess whose image can't launch emits an async 'error' with NO
+  // listener → uncaughtException → false crash marker + a money-ops breaker tick for a benign "your OS
+  // blocks WSH" condition. So attach 'error'/'spawn' BEFORE unref and only take the exit path once the
+  // launcher is KNOWN to have started; a failed launch means no swap happens → keep-current (no exit,
+  // no SSIM_UPDATING), classified as swap-blocked.
+  return new Promise((resolve) => {
+    const child = launcher('wscript.exe', [vbs]);
+    child.on('error', (e) => {
+      logger.error(`update swap launcher failed to start (${(e as NodeJS.ErrnoException).code}) – keeping current; manual reinstall needed`);
+      setUpdateOutcome('swap-blocked');
+      resolve({ updated: false, reason: 'swap launcher blocked (WSH disabled?)' });
+    });
+    child.on('spawn', () => {
+      child.unref();
+      // Tell the shell this is an UPDATE, not a crash → quit cleanly so the file frees up. The single-exe
+      // shell acts on this; the old two-file shell ignores it (it already follows its sidecar out on exit).
+      emitUpdate('SSIM_UPDATING');
+      logger.info(`update staged (${mode}) – swap script launched, exiting for replacement`);
+      // Give WScript a moment to spin the bat up as an independent process before we vanish (do NOT unref).
+      setTimeout(() => process.exit(0), 800);
+      resolve({ updated: true, reason: 'swapping' });
+    });
+  });
 }
 
 // ── C3: per-artifact self-test failure streak (never pin silently) ────────────
