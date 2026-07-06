@@ -18,7 +18,7 @@ import { AccountVault } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
-import { loadMaFile, generateTotpCode, msUntilNextTotp } from '../core/LoginFlow';
+import { loadMaFile, generateTotpCode, msUntilNextTotp, identitySecretPresence } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
 import { LicenseClient } from '../licensing/LicenseClient';
 import { getAvailableUpdate, getBlockedUpdate, getPriorCrash, getUpdateOutcome } from '../licensing/updateStatus';
@@ -2333,10 +2333,10 @@ function sanitizeAccount(account: AccountConfig): Record<string, unknown> {
   return {
     ...rest,
     // INV-A1 / C5: the dashboard should show the REAL "can confirm trades" capability
-    // (maFile identity_secret), not the raw tier label. tier is now a projection of this.
+    // (maFile identity_secret, resolved vault THEN disk like login does), not the raw tier
+    // label. tier is a projection of this — consulted only when the maFile is unreadable.
     canConfirm: canConfirm({
-      vaultEnabled: AccountVault.isEnabled(),
-      vaultMaFileHasIdentitySecret: !!AccountVault.getAccount(account.username)?.maFile?.identity_secret,
+      identitySecret: identitySecretPresence(account),
       tier: account.tier,
     }),
     network: account.network

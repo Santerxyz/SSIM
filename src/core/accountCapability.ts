@@ -1,8 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  accountCapability — pure policy for two account invariants:
 //   • INV-A1 (C5): "can this account confirm trades?" has ONE real signal — the
-//     maFile's identity_secret. `tier` is a label and must be a projection of it,
-//     never an independent source of truth.
+//     maFile's identity_secret, resolved the way login resolves it (vault THEN disk,
+//     see LoginFlow.identitySecretPresence). `tier` is a label and is consulted only
+//     when that signal is genuinely unreadable, never as an independent source of truth.
 //   • INV-A2 (C8): a token-only (LIMITED, no maFile) account's refresh token is its
 //     SOLE credential. Deleting it on an 'auth' verdict would strand the account, so
 //     it is preserved and the account is surfaced as needing re-import.
@@ -10,22 +11,28 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 export interface CanConfirmInput {
-  /** Is the encrypted vault the active credential store? */
-  vaultEnabled: boolean;
-  /** In vault mode: does the vault's maFile for this account carry an identity_secret? */
-  vaultMaFileHasIdentitySecret: boolean;
-  /** Legacy/plaintext fallback: the stored tier label. */
+  /**
+   * The RUNTIME identity_secret presence, resolved exactly the way login resolves the
+   * maFile — vault THEN disk (see LoginFlow.identitySecretPresence). `'present'`/`'absent'`
+   * are the real signal; `'unknown'` means the maFile was unreadable (fs/JSON error) so
+   * the honest capability can't be measured and we fall back to the tier label.
+   */
+  identitySecret: 'present' | 'absent' | 'unknown';
+  /** Legacy/plaintext fallback: the stored tier label (used ONLY when the real signal is unreadable). */
   tier?: string;
 }
 
 /**
- * The single "can confirm trades / market listings" predicate. In vault mode the
- * vault maFile is authoritative (tier is irrelevant); otherwise we fall back to the
- * tier label. This is what the dashboard should display instead of raw `tier`, so
- * "Full" can never claim a capability the maFile doesn't back. (INV-A1 / C5.)
+ * The single "can confirm trades / market listings" predicate. The maFile's identity_secret
+ * — resolved vault THEN disk, mirroring the login credential resolution — is authoritative in
+ * BOTH modes; the tier label is consulted only when that signal is genuinely unreadable
+ * (`'unknown'`), never as an independent source of truth. This is what the dashboard should
+ * display instead of raw `tier`, so "Full" can never claim a capability the maFile doesn't
+ * back — for vault-resident AND disk-resident accounts alike. (INV-A1 / C5.)
  */
 export function canConfirm(input: CanConfirmInput): boolean {
-  if (input.vaultEnabled) return input.vaultMaFileHasIdentitySecret;
+  if (input.identitySecret === 'present') return true;
+  if (input.identitySecret === 'absent') return false;
   return input.tier !== 'limited';
 }
 

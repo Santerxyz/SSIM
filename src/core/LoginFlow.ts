@@ -1,8 +1,9 @@
+import fs from 'fs';
 import SteamTotp from 'steam-totp';
 import type { AccountConfig, MaFile } from '../types/account';
 import { logger } from '../utils/logger';
 import { AccountVault } from './AccountVault';
-import { loadMaFileFromDisk } from './maFiles';
+import { loadMaFileFromDisk, resolveMaFilePath } from './maFiles';
 import { getSteamTotpOffsetSeconds } from '../trading/steamTotpTimeout';
 
 // ─── maFile loading ────────────────────────────────────────────────────────────
@@ -28,6 +29,46 @@ export function loadMaFile(account: AccountConfig): MaFile {
     logger.warn(`[${account.username}] maFile missing identity_secret (trade confirmations won't work)`);
   }
   return maFile;
+}
+
+/**
+ * The RUNTIME identity_secret presence for an account, resolved exactly the way {@link loadMaFile}
+ * resolves the credential — vault THEN disk — so the capability the dashboard shows matches what a
+ * login would actually confirm with (INV-A1 / C5). Tri-state on purpose (INV-B10 "unknown ≠ empty"):
+ * a fs/JSON error is reported as `'unknown'`, never coerced to `'absent'`, so the caller can fall
+ * back to the tier label instead of fabricating a false negative.
+ *   • vault mode + the vault's maFile carries a shared_secret → classify by that maFile's
+ *     identity_secret (mirrors loadMaFile's vault-hit gate; disk is never read for a vaulted bot).
+ *   • otherwise read from disk: identity_secret present/absent → `'present'`/`'absent'`; a
+ *     "not found" throw → `'absent'`; any other throw (JSON/fs) → `'unknown'`.
+ * The disk read is memoised in a module-level cache keyed on the maFile path + its mtime, so the
+ * 537-account accounts-tree GET does not re-parse every maFile on every poll (S10 hot-path lesson).
+ * A statSync failure yields no cache key → return `'unknown'` (never cached).
+ */
+const diskPresenceCache = new Map<string, { mtimeKey: string; presence: 'present' | 'absent' | 'unknown' }>();
+
+export function identitySecretPresence(account: AccountConfig): 'present' | 'absent' | 'unknown' {
+  if (AccountVault.isEnabled()) {
+    const v = AccountVault.getAccount(account.username);
+    if (v?.maFile?.shared_secret) return v.maFile.identity_secret ? 'present' : 'absent';
+  }
+  const resolved = resolveMaFilePath(account.maFilePath);
+  let mtimeKey: string;
+  try {
+    mtimeKey = String(fs.statSync(resolved).mtimeMs);
+  } catch {
+    return 'unknown'; // unstattable → no cache key → honest 'unknown' (tier fallback), never a fabricated 'absent'
+  }
+  const cached = diskPresenceCache.get(resolved);
+  if (cached && cached.mtimeKey === mtimeKey) return cached.presence;
+  let presence: 'present' | 'absent' | 'unknown';
+  try {
+    presence = loadMaFileFromDisk(account.maFilePath).identity_secret ? 'present' : 'absent';
+  } catch (err) {
+    presence = /maFile not found/.test((err as Error).message) ? 'absent' : 'unknown';
+  }
+  diskPresenceCache.set(resolved, { mtimeKey, presence });
+  return presence;
 }
 
 // ─── TOTP generation ───────────────────────────────────────────────────────────
