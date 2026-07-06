@@ -3,7 +3,7 @@ import QRCode from 'qrcode';
 import { LoginSession, EAuthTokenPlatformType, EAuthSessionGuardType } from 'steam-session';
 import type { AccountManager } from './AccountManager';
 import type { SessionManager } from './SessionManager';
-import type { NetworkConfig } from '../types/account';
+import { normalizeProxy } from '../network/AgentFactory';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -286,16 +286,15 @@ export class AccountImportService {
     logger.info(`[import ${rec.id.slice(0, 8)}] ${rec.isUpdate ? 'refreshed' : 'imported'} "${username}" as LIMITED`);
   }
 
-  /** Maps the chosen environment's proxy to steam-session network options (one of the set). */
+  /** Maps the environment's proxy (or none) to steam-session network options.
+   *  Normalizes via the same normalizeProxy every other network path applies (B24),
+   *  so legacy non-URL env proxies (host:port:user:pass etc.) work here too; reads the
+   *  B20 single-source envProxyFor so vault mode never uses a stale in-memory copy. */
   private networkOptions(environmentId: string): { localAddress?: string; httpProxy?: string; socksProxy?: string } {
-    const env = this.accounts.getEnvironment(environmentId);
-    const net: NetworkConfig = env?.proxy?.trim()
-      ? { type: 'proxy', value: env.proxy.trim() }
-      : { type: 'localip', value: '0.0.0.0' };
-    if (net.type === 'localip') {
-      return net.value && net.value !== '0.0.0.0' ? { localAddress: net.value } : {};
-    }
-    return /^socks/i.test(net.value) ? { socksProxy: net.value } : { httpProxy: net.value };
+    const raw = this.accounts.envProxyFor(environmentId);
+    if (!raw) return {};
+    const url = normalizeProxy(raw);
+    return /^socks[45h]?:\/\//i.test(url) ? { socksProxy: url } : { httpProxy: url };
   }
 
   private resolveEnvironment(environmentId: string): string {
