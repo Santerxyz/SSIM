@@ -13,6 +13,27 @@ import { maFilesDir } from '../utils/paths';
 const MA_FILES_DIR = maFilesDir();
 
 /**
+ * Reads a text file, tolerating the BOM/UTF-16 encodings Windows tooling emits by default:
+ * PowerShell 5.1's `>` / `Out-File` writes UTF-16 LE (BOM), Notepad "Unicode" the same,
+ * "Unicode big endian" UTF-16 BE. Decoded as UTF-8 those become NUL-interleaved garbage that
+ * fails `JSON.parse` or never string-matches — a maFile then reports "not valid JSON" (it IS
+ * valid) and accounts.txt usernames silently match nothing. Plain UTF-8 is byte-identical to
+ * `readFileSync(path, 'utf-8')`; a leading UTF-8 BOM is stripped so it never leaks into a field.
+ */
+export function readTextFileTolerant(filePath: string): string {
+  const buf = fs.readFileSync(filePath);
+  if (buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
+  if (buf[0] === 0xfe && buf[1] === 0xff) {
+    const swapped = Buffer.from(buf.subarray(2)); // drop BE BOM, then byte-swap pairs → LE
+    swapped.swap16();
+    return swapped.toString('utf16le');
+  }
+  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return buf.subarray(3).toString('utf-8');
+  const text = buf.toString('utf-8');
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/**
  * Resolves a maFile reference to a path INSIDE the ./mafiles/ drop zone. Containment
  * (B23): a client-supplied maFilePath reaches this from POST/PATCH /api/accounts and
  * attach-mafile; an absolute path (C:/Windows/win.ini) or a `../` traversal must never
@@ -34,7 +55,7 @@ export function resolveMaFilePath(maFilePath: string): string {
 export function loadMaFileFromDisk(maFilePath: string): MaFile {
   const filePath = resolveMaFilePath(maFilePath);
   if (!fs.existsSync(filePath)) throw new Error(`maFile not found: ${filePath}`);
-  const raw = fs.readFileSync(filePath, 'utf-8');
+  const raw = readTextFileTolerant(filePath);
   let mf: MaFile;
   try { mf = JSON.parse(raw) as MaFile; } catch { throw new Error(`maFile is not valid JSON: ${filePath}`); }
   if (!mf.shared_secret) throw new Error(`maFile missing shared_secret: ${filePath}`);
@@ -46,7 +67,7 @@ export function readCredentialsFile(): Map<string, string> {
   const map = new Map<string, string>();
   const file = path.join(MA_FILES_DIR, 'accounts.txt');
   if (!fs.existsSync(file)) return map;
-  for (const raw of fs.readFileSync(file, 'utf-8').split(/\r?\n/)) {
+  for (const raw of readTextFileTolerant(file).split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const idx = line.indexOf(':');
@@ -109,7 +130,7 @@ export function listDropZoneMaFiles(): DropZoneEntry[] {
   for (const file of fs.readdirSync(MA_FILES_DIR)) {
     if (!file.toLowerCase().endsWith('.mafile')) continue;
     try {
-      const maFile = JSON.parse(fs.readFileSync(path.join(MA_FILES_DIR, file), 'utf-8')) as MaFile;
+      const maFile = JSON.parse(readTextFileTolerant(path.join(MA_FILES_DIR, file))) as MaFile;
       const accountName = (maFile.account_name as string) || '';
       // Require a USABLE maFile (account_name + shared_secret) — mirror loadMaFileFromDisk so a
       // maFile that fails the strict disk loader is never imported via this looser path.
