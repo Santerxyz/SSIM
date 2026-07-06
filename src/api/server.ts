@@ -224,46 +224,14 @@ export function createApp(deps: ApiDeps): Express {
   };
 
   // ── Security hardening ─────────────────────────────────────────────────────
-  // 1) NO CORS layer: the dashboard is served same-origin from this very server,
-  //    so no cross-origin caller is ever legitimate. (An open `cors()` would let
-  //    any website the operator visits script against this credential-bearing API.)
-  // 2) Host-header allowlist (anti DNS-rebinding): a malicious page can point its
-  //    own domain at 127.0.0.1 and bypass the browser's same-origin protection –
-  //    the Host header is the reliable tell. Enforced only for the default
-  //    loopback deployment; an explicit HOST=<LAN-IP> opt-in skips the check.
-  const boundHost = process.env.HOST ?? '127.0.0.1';
-  const LOOPBACK_BOUND = boundHost === '127.0.0.1' || boundHost === 'localhost' || boundHost === '::1';
-  if (LOOPBACK_BOUND) {
-    app.use((req: Request, res: Response, next: NextFunction) => {
-      const host = hostnameOnly(req.headers.host ?? '');
-      if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') return next();
-      logger.warn(`blocked request with foreign Host header "${req.headers.host}" (possible DNS rebinding)`);
-      res.status(403).json({ error: 'Forbidden' });
-    });
-  }
-  // 2b) Anti-CSRF (#26, defense-in-depth atop the Host allow-list): reject a MUTATING
-  //     request whose Origin/Referer is a FOREIGN site, so a malicious page the operator
-  //     visits cannot drive this credential-bearing API. Same-origin and tool requests
-  //     (no Origin) pass. NOTE: this does NOT authenticate other LOCAL processes — a
-  //     boot-token cookie is the recommended next step for that (AUDIT_LEDGER #26).
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
-    const src = req.headers.origin ?? req.headers.referer;
-    if (typeof src === 'string' && src) {
-      try {
-        const host = new URL(src).hostname.toLowerCase();
-        // Allow the server's OWN origin — including a deliberate LAN HOST=<ip> opt-in, where
-        // the dashboard is served from that host so its same-origin POSTs carry that Origin.
-        const ok = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === boundHost.toLowerCase();
-        if (!ok) {
-          logger.warn(`blocked cross-origin ${req.method} ${req.path} from "${src}"`);
-          return res.status(403).json({ error: 'Forbidden (cross-origin request)' });
-        }
-      } catch { return res.status(403).json({ error: 'Forbidden (malformed Origin)' }); }
-    }
-    next();
-  });
-  // 3) JSON body limit raised: mass-send/mass-sell payloads with thousands of
+  // NO CORS layer: the dashboard is served same-origin from this very server, so no
+  // cross-origin caller is ever legitimate. (An open `cors()` would let any website the
+  // operator visits script against this credential-bearing API.)
+  // The DNS-rebind (Host allowlist) + anti-CSRF (Origin/Referer) checks live in ONE place —
+  // `sameOriginGuard` (mounted below). It was previously duplicated by two inline layers here,
+  // whose fixed boundHost allowlist wrong-blocked the sanctioned LAN opt-in (HOST=<LAN-IP>) that
+  // the guard already handles via same-origin match; the inline layers were removed (H-API-005).
+  // JSON body limit raised: mass-send/mass-sell payloads with thousands of
   //    asset ids exceed express' 100kb default (→ silent HTTP 413 failures).
   app.use(express.json({ limit: '5mb' }));
   // SECURITY (B25): redact secrets from EVERY JSON error string in one place. Many money/route
