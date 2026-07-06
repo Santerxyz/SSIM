@@ -2,7 +2,7 @@ import fs from 'fs';
 import http from 'http';
 import express from 'express';
 import { AccountVault, VAULT_READ_ERROR_PREFIX } from './AccountVault';
-import { looksLikeOrphanedVaultInstall } from './vaultBoot';
+import { looksLikeOrphanedVaultInstall, normalizeMasterPassword, unlockExistingVault } from './vaultBoot';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
 import { openUiWindow } from '../appWindow';
@@ -109,14 +109,22 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
       // typo would lock the vault behind an unknown password (no recovery). Require confirm on creates.
       if (!exists) {
         if (typeof confirm !== 'string') return res.status(400).json({ ok: false, error: 'First run: confirm the new Master Password (reload the unlock page if no confirm field is shown).' });
-        if (confirm !== password) return res.status(400).json({ ok: false, error: 'The passwords do not match.' });
+        // H-ACC-024: compare the NORMALIZED forms — the vault is created off the normalized password,
+        // so a trailing space on only one field must not read as a mismatch (nor create a padded vault).
+        if (normalizeMasterPassword(confirm) !== normalizeMasterPassword(password)) return res.status(400).json({ ok: false, error: 'The passwords do not match.' });
       }
 
       // Grow a small delay with each failed attempt (scrypt + loopback already gate). The delay lives
       // INSIDE the serialized attempt so it reads `failed` after the prior attempt settled, not at entry.
+      // H-ACC-024: a CREATE is keyed off the normalized password (the single normalization rule); an
+      // UNLOCK goes through unlockExistingVault (normalized first, then a verbatim retry that opens a
+      // legacy padded vault this same portal created before normalization was unified).
+      const opts = { createEmptyAnyway: body.createEmptyAnyway === true };
       const attempt = async () => {
         if (failed > 0) await sleep(Math.min(2_000, failed * 400));
-        return AccountVault.unlockOrCreate(password, { createEmptyAnyway: body.createEmptyAnyway === true });
+        return exists
+          ? unlockExistingVault(password, opts)
+          : AccountVault.unlockOrCreate(normalizeMasterPassword(password), opts);
       };
       const result = attemptQueue.then(attempt, attempt);
       attemptQueue = result.then(() => undefined, () => undefined);

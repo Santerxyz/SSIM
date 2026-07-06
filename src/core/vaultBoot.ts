@@ -4,7 +4,7 @@ import readline from 'readline';
 import type { AccountManager } from './AccountManager';
 import type { MaFile } from '../types/account';
 import { AccountVault } from './AccountVault';
-import type { VaultAccount } from './AccountVault';
+import type { VaultAccount, AccountVaultImpl } from './AccountVault';
 import { loadMaFileFromDisk, readCredentialsFile, listDropZoneMaFiles, parseAccountsCsv } from './maFiles';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
@@ -37,6 +37,37 @@ export function looksLikeOrphanedVaultInstall(): boolean {
  *  known absent. Exported for tests. */
 export function shouldBlockTtyEmptyCreate(): boolean {
   return looksLikeOrphanedVaultInstall() && process.env.SSIM_VAULT_CREATE !== '1';
+}
+
+/** H-ACC-024: THE single master-password normalization rule. Every input path (headless env, the
+ *  CLI prompt, the windowed unlock portal) must key the scrypt derivation off the SAME normalized
+ *  form, or a vault created with a trailing/leading space (a classic paste artifact) can never be
+ *  reopened from a path that trims — a hard, "wrong password" lockout with the correct password. */
+export function normalizeMasterPassword(pw: string): string { return pw.trim(); }
+
+/** H-ACC-024: the shared UNLOCK entry every path uses. Derives the key off `normalizeMasterPassword`
+ *  (matching every CREATE path), so a normalized vault opens from any input path. COMPATIBILITY BRIDGE
+ *  (a one-time data-migration for divergent historical normalization, NOT a band-aid retry): a vault
+ *  created by the OLD windowed portal — which keyed off the raw string — was salted with the padded
+ *  password. So if the trimmed form is exactly WRONG_PASSWORD and trimming actually changed the input,
+ *  retry ONCE with the verbatim string to open that legacy vault. Any other error (newer-version,
+ *  transient read error, corrupt file) is rethrown unchanged; two failed forms → WRONG_PASSWORD, so a
+ *  genuine bad password is unaffected apart from one extra scrypt only when the input carries whitespace.
+ *  The vault instance is injectable so tests can drive an isolated AccountVaultImpl. */
+export function unlockExistingVault(
+  raw: string,
+  opts?: { createEmptyAnyway?: boolean },
+  vault: AccountVaultImpl = AccountVault,
+): { created: boolean } {
+  const normalized = normalizeMasterPassword(raw);
+  try {
+    return vault.unlockOrCreate(normalized, opts);
+  } catch (e) {
+    if ((e as Error).message === 'WRONG_PASSWORD' && raw !== normalized) {
+      return vault.unlockOrCreate(raw, opts); // legacy portal-created vault salted with the padded password
+    }
+    throw e; // newer-version / transient read error / corrupt-both → unchanged
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -110,8 +141,11 @@ export async function unlockVault(): Promise<void> {
   // Headless (detached background child / systemd / no TTY): the vault is MANDATORY, so the
   // Master Password comes from SSIM_VAULT_PASSWORD (or the in-process cache on a re-gate).
   if (!process.stdin.isTTY) {
-    const envPw = process.env.SSIM_VAULT_PASSWORD?.trim() || headlessPwCache;
-    if (!envPw) {
+    // Keep the RAW env value (no pre-trim) so unlockExistingVault can key off both the normalized
+    // form and, for a legacy padded-portal vault, the verbatim string (H-ACC-024). Guard on the
+    // NORMALIZED form being non-empty (an all-whitespace value is still "no password").
+    const envPw = process.env.SSIM_VAULT_PASSWORD || headlessPwCache;
+    if (!envPw || !normalizeMasterPassword(envPw)) {
       logger.error('[vault] no interactive terminal and no SSIM_VAULT_PASSWORD set – a Master Password is required');
       process.exit(1);
     }
@@ -126,7 +160,7 @@ export async function unlockVault(): Promise<void> {
       // createEmptyAnyway mirrors the B36 override: SSIM_VAULT_CREATE=1 skips the vault.enc.bak
       // recovery probe and starts a NEW empty vault; otherwise a missing vault.enc self-heals from
       // a matching .bak instead of orphaning the farm (H-ACC-039).
-      AccountVault.unlockOrCreate(envPw, { createEmptyAnyway: process.env.SSIM_VAULT_CREATE === '1' });
+      unlockExistingVault(envPw, { createEmptyAnyway: process.env.SSIM_VAULT_CREATE === '1' });
       headlessPwCache = envPw;                       // remember for runtime re-gates
       const viaDetached = process.env.SSIM_DETACHED === '1';
       delete process.env.SSIM_VAULT_PASSWORD;        // drop it from the readable env block
@@ -168,10 +202,10 @@ export async function unlockVault(): Promise<void> {
     }
     // First run: SET a new Master Password, confirmed twice to avoid a typo lockout.
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const pw = (await maskedQuestion('Set a NEW Master Password (any length): ')).trim();
+      const pw = normalizeMasterPassword(await maskedQuestion('Set a NEW Master Password (any length): '));
       // eslint-disable-next-line no-console
       if (!pw) { console.error('  A Master Password is required.\n'); continue; }
-      const confirm = (await maskedQuestion('Confirm the Master Password: ')).trim();
+      const confirm = normalizeMasterPassword(await maskedQuestion('Confirm the Master Password: '));
       // eslint-disable-next-line no-console
       if (pw !== confirm) { console.error('  The passwords do not match — try again.\n'); continue; }
       AccountVault.unlockOrCreate(pw);
@@ -186,11 +220,13 @@ export async function unlockVault(): Promise<void> {
 
   // Existing vault: unlock it.
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const pw = (await maskedQuestion('Enter your Master Password to unlock the vault: ')).trim();
+    // Keep the RAW typed value so the H-ACC-024 bridge can retry a legacy padded-portal vault verbatim;
+    // guard on the NORMALIZED form being non-empty (a whitespace-only entry is still "no password").
+    const pw = await maskedQuestion('Enter your Master Password to unlock the vault: ');
     // eslint-disable-next-line no-console
-    if (!pw) { console.error('  A Master Password is required.\n'); continue; }
+    if (!normalizeMasterPassword(pw)) { console.error('  A Master Password is required.\n'); continue; }
     try {
-      AccountVault.unlockOrCreate(pw);
+      unlockExistingVault(pw);
       return;
     } catch (e) {
       // eslint-disable-next-line no-console
