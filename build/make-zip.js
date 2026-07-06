@@ -77,11 +77,21 @@ const listing = execFileSync('powershell', ['-NoProfile', '-Command',
   `$z.Entries | ForEach-Object { '{0}|{1}' -f $_.FullName, $_.Length }; $z.Dispose()`],
   { encoding: 'utf8' });
 const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-  .map((l) => { const i = l.lastIndexOf('|'); return { name: l.slice(0, i), size: Number(l.slice(i + 1)) }; });
+  // Normalise to forward slashes: real ZipFile FullNames use BACKSLASHES on Windows, which the
+  // forward-slash-anchored `mafiles/` branch + placeholder allow-list below would otherwise never
+  // match — so a leaked mafiles/accounts.txt would slip past the backstop entirely.
+  .map((l) => { const i = l.lastIndexOf('|'); return { name: l.slice(0, i).replace(/\\/g, '/'), size: Number(l.slice(i + 1)) }; });
 
-const SECRET_RE = /vault\.enc|accounts\.json|refresh_tokens|secrets\.local|license\.(key|token)|\.maFile$|\.mafile$|(^|\/)mafiles\/.+\.(maFile|txt)$|\.log$|protection\.json|value_history|inventories.*\.json|prices\.json|ssim\.lock|ssim\.port/i;
+// `accounts.(txt|csv)` are the plaintext bulk-import credential files (user:pass) — caught ANYWHERE,
+// not only under mafiles/, since accounts.txt matches no other branch.
+const SECRET_RE = /vault\.enc|accounts\.json|accounts\.(txt|csv)|refresh_tokens|secrets\.local|license\.(key|token)|\.maFile$|\.mafile$|(^|\/)mafiles\/.+\.(maFile|txt)$|\.log$|protection\.json|value_history|inventories.*\.json|prices\.json|ssim\.lock|ssim\.port/i;
 const ALLOW_MAFILE_PLACEHOLDER = /mafiles\/PUT_MAFILES_HERE\.txt$/i;
 const offenders = entries.filter((e) => SECRET_RE.test(e.name) && !ALLOW_MAFILE_PLACEHOLDER.test(e.name));
+// The placeholder is written every build; its absence means the stage layout drifted, so the
+// separator-sensitive mafiles/ branch is unverified — warn rather than claim CLEAN silently.
+if (!entries.some((e) => ALLOW_MAFILE_PLACEHOLDER.test(e.name))) {
+  console.warn('  ⚠ mafiles/PUT_MAFILES_HERE.txt not found in the ZIP — stage layout may have drifted; the mafiles/ scan branch is unverified.');
+}
 
 console.log('\n=== ZIP CONTENTS (' + entries.length + ' entries) ===');
 for (const e of entries) console.log('  ' + e.name + (e.size ? '  (' + (e.size > 1048576 ? (e.size / 1048576).toFixed(1) + ' MB' : e.size + ' B') + ')' : '  <dir>'));
