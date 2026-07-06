@@ -106,6 +106,30 @@ export class AccountVaultImpl {
   }
 
   /**
+   * Validates the plaintext envelope shape + CLAMPS the header-controlled KDF cost params, then
+   * returns the decoded salt + (bounded) params + iv/tag/ct + version, or null for a bad envelope.
+   * The header is UNAUTHENTICATED (GCM's tag only covers `ct`), so a crafted/corrupt file could
+   * otherwise force `scryptSync` into a multi-GB allocation + a minutes-long synchronous freeze
+   * (H-ACC-036). N/r/p are refused unless integer, N a power of two in 2^12–2^17, r in 1–16,
+   * p in 1–4, AND 128·N·r ≤ 256 MiB — SSIM's own writes (N=2^15/r=8/p=1) sit well inside these.
+   * A file with NO header N/r/p yields params=undefined (deriveKey falls back to the defaults).
+   */
+  private parseEnvelope(file: unknown): { salt: Buffer; params?: { N: number; r: number; p: number }; iv: string; tag: string; ct: string; v: number } | null {
+    const f = file as VaultFileFormat;
+    if (!f || f.magic !== MAGIC || !f.kdf?.salt || !f.iv || !f.tag || !f.ct) return null;
+    let params: { N: number; r: number; p: number } | undefined;
+    if (Number.isInteger(f.kdf.N) && Number.isInteger(f.kdf.r) && Number.isInteger(f.kdf.p)) {
+      const { N, r, p } = f.kdf;
+      const powerOfTwo = N > 0 && (N & (N - 1)) === 0;
+      if (!powerOfTwo || N < 4096 || N > 131072 || r < 1 || r > 16 || p < 1 || p > 4 || 128 * N * r > 256 * 1024 * 1024) {
+        return null; // out-of-bounds header cost params → treat exactly like a corrupt envelope
+      }
+      params = { N, r, p };
+    }
+    return { salt: Buffer.from(f.kdf.salt, 'base64'), params, iv: f.iv, tag: f.tag, ct: f.ct, v: f.v };
+  }
+
+  /**
    * Reads + envelope-validates a vault file and derives the key from ITS OWN header salt,
    * then decrypts. Returns the derived key/salt + plaintext, or throws:
    *   • Error('WRONG_PASSWORD')       — GCM auth failed (wrong key OR a corrupt ciphertext)
@@ -114,24 +138,22 @@ export class AccountVaultImpl {
    */
   private decryptFile(vaultPath: string, password: string): { key: Buffer; salt: Buffer; plain: string } {
     const file = fsExtra.readJsonSync(vaultPath) as VaultFileFormat;
-    if (!file || file.magic !== MAGIC || !file.kdf?.salt || !file.iv || !file.tag || !file.ct) {
+    const env = this.parseEnvelope(file);
+    if (!env) {
       throw new Error('vault.enc is corrupt or not an SSIM vault');
     }
     // Envelope version gate (B30): a file written by a NEWER SSIM must be refused with a
     // DISTINCT error (never decrypted-then-rewritten, which would strip its newer sections).
-    if (Number.isFinite(Number(file.v)) && Number(file.v) > VAULT_VERSION) {
+    if (Number.isFinite(Number(env.v)) && Number(env.v) > VAULT_VERSION) {
       throw new Error(VAULT_NEWER_VERSION_ERROR);
     }
-    const salt = Buffer.from(file.kdf.salt, 'base64');
-    const params = (Number.isInteger(file.kdf.N) && Number.isInteger(file.kdf.r) && Number.isInteger(file.kdf.p))
-      ? { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p }
-      : undefined;
-    const key = this.deriveKey(password, salt, params);
+    const salt = env.salt;
+    const key = this.deriveKey(password, salt, env.params);
     let plain: string;
     try {
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(file.iv, 'base64'));
-      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
-      plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+      plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
     } catch {
       throw new Error('WRONG_PASSWORD'); // GCM auth failure → wrong key OR corrupt ciphertext
     }
@@ -247,11 +269,11 @@ export class AccountVaultImpl {
   verifyDiskRoundTrip(): boolean {
     if (!this.key) return false;
     try {
-      const file = fsExtra.readJsonSync(this.vaultFile) as VaultFileFormat;
-      if (!file || file.magic !== MAGIC || !file.iv || !file.tag || !file.ct) return false;
-      const decipher = crypto.createDecipheriv('aes-256-gcm', this.key, Buffer.from(file.iv, 'base64'));
-      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
-      const plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+      const env = this.parseEnvelope(fsExtra.readJsonSync(this.vaultFile));
+      if (!env) return false;
+      const decipher = crypto.createDecipheriv('aes-256-gcm', this.key, Buffer.from(env.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+      const plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
       return !!JSON.parse(plain) && typeof JSON.parse(plain) === 'object';
     } catch { return false; }
   }
@@ -261,16 +283,13 @@ export class AccountVaultImpl {
    *  password / corrupt file. Used by "Import SSIM Vault" to merge another farm. */
   decryptExternalVault(rawContent: string, password: string): { accounts: Record<string, VaultAccount>; tokens: Record<string, string> } | null {
     try {
-      const file = JSON.parse(rawContent) as VaultFileFormat;
-      if (!file || file.magic !== MAGIC || !file.kdf?.salt || !file.iv || !file.tag || !file.ct) return null;
-      const salt = Buffer.from(file.kdf.salt, 'base64');
-      const params = (Number.isInteger(file.kdf.N) && Number.isInteger(file.kdf.r) && Number.isInteger(file.kdf.p))
-        ? { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p } : undefined;
-      if (Number.isFinite(Number(file.v)) && Number(file.v) > VAULT_VERSION) return null; // newer file → don't guess
-      const key = this.deriveKey(password, salt, params);
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(file.iv, 'base64'));
-      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
-      const plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+      const env = this.parseEnvelope(JSON.parse(rawContent));
+      if (!env) return null;
+      if (Number.isFinite(Number(env.v)) && Number(env.v) > VAULT_VERSION) return null; // newer file → don't guess
+      const key = this.deriveKey(password, env.salt, env.params);
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+      const plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
       const payload = normalizePayload(JSON.parse(plain));
       return { accounts: payload.accounts, tokens: payload.tokens };
     } catch { return null; }

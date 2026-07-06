@@ -216,6 +216,37 @@ test('H-ACC-040: a throwing debounced save is caught (no uncaughtException), sta
   assert.equal(v2.getToken('bot1'), 'c', 'the next successful save recovers the dirty in-memory state');
 });
 
+// ─── H-ACC-036: an absurd header-controlled scrypt N is refused as corrupt (no huge alloc/freeze) ──
+// The vault header is UNAUTHENTICATED — a crafted/corrupt file could set kdf.N = 2^24 and force
+// scryptSync into a ~16 GB working set + a minutes-long synchronous event-loop freeze. The clamp
+// rejects out-of-bounds params BEFORE any scrypt call, so it fails as corrupt in milliseconds.
+test('H-ACC-036: a vault.enc with an absurd kdf.N is refused as corrupt, in ms (never derives)', () => {
+  const { file, bak } = tmpVault();
+  new AccountVaultImpl(file, bak).unlockOrCreate('pw');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.kdf.N = 1 << 24; // 16,777,216 → 128·N·r ≈ 16 GB working set for scrypt
+  fs.writeFileSync(file, JSON.stringify(raw));
+
+  const t = Date.now();
+  assert.throws(
+    () => new AccountVaultImpl(file, bak).unlockOrCreate('pw'),
+    /corrupt or not an SSIM vault/,
+    'an out-of-bounds header N must be refused as corrupt (not decrypted, not WRONG_PASSWORD)',
+  );
+  assert.ok(Date.now() - t < 500, 'the clamp rejects before any scrypt call → returns in ms');
+});
+
+test('H-ACC-036: the import path (decryptExternalVault) returns null for an absurd kdf.N', () => {
+  const { file, bak } = tmpVault();
+  new AccountVaultImpl(file, bak).unlockOrCreate('pw');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.kdf.N = 1 << 24;
+  const t = Date.now();
+  assert.equal(new AccountVaultImpl(file, bak).decryptExternalVault(JSON.stringify(raw), 'x'), null,
+    'a hostile imported vault with an out-of-bounds header N must be refused (null), not derived');
+  assert.ok(Date.now() - t < 500, 'refused before any scrypt call');
+});
+
 test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   const { file, bak } = tmpVault();
   const v1 = new AccountVaultImpl(file, bak);
