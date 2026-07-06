@@ -1,5 +1,6 @@
 import fsExtra from 'fs-extra';
 import path from 'path';
+import readline from 'readline';
 import type { AccountManager } from './AccountManager';
 import type { MaFile } from '../types/account';
 import { AccountVault } from './AccountVault';
@@ -27,6 +28,15 @@ export function looksLikeOrphanedVaultInstall(): boolean {
     // carry real passwords (or no accounts at all).
     return accts.some(a => a && (a.password === '' || a.password == null));
   } catch { return false; }
+}
+
+/** H-ACC-026: should the INTERACTIVE first-run TTY path block a silent empty-vault create right now?
+ *  True on the same orphan condition the headless (l.102) and windowed (unlockPortal.ts:29) paths already
+ *  guard: accounts.json holds registered accounts but vault.enc is missing, and the operator has not set
+ *  SSIM_VAULT_CREATE=1 to start anew. Only ever called from the `!existing` branch, so vault.enc is already
+ *  known absent. Exported for tests. */
+export function shouldBlockTtyEmptyCreate(): boolean {
+  return looksLikeOrphanedVaultInstall() && process.env.SSIM_VAULT_CREATE !== '1';
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -73,6 +83,15 @@ function maskedQuestion(query: string): Promise<string> {
       }
     };
     stdin.on('data', onData);
+  });
+}
+
+/** Reads a single line from stdin with normal echo (NOT masked) — used for typed confirmations
+ *  the operator SHOULD see, e.g. the H-ACC-026 orphan-vault "CREATE NEW VAULT" acknowledgement. */
+function plainQuestion(query: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(query, (answer) => { rl.close(); resolve(answer); });
   });
 }
 
@@ -127,6 +146,26 @@ export async function unlockVault(): Promise<void> {
   );
 
   if (!existing) {
+    // H-ACC-026: same B36 orphan guard the headless (l.102) and windowed (unlockPortal.ts) paths hold —
+    // if accounts.json holds registered accounts but vault.enc is missing (partial restore / AV quarantine
+    // / mis-set SSIM_HOME), creating a fresh empty vault would orphan every account AND destroy the only
+    // signal that vault.enc is merely missing. Refuse unless the operator TYPES an explicit acknowledgement
+    // (or set SSIM_VAULT_CREATE=1 for the non-interactive bypass, parity with l.102).
+    if (shouldBlockTtyEmptyCreate()) {
+      // eslint-disable-next-line no-console
+      console.error(
+        '\n  Registered accounts exist but the vault file (vault.enc) is MISSING — likely a partial restore,\n' +
+        '  an antivirus quarantine, or a mis-set SSIM_HOME. Creating a new vault now would leave every account\n' +
+        '  credential-less. Restore vault.enc (a local vault.enc.bak with the same Master Password is\n' +
+        '  auto-restored) or fix SSIM_HOME and relaunch — OR type exactly  CREATE NEW VAULT  to start anew.\n',
+      );
+      const ack = (await plainQuestion('  Type CREATE NEW VAULT to confirm, or anything else to abort: ')).trim();
+      if (ack !== 'CREATE NEW VAULT') {
+        // eslint-disable-next-line no-console
+        console.error('  Aborting — no vault was created.');
+        process.exit(1);
+      }
+    }
     // First run: SET a new Master Password, confirmed twice to avoid a typo lockout.
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const pw = (await maskedQuestion('Set a NEW Master Password (any length): ')).trim();
