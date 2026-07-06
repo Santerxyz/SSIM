@@ -1,6 +1,17 @@
 import { logger } from '../utils/logger';
 
 /**
+ * Thrown when a queued task is skipped BEFORE its cooldown/start because its
+ * `skip` predicate said so (e.g. "End Task" cancelled the run). The `skipped`
+ * flag lets the caller distinguish this from a real fetch failure so a cancelled
+ * backlog is not counted as failed. (H-INV-008.)
+ */
+export class ThrottleSkippedError extends Error {
+  readonly skipped = true;
+  constructor() { super('skipped: cancelled before start'); }
+}
+
+/**
  * Serial throttle with a randomized cooldown – the rate-limit guard for accounts
  * that run WITHOUT a proxy (local IP).
  *
@@ -44,9 +55,15 @@ export class LocalIpThrottle {
    * Runs `task` once it reaches the front of the queue AND the randomized cooldown
    * since the previous task's start has elapsed. Resolves/rejects with `task`'s
    * own result, so callers see no difference beyond the added wait.
+   *
+   * `opts.skip` is consulted at the very front of the chain — BEFORE the cooldown
+   * wait and without touching `lastStartAt` — so a cancelled backlog collapses
+   * immediately (each queued task throws ThrottleSkippedError instead of waiting
+   * out its cooldown and then fetching). (H-INV-008.)
    */
-  run<T>(task: () => Promise<T>): Promise<T> {
+  run<T>(task: () => Promise<T>, opts?: { skip?: () => boolean }): Promise<T> {
     const scheduled = this.tail.then(async () => {
+      if (opts?.skip?.()) throw new ThrottleSkippedError();
       const wait = this.nextWaitMs();
       if (wait > 0) {
         logger.debug(`[localip-throttle] waiting ${Math.round(wait)}ms before next no-proxy fetch`);

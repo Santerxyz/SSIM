@@ -747,10 +747,17 @@ export class InventoryService {
         // concurrent post-trade refresh of the same account), set by ensureSession within the run().
         const store: { createdByCall?: boolean } = {};
         try {
-          await this.ownershipCtx.run(store, () => this.refreshMaybeThrottled(username, game));
+          await this.ownershipCtx.run(store, () => this.refreshMaybeThrottled(username, game, () => this.refreshCancel));
         } catch (err) {
-          this.job.failed.push({ username, error: (err as Error).message });
-          logger.warn(`[${username}] ${game} refresh failed: ${(err as Error).message}`);
+          // H-INV-008: a ThrottleSkippedError means the account was cancelled BEFORE any fetch started —
+          // it's a skip, not a failure. Don't inflate job.failed (the finally still counts it in job.done,
+          // matching today's cancelled-run accounting); log at debug.
+          if ((err as { skipped?: boolean }).skipped === true) {
+            logger.debug(`[${username}] ${game} refresh skipped (cancelled before start)`);
+          } else {
+            this.job.failed.push({ username, error: (err as Error).message });
+            logger.warn(`[${username}] ${game} refresh failed: ${(err as Error).message}`);
+          }
         } finally {
           this.job.done++;
           // Release ONLY a session THIS refresh created (ownership recorded by ensureSession into our own
@@ -806,9 +813,12 @@ export class InventoryService {
    * Steam's rate limit, however many are queued; proxied accounts (own exit IP)
    * refresh straight through at full concurrency.
    */
-  private refreshMaybeThrottled(username: string, game: GameId): Promise<AccountInventory> {
+  private refreshMaybeThrottled(username: string, game: GameId, skip?: () => boolean): Promise<AccountInventory> {
+    // H-INV-008: pass `skip` into the throttle so an "End Task" cancel drops queued-but-unstarted
+    // local-IP accounts immediately (ThrottleSkippedError) instead of draining serially through the
+    // cooldown chain. Proxied accounts start straight away — the skip is checked in the bulk worker loop.
     return this.isLocalIp(username)
-      ? this.localIpThrottle.run(() => this.refreshOne(username, game))
+      ? this.localIpThrottle.run(() => this.refreshOne(username, game), { skip })
       : this.refreshOne(username, game);
   }
 
