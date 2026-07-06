@@ -29,6 +29,22 @@ const PAGE = publicDir('license.html');
  */
 export function runActivationPortal(hwid: string, port: number, host: string, version = ''): Promise<void> {
   return new Promise<void>((resolve) => {
+    // OQ-C1(a) / H-LIC-010: the PRE-LICENSE activation portal is HARD-PINNED to loopback
+    // regardless of HOST. It serves the license-key entry form (POST /api/license/activate,
+    // an activation-attempt relay to the license server) and the device HWID (GET
+    // /api/license/state) over cleartext HTTP, and its only legitimate consumer is the local
+    // Tauri webview — so there is no reason to expose it to the LAN. The full app still honors
+    // HOST after the license gate. The warning below is belt-and-suspenders: it fires if an
+    // operator set HOST=0.0.0.0 expecting the portal to be reachable, so the (intended) loopback
+    // pin is not silent.
+    if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+      logger.warn(
+        `SECURITY: HOST=${host} is set, but the license activation portal is pinned to ` +
+        `127.0.0.1 (loopback only) — the key-entry form and the device HWID are NOT exposed ` +
+        `to the network. The full app honors HOST after the license gate.`,
+      );
+    }
+    const bindHost = '127.0.0.1';
     const app = express();
     app.use(express.json());
     // SECURITY — serve ONLY /assets/* (logo, fonts) here, NEVER the whole public/
@@ -114,7 +130,7 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
     // the shell only after this portal actually binds it, so the shell never adopts a foreign app
     // holding the desired port. (BUG 2.)
     const server = http.createServer(app);
-    listenAndAnnounce(server, host, port).then((bound) => {
+    listenAndAnnounce(server, bindHost, port).then((bound) => {
       // eslint-disable-next-line no-console
       console.log(
         `\n  \x1b[35m\x1b[1m◆ SSIM\x1b[0m\x1b[2m  ·  License required\x1b[0m\n` +
@@ -123,7 +139,7 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
         `   license key to activate SSIM.\n` +
         `  \x1b[2m────────────────────────────────────────────────\x1b[0m\n`,
       );
-      logger.info(`license activation portal listening on ${host}:${bound}`);
+      logger.info(`license activation portal listening on ${bindHost}:${bound}`);
       openUiWindow(`http://localhost:${bound}`);
     }).catch((err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
@@ -131,7 +147,7 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
           `Port ${port} is already in use.`,
           'Is SSIM already running? Close the other instance, or set PORT=<free> and restart.',
         );
-        logger.error(`activation portal cannot bind ${host}:${port} – EADDRINUSE (walk exhausted)`);
+        logger.error(`activation portal cannot bind ${bindHost}:${port} – EADDRINUSE (walk exhausted)`);
       } else {
         printLockScreen('The activation server failed to start.', err.message);
         logger.error(`activation portal listen error: ${err.message}`);
