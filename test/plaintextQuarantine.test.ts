@@ -6,6 +6,7 @@ import fs from 'fs';
 import { quarantinePlaintextFile, quarantineMigratedPlaintext } from '../src/core/vaultBoot';
 import { AccountVault } from '../src/core/AccountVault';
 import { dataDir, vaultDir } from '../src/utils/paths';
+import { logger } from '../src/utils/logger';
 
 // ─── B21: quarantine plaintext token/key files once safely in the vault ────────
 // In vault mode the token/key stores read ONLY the vault, so a vaulted entry left in
@@ -107,4 +108,33 @@ test('H-ACC-041: a failed flush() leaves refresh_tokens.json + csfloat_keys.json
     av.flush = origFlush;
     try { fs.rmSync(tokFile, { force: true }); fs.rmSync(keyFile, { force: true }); } catch { /* ignore */ }
   }
+});
+
+// ─── H-ACC-028: a JSON.parse failure on a SECRET-BEARING file must not leak token bytes ──
+// Node 24's V8 quotes a ~13-char source snippet around a mid-value "unexpected token" parse
+// error ("… is not valid JSON"). On refresh_tokens.json / csfloat_keys.json the values ARE the
+// secrets, so that window carries the opening bytes of a refresh JWT (every one begins `eyJ`)
+// into logs/*.log at warn level — a file the operator opens via Live Logs (S20). The catch must
+// log the error CLASS ('invalid JSON'), never its snippet-bearing message.
+test('H-ACC-028: a corrupt secret file logs "invalid JSON", never a token snippet', () => {
+  // Mid-value corruption: the stray `x` sits immediately before the token value, the shape that
+  // makes V8 quote a source snippet. (A trailing-garbage fixture yields a position-only message
+  // and would NOT exercise the leak.) SECRETMARKER stands in for the token bytes after `eyJ0eS`.
+  const f = tmpFile(0); // placeholder; overwrite with raw invalid JSON below
+  fs.writeFileSync(f, '{"tokens":{"u":x"eyJ0eSECRETMARKER9.z"}}');
+
+  const warnings: string[] = [];
+  const origWarn = logger.warn.bind(logger);
+  (logger as unknown as { warn: (m: string) => void }).warn = (m: string) => { warnings.push(m); };
+  try {
+    // Exact call from the Verification line; vaultGet is never reached (parse throws first).
+    quarantinePlaintextFile(f, 'tokens', 'refresh token', () => undefined);
+  } finally {
+    (logger as unknown as { warn: unknown }).warn = origWarn;
+  }
+
+  const joined = warnings.join('\n');
+  assert.ok(joined.length > 0, 'the parse failure was logged (the catch fired)');
+  assert.ok(!joined.includes('eyJ0eS'), 'no token-source snippet leaked into the warn message');
+  assert.ok(joined.includes('invalid JSON'), 'the error is reported by class, not by V8 message');
 });

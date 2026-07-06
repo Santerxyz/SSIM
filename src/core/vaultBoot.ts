@@ -290,6 +290,18 @@ function resolveTargetFolder(accounts: AccountManager, envId: string, folderId?:
  * Idempotent + non-destructive: only absorbs usernames not already vaulted; never deletes any
  * plaintext source file.
  */
+/** H-ACC-028: a redaction-safe label for an fs/JSON error on a SECRET-BEARING file
+ *  (refresh_tokens.json / csfloat_keys.json — their values ARE the secrets). Node 24's V8
+ *  quotes a ~13-char source snippet around a mid-value JSON.parse failure ("Unexpected token
+ *  … is not valid JSON"), which on these files leaks the opening bytes of a refresh JWT / API
+ *  key into logs/*.log (Live Logs / support flows read that file). Return the error CLASS, never
+ *  its message: SyntaxError → 'invalid JSON'; otherwise the errno code / error name. */
+function fsErrLabel(e: unknown): string {
+  return e instanceof SyntaxError
+    ? 'invalid JSON'
+    : ((e as NodeJS.ErrnoException).code ?? (e as Error).name ?? 'error');
+}
+
 export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: number } {
   if (!AccountVault.isEnabled()) return { migrated: 0 };
   let migrated = 0;
@@ -318,7 +330,7 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
       }
       if (n) logger.info(`[vault] migrated ${n} refresh token(s) into the vault`);
     }
-  } catch (e) { logger.warn(`[vault] refresh-token migration skipped: ${(e as Error).message}`); }
+  } catch (e) { logger.warn(`[vault] refresh-token migration skipped: ${fsErrLabel(e)}`); }
 
   // 2b) Migrate per-account CSFloat API keys into the vault. Without this, keys saved in
   //     plaintext mode become invisible after vault mode is enabled (the key store reads
@@ -334,7 +346,7 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
       }
       if (n) logger.info(`[vault] migrated ${n} CSFloat API key(s) into the vault`);
     }
-  } catch (e) { logger.warn(`[vault] CSFloat-key migration skipped: ${(e as Error).message}`); }
+  } catch (e) { logger.warn(`[vault] CSFloat-key migration skipped: ${fsErrLabel(e)}`); }
 
   AccountVault.save();
 
@@ -440,7 +452,7 @@ export function quarantinePlaintextFile(
       logger.warn(`[vault] quarantined ${removed} plaintext ${label}(s) from ${path.basename(file)}; kept ${Object.keys(kept).length} not-yet-vaulted entry/entries`);
     }
   } catch (e) {
-    logger.warn(`[vault] plaintext ${label} quarantine skipped: ${(e as Error).message}`);
+    logger.warn(`[vault] plaintext ${label} quarantine skipped: ${fsErrLabel(e)}`);
   }
 }
 
