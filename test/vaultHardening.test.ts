@@ -350,3 +350,33 @@ test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   fs.writeFileSync(file, JSON.stringify(main));
   assert.throws(() => new AccountVaultImpl(file, bak).unlockOrCreate('WRONG'), /WRONG_PASSWORD/);
 });
+
+// ─── H-ACC-038: unlockOrCreate is transactional — a persist throw leaves the vault LOCKED ──
+// In the create and .bak-recovery branches the key/salt/payload are set BEFORE the initial save()
+// (save reads them). A save throw (disk-full/EPERM/AV-lock) propagates to the caller, which treats
+// the attempt as failed — so isEnabled() must NOT be left true with an unpersisted payload. The
+// class contract everywhere (TokenStore, CsFloatKeyStore, migrate/quarantine) is "threw ⇒ locked".
+test('H-ACC-038(a): a save throw during CREATE rolls the state back — isEnabled() stays false', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+  assert.throws(() => v.unlockOrCreate('pw'), /EACCES/);
+  assert.equal(v.isEnabled(), false, 'a failed create must NOT leave a half-enabled vault');
+});
+
+test('H-ACC-038(b): after the throw a fresh instance creates + unlocks cleanly', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  const r = v.unlockOrCreate('pw'); // real save, no override
+  assert.equal(r.created, true);
+  assert.equal(v.isEnabled(), true, 'a normal create leaves the vault open');
+});
+
+test('H-ACC-038(c): a save throw during .bak RECOVERY rolls back — isEnabled() stays false', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.rmSync(file); // vault.enc gone; only the .bak survives → recovery branch
+  const v = new AccountVaultImpl(file, bak);
+  (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+  assert.throws(() => v.unlockOrCreate('pw'), /EACCES/, 'recovery persist failure propagates');
+  assert.equal(v.isEnabled(), false, 'a failed recovery must not report the vault as open');
+});

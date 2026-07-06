@@ -224,7 +224,11 @@ export class AccountVaultImpl {
         // between that copy and the rename would leave BOTH files corrupt → total, unrecoverable farm
         // credential loss. Writing atomically without touching .bak keeps the good backup intact: a
         // crash mid-recovery leaves vault.enc corrupt but .bak good, so the next boot re-recovers.
-        this.save({ backup: false });
+        // H-ACC-038: the fields above are set FIRST because save() reads them, but a persist throw
+        // (disk-full/EPERM/AV-lock) would otherwise leave isEnabled()===true with nothing on disk while
+        // the caller is told the unlock failed. Roll them back so a throw restores the locked state.
+        try { this.save({ backup: false }); }
+        catch (e) { this.key = this.salt = this.payload = undefined; throw e; }
         logger.info(`[vault] recovered from backup + rewrote vault.enc (${this.accountCount()} account(s))`);
         return { created: false };
       }
@@ -246,7 +250,10 @@ export class AccountVaultImpl {
       if (rec) {
         this.payload = rec.payload; this.key = rec.key; this.salt = rec.salt;
         // S5: rewrite vault.enc WITHOUT a backup pass (never copy anything over the proven-good .bak).
-        this.save({ backup: false });
+        // H-ACC-038: roll the fields back on a persist throw so the caller-observed failure keeps the
+        // vault locked (isEnabled()===false) rather than half-enabled with an unpersisted payload.
+        try { this.save({ backup: false }); }
+        catch (e) { this.key = this.salt = this.payload = undefined; throw e; }
         logger.info('[vault] vault.enc was missing but vault.enc.bak decrypted — restored the vault from the backup');
         logger.info(`[vault] restored from backup (${this.accountCount()} account(s))`);
         return { created: false };
@@ -260,7 +267,10 @@ export class AccountVaultImpl {
     this.salt = salt;
     this.key = this.deriveKey(password, salt);
     this.payload = { version: VAULT_VERSION, accounts: {}, tokens: {}, csfloatKeys: {}, envProxies: {}, accountProxies: {} };
-    this.save();
+    // H-ACC-038: roll the fields back on a persist throw so a save failure during create leaves the
+    // vault locked (isEnabled()===false) instead of enabled-in-memory with no vault.enc on disk.
+    try { this.save(); }
+    catch (e) { this.key = this.salt = this.payload = undefined; throw e; }
     logger.info('[vault] new vault created + unlocked');
     return { created: true };
   }
