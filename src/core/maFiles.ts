@@ -86,12 +86,30 @@ function normalizeMaFile(mf: MaFile, raw: string): MaFile {
   return mf;
 }
 
-/** Parses mafiles/accounts.txt → Map<lowercaseUsername, password>. */
+/**
+ * Parses mafiles/accounts.txt → Map<lowercaseUsername, password>.
+ * `existsSync` can pass and the read still throw EBUSY/EPERM when the file is transiently
+ * locked (AV scanning a freshly-edited file, an editor holding it exclusive) — the S54/S58
+ * transient-lock class. Classify that (and the ENOENT existsSync race) as ACCOUNTS_TXT_LOCKED
+ * so the import routes name the locked file instead of answering a generic 500. NEVER return an
+ * empty map on read failure — that would fabricate the false per-file "no password" reason for
+ * every account; the failure must abort the import before any mutation.
+ */
 export function readCredentialsFile(): Map<string, string> {
   const map = new Map<string, string>();
   const file = path.join(MA_FILES_DIR, 'accounts.txt');
   if (!fs.existsSync(file)) return map;
-  for (const raw of readTextFileTolerant(file).split(/\r?\n/)) {
+  let text: string;
+  try {
+    text = readTextFileTolerant(file);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EBUSY' || code === 'EPERM' || code === 'ENOENT') {
+      throw Object.assign(new Error('mafiles/accounts.txt is unreadable (locked by another program?) — close it and retry'), { code: 'ACCOUNTS_TXT_LOCKED' });
+    }
+    throw err;
+  }
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const idx = line.indexOf(':');

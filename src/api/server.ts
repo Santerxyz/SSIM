@@ -2092,8 +2092,15 @@ export function createApp(deps: ApiDeps): Express {
       // Vault mode: import ONLY the SELECTED maFiles from the drop zone into the vault + create
       // org entries in the chosen environment + folder. Honours the selection; never imports an
       // un-ticked file or guesses a target. Non-destructive; idempotent.
-      const { imported, skipped, reasons } = importDropZoneIntoVault(accounts, environmentId, folderId ?? null, files.map(String));
-      return res.json({ vault: true, imported, skipped, reasons, migrated: 0, added: [] });
+      try {
+        const { imported, skipped, reasons } = importDropZoneIntoVault(accounts, environmentId, folderId ?? null, files.map(String));
+        return res.json({ vault: true, imported, skipped, reasons, migrated: 0, added: [] });
+      } catch (e) {
+        // A transiently-locked accounts.txt (EBUSY/EPERM) is named, not a generic 500 — the whole
+        // import aborts before any mutation, so the operator can close the file and retry.
+        if ((e as { code?: string }).code === 'ACCOUNTS_TXT_LOCKED') return res.status(409).json({ error: (e as Error).message });
+        throw e;
+      }
     }
 
     const creds = readCredentialsFile();
