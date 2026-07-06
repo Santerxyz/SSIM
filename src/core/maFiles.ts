@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type { MaFile } from '../types/account';
 import { maFilesDir } from '../utils/paths';
+import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Shared "drop-zone" helpers for the mafiles/ folder (the import source).
@@ -83,6 +84,8 @@ export function readCredentialsFile(): Map<string, string> {
 
 export interface CsvAccount { username: string; password: string; shared_secret: string; identity_secret: string; }
 
+export interface CsvRejected { line: number; reason: 'too few columns' | 'missing username/password/shared_secret'; }
+
 /** Splits one CSV line, honouring double-quoted fields (so a password may contain commas). */
 function parseCsvLine(line: string): string[] {
   const out: string[] = [];
@@ -106,27 +109,37 @@ function parseCsvLine(line: string): string[] {
  * lines and an optional header row. Requires username+password+shared_secret; identity_secret
  * may be empty (trade confirmations then won't work for that bot, same as a maFile without it).
  */
-export function parseAccountsCsv(text: string): CsvAccount[] {
+export function parseAccountsCsv(text: string): { rows: CsvAccount[]; rejected: CsvRejected[] } {
   const rows: CsvAccount[] = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
+  const rejected: CsvRejected[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith('#')) continue;             // blank / comment → not a data row
     const cells = parseCsvLine(line).map((c) => c.trim());
-    if (cells.length < 3) continue;
+    if (cells.length < 3) { rejected.push({ line: i + 1, reason: 'too few columns' }); continue; }
     const [username, password, shared_secret, identity_secret] = cells;
-    if (username.toLowerCase() === 'username') continue;     // header row
-    if (!username || !password || !shared_secret) continue;  // unusable row
+    if (username.toLowerCase() === 'username') continue;      // header row → not a data row
+    if (!username || !password || !shared_secret) { rejected.push({ line: i + 1, reason: 'missing username/password/shared_secret' }); continue; }
     rows.push({ username, password, shared_secret, identity_secret: identity_secret || '' });
   }
-  return rows;
+  return { rows, rejected };
 }
 
 export interface DropZoneEntry { file: string; accountName: string; maFile: MaFile; }
+export interface DropZoneUnreadable { file: string; reason: string; }
 
-/** Lists every readable *.maFile in ./mafiles/ with its parsed contents + account_name. */
-export function listDropZoneMaFiles(): DropZoneEntry[] {
-  if (!fs.existsSync(MA_FILES_DIR)) return [];
-  const out: DropZoneEntry[] = [];
+/**
+ * Lists every USABLE *.maFile in ./mafiles/ with its parsed contents + account_name, AND every
+ * file that was dropped for being unparseable/AV-locked or missing account_name/shared_secret.
+ * Nothing is ever silently swallowed: a whole folder of encrypted SDA blobs (base64, not JSON)
+ * surfaces as `unreadable` entries instead of an empty list. Filenames only are logged — never
+ * file contents, which may carry secrets. (H-ACC-078.)
+ */
+export function listDropZoneMaFiles(): { entries: DropZoneEntry[]; unreadable: DropZoneUnreadable[] } {
+  if (!fs.existsSync(MA_FILES_DIR)) return { entries: [], unreadable: [] };
+  const entries: DropZoneEntry[] = [];
+  const unreadable: DropZoneUnreadable[] = [];
   for (const file of fs.readdirSync(MA_FILES_DIR)) {
     if (!file.toLowerCase().endsWith('.mafile')) continue;
     try {
@@ -134,8 +147,13 @@ export function listDropZoneMaFiles(): DropZoneEntry[] {
       const accountName = (maFile.account_name as string) || '';
       // Require a USABLE maFile (account_name + shared_secret) — mirror loadMaFileFromDisk so a
       // maFile that fails the strict disk loader is never imported via this looser path.
-      if (accountName && maFile.shared_secret) out.push({ file, accountName, maFile });
-    } catch { /* skip unparseable */ }
+      if (!accountName) { unreadable.push({ file, reason: 'no account_name' }); continue; }
+      if (!maFile.shared_secret) { unreadable.push({ file, reason: 'no shared_secret' }); continue; }
+      entries.push({ file, accountName, maFile });
+    } catch (err) { unreadable.push({ file, reason: 'unreadable: ' + (err as Error).message }); }
   }
-  return out;
+  if (unreadable.length) {
+    logger.warn(`[mafiles] ${unreadable.length} drop-zone file(s) skipped: ${unreadable.map((u) => u.file).join(', ')}`);
+  }
+  return { entries, unreadable };
 }

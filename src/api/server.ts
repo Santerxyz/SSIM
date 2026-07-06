@@ -2042,8 +2042,8 @@ export function createApp(deps: ApiDeps): Express {
       return res.status(400).json({ error: 'CSV import requires the vault — set a master password at startup' });
     }
     try {
-      const { imported, skipped } = importCsvIntoVault(accounts, csv, environmentId, folderId ?? null);
-      res.json({ imported, skipped });
+      const { imported, skipped, rejected } = importCsvIntoVault(accounts, csv, environmentId, folderId ?? null);
+      res.json({ imported, skipped, rejected });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
     }
@@ -2092,8 +2092,8 @@ export function createApp(deps: ApiDeps): Express {
       // Vault mode: import ONLY the SELECTED maFiles from the drop zone into the vault + create
       // org entries in the chosen environment + folder. Honours the selection; never imports an
       // un-ticked file or guesses a target. Non-destructive; idempotent.
-      const { imported, skipped } = importDropZoneIntoVault(accounts, environmentId, folderId ?? null, files.map(String));
-      return res.json({ vault: true, imported, skipped, migrated: 0, added: [] });
+      const { imported, skipped, reasons } = importDropZoneIntoVault(accounts, environmentId, folderId ?? null, files.map(String));
+      return res.json({ vault: true, imported, skipped, reasons, migrated: 0, added: [] });
     }
 
     const creds = readCredentialsFile();

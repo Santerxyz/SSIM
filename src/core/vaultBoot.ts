@@ -6,6 +6,7 @@ import type { MaFile } from '../types/account';
 import { AccountVault, VAULT_NEWER_VERSION_ERROR } from './AccountVault';
 import type { VaultAccount, AccountVaultImpl } from './AccountVault';
 import { loadMaFileFromDisk, readCredentialsFile, listDropZoneMaFiles, parseAccountsCsv } from './maFiles';
+import type { CsvRejected } from './maFiles';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { dataDir, vaultDir } from '../utils/paths';
@@ -442,29 +443,39 @@ export function importDropZoneIntoVault(
   targetEnvId: string,
   targetFolderId: string | null,
   selectedFiles: string[],
-): { imported: number; skipped: number } {
-  if (!AccountVault.isEnabled() || !targetEnvId) return { imported: 0, skipped: 0 };
+): { imported: number; skipped: number; reasons: Array<{ file: string; reason: string }> } {
+  if (!AccountVault.isEnabled() || !targetEnvId) return { imported: 0, skipped: 0, reasons: [] };
   const allow = new Set(selectedFiles.map((f) => path.basename(String(f)))); // basename: no path traversal
-  if (allow.size === 0) return { imported: 0, skipped: 0 };
+  if (allow.size === 0) return { imported: 0, skipped: 0, reasons: [] };
 
   const creds = readCredentialsFile();
   const targetFolder = resolveTargetFolder(accounts, targetEnvId, targetFolderId);
+  const { entries, unreadable } = listDropZoneMaFiles();
+  const seen = new Set<string>(); // ticked filenames the drop-zone scan actually saw (usable or not)
   let imported = 0;
   let skipped = 0;
-  for (const entry of listDropZoneMaFiles()) {
+  const reasons: Array<{ file: string; reason: string }> = [];
+  for (const entry of entries) {
     if (!allow.has(entry.file)) continue; // not ticked by the operator → NEVER import
+    seen.add(entry.file);
     // Skip if already vaulted OR already an accounts.json record (protects an un-vaulted orphan
     // from being overwritten by a re-dropped maFile).
-    if (AccountVault.hasAccount(entry.accountName) || accounts.existsRaw(entry.accountName)) { skipped++; continue; }
+    if (AccountVault.hasAccount(entry.accountName) || accounts.existsRaw(entry.accountName)) { skipped++; reasons.push({ file: entry.file, reason: 'already imported' }); continue; }
     const password = creds.get(entry.accountName.toLowerCase());
-    if (!password) { skipped++; continue; } // no password in accounts.txt → unusable
+    if (!password) { skipped++; reasons.push({ file: entry.file, reason: 'no password in accounts.txt' }); continue; } // no password → unusable
     if (AccountVault.importAccount({ username: entry.accountName, password, maFile: entry.maFile })) {
       imported++;
       accounts.addImportedAccount({ username: entry.accountName, maFilePath: entry.file, environmentId: targetEnvId, folderId: targetFolder });
     } else {
       skipped++;
+      reasons.push({ file: entry.file, reason: 'unusable maFile (no shared_secret)' });
     }
   }
+  // Every TICKED file must be accounted for: a ticked file that the scan flagged unreadable, or one
+  // no longer on disk, is skipped-with-reason — never a silent no-op (H-ACC-078's invariant:
+  // imported + skipped(with reasons) === submitted).
+  for (const u of unreadable) { if (allow.has(u.file)) { seen.add(u.file); skipped++; reasons.push({ file: u.file, reason: u.reason }); } }
+  for (const file of allow) { if (!seen.has(file)) { skipped++; reasons.push({ file, reason: 'file not found in mafiles/' }); } }
 
   if (imported) {
     AccountVault.save();
@@ -480,7 +491,7 @@ export function importDropZoneIntoVault(
       `  ${line}\x1b[0m\n`,
     );
   }
-  return { imported, skipped };
+  return { imported, skipped, reasons };
 }
 
 /**
@@ -489,13 +500,13 @@ export function importDropZoneIntoVault(
  * new bot, and blanks accounts.json secrets — same non-destructive contract as the drop zone.
  * No maFile on disk is needed; the secret is built straight from the CSV row.
  */
-export function importCsvIntoVault(accounts: AccountManager, csvText: string, targetEnvId: string, targetFolderId: string | null = null): { imported: number; skipped: number } {
-  if (!AccountVault.isEnabled() || !targetEnvId) return { imported: 0, skipped: 0 };
-  const rows = parseAccountsCsv(csvText);
+export function importCsvIntoVault(accounts: AccountManager, csvText: string, targetEnvId: string, targetFolderId: string | null = null): { imported: number; skipped: number; rejected: CsvRejected[] } {
+  if (!AccountVault.isEnabled() || !targetEnvId) return { imported: 0, skipped: 0, rejected: [] };
+  const { rows, rejected } = parseAccountsCsv(csvText);
   const env = targetEnvId; // STRICT: the explicitly-chosen target env — never a guessed default
   const folderId = resolveTargetFolder(accounts, env, targetFolderId);
   let imported = 0;
-  let skipped = 0;
+  let skipped = rejected.length; // parser-dropped rows are lost input — count them (H-ACC-078)
   for (const r of rows) {
     // Skip if already vaulted OR if the username is already an accounts.json record —
     // INCLUDING an un-vaulted "orphan" (maFile failed to load at boot) whose recoverable
@@ -515,7 +526,7 @@ export function importCsvIntoVault(accounts: AccountManager, csvText: string, ta
     accounts.enterVaultMode();
     logger.info(`[vault] CSV import: ${imported} new account(s) added, ${skipped} skipped`);
   }
-  return { imported, skipped };
+  return { imported, skipped, rejected };
 }
 
 /** Builds lcUsername → folder-name PATH (root→leaf) from an exported accounts.json, so the

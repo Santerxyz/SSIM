@@ -5491,6 +5491,11 @@ async function submitBulk() {
     const res = await api('/api/mafiles/import', { method: 'POST', body: JSON.stringify({ files, environmentId, folderId }) });
     if (res.vault) {
       toast(`${res.imported} bot(s) imported into the vault${res.migrated ? `, ${res.migrated} migrated` : ''}`, res.imported ? 'success' : 'info');
+      // H-ACC-078: never let a ticked file no-op silently — surface why each skipped file failed.
+      if (Array.isArray(res.reasons) && res.reasons.length) {
+        const first = res.reasons.slice(0, 5).map((r) => `${r.file}: ${r.reason}`).join('; ');
+        toast(`${res.reasons.length} file(s) could not be imported — ${first}${res.reasons.length > 5 ? '…' : ''}`, 'warn');
+      }
     } else {
       const skipMsg = res.skipped.length ? `, ${res.skipped.length} skipped` : '';
       toast(`${res.added.length} bot(s) imported${skipMsg}`, res.added.length ? 'success' : 'warn');
@@ -5515,6 +5520,11 @@ async function onBulkCsv(ev) {
     const r = await api('/api/import/csv', { method: 'POST', body: JSON.stringify({ csv, environmentId, folderId }) });
     show(`Imported ${r.imported} new, ${r.skipped} skipped.`, r.imported ? 'text-emerald-400' : 'text-amber-400');
     toast(`CSV import: ${r.imported} added, ${r.skipped} skipped`, r.imported ? 'success' : 'info');
+    // H-ACC-078: parser-dropped rows are lost input — name the first few so the operator can fix them.
+    if (Array.isArray(r.rejected) && r.rejected.length) {
+      const first = r.rejected.slice(0, 5).map((x) => `line ${x.line}: ${x.reason}`).join('; ');
+      toast(`${r.rejected.length} row(s) could not be imported — ${first}${r.rejected.length > 5 ? '…' : ''}`, 'warn');
+    }
     if (r.imported) { closeBulk(); await reloadAll(); if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard(); }
   } catch (err) {
     show(err.message, 'text-rose-400');
