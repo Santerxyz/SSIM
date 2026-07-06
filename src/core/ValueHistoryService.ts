@@ -1,3 +1,4 @@
+import path from 'path';
 import fsExtra from 'fs-extra';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
@@ -84,11 +85,39 @@ export class ValueHistoryService {
       if (fsExtra.existsSync(HISTORY_PATH)) {
         const parsed = fsExtra.readJsonSync(HISTORY_PATH) as HistoryFile;
         if (parsed && typeof parsed.series === 'object') return { version: 1, series: parsed.series ?? {} };
+        // File exists but the shape is wrong (`{}`, `null`, an array, a missing `series`). Unlike
+        // InventoryStore, value history is NOT refetchable — the only record of the past — so preserve
+        // the current bytes before starting fresh (S12/S5 clobber class).
+        this.preserveHistory('unexpected shape');
       }
     } catch (err) {
-      logger.warn(`value_history.json unreadable, starting fresh: ${(err as Error).message}`);
+      // ANY read/parse throw (incl. a transient Windows EBUSY/EPERM from an AV scanner at boot):
+      // preserve the current bytes before overwriting the only copy on the next flush.
+      this.preserveHistory((err as Error).message);
     }
     return { version: 1, series: {} };
+  }
+
+  /** Best-effort: copy the current (unreadable/malformed) value_history.json to a
+   *  `.corrupt-<ts>` sibling before load() starts fresh, so a transient boot-time lock
+   *  or a corruption event can't silently destroy the only record of the past. Keeps the
+   *  newest 2 preserved copies (older ones are pruned). Failures are swallowed — a failed
+   *  preserve (e.g. the file is still locked) must never block boot. */
+  private preserveHistory(why: string): void {
+    try {
+      const preserved = `${HISTORY_PATH}.corrupt-${Date.now()}`;
+      fsExtra.copySync(HISTORY_PATH, preserved);
+      logger.warn(`value_history.json unusable (${why}) – preserved to ${preserved}, starting fresh`);
+      // Bound growth: keep only the newest 2 `.corrupt-*` siblings.
+      const dir = path.dirname(HISTORY_PATH);
+      const base = path.basename(HISTORY_PATH);
+      const olds = fsExtra.readdirSync(dir)
+        .filter((f) => f.startsWith(`${base}.corrupt-`))
+        .sort(); // ascending by the timestamp suffix (fixed-width, lexicographic = chronological)
+      for (const f of olds.slice(0, Math.max(0, olds.length - 2))) {
+        try { fsExtra.unlinkSync(path.join(dir, f)); } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
   }
 
   private scheduleFlush(): void {
