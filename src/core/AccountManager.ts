@@ -47,8 +47,44 @@ export class AccountManager {
       fsExtra.writeJsonSync(DB_PATH, fresh, { spaces: 2 });
       return fresh;
     }
-    const db = fsExtra.readJsonSync(DB_PATH) as AccountsDatabase;
+    let db: AccountsDatabase;
+    try {
+      db = fsExtra.readJsonSync(DB_PATH) as AccountsDatabase;
+    } catch (err) {
+      // accounts.json is present but unparseable (hand-edit typo, disk fault, a torn write). The
+      // .bak written by save() (B34) exists for exactly this case — recover from it instead of
+      // bricking boot or (worse) fabricating an empty fleet, which would hide a recoverable file
+      // and trip the vault→org self-heal against real data (S4/S7). (H-ACC-013.)
+      db = this.recoverFromBak(err as Error);
+    }
     return this.migrate(db);
+  }
+
+  /**
+   * H-ACC-013: recover a corrupt accounts.json from its sibling .bak, or fail loud.
+   *   • .bak parses → QUARANTINE the corrupt main as accounts.json.corrupt-<epochMs> (kept for
+   *     forensics, never deleted) BEFORE adopting the backup, so the next save()'s backup:true
+   *     copies recovered-good data and never clobbers the good .bak with the corrupt main (S5).
+   *   • .bak missing/also-corrupt → throw a single named Error. NEVER fall through to the fresh-db
+   *     branch: an empty fleet fabricated from a failed read is the S4/S7 failure class.
+   */
+  private recoverFromBak(err: Error): AccountsDatabase {
+    logger.error(`accounts.json at ${DB_PATH} is unreadable (${err.message}) — attempting recovery from ${DB_PATH}.bak`);
+    const bak = `${DB_PATH}.bak`;
+    let recovered: AccountsDatabase;
+    try {
+      recovered = fsExtra.readJsonSync(bak) as AccountsDatabase;
+    } catch (bakErr) {
+      throw new Error(
+        `accounts.json is corrupt (${err.message}) and ${bak} could not recover it (${(bakErr as Error).message}). ` +
+        `The corrupt file was left in place at ${DB_PATH}; restore it from a backup (or delete it to start fresh) and restart.`,
+      );
+    }
+    // Rename the corrupt main away BEFORE any save so the next save() backs up recovered-good data.
+    const quarantine = `${DB_PATH}.corrupt-${Date.now()}`;
+    fsExtra.renameSync(DB_PATH, quarantine);
+    logger.warn(`[accounts] recovered accounts.json from .bak — corrupt original kept as ${quarantine}`);
+    return recovered;
   }
 
   /**
