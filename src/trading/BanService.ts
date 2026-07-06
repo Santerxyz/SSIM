@@ -21,10 +21,13 @@ import { logger, redactSecrets } from '../utils/logger';
 //  flags together (the public profile XML only exposes VAC + trade state).
 //
 //  GetPlayerBans needs a Steam Web API key. We never ask the operator to paste
-//  one: a single key checks ARBITRARY SteamIDs, so we obtain ONE key from any
-//  of our own logged-in accounts (auto-creating it with the account's
-//  identity_secret if needed) and cache it for the process lifetime. An explicit
-//  STEAM_WEB_API_KEY env var, when set, wins (zero Steam round-trips).
+//  one: a single key checks ARBITRARY SteamIDs, so we obtain key(s) from accounts
+//  WITHIN each environment (auto-creating them with the account's identity_secret
+//  if needed) and cache them PER-ENVIRONMENT for the process lifetime — a repeat
+//  check of the same fleet re-uses the cached keys and logs in nobody. A key is
+//  evicted only when Steam rejects it (401/403), so the next run re-mints just
+//  that one. An explicit STEAM_WEB_API_KEY env var, when set, wins globally (zero
+//  Steam round-trips) and is never cached.
 //
 //  SteamIDs are resolved WITHOUT a login wherever possible (live session →
 //  maFile Session.SteamID → the maFile filename, which is the SteamID64), so a
@@ -128,9 +131,10 @@ interface CommunityWithKey {
 }
 
 export class BanService {
-  /** Cached Steam Web API key (process-lifetime). Cleared if Steam rejects it. */
-  private apiKey?: string;
   private apiKeyFrom?: string;
+  /** Per-environment Web API key cache (process-lifetime). A key is evicted only when Steam
+   *  rejects it (401/403), after which the next run re-acquires one for that env. */
+  private readonly envKeys = new Map<string, string[]>();
   /** Read-only token reader (vault-aware) → SteamID from the refresh-token JWT, no login. */
   private readonly tokens = new TokenStore();
 
@@ -266,7 +270,10 @@ export class BanService {
     await mapLimit(assignments, BAN_CHECK_CONCURRENCY, async (a) => {
       const key = keysByEnv.get(a.envId)?.[a.keyIndex];
       if (!key) return; // defensive — planner never emits an assignment beyond keyCounts
-      await this.fetchChunk(key, a.steamIds, bySteamId);
+      await this.fetchChunk(key, a.steamIds, bySteamId, () => {
+        const arr = this.envKeys.get(a.envId);
+        if (arr) this.envKeys.set(a.envId, arr.filter((k) => k !== key));
+      });
     });
     // Surface uncovered accounts (env had more accounts than its keys could cover, or none).
     for (const u of uncovered) {
@@ -290,7 +297,9 @@ export class BanService {
     const ready = candidates.filter((u) => this.sessions.isReady(u));
     const rest  = candidates.filter((u) => !this.sessions.isReady(u));
     const ordered = [...new Set([...ready, ...rest])];
-    const keys: string[] = [];
+    // Seed from the process-lifetime cache: a prior run's keys for this env need no re-login. The
+    // `keys.length >= needed` guard below then skips ALL minting when the cache already covers us.
+    const keys: string[] = [...(this.envKeys.get(envId) ?? [])];
     let logins = 0;
     for (const username of ordered) {
       if (keys.length >= needed) break;
@@ -321,6 +330,7 @@ export class BanService {
         if (!wasLiveBefore) this.releaseWhenSettled(username, mint);
       }
     }
+    this.envKeys.set(envId, keys); // cache for the process lifetime; evicted only on a Steam 401/403
     logger.info(`[bans] env ${envId}: acquired ${keys.length}/${needed} key(s) (${logins} login(s))`);
     return keys;
   }
@@ -338,8 +348,15 @@ export class BanService {
   }
 
   /** Fetches one chunk of SteamIDs with `apiKey` and folds the results into `bySteamId`.
-   *  Per-account failures stay scoped to this chunk and never abort the others. */
-  private async fetchChunk(apiKey: string, batch: string[], bySteamId: Map<string, AccountBanInfo>): Promise<void> {
+   *  Per-account failures stay scoped to this chunk and never abort the others. When Steam
+   *  rejects the key (401/403), `onKeyRejected` (if given) evicts it from the per-env cache so
+   *  the next run re-mints — the env-override key passes none (it is never cached). */
+  private async fetchChunk(
+    apiKey: string,
+    batch: string[],
+    bySteamId: Map<string, AccountBanInfo>,
+    onKeyRejected?: () => void,
+  ): Promise<void> {
     if (batch.length === 0) return;
     try {
       const players = await this.fetchBansWithRetry(apiKey, batch);
@@ -363,6 +380,7 @@ export class BanService {
         if (info && !info.error) info.error = 'Steam returned no ban record';
       }
     } catch (err) {
+      if ((err as { keyRejected?: boolean }).keyRejected) onKeyRejected?.();
       const msg = `Ban lookup failed: ${redactSecrets((err as Error).message)}`;
       for (const sid of batch) {
         const info = bySteamId.get(sid);
@@ -546,14 +564,15 @@ export class BanService {
   /**
    * Calls ISteamUser/GetPlayerBans for up to 100 SteamIDs. Routed DIRECT (proxy:false)
    * like the other api.steampowered.com reads — ban data is independent of egress IP.
-   * A 401/403 invalidates the cached key so the next run re-acquires one.
+   * A 401/403 tags the throw `keyRejected` so `fetchChunk` evicts the key from the per-env
+   * cache; the next run re-mints one for that environment.
    */
   private async fetchBans(apiKey: string, steamIds: string[]): Promise<SteamBanRecord[]> {
     const url = `https://api.steampowered.com/ISteamUser/GetPlayerBans/v1/` +
       `?key=${encodeURIComponent(apiKey)}&steamids=${steamIds.join(',')}`;
     const r = await axios.get(url, { timeout: 15_000, proxy: false, validateStatus: () => true });
     if (r.status === 401 || r.status === 403) {
-      if (this.apiKeyFrom !== 'env') { this.apiKey = undefined; this.apiKeyFrom = undefined; } // re-acquire next time
+      if (this.apiKeyFrom !== 'env') { this.apiKeyFrom = undefined; } // per-env cache eviction is fetchChunk's onKeyRejected
       throw Object.assign(new Error('Steam rejected the Web API key'), { transient: false, keyRejected: true });
     }
     if (r.status === 429 || r.status >= 500) {

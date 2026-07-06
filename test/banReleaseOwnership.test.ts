@@ -29,6 +29,7 @@ test('H-TRD-034: a mint that lands PAST the 20s budget still releases — once, 
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
     const svc: AnyBan = Object.create(BanService.prototype);
+    svc.envKeys = new Map<string, string[]>();
     const logouts: string[] = [];
     let live = false; // becomes live once the (late) login lands
 
@@ -69,6 +70,7 @@ test('H-TRD-034: after our release, a NEW foreign live session is NOT killed by 
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
     const svc: AnyBan = Object.create(BanService.prototype);
+    svc.envKeys = new Map<string, string[]>();
     const logouts: string[] = [];
     let live = false;
 
@@ -108,6 +110,7 @@ test('H-TRD-034: happy path (mint lands in-budget) releases the session exactly 
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
     const svc: AnyBan = Object.create(BanService.prototype);
+    svc.envKeys = new Map<string, string[]>();
     const logouts: string[] = [];
     let live = false;
 
