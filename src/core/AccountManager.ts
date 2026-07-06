@@ -505,6 +505,11 @@ export class AccountManager {
           try {
             const maFile = loadMaFileFromDisk(item.maFilePath);
             AccountVault.upsertAccount({ username: item.username, password: item.password, maFile });
+            // Vault now owns the secret — blank the in-memory plaintext copy so `secretFree`
+            // (save(), l.216) stays true and B34 backups keep running. Identical semantics to
+            // enterVaultMode (l.253) and the single-add route. ONLY after a successful upsert:
+            // the catch path below keeps plaintext (non-destructive guarantee). (H-ACC-017)
+            account.password = '';
           } catch (err) {
             logger.warn(`[${item.username}] bulk import: could not vault (kept plaintext until re-vaulted): ${(err as Error).message}`);
           }
