@@ -2,7 +2,7 @@ import EventEmitter from 'events';
 import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
 import { SessionState, type ManagedSession, type WebSession } from '../types/session';
-import { AgentFactory } from '../network/AgentFactory';
+import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
@@ -561,7 +561,7 @@ export class SessionManager extends EventEmitter {
         session.loggedInAt = new Date();
         session.loginAttempts++;
 
-        logger.info(`[${account.username}] Logged in  SteamID=${session.steamId}  via ${network.type}:${network.value}  – awaiting web session…`);
+        logger.info(`[${account.username}] Logged in  SteamID=${session.steamId}  via ${network.type}:${network.type === 'proxy' ? redactProxyCredentials(network.value) : network.value}  – awaiting web session…`);
 
         this.transition(session, SessionState.LOGGING_IN, SessionState.LOGGED_IN);
         this.emit('loggedIn', account.username, session.steamId ?? '');
@@ -760,7 +760,7 @@ export class SessionManager extends EventEmitter {
       username:   s.account.username,
       state:      s.state,
       steamId:    s.steamId,
-      network:    s.account.network ? `${s.account.network.type}:${s.account.network.value}` : 'unknown',
+      network:    s.account.network ? `${s.account.network.type}:${s.account.network.type === 'proxy' ? redactProxyCredentials(s.account.network.value) : s.account.network.value}` : 'unknown',
       loggedInAt: s.loggedInAt?.toISOString(),
     }));
   }

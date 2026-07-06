@@ -358,3 +358,14 @@ export function normalizeProxy(value: string): string {
   const trimmed = (value ?? '').trim();
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
+
+/** Redacts proxy credentials for display. Handles the URL form directly AND the legacy
+ *  non-URL formats (host:port:user:pass etc.) via parseProxy, so a value stored by a
+ *  pre-normalizeProxy version can never surface its user:pass in the env/account list (B24). */
+export function redactProxyCredentials(value: string): string {
+  const urlMasked = value.replace(/\/\/[^@/]+@/, '//***:***@');
+  if (urlMasked !== value) return urlMasked;              // URL form → already masked
+  const p = parseProxy(value);                            // legacy form → mask if it carries creds
+  if (p && p.username) return `${p.scheme}://***:***@${p.host}:${p.port}`;
+  return value;
+}

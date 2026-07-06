@@ -33,7 +33,8 @@ import { CasketService } from '../trading/CasketService';
 import { GcActionLayer } from '../trading/GcActionLayer';
 import { cs2Schema } from '../core/Cs2SchemaService';
 import type { SellStrategy } from '../pricing/MarketPricing';
-import { AgentFactory, normalizeProxy, parseProxy } from '../network/AgentFactory';
+import { AgentFactory, normalizeProxy, redactProxyCredentials } from '../network/AgentFactory';
+export { redactProxyCredentials } from '../network/AgentFactory';
 import { PricingService } from '../pricing/PricingService';
 import { currencyInfo } from '../pricing/currencies';
 import { ExchangeRateService } from '../pricing/ExchangeRateService';
@@ -2391,17 +2392,6 @@ export function hostnameOnly(hostHeader: string): string {
   const h = hostHeader.trim().toLowerCase();
   if (h.startsWith('[')) { const end = h.indexOf(']'); return end >= 0 ? h.slice(0, end + 1) : h; }
   return h.split(':')[0];
-}
-
-/** Redacts proxy credentials for display. Handles the URL form directly AND the legacy
- *  non-URL formats (host:port:user:pass etc.) via parseProxy, so a value stored by a
- *  pre-normalizeProxy version can never surface its user:pass in the env/account list (B24). */
-export function redactProxyCredentials(value: string): string {
-  const urlMasked = value.replace(/\/\/[^@/]+@/, '//***:***@');
-  if (urlMasked !== value) return urlMasked;              // URL form → already masked
-  const p = parseProxy(value);                            // legacy form → mask if it carries creds
-  if (p && p.username) return `${p.scheme}://***:***@${p.host}:${p.port}`;
-  return value;
 }
 
 /**
