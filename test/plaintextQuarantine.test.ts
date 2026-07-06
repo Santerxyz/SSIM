@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { quarantinePlaintextFile, quarantineMigratedPlaintext } from '../src/core/vaultBoot';
 import { AccountVault } from '../src/core/AccountVault';
-import { dataDir } from '../src/utils/paths';
+import { dataDir, vaultDir } from '../src/utils/paths';
 
 // ─── B21: quarantine plaintext token/key files once safely in the vault ────────
 // In vault mode the token/key stores read ONLY the vault, so a vaulted entry left in
@@ -77,6 +77,12 @@ test('H-ACC-035: a partial keep scrubs the quarantined secret from the .bak sibl
 test('H-ACC-041: a failed flush() leaves refresh_tokens.json + csfloat_keys.json byte-identical', () => {
   // The singleton points at SSIM_HOME/Vault (a throwaway per _setup.cjs). Unlock it so the
   // quarantine gate is reached (it returns early unless isEnabled()).
+  // Hermetic: AccountVault + its on-disk vault dir are process-wide, so a sibling vault test in
+  // this worker may have left vault.enc under a DIFFERENT password → unlockOrCreate('gate-pw')
+  // would throw WRONG_PASSWORD. Wipe it first so a fresh vault is created (mirrors vaultBootImport).
+  for (const f of ['vault.enc', 'vault.enc.bak', 'accounts.json', 'accounts.json.bak']) {
+    try { fs.rmSync(vaultDir(f), { force: true }); } catch { /* ignore */ }
+  }
   AccountVault.unlockOrCreate('gate-pw');
   AccountVault.setToken('alice', 'TA');       // vaulted → would be quarantined if the gate passed
   AccountVault.setCsFloatKey('alice', 'KA');
