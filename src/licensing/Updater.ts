@@ -105,6 +105,42 @@ function isNewer(remote: string, local: string): boolean {
   return false;
 }
 
+/**
+ * Validate the untrusted `/version` body into a VersionInfo, or `null` if it is malformed. This runs
+ * BEFORE isNewer / download / verify, so a hijacked-manifest / MITM attacker (the exact adversary the
+ * header threat model names) can never drive an unvalidated field into a filesystem path (`sha256` →
+ * stagedArtifactPath) or the shell's version eval (`latest` → SSIM_UPDATE_DOWNLOADING → lib.rs w.eval)
+ * BEFORE the sha256/Ed25519 gate — signature verification happens too late to guard those sinks.
+ * Forward-compat: unknown extra fields are tolerated (matching the VersionInfo comment); only the
+ * KNOWN fields are shape-checked. `sha256` is normalized to lowercase here so the whole file carries a
+ * single canonical representation (folds in the case-inconsistency H-LIC-003 guards against).
+ */
+export function parseManifest(raw: unknown): VersionInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Record<string, unknown>;
+  const b64url = (v: unknown): v is string => typeof v === 'string' && v.length <= 512 && /^[A-Za-z0-9_-]+$/.test(v);
+  if (typeof m.latest !== 'string' || !/^\d+\.\d+\.\d+$/.test(m.latest)) return null;
+  if (typeof m.sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(m.sha256)) return null;
+  if (typeof m.url !== 'string') return null;
+  try { if (new URL(m.url).protocol !== 'https:') return null; } catch { return null; }
+  if (!b64url(m.sigKind)) return null;               // verify() already refuses a sig-less manifest — fail faster here
+  if (m.sig !== undefined && !b64url(m.sig)) return null;   // LEGACY field, still emitted — validate-if-present
+  if (m.kind !== undefined && m.kind !== 'single-exe' && m.kind !== 'backend') return null;
+  if (m.notes !== undefined && typeof m.notes !== 'string') return null;
+  if (m.publishedAt !== undefined && (typeof m.publishedAt !== 'string' || m.publishedAt.length > 64)) return null;
+  const info: VersionInfo = {
+    latest: m.latest,
+    url: m.url,
+    sha256: m.sha256.toLowerCase(),                  // canonical lowercase (path-safe + case-consistent)
+    sig: typeof m.sig === 'string' ? m.sig : '',
+    sigKind: m.sigKind as string,
+  };
+  if (m.kind !== undefined) info.kind = m.kind as 'single-exe' | 'backend';
+  if (typeof m.notes === 'string') info.notes = m.notes.slice(0, 4096);
+  if (typeof m.publishedAt === 'string') info.publishedAt = m.publishedAt;
+  return info;
+}
+
 /** The three outcomes of a version check, kept DISTINCT so the caller never mistakes a failed check for
  *  "up to date" (S53) — 'current' and 'check-failed' both used to collapse to a bare `null`. */
 type CheckResult =
@@ -121,7 +157,8 @@ async function check(
   try {
     const res = await get(`${LICENSE_API_URL}/version`);
     if (res.status !== 200) return { status: 'check-failed', error: `HTTP ${res.status}` };
-    const info = res.data as VersionInfo;
+    const info = parseManifest(res.data);
+    if (!info) return { status: 'check-failed', error: 'malformed manifest' };
     return isNewer(info.latest, currentVersion) ? { status: 'update', info } : { status: 'current' };
   } catch (err) {
     logger.warn(`update check failed: ${(err as Error).message}`);
@@ -936,4 +973,4 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   return swapAndRelaunch(file, info); // does not return on success (process exits)
 }
 
-export const Updater = { check, runUpdate };
+export const Updater = { check, runUpdate, parseManifest };
