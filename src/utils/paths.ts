@@ -70,6 +70,28 @@ export function migrateVaultDir(): void {
       const to = vaultDir(name);
       if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to);
     }
+    // BOTH-PRESENT guard: for the two PRIMARY files, a leftover data/<name> after the loop
+    // means the rename was skipped because Vault/<name> already existed — an ambiguous
+    // two-source state (operator restored a legacy backup over a migrated Vault/). We NEVER
+    // auto-pick a winner (mtime is not authoritative for which vault the operator wants):
+    // the app adopts the Vault/ copy, but the orphaned data/ copy must not vanish silently.
+    // Signal it so it survives to the operator/dashboard; never move/delete/overwrite here.
+    const conflicts: string[] = [];
+    for (const name of ['vault.enc', 'accounts.json']) {
+      const stray = dataDir(name);
+      if (!fs.existsSync(stray)) continue;
+      const adopted = vaultDir(name);
+      const strayM = fs.statSync(stray).mtime.toISOString();
+      const adoptedM = fs.statSync(adopted).mtime.toISOString();
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      (require('./logger') as typeof import('./logger')).logger.warn(
+        `VAULT LOCATION CONFLICT: ignoring stale ${stray} (mtime ${strayM}); the app is using ${adopted} (mtime ${adoptedM})`,
+      );
+      conflicts.push(`${name}: IGNORED ${stray} (mtime ${strayM}) | USING ${adopted} (mtime ${adoptedM})`);
+    }
+    if (conflicts.length) {
+      fs.writeFileSync(dataDir('VAULT_LOCATION_CONFLICT.txt'), conflicts.join('\n') + '\n');
+    }
   } catch { /* best-effort: the app creates fresh files in Vault/ if needed */ }
 }
 
