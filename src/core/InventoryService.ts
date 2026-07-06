@@ -400,7 +400,7 @@ export class InventoryService {
         : 0;
       if (prevOwnedLocked > 0) {
         logger.warn(`[${username}] inventory contexts returned 0 assets but cache holds ${prevOwnedLocked} owned/locked – reconciling listings into cache (suspected partial read)`);
-        return this.reconcilePartialRead(username, prev!, listed, listedAssetIds, listingsOk);
+        return this.reconcilePartialRead(username, prev!, listed, listedAssetIds, listingsOk, inv.wallet);
       }
     }
 
@@ -415,7 +415,7 @@ export class InventoryService {
         : 0;
       if (prevOwnedLocked > gcOwnedLockedCount) {
         logger.warn(`[${username}] inventory read TRUNCATED at the page cap and cache holds more (${prevOwnedLocked} > ${gcOwnedLockedCount}) – keeping fuller cache, reconciling listings`);
-        return this.reconcilePartialRead(username, prev!, listed, listedAssetIds, listingsOk);
+        return this.reconcilePartialRead(username, prev!, listed, listedAssetIds, listingsOk, inv.wallet);
       }
     }
 
@@ -444,6 +444,7 @@ export class InventoryService {
     listed: CS2Item[],
     listedAssetIds: Set<string>,
     listingsOk: boolean,
+    wallet: AccountInventory['wallet'] | undefined,
   ): AccountInventory {
     const now = Date.now();
 
@@ -476,6 +477,11 @@ export class InventoryService {
       totalItems: ownedLocked.reduce((n, i) => n + i.quantity, 0)
                 + listedBucket.reduce((n, i) => n + (i.quantity || 0), 0),
     };
+    // H-INV-006: the `{...prev}` spread carried `prev.wallet` forward; when this pass captured a
+    // fresher wallet (live 'wallet' event, else S41 carry) commit THAT instead so a protected read
+    // no longer persists a stale balance stamped as fresh. No wallet this pass → keep the spread
+    // fallback (never fabricate 0). (Directive 2 tri-state.)
+    if (wallet) inv.wallet = wallet;
     this.gcStore.set(username, inv);
     const movedToListed = listingsOk
       ? prev.items.filter(i => i.category !== 'listed').reduce((n, i) => n + i.assetIds.filter(id => listedAssetIds.has(String(id))).length, 0)
@@ -603,6 +609,17 @@ export class InventoryService {
       // deep copy (InventoryStore.get clones), so stamping it never touches the cache.
       const fallbackClone = prev!;
       fallbackClone.staleReadFallback = true;
+      // H-INV-006: a protected pass must still commit a fresher wallet (live 'wallet' event, else
+      // S41 carry) — otherwise a balance that changed since the last good read stays stale forever
+      // (the H-INV-005 freeze compounds this: reconcile every pass → wallet never updates). Show it
+      // on the returned record; persist it onto the cached record too WITHOUT re-stamping fetchedAt
+      // (item data is old) and WITHOUT the read-only staleReadFallback flag (H-TRD-041 never
+      // persists that). `set`'s newest-wins guard passes on the equal timestamp. (Directive 2.)
+      if (inv.wallet) {
+        fallbackClone.wallet = inv.wallet;
+        const stored = this.storeFor(game).get(username);
+        if (stored) { stored.wallet = inv.wallet; this.storeFor(game).set(username, stored); }
+      }
       return fallbackClone;
     }
 
