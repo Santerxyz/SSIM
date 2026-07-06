@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { logsDir, baseDir } from './paths';
-import { redactSecrets } from './logger';
+import { redactSecrets } from './redact';
 import { rollIfLarge, SINK_MAX_BYTES } from './rollLog';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -38,9 +38,11 @@ function memTag(): string {
 }
 
 /**
- * Appends a crash/fatal record to crash-log.txt synchronously. Credentials in the
- * stack (proxy URLs carry user:pass) are redacted with the SAME masker the logger
- * uses, so secrets never land at rest here either. Best-effort; swallows all errors.
+ * Appends a crash/fatal record to crash-log.txt synchronously. PROXY credentials in the
+ * stack (proxy URLs carry user:pass) are redacted with the SAME canonical masker the logger
+ * uses (redact.ts) — URL + legacy forms. Non-proxy secret VALUES must never be passed to a
+ * crash sink in the first place (enforced by test/logSecrecyGuard.test.ts, not scrubbed
+ * here). Best-effort; swallows all errors.
  */
 export function writeCrash(label: string, detail: unknown): void {
   try {

@@ -12,15 +12,15 @@ fsExtra.ensureDirSync(LOG_DIR);
 export const LOG_FILE = path.join(LOG_DIR, 'ssim.log');
 
 /**
- * Strips credentials from a string before it is logged or surfaced to a client.
- * Proxy agents embed `scheme://user:pass@host:port`; a failed proxied request puts
- * that full URL (creds included) into Error.message, which must never land at rest
- * in ssim.log or be returned over the API. Masks the userinfo of any URL-like token.
+ * The canonical secret redactor, applied to every record's message + stack (below) and
+ * re-exported for the res.json error middleware / crash sink. It covers PROXY CREDENTIALS
+ * (URL userinfo + legacy host:port:user:pass forms) — the one class that can reach a sink
+ * as part of an Error string. It does NOT scrub non-proxy secret VALUES (identity_secret /
+ * shared_secret / tokens / password / license key); those must never be passed to a sink,
+ * which is enforced by test/logSecrecyGuard.test.ts, not by scrubbing here. See redact.ts.
  */
-export function redactSecrets(input: string): string {
-  if (!input) return input;
-  return input.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@');
-}
+export { redactSecrets } from './redact';
+import { redactSecrets } from './redact';
 
 // Redacts credentials from every record's message + stack before ANY transport writes it.
 const redactFormat = winston.format((info) => {
