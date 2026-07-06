@@ -19,6 +19,20 @@ interface TokenFile {
 // brand-new object with its own empty map each time.
 const emptyFile = (): TokenFile => ({ version: 1, tokens: {} });
 
+// H-ACC-055: a millisecond-scale AV/handle lock at boot (EBUSY/EPERM/EACCES/EMFILE/ENFILE) is a TRANSIENT
+// fault, NOT corruption — routing it to the degraded latch makes the whole intact fleet-token file invisible
+// for the entire run (F8 mass re-auth). Retry the synchronous read a few times with a real window (S59
+// precedent) before classifying the file as unreadable. A genuine parse error / any other code still falls
+// straight through to the .bak-or-degrade path.
+const TRANSIENT_FS_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE']);
+const TRANSIENT_READ_RETRIES = 3;
+const TRANSIENT_RETRY_SLEEP_MS = 150;
+
+/** Synchronous sleep for boot-time read retries (the event loop isn't serving yet; mirrors singleInstance.ts). */
+function sleepSync(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB blocked → skip the wait */ }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  TokenStore – persists Steam Auth-v2 refresh tokens to disk per account
 //
@@ -50,18 +64,51 @@ export class TokenStore {
    *  irrelevant and must NOT raise a false DEGRADED alarm (S35b, also silences BanService's 2nd instance). */
   isDegraded(): boolean { return this.degraded && !AccountVault.isEnabled(); }
 
+  /** H-ACC-055: readJsonSync with a bounded retry on TRANSIENT fs codes only (AV/handle lock at boot). A
+   *  parse error or any non-transient code throws on the first attempt exactly as a raw readJsonSync would,
+   *  so corruption is still classified as corruption. */
+  private static readJsonWithRetry(p: string): unknown {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return fsExtra.readJsonSync(p);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (attempt < TRANSIENT_READ_RETRIES && code && TRANSIENT_FS_CODES.has(code)) {
+          sleepSync(TRANSIENT_RETRY_SLEEP_MS);
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /** H-ACC-059: a missing main is a fresh install ONLY when there is no sibling .bak. If a .bak survives
+   *  (main deleted by the operator/AV per the degraded-store message, or lost between save generations), it
+   *  still holds the last-good fleet tokens — recover from it rather than booting silently empty and then
+   *  clobbering the .bak two saves later (the S5 clobber). No .bak → genuine fresh install. */
+  private missingMain(): TokenFile {
+    if (fsExtra.existsSync(`${this.filePath}.bak`)) return this.recoverFromBakOrDegrade('is missing');
+    fsExtra.ensureDirSync(path.dirname(this.filePath));
+    return emptyFile(); // fresh install → empty is correct, NOT degraded
+  }
+
   private load(): TokenFile {
     if (!fsExtra.existsSync(this.filePath)) {
-      fsExtra.ensureDirSync(path.dirname(this.filePath));
-      return emptyFile(); // fresh install → empty is correct, NOT degraded
+      return this.missingMain();
     }
     try {
-      const tokens = TokenStore.readTokens(fsExtra.readJsonSync(this.filePath) as Partial<TokenFile> | null);
+      const tokens = TokenStore.readTokens(TokenStore.readJsonWithRetry(this.filePath) as Partial<TokenFile> | null);
       if (tokens) return { version: 1, tokens };
       // Present but wrong SHAPE → try the .bak before degrading (S35a).
       return this.recoverFromBakOrDegrade('is present but malformed');
     } catch (err) {
-      // Present but unreadable/corrupt → try the .bak before degrading (S35a).
+      // H-ACC-055: the existsSync→read TOCTOU window can vanish the file (ENOENT). A missing file is a fresh
+      // install, NOT corruption (the file's own contract) — load fresh without degrading, exactly like the
+      // missing-at-boot branch above. Every other throw (incl. transient codes that survived the retry above)
+      // is unreadable → try the .bak before degrading (S35a).
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return this.missingMain(); // H-ACC-059: same .bak check as the missing-at-boot branch
+      }
       return this.recoverFromBakOrDegrade(`unreadable (${(err as Error).message})`);
     }
   }
@@ -86,7 +133,8 @@ export class TokenStore {
     const base = path.basename(this.filePath);
     try {
       if (fsExtra.existsSync(bakPath)) {
-        const tokens = TokenStore.readTokens(fsExtra.readJsonSync(bakPath) as Partial<TokenFile> | null);
+        // H-ACC-055: same transient-lock retry — an AV sweep that holds the main typically holds the .bak too.
+        const tokens = TokenStore.readTokens(TokenStore.readJsonWithRetry(bakPath) as Partial<TokenFile> | null);
         if (tokens) {
           const recovered: TokenFile = { version: 1, tokens };
           try {
@@ -107,17 +155,19 @@ export class TokenStore {
     return emptyFile();
   }
 
-  private save(): void {
+  private save(): boolean {
     if (this.degraded) {
       // Writing now would copy the corrupt file to .bak (clobbering the last-good backup) and overwrite
       // it — destroying the very data an operator needs to recover. Skip it. (B2.)
       logger.warn(`refresh token store is DEGRADED – NOT persisting (would clobber the corrupt ${path.basename(this.filePath)} + its .bak). Fix the file and restart.`);
-      return;
+      return false;
     }
     try {
       writeJsonAtomic(this.filePath, this.file, { spaces: 2, mode: 0o600, backup: true });
+      return true;
     } catch (err) {
       logger.warn(`Could not persist refresh tokens: ${(err as Error).message}`);
+      return false;
     }
   }
 
@@ -135,7 +185,8 @@ export class TokenStore {
     return this.get(username) !== undefined;
   }
 
-  set(username: string, token: string): void {
+  set(username: string, token: string): boolean {
+    let persisted: boolean;
     if (AccountVault.isEnabled()) {
       // S24: the vault's setToken → synchronous save() → writeJsonAtomic can THROW (disk full / EACCES /
       // AV lock). This runs INSIDE steam-user's `refreshToken` emit, so an escaping throw becomes a global
@@ -144,14 +195,17 @@ export class TokenStore {
       // warn-and-continue contract: the token is live for THIS session, just not persisted this attempt.
       try {
         AccountVault.setToken(username, token);
+        persisted = true;
       } catch (err) {
         logger.warn(`[${username}] could not persist refresh token to the vault (token live this session only): ${(err as Error).message}`);
+        persisted = false;
       }
     } else {
       this.file.tokens[this.key(username)] = token; // in-memory for THIS run
-      this.save();                                  // no-op while degraded (see save())
+      persisted = this.save();                      // false while degraded / on write failure (see save())
     }
     logger.info(`[${username}] refresh token persisted${this.degraded && !AccountVault.isEnabled() ? ' (in-memory only – store degraded)' : ''}`);
+    return persisted;
   }
 
   delete(username: string): void {

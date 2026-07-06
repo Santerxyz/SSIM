@@ -1,9 +1,10 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MoneyOpJournal } from '../src/core/MoneyOpJournal';
+import { MoneyOpJournal, DEFAULT_TTL_MS } from '../src/core/MoneyOpJournal';
+import { logger } from '../src/utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  B4 — the cross-restart money-op journal. A CLEANLY completed op (begin→resolve)
@@ -41,9 +42,20 @@ test('B4: record() advances the phase but the entry still lingers until resolve 
   const p = jpath();
   const j = new MoneyOpJournal(p);
   j.begin('op', 'buy');
-  j.record('op', 'placed');
+  j.record('op', 'buy', 'placed');
   const e = j.findUnresolved('op');
   assert.equal(e?.phase, 'placed', 'a post-commit crash records it was actually placed');
+});
+
+test('H-TRD-110: record() after a lost begin still journals the landed op', () => {
+  const p = jpath();
+  const j = new MoneyOpJournal(p);
+  // begin() was NEVER called (its write failed transiently / the entry was clobbered). record() is the
+  // one call made with CERTAIN knowledge the op landed → it must UPSERT, not silently no-op.
+  j.record('op', 'buy', 'placed');
+  assert.equal(j.findUnresolved('op')?.phase, 'placed', 'the landed op is journaled even without a prior begin');
+  j.resolve('op');
+  assert.equal(j.findUnresolved('op'), undefined, 'and it clears on resolve');
 });
 
 test('B4: a lingering entry OLDER than the TTL is swept (a long-past crash cannot block forever)', () => {
@@ -54,6 +66,12 @@ test('B4: a lingering entry OLDER than the TTL is swept (a long-past crash canno
   j.begin('op', 'buy');
   clock += 5000; // 5s later — well past the TTL
   assert.equal(j.findUnresolved('op'), undefined, 'an expired entry is swept, not surfaced');
+});
+
+test('H-TRD-106: default TTL spans an overnight crash→next-morning retry', () => {
+  // The realistic recovery timeline (crash at night, operator restarts and re-fires next morning) exceeds
+  // an hour; a 1h TTL swept the lingering entry exactly when it was most needed. Pin ≥24h.
+  assert.ok(DEFAULT_TTL_MS >= 24 * 60 * 60 * 1000, 'the default TTL must outlive a crash-overnight → retry-next-morning cycle');
 });
 
 test('B4: distinct op-hashes (a buy and a send) never collide', () => {
@@ -104,6 +122,50 @@ test('S15: consultRefusal with NO lingering entry allows (undefined) — legit o
   assert.equal(j.consultRefusal('fresh-op'), undefined);
 });
 
+// ─── H-TRD-107: a TRANSIENT fs read failure (EBUSY/EPERM) is never persisted as authoritative-empty ───
+test('H-TRD-107: a transient read failure never erases lingering entries', () => {
+  const p = jpath();
+  // Run 1: two accounts crash mid-flight, leaving lingering entries.
+  const j = new MoneyOpJournal(p);
+  j.begin('A', 'buy');
+  j.begin('B', 'buy');
+  assert.ok(j.findUnresolved('A'), 'A lingers');
+  // Run 2: an UNRELATED op on account C fires while AV holds a read lock (EBUSY).
+  mock.method(fs, 'readFileSync', () => {
+    const e = new Error('EBUSY: resource busy or locked');
+    (e as NodeJS.ErrnoException).code = 'EBUSY';
+    throw e;
+  });
+  const j2 = new MoneyOpJournal(p);
+  assert.equal(j2.consultRefusal('C'), undefined, 'a transient read blip degrades to ALLOW');
+  j2.begin('C', 'buy'); // must NOT clobber the whole file to {C}
+  mock.restoreAll();
+  // The on-disk journal is byte-intact: A and B still linger.
+  assert.ok(fs.existsSync(p), 'the journal file was not deleted by the blip');
+  const j3 = new MoneyOpJournal(p);
+  assert.ok(j3.findUnresolved('A'), 'A still present — its double-spend memory survived the blip');
+  assert.ok(j3.findUnresolved('B'), 'B still present');
+});
+
+// ─── H-TRD-109: a persistent write failure is surfaced ONCE per minute (rate-limited), never thrown ───
+test('H-TRD-109: a failing journal write warns exactly once within 60s and never throws', () => {
+  const p = jpath();
+  const j = new MoneyOpJournal(p);
+  // Force every atomic write to fail (disk-full / EPERM / AV lock class) via the rename() step.
+  mock.method(fs, 'renameSync', () => {
+    const e = new Error('EPERM: operation not permitted, rename');
+    (e as NodeJS.ErrnoException).code = 'EPERM';
+    throw e;
+  });
+  const warn = mock.method(logger, 'warn', () => logger);
+  // Two begins well within the 60s window — the write fails both times, but only ONE warn is surfaced.
+  assert.doesNotThrow(() => j.begin('op1', 'buy'), 'a failed journal write must never break the money op');
+  assert.doesNotThrow(() => j.begin('op2', 'buy'));
+  const jWarns = warn.mock.calls.filter((c) => String(c.arguments[0] ?? '').includes('[money-journal]'));
+  assert.equal(jWarns.length, 1, 'the sustained write failure is rate-limited to one warn per minute');
+  mock.restoreAll();
+});
+
 test('B4: the journal never throws on a corrupt file (degrades to today’s behaviour, not a hazard)', () => {
   const p = jpath();
   fs.writeFileSync(p, '{ not valid json');
@@ -111,4 +173,14 @@ test('B4: the journal never throws on a corrupt file (degrades to today’s beha
   assert.doesNotThrow(() => j.begin('op', 'buy'));
   assert.doesNotThrow(() => j.findUnresolved('op'));
   assert.doesNotThrow(() => j.resolve('op'));
+});
+
+test('H-TRD-108: an array journal file is treated as corrupt so begin() still persists as an object map', () => {
+  const p = jpath();
+  // A JSON array on disk passes typeof===object; begin() writing a string-keyed prop onto it would be
+  // DROPPED by JSON.stringify → the op journals nothing. The array must be treated as corrupt-empty.
+  fs.writeFileSync(p, '[]');
+  new MoneyOpJournal(p).begin('op', 'buy');
+  // A fresh instance re-reads the file: the entry actually persisted (as an object map, not lost to the array).
+  assert.ok(new MoneyOpJournal(p).findUnresolved('op'), 'begin() persisted the entry despite the array file');
 });

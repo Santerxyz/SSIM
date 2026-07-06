@@ -153,7 +153,15 @@ export class CsFloatClient {
         // for its whole duration, so interactive requests can't preempt a background pricing storm. Throw a
         // sentinel so this task RESOLVES and frees the slot; the backoff + re-schedule happen in .catch below.
         if (res.status === 429 && attempt < 3) throw new RateLimitRetry();
-        if (res.status >= 200 && res.status < 300) return res.data as T;
+        if (res.status >= 200 && res.status < 300) {
+          const d = res.data as unknown;
+          // CSFloat endpoints answer JSON (objects/arrays); DELETEs may answer empty (204/no body).
+          // A non-empty STRING body on a 2xx is an HTML interstitial / wrapper page, NOT a success payload.
+          if (typeof d === 'string' && d.trim() !== '') {
+            throw new CsFloatError('CSFloat returned a non-JSON body on a 2xx (edge/interstitial page) — treat as a transient failure', res.status, undefined);
+          }
+          return d as T;
+        }
         throw new CsFloatError(extractError(res.status, res.data), res.status, res.data);
       }, this.priority)
       .catch(async (err) => {

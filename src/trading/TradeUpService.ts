@@ -1,9 +1,11 @@
 import type { InventoryService } from '../core/InventoryService';
 import type { PricingService } from '../pricing/PricingService';
 import type { GcActionLayer } from './GcActionLayer';
+import { GcBusyError } from './GcActionLayer';
 import { Cs2SchemaService, parseSkinName, type SkinDef } from '../core/Cs2SchemaService';
-import { computeContract, wearMidpoint, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
+import { computeContract, wearMidpoint, achievableWears, type TuContract, type TuInput, type PriceFn } from './tradeupMath';
 import { isSellable } from '../core/MarketModel';
+import { MoneyOps, assetKey } from './MoneyOps';
 import { logger } from '../utils/logger';
 
 const CS2_APPID = 730;
@@ -75,6 +77,12 @@ export class TradeUpService {
   /** Single live execution job (the trade-up money/item path is deliberately serialized). */
   private execJob: TradeUpExecJob = { running: false, enabled: false, statusReason: '', total: 0, done: 0, crafted: 0, failed: 0, results: [] };
   private execCancel = false;
+  // H-TRD-069: a GcBusyError can ONLY fire before the craft is sent (the per-account slot rejects
+  // pre-connect), so a busy rejection ⇔ nothing sent → we WAIT the slot out (a storage move / float
+  // read holding it) rather than burning the contract as a real failure. Bounded, cancel-aware; a
+  // maximal 1000-item casket batch can legitimately exhaust the window and lands in the honest message.
+  private readonly busyRetryWaitMs = 5_000;
+  private readonly busyRetryMaxAttempts = 24; // ~2min: covers the float read (≤~37s) + small/medium storage batches
 
   constructor(
     private readonly inventory: InventoryService,
@@ -105,19 +113,57 @@ export class TradeUpService {
   startExecute(username: string, contracts: TuExecContract[]): TradeUpExecJob {
     if (this.execJob.running) throw new Error('a trade-up execution is already running');
     if (!Array.isArray(contracts) || contracts.length === 0) throw new Error('no contracts selected');
+    // H-TRD-067: contracts CONSUME their inputs — an asset id may appear at most once across the whole
+    // selection (and not twice within one contract). Overlapping candidates (the top-N by profit are
+    // near-duplicates by construction) otherwise craft contract 1 then fail every later sharer at the GC
+    // presence re-check; a non-unique intra-contract set passes that per-id membership check and pushes a
+    // malformed craft the GC refuses — reported today as a false confirmed success (H-TRD-052).
+    const used = new Set<string>();
     for (const c of contracts) {
       if (!c || !Array.isArray(c.inputAssetIds) || c.inputAssetIds.length !== 10 || !c.inputAssetIds.every((id) => typeof id === 'string' && id)) {
         throw new Error('each contract must carry exactly 10 input asset ids');
       }
       if (typeof c.rarityId !== 'string' || !c.rarityId) throw new Error('each contract must carry its input rarityId (for the craft recipe)');
+      for (const id of c.inputAssetIds) {
+        if (used.has(id)) throw new Error(`asset ${id} is used by more than one selected contract (or twice in one) — contracts consume their inputs; deselect overlapping candidates`);
+        used.add(id);
+      }
+    }
+    // H-TRD-069: refuse upfront if this account's single GC-op slot is already held (a storage move /
+    // float read is running) — otherwise every contract would enter the loop only to wait the slot out.
+    if (this.gc.opInFlight(username)) {
+      throw new Error(`a GC operation (storage/float read) is running for ${username} — wait for it to finish`);
     }
     const st = this.gc.status();
     this.execCancel = false;
+    // Gated off (SSIM_GC_VERIFIED=0 / dev): completes IMMEDIATELY as a SAFE NO-OP. Running the loop
+    // would only iterate every contract to a guaranteed craftTradeUp throw (~1.5s each) with busy()===true
+    // the whole time (defers a mid-session update install, S14), and report failed:N for an execution
+    // that never could run. Short-circuit to a no-op terminal state — nothing is ever crafted.
+    if (!st.craftEnabled) {
+      const now = new Date().toISOString();
+      this.execJob = {
+        running: false, cancelling: false, cancelled: false, enabled: false, statusReason: st.reason,
+        total: contracts.length, done: 0, crafted: 0, failed: 0, results: [], startedAt: now, finishedAt: now,
+      };
+      return this.executeStatus();
+    }
     this.execJob = {
       running: true, cancelling: false, cancelled: false, enabled: st.craftEnabled, statusReason: st.reason,
       total: contracts.length, done: 0, crafted: 0, failed: 0, results: [], startedAt: new Date().toISOString(),
     };
-    void this.runExecute(username, contracts);
+    // S33: a fire-and-forget orchestrator that ever REJECTS would (a) escape `void` as an
+    // unhandledRejection → a money-breaker tick, and (b) never reach its trailing running=false → the
+    // job stays latched running until restart (409s every future start; S14 update busy-gate defers
+    // installs forever). Finalize on rejection: release the job + log (never rethrow).
+    void this.runExecute(username, contracts).catch((err) => {
+      this.execJob.running = false;
+      this.execJob.cancelling = false;
+      this.execJob.current = undefined;
+      this.execJob.finishedAt = new Date().toISOString();
+      this.execCancel = false;
+      logger.error(`[tradeup] execution orchestrator crashed — job released: ${err instanceof Error ? err.message : String(err)}`);
+    });
     return this.executeStatus();
   }
 
@@ -130,18 +176,57 @@ export class TradeUpService {
     for (let i = 0; i < contracts.length; i++) {
       if (this.execCancel) break;
       this.execJob.current = i;
+      // Cross-service asset guard (D2 / INV-D2): a craft IRREVERSIBLY consumes its 10 inputs, so
+      // claim them all-or-nothing before submitting — refuse (never craft) if any input is mid-flight
+      // in another money op (being sold/sent). Release in the finally once this contract settles.
+      const keys = contracts[i].inputAssetIds.map((id) => assetKey(username, id));
+      let claimed = false;
       try {
-        const r = await this.gc.craftTradeUp(username, {
-          inputAssetIds: contracts[i].inputAssetIds,
-          inputRarityId: contracts[i].rarityId,
-          stattrak: !!contracts[i].stattrak,
-        });
-        this.execJob.crafted++;
-        this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
-      } catch (e) {
-        this.execJob.failed++;
-        this.execJob.results.push({ index: i, submitted: false, error: (e as Error).message });
+        if (!MoneyOps.claimAll(keys)) {
+          this.execJob.failed++;
+          this.execJob.results.push({ index: i, submitted: false, error: 'input asset busy in another money operation (sell/send) — not submitted' });
+          continue;
+        }
+        claimed = true;
+        // H-TRD-069: a GcBusyError ⇔ the craft was NEVER sent (the per-account slot rejects pre-connect),
+        // so it is 100% safe to wait the holder (storage move / float read) out and re-attempt the SAME
+        // contract — never a masking retry of a submitted craft. Bounded + cancel-aware; done++ fires ONCE.
+        for (let attempt = 1; ; attempt++) {
+          try {
+            const r = await this.gc.craftTradeUp(username, {
+              inputAssetIds: contracts[i].inputAssetIds,
+              inputRarityId: contracts[i].rarityId,
+              stattrak: !!contracts[i].stattrak,
+            });
+            if (r.rejected) {
+              // The GC answered and REFUSED the craft — no items were consumed, nothing produced.
+              this.execJob.failed++;
+              this.execJob.results.push({ index: i, submitted: true, error: 'GC rejected the craft — no items were consumed (check inputs/recipe)' });
+            } else {
+              if (r.confirmed) this.execJob.crafted++; // count only a GC-confirmed craft
+              this.execJob.results.push({ index: i, submitted: r.submitted, confirmed: r.confirmed, error: r.confirmed ? undefined : 'submitted — not confirmed in-window (verify in-game; NOT retried)' });
+            }
+            break;
+          } catch (e) {
+            if (e instanceof GcBusyError && attempt < this.busyRetryMaxAttempts) {
+              if (this.execCancel) {
+                this.execJob.failed++;
+                this.execJob.results.push({ index: i, submitted: false, error: `${e.message} — cancelled while waiting` });
+                break;
+              }
+              await sleep(this.busyRetryWaitMs);
+              continue; // slot may have freed — re-attempt the same contract
+            }
+            this.execJob.failed++;
+            const msg = e instanceof GcBusyError
+              ? 'GC busy for the whole wait window (storage/float op running) — nothing was sent; re-run when it finishes'
+              : (e instanceof Error ? e.message : String(e));
+            this.execJob.results.push({ index: i, submitted: false, error: msg });
+            break;
+          }
+        }
       } finally {
+        if (claimed) MoneyOps.releaseAll(keys);
         this.execJob.done++;
       }
       if (i < contracts.length - 1 && !this.execCancel) await sleep(1_500);
@@ -234,7 +319,9 @@ export class TradeUpService {
       }
     }
 
-    candidates.sort((a, b) => b.profitCents - a.profitCents);
+    // H-TRD-072: rank fully-priced first, profit second, so the MAX_CANDIDATES slice
+    // keeps honest fully-priced contracts over estimate ones with fabricated near-zero cost.
+    candidates.sort((a, b) => (Number(b.fullyPriced) - Number(a.fullyPriced)) || (b.profitCents - a.profitCents));
     const top = candidates.slice(0, MAX_CANDIDATES);
 
     if (top.some((c) => !c.fullyPriced)) {
@@ -280,8 +367,9 @@ export class TradeUpService {
     return out;
   }
 
-  /** Queues background price fills for every eligible collection's output skins (all 5 wears) + the
-   *  inputs, so the NEXT calculation has accurate EV (outputs are never in the account inventory). */
+  /** Queues background price fills for every eligible collection's output skins (only the wears each
+   *  skin's float range can roll) + the inputs, so the NEXT calculation has accurate EV (outputs are
+   *  never in the account inventory). */
   private warmOutputPrices(inputs: TuInput[]): void {
     const missing: Array<{ name: string; appid: number }> = [];
     const seen = new Set<string>();
@@ -295,7 +383,7 @@ export class TradeUpService {
     for (const key of collections) {
       const [collection, rarityId, st] = key.split('|');
       for (const o of this.schema.outputsFor(collection, rarityId)) {
-        for (const wear of ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'] as const) {
+        for (const wear of achievableWears(o.minFloat, o.maxFloat)) {
           add(this.schema.marketHashName(o.name, wear, st === '1'));
         }
       }

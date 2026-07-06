@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { AccountVaultImpl, VAULT_NEWER_VERSION_ERROR, type VaultAccount } from '../src/core/AccountVault';
+import { logger } from '../src/utils/logger';
 
 // Each test uses an isolated temp vault file so the singleton's state can't leak across tests.
 let seq = 0;
@@ -148,6 +149,194 @@ test('S5: after recovering from .bak, the .bak still holds the good backup (not 
   assert.equal(bakCheck.getAccount('bot1')?.password, 'pw123', '.bak still holds the good credentials');
 });
 
+// ─── H-ACC-041: a failed persist at flush() returns false, NEVER throws ─────────
+// A locked/read-only vault dir at shutdown must not wedge the graceful-shutdown latch: flush()
+// logs loudly and returns false instead of propagating the writeJsonAtomic throw into shutdown().
+test('H-ACC-041: flush() returns false and does NOT throw when the save fails', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  v.unlockOrCreate('pw');
+  v.setToken('bot1', 'tok'); // something pending
+  (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+
+  const origError = logger.error;
+  let logged = false;
+  (logger as unknown as { error: (m: string) => void }).error = () => { logged = true; };
+  try {
+    assert.equal(v.flush(), false, 'a failed save returns false');
+    assert.doesNotThrow(() => v.flush(), 'the throw is swallowed, never propagated to shutdown()');
+    assert.equal(logged, true, 'the failure is logged loudly at error level');
+  } finally {
+    (logger as unknown as { error: typeof origError }).error = origError;
+  }
+});
+
+test('H-ACC-041: flush() on a locked (never-unlocked) vault returns true (nothing to persist)', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak); // never unlocked → isEnabled() false
+  assert.equal(v.flush(), true, 'no payload → nothing to persist → true, no throw');
+});
+
+// ─── H-ACC-040: a failed DEBOUNCED save is swallowed, NEVER an uncaughtException ──
+// A rotation (non-first-mint) token write takes scheduleSave() → a bare 1.5s setTimeout. If the
+// deferred save() throws (AV-lock/disk-full during login churn) the throw becomes a global
+// uncaughtException → 3-in-60s latches the money-ops breaker. The timer callback must catch it,
+// warn, and leave the payload dirty-in-memory (recovered by the next mutation or the shutdown flush).
+test('H-ACC-040: a throwing debounced save is caught (no uncaughtException), state recovers on next save', async () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  v.unlockOrCreate('pw');
+  v.setToken('bot1', 'a'); // first-mint → synchronous save, no debounce
+
+  const uncaught: Error[] = [];
+  const onUncaught = (e: Error) => uncaught.push(e);
+  process.on('uncaughtException', onUncaught);
+  const origWarn = logger.warn;
+  let warned = false;
+  (logger as unknown as { warn: (m: string) => void }).warn = () => { warned = true; };
+  try {
+    // Override the persist to throw, then trigger a ROTATION (existing token) → scheduleSave debounce.
+    (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+    v.setToken('bot1', 'b');
+    await new Promise((r) => setTimeout(r, 1_700)); // let the 1.5s debounce fire
+    assert.equal(uncaught.length, 0, 'the debounced throw must NOT escape as an uncaughtException');
+    assert.equal(warned, true, 'the failure is logged loudly at warn level');
+  } finally {
+    process.removeListener('uncaughtException', onUncaught);
+    (logger as unknown as { warn: typeof origWarn }).warn = origWarn;
+  }
+
+  // 'b' is dirty-in-memory only (the throw was swallowed). The stated contract: a subsequent
+  // successful mutation + flush persists the latest value, recovered on reopen.
+  delete (v as unknown as { save?: () => void }).save; // restore the real prototype save
+  v.setToken('bot1', 'c');
+  v.flush();
+  const v2 = new AccountVaultImpl(file, bak);
+  v2.unlockOrCreate('pw');
+  assert.equal(v2.getToken('bot1'), 'c', 'the next successful save recovers the dirty in-memory state');
+});
+
+// ─── H-ACC-036: an absurd header-controlled scrypt N is refused as corrupt (no huge alloc/freeze) ──
+// The vault header is UNAUTHENTICATED — a crafted/corrupt file could set kdf.N = 2^24 and force
+// scryptSync into a ~16 GB working set + a minutes-long synchronous event-loop freeze. The clamp
+// rejects out-of-bounds params BEFORE any scrypt call, so it fails as corrupt in milliseconds.
+test('H-ACC-036: a vault.enc with an absurd kdf.N is refused as corrupt, in ms (never derives)', () => {
+  const { file, bak } = tmpVault();
+  new AccountVaultImpl(file, bak).unlockOrCreate('pw');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.kdf.N = 1 << 24; // 16,777,216 → 128·N·r ≈ 16 GB working set for scrypt
+  fs.writeFileSync(file, JSON.stringify(raw));
+
+  const t = Date.now();
+  assert.throws(
+    () => new AccountVaultImpl(file, bak).unlockOrCreate('pw'),
+    /corrupt or not an SSIM vault/,
+    'an out-of-bounds header N must be refused as corrupt (not decrypted, not WRONG_PASSWORD)',
+  );
+  assert.ok(Date.now() - t < 500, 'the clamp rejects before any scrypt call → returns in ms');
+});
+
+test('H-ACC-036: the import path (decryptExternalVault) returns null for an absurd kdf.N', () => {
+  const { file, bak } = tmpVault();
+  new AccountVaultImpl(file, bak).unlockOrCreate('pw');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.kdf.N = 1 << 24;
+  const t = Date.now();
+  assert.equal(new AccountVaultImpl(file, bak).decryptExternalVault(JSON.stringify(raw), 'x'), null,
+    'a hostile imported vault with an out-of-bounds header N must be refused (null), not derived');
+  assert.ok(Date.now() - t < 500, 'refused before any scrypt call');
+});
+
+// ─── H-ACC-037: .bak recovery covers the COMMON corruption shapes, not just bad ciphertext ──
+// External corruption (AV mangling, disk fault, partial restore, a user edit) usually yields
+// UNPARSEABLE bytes or a mis-shaped envelope — not a pristine JSON envelope with only a bad GCM
+// ciphertext. Recovery must trigger on those too; a genuine corrupt-both must still fail as corrupt.
+function seedRecoverableVault(): { file: string; bak: string } {
+  const { file, bak } = tmpVault();
+  const v1 = new AccountVaultImpl(file, bak);
+  v1.unlockOrCreate('pw');
+  v1.upsertAccount(ACCT);        // save writes vault.enc AND a .bak of the prior state
+  v1.setToken('bot1', 'tok-1');  // another save → .bak now holds the account
+  v1.flush();
+  assert.ok(fs.existsSync(bak), 'a real .bak exists after multiple saves');
+  return { file, bak };
+}
+
+test('H-ACC-037(a): unparseable vault.enc (garbage JSON) recovers from a healthy .bak', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.writeFileSync(file, 'garbage{{{'); // SyntaxError on readJsonSync → corrupt, recoverable
+  const v2 = new AccountVaultImpl(file, bak);
+  const r = v2.unlockOrCreate('pw');
+  assert.equal(r.created, false, 'recovered, not recreated');
+  assert.equal(v2.getAccount('bot1')?.password, 'pw123', 'recovered the account from the backup');
+  // vault.enc was rewritten healthy → it re-decrypts.
+  assert.doesNotThrow(() => new AccountVaultImpl(file, bak + '.none').unlockOrCreate('pw'));
+});
+
+test('H-ACC-037(b): a mis-shaped envelope (wrong magic) recovers from a healthy .bak', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.writeFileSync(file, JSON.stringify({ magic: 'nope' })); // parses, but parseEnvelope rejects it
+  const v2 = new AccountVaultImpl(file, bak);
+  assert.doesNotThrow(() => v2.unlockOrCreate('pw'), 'a corrupt envelope recovers, not a raw throw');
+  assert.equal(v2.getAccount('bot1')?.password, 'pw123', 'recovered the account from the backup');
+});
+
+test('H-ACC-037(c): both vault.enc AND .bak corrupt fail as corrupt (NOT WRONG_PASSWORD)', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.writeFileSync(file, 'garbage{{{');
+  fs.writeFileSync(bak, 'garbage{{{');
+  assert.throws(
+    () => new AccountVaultImpl(file, bak).unlockOrCreate('pw'),
+    /corrupt/,
+    'corrupt-both is reported as corrupt',
+  );
+  assert.throws(
+    () => new AccountVaultImpl(file, bak).unlockOrCreate('pw'),
+    (e: Error) => !/WRONG_PASSWORD/.test(e.message),
+    'must NOT be lied about as a wrong password',
+  );
+});
+
+test('H-ACC-037(d): healthy files + wrong password still fail as WRONG_PASSWORD (UX unchanged)', () => {
+  const { file, bak } = seedRecoverableVault();
+  assert.throws(() => new AccountVaultImpl(file, bak).unlockOrCreate('nope'), /WRONG_PASSWORD/);
+});
+
+// ─── H-ACC-039: a MISSING vault.enc with a healthy .bak self-heals (never a first-run create) ──
+// AV quarantine of vault.enc / a partial restore / a deletion leaves vault.enc.bak as the only
+// credential copy. The create branch must probe the .bak with the operator's password: on success
+// RESTORE (never touching the good .bak, S5); on a wrong password with a .bak present throw rather
+// than clobber a recoverable farm; and createEmptyAnyway is the deliberate fresh-start escape hatch.
+test('H-ACC-039(a): a missing vault.enc restores from a healthy .bak (not recreated) without clobbering it', () => {
+  const { file, bak } = seedRecoverableVault();
+  const bakBytes = fs.readFileSync(bak);
+  fs.rmSync(file); // vault.enc quarantined/deleted; only the .bak survives
+
+  const v = new AccountVaultImpl(file, bak);
+  const r = v.unlockOrCreate('pw');
+  assert.equal(r.created, false, 'recovered, not a fresh empty vault');
+  assert.equal(v.getAccount('bot1')?.password, 'pw123', 'the farm credential is back from the .bak');
+  assert.ok(fs.existsSync(file), 'vault.enc was rewritten from the recovered payload');
+  assert.deepEqual(fs.readFileSync(bak), bakBytes, 'the proven-good .bak was NOT clobbered (S5)');
+});
+
+test('H-ACC-039(b): a missing vault.enc + WRONG password with a .bak present throws, creates nothing', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.rmSync(file);
+  const v = new AccountVaultImpl(file, bak);
+  assert.throws(() => v.unlockOrCreate('wrong'), /WRONG_PASSWORD/, 'a typo must not create an empty vault over a recoverable farm');
+  assert.equal(fs.existsSync(file), false, 'nothing was created');
+});
+
+test('H-ACC-039(c): createEmptyAnyway skips the .bak probe and starts a fresh empty vault', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.rmSync(file);
+  const v = new AccountVaultImpl(file, bak);
+  const r = v.unlockOrCreate('anyPw', { createEmptyAnyway: true });
+  assert.equal(r.created, true, 'the explicit override creates a new empty vault');
+  assert.equal(v.accountCount(), 0, 'the fresh vault holds no accounts');
+});
+
 test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   const { file, bak } = tmpVault();
   const v1 = new AccountVaultImpl(file, bak);
@@ -160,4 +349,34 @@ test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   const ctBuf = Buffer.from(main.ct, 'base64'); ctBuf[0] ^= 0xff; main.ct = ctBuf.toString('base64');
   fs.writeFileSync(file, JSON.stringify(main));
   assert.throws(() => new AccountVaultImpl(file, bak).unlockOrCreate('WRONG'), /WRONG_PASSWORD/);
+});
+
+// ─── H-ACC-038: unlockOrCreate is transactional — a persist throw leaves the vault LOCKED ──
+// In the create and .bak-recovery branches the key/salt/payload are set BEFORE the initial save()
+// (save reads them). A save throw (disk-full/EPERM/AV-lock) propagates to the caller, which treats
+// the attempt as failed — so isEnabled() must NOT be left true with an unpersisted payload. The
+// class contract everywhere (TokenStore, CsFloatKeyStore, migrate/quarantine) is "threw ⇒ locked".
+test('H-ACC-038(a): a save throw during CREATE rolls the state back — isEnabled() stays false', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+  assert.throws(() => v.unlockOrCreate('pw'), /EACCES/);
+  assert.equal(v.isEnabled(), false, 'a failed create must NOT leave a half-enabled vault');
+});
+
+test('H-ACC-038(b): after the throw a fresh instance creates + unlocks cleanly', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  const r = v.unlockOrCreate('pw'); // real save, no override
+  assert.equal(r.created, true);
+  assert.equal(v.isEnabled(), true, 'a normal create leaves the vault open');
+});
+
+test('H-ACC-038(c): a save throw during .bak RECOVERY rolls back — isEnabled() stays false', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.rmSync(file); // vault.enc gone; only the .bak survives → recovery branch
+  const v = new AccountVaultImpl(file, bak);
+  (v as unknown as { save: () => void }).save = () => { throw new Error('EACCES: disk locked'); };
+  assert.throws(() => v.unlockOrCreate('pw'), /EACCES/, 'recovery persist failure propagates');
+  assert.equal(v.isEnabled(), false, 'a failed recovery must not report the vault as open');
 });

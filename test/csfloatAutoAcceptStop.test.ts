@@ -63,3 +63,35 @@ test('S46: an in-flight pass stops launching new deliveries when stop() is calle
   await (w as unknown as { runOnce: () => Promise<void> }).runOnce();
   assert.deepEqual(delivered, ['a'], 'the stopped flag halted the pass after the first delivery (b, c not sent)');
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-FLT-011 — when the delivered-id store cannot make a record durable (add()
+//  returns FALSE), deliverFor must STOP launching new deliveries for that account
+//  this pass, so a crash before the store recovers can't re-send every sale whose
+//  dedup was never saved. It must not send the SECOND pending trade in the batch.
+// ════════════════════════════════════════════════════════════════════════════
+test('H-FLT-011: deliverFor stops after the first non-persisted delivery (no second send)', async () => {
+  // Two pending CSFloat trades for the account; both would be valid to deliver.
+  const trades = [
+    { id: 't1', buyer_id: '76561198000000001', contract: { item: { asset_id: '111' } } },
+    { id: 't2', buyer_id: '76561198000000002', contract: { item: { asset_id: '222' } } },
+  ];
+  const csfloat = {
+    hasKey: () => true,
+    trades: async () => ({ trades }),
+  };
+  let sends = 0;
+  const tradeSvc = {
+    sendTrade: async () => { sends++; return { status: 'sent', offerId: `o${sends}` }; },
+  };
+  const mgr = { get: (u: string) => ({ username: u, enabled: true, tier: 'full' }) };
+  const w = new CsFloatAutoAcceptWorker(mgr as never, tradeSvc as never, csfloat as never);
+  // Stub the durable store: add() returns FALSE (record not durable) so the pass must stop after one send.
+  (w as unknown as { delivered: unknown }).delivered = {
+    isDegraded: () => false,
+    has: () => false,
+    add: () => false,
+  };
+  await (w as unknown as { deliverFor: (u: string) => Promise<void> }).deliverFor('a');
+  assert.equal(sends, 1, 'deliverFor stopped after the first non-durable record — the second trade was NOT sent');
+});

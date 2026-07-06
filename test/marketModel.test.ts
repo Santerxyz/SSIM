@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseMyListings, listingsForApp, listedAssetIdsForApp,
+  parseMyListings, mergeParsed, emptyParsed, listingsForApp, listedAssetIdsForApp,
   bucketOf, isSellable, assertSellable,
 } from '../src/core/MarketModel';
 
@@ -85,6 +85,83 @@ test('isSellable / assertSellable refuse trade-locked and non-tradable items', (
   assert.doesNotThrow(() => assertSellable({ assetId: '1', tradable: true, tradeLockExpiry: null }));
 });
 
+// ── H-TRD-117: the gate fails CLOSED on a missing flag or an unparseable date ──
+
+test('isSellable fails closed on a missing tradable flag and an unparseable lock date', () => {
+  assert.equal(isSellable({}), false, 'undefined tradable ⇒ not sellable');
+  assert.equal(isSellable({ tradable: true, tradeLockExpiry: 'not-a-date' }), false, 'NaN lock date ⇒ not sellable');
+});
+
+test('bucketOf fails closed on a missing tradable flag and an unparseable lock date', () => {
+  assert.equal(bucketOf({}), 'tradelocked', 'undefined tradable ⇒ not classified tradable');
+  assert.equal(bucketOf({ tradable: true, tradeLockExpiry: 'not-a-date' }), 'tradelocked', 'NaN lock date ⇒ tradelocked');
+});
+
+// ── H-TRD-111: a non-listings payload must NOT coerce to "successfully empty" ──
+
+test('parseMyListings THROWS on {success:false} (Steam error body, HTTP 200)', () => {
+  assert.throws(() => parseMyListings({ success: false }), /not a listings payload/);
+});
+
+test('parseMyListings THROWS on a structureless object ({})', () => {
+  assert.throws(() => parseMyListings({}), /not a listings payload/);
+});
+
+test('parseMyListings returns empty (no throw) for a legit empty account', () => {
+  const p = parseMyListings({ success: true, total_count: 0, listings: [], assets: {} });
+  assert.equal(listingsForApp(p, 730).length, 0);
+  assert.equal(listedAssetIdsForApp(p, 730).size, 0);
+});
+
+// ── H-TRD-116: mergeParsed dedups a listing re-fetched across a page boundary ──
+
+test('mergeParsed keeps a listing shared by two pages only once (listingId)', () => {
+  const p1 = parseMyListings({
+    total_count: 2,
+    listings: [
+      { listingid: 'L111', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: 2003 },
+    ],
+    assets: {},
+  });
+  const p2 = parseMyListings({
+    total_count: 2,
+    listings: [
+      { listingid: 'L111', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: 2003 },
+      { listingid: 'L222', asset: { appid: 730, contextid: '2', id: '222', amount: '1' }, price: 2000, fee: 300, currencyid: 2003 },
+    ],
+    assets: {},
+  });
+  const acc = emptyParsed();
+  mergeParsed(acc, p1);
+  mergeParsed(acc, p2);
+  assert.equal(acc.listings.length, 2, 'the re-fetched L111 is merged once, not twice');
+  assert.deepEqual(listingsForApp(acc, 730).map(l => l.listingId).sort(), ['L111', 'L222']);
+});
+
+test('mergeParsed dedups a PENDING listing (listingId empty) by asset composite', () => {
+  const pending = (id: string) => ({
+    listings: [],
+    pending_listings: [{ asset: { appid: 730, contextid: '2', id, amount: '1' } }],
+    assets: {},
+  });
+  const acc = emptyParsed();
+  mergeParsed(acc, parseMyListings(pending('333')));
+  mergeParsed(acc, parseMyListings(pending('333')));      // same pending asset re-appears
+  assert.equal(acc.listings.length, 1, 'a pending listing with no listingId is deduped by assetId');
+});
+
+test('mergeParsed keeps TWO distinct pending listings (different assetIds)', () => {
+  const pending = (id: string) => ({
+    listings: [],
+    pending_listings: [{ asset: { appid: 730, contextid: '2', id, amount: '1' } }],
+    assets: {},
+  });
+  const acc = emptyParsed();
+  mergeParsed(acc, parseMyListings(pending('333')));
+  mergeParsed(acc, parseMyListings(pending('444')));
+  assert.equal(acc.listings.length, 2, 'distinct pending assets are both kept');
+});
+
 test('parseMyListings folds pending listings into the dedup superset (confirmed=false)', () => {
   const page = {
     listings: [], pending_listings: [
@@ -95,4 +172,42 @@ test('parseMyListings folds pending listings into the dedup superset (confirmed=
   const p = parseMyListings(page);
   assert.ok(listedAssetIdsForApp(p, 730).has('333'), 'pending asset is in the no-leak superset');
   assert.equal(listingsForApp(p, 730)[0].confirmed, false);
+});
+
+// ── H-TRD-115: an on-hold listing appears in the Listed bucket as confirmed=true ──
+
+test('parseMyListings scans listings_on_hold → row is confirmed=true and in the superset', () => {
+  const page = {
+    listings: [], listings_on_hold: [
+      { listingid: 'H1', asset: { appid: 730, contextid: '2', id: '444', amount: '1' } },
+    ],
+    assets: {},
+  };
+  const p = parseMyListings(page);
+  const rows = listingsForApp(p, 730);
+  assert.equal(rows.length, 1, 'the on-hold listing is kept as a Listed row');
+  assert.equal(rows[0].confirmed, true, 'a server-side hold is confirmed, not awaiting-2FA');
+  assert.ok(listedAssetIdsForApp(p, 730).has('444'), 'on-hold asset is in the no-leak superset');
+});
+
+// ── H-TRD-113: non-numeric currencyid falls back to 0 (the "0 = unknown" contract) ──
+
+test('parseMyListings: a non-numeric currencyid yields currency 0 (not NaN)', () => {
+  const p = parseMyListings({
+    listings: [
+      { listingid: 'L1', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: 'garbage' },
+    ],
+    assets: {},
+  });
+  assert.equal(listingsForApp(p, 730)[0].currency, 0, 'malformed currencyid degrades to the unknown sentinel');
+});
+
+test('parseMyListings: a numeric-string currencyid round-trips (2003 → 3)', () => {
+  const p = parseMyListings({
+    listings: [
+      { listingid: 'L1', asset: { appid: 730, contextid: '2', id: '111', amount: '1' }, price: 1000, fee: 150, currencyid: '2003' },
+    ],
+    assets: {},
+  });
+  assert.equal(listingsForApp(p, 730)[0].currency, 3, 'string currencyid still parses correctly');
 });

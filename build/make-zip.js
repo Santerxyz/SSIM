@@ -30,6 +30,12 @@ const ZIP = path.join(RELEASE_DIR, `SSIM-${VERSION}.zip`);
 
 const fail = (m) => { console.error(`\n✗ ${m}\n`); process.exit(1); };
 
+// Escape a path for safe interpolation inside a SINGLE-QUOTED PowerShell string literal:
+// a single quote is the only char that can terminate/reframe the literal, and PS doubles it
+// to escape. Paired with -LiteralPath, this makes the zip/scan robust to a checkout under a
+// path containing ' [ ] * ? (wildcard/quote-fragile chars the build script doesn't control).
+const psq = (p) => p.replace(/'/g, "''");
+
 // 1. Precondition — the Tauri build must have produced the single SSIM.exe.
 if (!fs.existsSync(path.join(SRC, 'SSIM.exe'))) fail('SSIM.exe not found in release-tauri/SSIM — run `npm run build:tauri` first.');
 
@@ -68,20 +74,30 @@ fs.writeFileSync(path.join(APP, 'START.txt'), [
 console.log('▸ compressing → ' + path.relative(ROOT, ZIP));
 fs.removeSync(ZIP);
 execFileSync('powershell', ['-NoProfile', '-Command',
-  `Compress-Archive -Path '${APP}' -DestinationPath '${ZIP}' -Force`], { stdio: 'inherit' });
+  `Compress-Archive -LiteralPath '${psq(APP)}' -DestinationPath '${psq(ZIP)}' -Force`], { stdio: 'inherit' });
 
 // 7. SECURITY SCAN — enumerate every zip entry; FAIL on any secret/user-data pattern.
 const listing = execFileSync('powershell', ['-NoProfile', '-Command',
   `Add-Type -AssemblyName System.IO.Compression.FileSystem; ` +
-  `$z=[System.IO.Compression.ZipFile]::OpenRead('${ZIP}'); ` +
+  `$z=[System.IO.Compression.ZipFile]::OpenRead('${psq(ZIP)}'); ` +
   `$z.Entries | ForEach-Object { '{0}|{1}' -f $_.FullName, $_.Length }; $z.Dispose()`],
   { encoding: 'utf8' });
 const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-  .map((l) => { const i = l.lastIndexOf('|'); return { name: l.slice(0, i), size: Number(l.slice(i + 1)) }; });
+  // Normalise to forward slashes: real ZipFile FullNames use BACKSLASHES on Windows, which the
+  // forward-slash-anchored `mafiles/` branch + placeholder allow-list below would otherwise never
+  // match — so a leaked mafiles/accounts.txt would slip past the backstop entirely.
+  .map((l) => { const i = l.lastIndexOf('|'); return { name: l.slice(0, i).replace(/\\/g, '/'), size: Number(l.slice(i + 1)) }; });
 
-const SECRET_RE = /vault\.enc|accounts\.json|refresh_tokens|secrets\.local|license\.(key|token)|\.maFile$|\.mafile$|(^|\/)mafiles\/.+\.(maFile|txt)$|\.log$|protection\.json|value_history|inventories.*\.json|prices\.json|ssim\.lock|ssim\.port/i;
+// `accounts.(txt|csv)` are the plaintext bulk-import credential files (user:pass) — caught ANYWHERE,
+// not only under mafiles/, since accounts.txt matches no other branch.
+const SECRET_RE = /vault\.enc|accounts\.json|accounts\.(txt|csv)|refresh_tokens|secrets\.local|license\.(key|token)|\.maFile$|\.mafile$|(^|\/)mafiles\/.+\.(maFile|txt)$|\.log$|protection\.json|value_history|inventories.*\.json|prices\.json|ssim\.lock|ssim\.port/i;
 const ALLOW_MAFILE_PLACEHOLDER = /mafiles\/PUT_MAFILES_HERE\.txt$/i;
 const offenders = entries.filter((e) => SECRET_RE.test(e.name) && !ALLOW_MAFILE_PLACEHOLDER.test(e.name));
+// The placeholder is written every build; its absence means the stage layout drifted, so the
+// separator-sensitive mafiles/ branch is unverified — warn rather than claim CLEAN silently.
+if (!entries.some((e) => ALLOW_MAFILE_PLACEHOLDER.test(e.name))) {
+  console.warn('  ⚠ mafiles/PUT_MAFILES_HERE.txt not found in the ZIP — stage layout may have drifted; the mafiles/ scan branch is unverified.');
+}
 
 console.log('\n=== ZIP CONTENTS (' + entries.length + ' entries) ===');
 for (const e of entries) console.log('  ' + e.name + (e.size ? '  (' + (e.size > 1048576 ? (e.size / 1048576).toFixed(1) + ' MB' : e.size + ' B') + ')' : '  <dir>'));

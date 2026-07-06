@@ -75,6 +75,16 @@
       <input id="confirm" type="password" autocomplete="off" spellcheck="false">
     </div>
 
+    <!-- Orphan mode (S18): shown only when the server refuses an empty-vault create over an
+         orphaned farm (409 orphaned:true). The operator must tick the acknowledgement to send
+         createEmptyAnyway and deliberately create a NEW empty vault. -->
+    <div id="orphanWrap" style="display:none">
+      <label class="ack" for="orphanAck" style="display:flex;align-items:flex-start;gap:8px;font-size:11.5px;color:#caa45a;line-height:1.5;margin:14px 0 0;cursor:pointer">
+        <input id="orphanAck" type="checkbox" style="width:auto;margin-top:2px;flex:0 0 auto">
+        <span>I understand: a NEW EMPTY vault will be created and my registered accounts stay credential-less until vault.enc is restored.</span>
+      </label>
+    </div>
+
     <button id="btn" type="submit">Unlock</button>
     <div class="msg" id="msg"></div>
     <div class="warn" id="warn" style="display:none">
@@ -85,56 +95,137 @@
 
 <script>
   var firstRun = false;
+  var orphanMode = false; // S18: set when the server refuses an empty-vault create over an orphaned farm.
   var el = function (id) { return document.getElementById(id); };
+
+  // S18: the server refused to silently create an empty vault (vault.enc missing, accounts.json
+  // survives). Switch the page into a deliberate, destructive "create NEW empty vault" mode instead
+  // of the bare error line — the only client path that can send createEmptyAnyway.
+  function enterOrphanMode(errText) {
+    orphanMode = true;
+    el('title').textContent = 'Vault file missing';
+    el('sub').textContent = errText;
+    el('confirmWrap').style.display = 'block';
+    el('warn').style.display = 'none';
+    el('orphanWrap').style.display = 'block';
+    var btn = el('btn');
+    btn.textContent = 'Create NEW empty vault';
+    btn.style.background = 'var(--err)';
+  }
 
   // Keep-alive ping (legacy Edge-window heartbeat; the Tauri shell now owns shutdown).
   function ping() { try { fetch('/api/app/ping').catch(function () {}); } catch (e) {} }
   ping();
   setInterval(ping, 4000);
 
-  fetch('/api/vault/state').then(function (r) { return r.json(); }).then(function (d) {
-    firstRun = !d.exists;
-    if (firstRun) {
-      el('title').textContent = 'Set your Master Password';
-      el('sub').textContent = 'Create a Master Password to encrypt this vault.';
-      el('confirmWrap').style.display = 'block';
-      el('btn').textContent = 'Create vault';
-      el('warn').style.display = 'block';
-    }
-  }).catch(function () {});
+  // H-ACC-066: the state probe decides "create" vs "unlock". A transient fetch failure used to be
+  // swallowed silently, leaving firstRun=false — the page then looked like an unlock but a first-run
+  // POST would CREATE a vault from a single unconfirmed entry. Retry 3× (700ms apart); if the state
+  // is still unknown, tell the operator and mark the probe unresolved so submit re-runs it before posting.
+  var stateResolved = false;
+  function applyFirstRun() {
+    el('title').textContent = 'Set your Master Password';
+    el('sub').textContent = 'Create a Master Password to encrypt this vault.';
+    el('confirmWrap').style.display = 'block';
+    el('btn').textContent = 'Create vault';
+    el('warn').style.display = 'block';
+  }
+  function probeState(attemptsLeft) {
+    return fetch('/api/vault/state').then(function (r) { return r.json(); }).then(function (d) {
+      stateResolved = true;
+      firstRun = !d.exists;
+      if (firstRun) applyFirstRun();
+      return true;
+    }).catch(function () {
+      if (attemptsLeft > 1) {
+        return new Promise(function (resolve) {
+          setTimeout(function () { resolve(probeState(attemptsLeft - 1)); }, 700);
+        });
+      }
+      var msg = el('msg');
+      msg.className = 'msg err';
+      msg.textContent = 'Could not determine vault state — check that SSIM is still starting, then try again.';
+      return false;
+    });
+  }
+  probeState(3);
 
   el('form').addEventListener('submit', function (e) {
     e.preventDefault();
+    // H-ACC-066: never post while the vault state is unknown (a swallowed probe failure would
+    // otherwise let an unlock attempt CREATE a vault). Re-run the probe first; only submit once
+    // the state is resolved so firstRun (and thus the confirm requirement) is decided from truth.
+    if (!stateResolved) {
+      var m = el('msg'); m.className = 'msg'; m.textContent = 'Checking vault state…';
+      probeState(3).then(function (ok) { if (ok) doSubmit(); });
+      return;
+    }
+    doSubmit();
+  });
+
+  function doSubmit() {
     var password = el('pw').value;
-    var confirm = firstRun ? el('confirm').value : undefined;
+    var confirm = (firstRun || orphanMode) ? el('confirm').value : undefined;
     var msg = el('msg');
     msg.className = 'msg';
     if (!password) { msg.className = 'msg err'; msg.textContent = 'A Master Password is required.'; return; }
-    if (firstRun && password !== confirm) { msg.className = 'msg err'; msg.textContent = 'The passwords do not match.'; return; }
+    if ((firstRun || orphanMode) && password !== confirm) { msg.className = 'msg err'; msg.textContent = 'The passwords do not match.'; return; }
+    // S18: creating a NEW empty vault over an orphaned farm is destructive — require the acknowledgement.
+    if (orphanMode && el('orphanAck').checked !== true) {
+      msg.className = 'msg err';
+      msg.textContent = 'Tick the acknowledgement to proceed, or restore vault.enc and restart SSIM.';
+      return;
+    }
 
     var btn = el('btn');
     var origLabel = btn.textContent;
     btn.disabled = true;
     el('logoWrap').classList.add('loading'); // ring spins around the logo while we unlock
     // Spinner in the button conveys progress — no static "Working…" text.
-    btn.innerHTML = '<span class="spin"></span>' + (firstRun ? 'Creating vault…' : 'Unlocking…');
+    btn.innerHTML = '<span class="spin"></span>' + ((firstRun || orphanMode) ? 'Creating vault…' : 'Unlocking…');
     msg.className = 'msg'; msg.textContent = '';
     fetch('/api/vault/unlock', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: password, confirm: confirm }),
-    }).then(function (r) { return r.json(); }).then(function (d) {
+      body: JSON.stringify({ password: password, confirm: confirm, createEmptyAnyway: (orphanMode && el('orphanAck').checked === true) ? true : undefined }),
+    }).then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); }).then(function (resp) {
+      var d = resp.d;
       if (d && d.ok) {
         // Correct password → keep the spinner running through the hand-off to the
-        // dashboard (the backend takes a moment to start the full app before reload).
+        // dashboard. The shell will NOT re-navigate (one-shot per spawn), so we must
+        // wait for PROOF the full app has rebound the port before we reload — a blind
+        // fixed timer would reload onto an unbound port (connection-refused) on a slow
+        // boot (large farms). Discriminator: only the portal fabricates vaultLocked:true;
+        // the full app's /api/system/status has no vaultLocked key, so "status answers
+        // without vaultLocked:true" ⇔ the dashboard is live. (H-ACC-067)
         btn.innerHTML = '<span class="spin"></span>' + (d.created ? 'Vault created — starting…' : 'Starting SSIM…');
         msg.className = 'msg'; msg.textContent = '';
-        setTimeout(function () { location.reload(); }, 2300);
+        var startedAt = Date.now();
+        var waitForApp = function () {
+          fetch('/api/system/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (s) {
+            if (s && s.vaultLocked !== true) { location.replace('/'); return; }
+            if (Date.now() - startedAt > 60000) { btn.innerHTML = '<span class="spin"></span>Still starting — large farms can take a minute…'; }
+            setTimeout(waitForApp, 500);
+          }).catch(function () {
+            if (Date.now() - startedAt > 60000) { btn.innerHTML = '<span class="spin"></span>Still starting — large farms can take a minute…'; }
+            setTimeout(waitForApp, 500);
+          });
+        };
+        setTimeout(waitForApp, 900);
       } else {
-        btn.disabled = false; btn.innerHTML = origLabel;
+        btn.disabled = false;
         el('logoWrap').classList.remove('loading');
-        msg.className = 'msg err';
-        msg.textContent = (d && d.error) || 'Unlock failed.';
-        el('pw').value = ''; el('pw').focus();
+        // S18: the server refuses an empty-vault create over an orphaned farm (409 orphaned:true).
+        // Enter the deliberate destructive mode rather than dead-ending on the bare error line.
+        if (resp.status === 409 && d && d.orphaned === true) {
+          enterOrphanMode((d && d.error) || 'The vault file (vault.enc) is missing.');
+          msg.className = 'msg'; msg.textContent = '';
+          el('pw').value = ''; el('pw').focus();
+        } else {
+          btn.innerHTML = origLabel;
+          msg.className = 'msg err';
+          msg.textContent = (d && d.error) || 'Unlock failed.';
+          el('pw').value = ''; el('pw').focus();
+        }
       }
     }).catch(function () {
       btn.disabled = false; btn.innerHTML = origLabel;
@@ -142,7 +233,7 @@
       msg.className = 'msg err';
       msg.textContent = 'Could not reach SSIM. Please try again.';
     });
-  });
+  }
 </script>
 </body>
 </html>

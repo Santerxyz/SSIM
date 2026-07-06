@@ -52,13 +52,27 @@ const RAW_PUBLIC_KEY: string =
 export const LICENSE_PUBLIC_KEY: string =
   RAW_PUBLIC_KEY.includes('\\n') ? RAW_PUBLIC_KEY.replace(/\\n/g, '\n') : RAW_PUBLIC_KEY;
 
+/**
+ * Parse a millisecond env knob, rejecting empty-string / garbage / non-positive
+ * values back to the literal default. `Number('')` is 0 and `Number('abc')` is
+ * NaN — either would turn the heartbeat interval into a ~1 ms hot loop or zero
+ * out the offline grace, so an empty/typo'd `set "LICENSE_HEARTBEAT_MS="` in
+ * secrets.local.bat must fall back rather than coerce. The export stays a bare
+ * `envMs(...)` call with no `process.env.X ??` literal, so the greedy bake regex
+ * in build/pack.js can never target it (see the API_URL note above).
+ */
+export function envMs(name: string, def: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return def;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : def; // garbage/empty/0/negative → default
+}
+
 /** How long a signed token is trusted offline before an online re-check is forced. */
-export const OFFLINE_GRACE_MS: number =
-  Number(process.env.LICENSE_OFFLINE_GRACE_MS ?? 72 * 60 * 60 * 1000); // 72h
+export const OFFLINE_GRACE_MS = envMs('LICENSE_OFFLINE_GRACE_MS', 72 * 60 * 60 * 1000); // 72h
 
 /** Heartbeat interval – server can revoke a seat between beats. */
-export const HEARTBEAT_INTERVAL_MS: number =
-  Number(process.env.LICENSE_HEARTBEAT_MS ?? 45 * 60 * 1000); // 45 min
+export const HEARTBEAT_INTERVAL_MS = envMs('LICENSE_HEARTBEAT_MS', 45 * 60 * 1000); // 45 min
 
 /** Network timeout for every license/update HTTP call. */
 export const LICENSE_HTTP_TIMEOUT_MS = 15_000;

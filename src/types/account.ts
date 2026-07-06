@@ -34,7 +34,12 @@ export interface AccountConfig {
   id:          string;
   username:    string;
   password:    string;
-  /** Filename inside ./mafiles/  OR  absolute path */
+  /**
+   * Bare filename inside ./mafiles/ (the consolidated drop zone). Directory
+   * components are ALWAYS stripped at load (B23 containment, maFiles.ts
+   * resolveMaFilePath) — absolute paths are not supported and are reinterpreted
+   * as ./mafiles/<basename>.
+   */
   maFilePath:  string;
   /**
    * RESOLVED network – COMPUTED at read-time by AccountManager (from
@@ -86,7 +91,8 @@ export interface AccountConfig {
    * (Trade Protection) is NOT exposed via any web inventory API, so the user can
    * set this per account to mark ALL of its items as locked until the given date.
    * When in the future it overrides the per-asset auto-tracking for display.
-   * Empty/absent/past = no manual protection.
+   * Empty/absent/past = no manual protection. Malformed (unparseable) values are
+   * treated as NO protection and logged as a warning at read time — use ISO 8601.
    */
   protectedUntil?: string;
   /**
@@ -121,21 +127,33 @@ export interface Folder {
 
 export interface MaFile {
   shared_secret:    string;
-  identity_secret:  string;
-  account_name:     string;
+  /** Absent or '' ⇒ this maFile cannot confirm trades/listings (limited capability); every consumer must truthiness-guard (see accountCapability.canConfirm) */
+  identity_secret?: string;
+  /** Absent in some third-party exports; drop-zone import requires it (maFiles.ts) */
+  account_name?:    string;
   serial_number?:   string;
   revocation_code?: string;
   uri?:             string;
   server_time?:     number;
   token_gid?:       string;
-  steamid?:         string;
+  /**
+   * SDA writes these as raw JSON numbers exceeding Number.MAX_SAFE_INTEGER — the numeric form is
+   * ALREADY precision-corrupted by JSON.parse and must never be converted to a string or used as an id.
+   * Only a `typeof === 'string'` value matching /^7656\d{13}$/ is trustworthy; resolve ids per
+   * BanService.resolveSteamId (raw-text regex / filename / live session).
+   */
+  steamid?:         string | number;
+  /**
+   * @deprecated dead SDA web-session data — nothing in src/ reads it; parse-time normalization deletes
+   * it (H-ACC-073); typed only to describe legacy vault records.
+   */
   Session?: {
     SessionID?:        string;
     SteamLogin?:       string;
     SteamLoginSecure?: string;
     WebCookie?:        string;
     OAuthToken?:       string;
-    SteamID?:          string;
+    SteamID?:          string | number;
   };
 }
 

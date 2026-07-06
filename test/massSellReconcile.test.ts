@@ -48,3 +48,48 @@ test('S28: nothing actually listed → no recovery, the genuine failure stays fa
   assert.equal(svc.job.failed.length, 1);
   assert.equal(svc.job.listed, 0);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-TRD-028 — mid-run web-session loss must DEFER, not fail. When a bot's web
+//  cookies die mid-run the sellitem POST throws a non-transient HTTP 40x and the
+//  phantom probe (getListedAssetIds) throws a non-transient HTTP 40x too. The old
+//  probe catch only handled the transient case, so a non-transient probe error
+//  fell through and the item was returned as a hard { error } — turning hundreds
+//  of retry-safe items into "genuine failures". listWithRetry must now defer on
+//  ANY probe error (phantom status unknown, session suspect).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('H-TRD-028: session-loss (sellitem 403 + probe 403) defers the item, calls sellOnMarket once', async () => {
+  const svc: any = Object.create(MarketService.prototype);
+  svc.job = { retried: 0 };
+  let sellCalls = 0;
+  let probeCalls = 0;
+  const trader = {
+    username: 'botA',
+    ready: true,
+    sessionState: 'LOGGED_IN', // CM session still up — only the WEB session died
+    async sellOnMarket(_a: string, _n: number) { sellCalls++; throw new Error('market/sellitem HTTP 403'); },
+    async getListedAssetIds() { probeCalls++; throw new Error('market/mylistings HTTP 403'); },
+  };
+  const listedSet = new Set<string>();
+  const outcome = await svc.listWithRetry(trader, 'a1', 1234, listedSet);
+  assert.equal(outcome, 'deferred', 'a dead web session must defer (retryable), not fail');
+  assert.equal(sellCalls, 1, 'the dead sellitem POST is attempted exactly once — no burned retries');
+  assert.equal(probeCalls, 1, 'the phantom probe is attempted exactly once');
+  assert.equal(listedSet.has('a1'), false, 'nothing was listed');
+});
+
+test('H-TRD-028: a genuine hard error on a HEALTHY session still returns { error }', async () => {
+  const svc: any = Object.create(MarketService.prototype);
+  svc.job = { retried: 0 };
+  const trader = {
+    username: 'botA',
+    ready: true,
+    sessionState: 'LOGGED_IN',
+    async sellOnMarket(_a: string, _n: number) { throw new Error('market listing rejected by Steam'); },
+    async getListedAssetIds() { return new Set<string>(); }, // probe SUCCEEDS: item is genuinely not listed
+  };
+  const outcome = await svc.listWithRetry(trader, 'a1', 1234, new Set<string>());
+  assert.deepEqual(outcome, { error: 'market listing rejected by Steam' },
+    'a hard error whose probe succeeds is still a genuine failure — the defer path only widens for probe FAILURES');
+});

@@ -9,7 +9,7 @@ import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { vaultDir } from '../utils/paths';
 import { AccountVault } from './AccountVault';
-import { loadMaFileFromDisk } from './maFiles';
+import { loadMaFileFromDisk, resolveMaFilePath } from './maFiles';
 
 const DB_PATH    = vaultDir('accounts.json');
 const DB_VERSION = 4; // v2 folders[]; v3 environments[]; v4 portable maFilePath (bare filename in ./mafiles)
@@ -19,7 +19,10 @@ const DB_VERSION = 4; // v2 folders[]; v3 environments[]; v4 portable maFilePath
  * these are rewritten to the bare filename during the v4 migration – loadMaFile
  * resolves bare names against the consolidated ./mafiles dir, which makes
  * accounts.json survive machine/folder moves. Paths pointing somewhere ELSE
- * (operator keeps maFiles on another drive) are left untouched.
+ * (operator keeps maFiles on another drive) are ALSO basenamed into ./mafiles:
+ * since B23 the loader can only read from the drop zone, so an other-drive path
+ * is already broken — we normalize it and log a one-time "copy into ./mafiles"
+ * rescue message rather than preserve a value that resolves to a wrong/missing file.
  */
 const LEGACY_MAFILE_DIRS = new Set(['mafiles', 'mafiles_unlinked']);
 
@@ -44,11 +47,74 @@ export class AccountManager {
         version: DB_VERSION, environments: [defaultEnv], folders: [], accounts: [],
         updatedAt: new Date().toISOString(),
       };
-      fsExtra.writeJsonSync(DB_PATH, fresh, { spaces: 2 });
+      writeJsonAtomic(DB_PATH, fresh, { spaces: 2 });
       return fresh;
     }
-    const db = fsExtra.readJsonSync(DB_PATH) as AccountsDatabase;
+    let db: AccountsDatabase;
+    try {
+      db = fsExtra.readJsonSync(DB_PATH) as AccountsDatabase;
+    } catch (err) {
+      // accounts.json is present but unparseable (hand-edit typo, disk fault, a torn write). The
+      // .bak written by save() (B34) exists for exactly this case — recover from it instead of
+      // bricking boot or (worse) fabricating an empty fleet, which would hide a recoverable file
+      // and trip the vault→org self-heal against real data (S4/S7). (H-ACC-013.)
+      db = this.recoverFromBak(err as Error);
+    }
+    // H-ACC-014: the file parsed but its shape is unusable — `accounts` missing/non-array (every
+    // later .some/.map throws a TypeError far from the cause) or `version` missing/non-numeric (a
+    // hand-merge artifact where `undefined < 3` is false → migrate() silently skips forever). Do
+    // NOT coerce accounts to [] (fabricated emptiness, S4 class) or default version (guessing risks
+    // re-running/skipping migrations against unknown state) — route into the same H-ACC-013
+    // recovery machinery (try .bak → quarantine → loud failure) as a torn write.
+    if (!AccountManager.isValidDbShape(db)) {
+      db = this.recoverFromBak(new Error('accounts.json is missing its `accounts` array or a numeric `version`'));
+    }
     return this.migrate(db);
+  }
+
+  /**
+   * H-ACC-014: minimal load-time shape gate. A parseable file whose `accounts` is not an array,
+   * or whose `version` is not a finite number, is unusable — treat it as corrupt (recover from
+   * .bak or fail loud) rather than let it reach migrate()/save() and throw a bare TypeError, or
+   * pass every version-gated migration on `undefined < N === false`.
+   */
+  private static isValidDbShape(db: unknown): db is AccountsDatabase {
+    return !!db && typeof db === 'object'
+      && Array.isArray((db as AccountsDatabase).accounts)
+      && typeof (db as AccountsDatabase).version === 'number'
+      && Number.isFinite((db as AccountsDatabase).version);
+  }
+
+  /**
+   * H-ACC-013: recover a corrupt accounts.json from its sibling .bak, or fail loud.
+   *   • .bak parses → QUARANTINE the corrupt main as accounts.json.corrupt-<epochMs> (kept for
+   *     forensics, never deleted) BEFORE adopting the backup, so the next save()'s backup:true
+   *     copies recovered-good data and never clobbers the good .bak with the corrupt main (S5).
+   *   • .bak missing/also-corrupt → throw a single named Error. NEVER fall through to the fresh-db
+   *     branch: an empty fleet fabricated from a failed read is the S4/S7 failure class.
+   */
+  private recoverFromBak(err: Error): AccountsDatabase {
+    logger.error(`accounts.json at ${DB_PATH} is unreadable (${err.message}) — attempting recovery from ${DB_PATH}.bak`);
+    const bak = `${DB_PATH}.bak`;
+    let recovered: AccountsDatabase;
+    try {
+      recovered = fsExtra.readJsonSync(bak) as AccountsDatabase;
+      // The .bak must itself be a usable database — a shape-invalid backup (H-ACC-014) is no better
+      // than a torn one; do not swap one broken shape for another.
+      if (!AccountManager.isValidDbShape(recovered)) {
+        throw new Error('the backup is missing its `accounts` array or a numeric `version`');
+      }
+    } catch (bakErr) {
+      throw new Error(
+        `accounts.json is corrupt (${err.message}) and ${bak} could not recover it (${(bakErr as Error).message}). ` +
+        `The corrupt file was left in place at ${DB_PATH}; restore it from a backup (or delete it to start fresh) and restart.`,
+      );
+    }
+    // Rename the corrupt main away BEFORE any save so the next save() backs up recovered-good data.
+    const quarantine = `${DB_PATH}.corrupt-${Date.now()}`;
+    fsExtra.renameSync(DB_PATH, quarantine);
+    logger.warn(`[accounts] recovered accounts.json from .bak — corrupt original kept as ${quarantine}`);
+    return recovered;
   }
 
   /**
@@ -89,11 +155,18 @@ export class AccountManager {
       let migrated = 0;
       for (const acc of db.accounts) {
         if (typeof acc.maFilePath === 'string' && path.isAbsolute(acc.maFilePath)) {
+          // Since B23 the loader (resolveMaFilePath) basenames EVERY path into ./mafiles — an
+          // absolute maFilePath can no longer read outside the drop zone. So normalize ALL
+          // absolute paths to the bare filename the loader actually honors, not just the legacy
+          // dirs. An other-drive path that isn't in ./mafiles is broken; surface it once (rescue
+          // message) instead of persisting a value that silently resolves to a wrong/missing file.
           const parent = path.basename(path.dirname(acc.maFilePath)).toLowerCase();
-          if (LEGACY_MAFILE_DIRS.has(parent)) {
-            acc.maFilePath = path.basename(acc.maFilePath);
-            migrated++;
+          const base = path.basename(acc.maFilePath);
+          if (!LEGACY_MAFILE_DIRS.has(parent) && !fsExtra.existsSync(resolveMaFilePath(base))) {
+            logger.warn(`maFile for ${acc.username} must live in ./mafiles — copy ${base} there and re-import.`);
           }
+          acc.maFilePath = base;
+          migrated++;
         }
       }
       if (migrated) logger.info(`maFilePath migration: ${migrated} account(s) → portable filename in ./mafiles`);
@@ -110,7 +183,7 @@ export class AccountManager {
     return db;
   }
 
-  private save(): void {
+  private save(opts?: { backup?: boolean }): void {
     this.db.updatedAt = new Date().toISOString();
     // In VAULT MODE never persist a password or a credential-bearing proxy to accounts.json
     // — BUT only blank an account that is ACTUALLY in the vault. An account that could NOT be
@@ -141,7 +214,7 @@ export class AccountManager {
     // `secretFree` detects the steady state without a disk read: no vaulted account holds a
     // password in memory. (An unmigrated account's plaintext is already in accounts.json anyway.)
     const secretFree = !this.db.accounts.some(a => a.password && AccountVault.hasAccount(a.username));
-    writeJsonAtomic(DB_PATH, toWrite, { spaces: 2, backup: vault ? secretFree : true });
+    writeJsonAtomic(DB_PATH, toWrite, { spaces: 2, backup: opts?.backup ?? (vault ? secretFree : true) });
     logger.debug('accounts.json saved');
   }
 
@@ -155,11 +228,12 @@ export class AccountManager {
   defaultEnvironmentId(): string { return this.db.environments[0]?.id ?? ''; }
 
   /** Adds a minimal org record for a brand-new vault-imported bot (NO secrets here). */
-  addImportedAccount(p: { username: string; maFilePath: string; environmentId: string; folderId?: string | null }): void {
+  addImportedAccount(p: { username: string; maFilePath: string; environmentId: string; folderId?: string | null; tier?: AccountTier }): void {
     if (this.rawGet(p.username)) return;
     this.db.accounts.push({
       id: uuidv4(), username: p.username, password: '', maFilePath: p.maFilePath,
       environmentId: p.environmentId, folderId: p.folderId ?? null,
+      ...(p.tier ? { tier: p.tier } : {}),
       enabled: true, addedAt: new Date().toISOString(),
     });
     this.save();
@@ -169,10 +243,15 @@ export class AccountManager {
    *  Only touches accounts that ACTUALLY made it into the vault — a non-vaulted account keeps
    *  its plaintext credential so it is never destroyed. Also purges the stale plaintext .bak. */
   enterVaultMode(): void {
+    // Count the records this pass ACTUALLY blanked (a non-empty password cleared, or a
+    // proxy-type override stripped) — enterVaultMode runs on EVERY vault-mode boot (index.ts
+    // → vaultBoot.ts:228), but only the write that flips a plaintext secret to blank is a real
+    // TRANSITION; a steady-state boot (everything already blank) must touch nothing. (H-ACC-020)
+    let blanked = 0;
     for (const acc of this.db.accounts) {
       if (!AccountVault.hasAccount(acc.username)) continue; // not vaulted → keep plaintext (recoverable)
-      acc.password = '';
-      if (acc.networkOverride?.type === 'proxy') acc.networkOverride = undefined;
+      if (acc.password) { acc.password = ''; blanked++; }
+      if (acc.networkOverride?.type === 'proxy') { acc.networkOverride = undefined; blanked++; }
     }
     // Migrate every credential-bearing ENV proxy into the vault (B20); save() then blanks the
     // plaintext copy for envs whose proxy is now provably vaulted (non-destructive).
@@ -181,8 +260,50 @@ export class AccountManager {
       if (env.proxy && env.proxy.trim() && AccountVault.importEnvProxy(env.id, env.proxy.trim())) envProxiesMoved++;
     }
     if (envProxiesMoved > 0) { AccountVault.save(); logger.info(`[vault] migrated ${envProxiesMoved} environment proxy/proxies into the vault`); }
-    this.save();
-    try { const bak = `${DB_PATH}.bak`; if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); } catch { /* best-effort */ }
+    const bak = `${DB_PATH}.bak`;
+    if (blanked > 0 || envProxiesMoved > 0) {
+      // TRANSITION boot — H-ACC-015's sequence verbatim. Purge FIRST, then save with backup:false
+      // — otherwise the save() would copy the PRE-blank plaintext main into accounts.json.bak (the
+      // heuristic reads in-memory passwords, which are already blanked above, so it would wrongly
+      // back up the still-plaintext DISK). Purging first also removes any plaintext-mode or
+      // migrate-time .bak left earlier in this boot. Kill-point matrix: die before purge → old .bak
+      // persists but is warned + retried next boot; die between purge and save → plaintext main
+      // intact (non-destructive guarantee), no .bak; die after save → disk secret-free, no .bak.
+      try { if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); }
+      catch (e) { logger.warn(`[vault] could not remove plaintext accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
+      this.save({ backup: false });
+      return;
+    }
+    // STEADY-STATE boot — nothing changed, so NO save (the pointless updatedAt bump / rewrite is
+    // dropped) and NO unconditional purge. A .bak that is a STALE pre-transition plaintext backup
+    // is retired here (this preserves -15's "a failed purge is retried next boot" property); a .bak
+    // whose secrets are NOT provably in the vault is a recoverable rollback copy and is LEFT IN
+    // PLACE (same byte-equality doctrine as quarantineMigratedPlaintext, vaultBoot.ts, B21). Matrix:
+    // steady boot → main and a non-stale .bak untouched; transition boot → -15's guarantees verbatim;
+    // transition purge failed → retried by this sentinel on subsequent boots until gone.
+    let bakDb: AccountsDatabase;
+    try { bakDb = fsExtra.readJsonSync(bak) as AccountsDatabase; }
+    catch { return; } // absent or unreadable → leave it in place (nothing to prove stale)
+    let plaintextSecrets = 0;
+    let allVaulted = true;
+    for (const acc of bakDb.accounts ?? []) {
+      if (!acc.password) continue;
+      plaintextSecrets++;
+      if (AccountVault.getAccount(acc.username)?.password !== acc.password) allVaulted = false;
+    }
+    for (const env of bakDb.environments ?? []) {
+      const p = env.proxy?.trim();
+      if (!p) continue;
+      plaintextSecrets++;
+      if (AccountVault.getEnvProxy(env.id) !== p) allVaulted = false;
+    }
+    // Purge ONLY a .bak that holds plaintext AND every plaintext secret is byte-equal to the vault
+    // (provably stale). A secret-free .bak, or one holding any not-vaulted / mismatched secret
+    // (a recoverable orphan), is a legitimate rollback copy — never destroyed.
+    if (plaintextSecrets > 0 && allVaulted) {
+      try { fsExtra.removeSync(bak); }
+      catch (e) { logger.warn(`[vault] could not remove stale plaintext accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
+    }
   }
 
   // ── Network resolution (computed, never persisted) ───────────────────────────
@@ -384,6 +505,11 @@ export class AccountManager {
           try {
             const maFile = loadMaFileFromDisk(item.maFilePath);
             AccountVault.upsertAccount({ username: item.username, password: item.password, maFile });
+            // Vault now owns the secret — blank the in-memory plaintext copy so `secretFree`
+            // (save(), l.216) stays true and B34 backups keep running. Identical semantics to
+            // enterVaultMode (l.253) and the single-add route. ONLY after a successful upsert:
+            // the catch path below keeps plaintext (non-destructive guarantee). (H-ACC-017)
+            account.password = '';
           } catch (err) {
             logger.warn(`[${item.username}] bulk import: could not vault (kept plaintext until re-vaulted): ${(err as Error).message}`);
           }
@@ -463,7 +589,18 @@ export class AccountManager {
     const account = this.rawGet(username);
     if (!account || account.steamId === steamId) return;
     account.steamId = steamId;
-    this.save();
+    // H-ACC-019: rememberSteamId is called bare inside steam-user's 'loggedOn' emit chain, so a
+    // throwing save() (writeJsonAtomic keeps its throw contract; renameSync EPERM/EBUSY under AV is
+    // the classic Windows case) would become an uncaughtException and, during a mass first-login,
+    // tick the money-ops breaker. The steamId is a write-through CACHE: it stays set in memory, is
+    // served correctly this session, and persists with the next successful save — so a disk hiccup
+    // must not cross into the emit chain. Degrade to warn-and-continue (same as S24 for TokenStore).
+    try {
+      this.save();
+    } catch (e) {
+      logger.warn(`[${account.username}] steamId cache persist failed (kept in memory; persists with the next save): ${(e as Error).message}`);
+      return;
+    }
     logger.debug(`[${account.username}] cached SteamID ${steamId}`);
   }
 

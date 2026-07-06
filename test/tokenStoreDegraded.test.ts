@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import fsExtra from 'fs-extra';
 import { TokenStore } from '../src/core/TokenStore';
 import { AccountVault } from '../src/core/AccountVault';
 
@@ -83,6 +84,28 @@ test('S35a: a corrupt main AND a corrupt .bak → DEGRADED (no valid backup to r
   assert.equal(new TokenStore(p).isDegraded(), true);
 });
 
+// ─── H-ACC-059: a MISSING main with a surviving .bak recovers (not a silent fresh start) ────────
+test('H-ACC-059: missing main with a VALID .bak recovers from the backup (no silent fresh start)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-tok-'));
+  const p = path.join(dir, 'refresh_tokens.json'); // main NEVER written → missing
+  const bak = `${p}.bak`;
+  fs.writeFileSync(bak, JSON.stringify({ version: 1, tokens: { alice: 'tok-a' } }));
+  const bakBytesBefore = fs.readFileSync(bak, 'utf8');
+  const s = new TokenStore(p);
+  assert.equal(s.isDegraded(), false, 'a valid .bak means the store is NOT degraded');
+  assert.equal(s.get('alice'), 'tok-a', 'tokens recovered from the backup (no fleet re-auth)');
+  assert.equal(fs.existsSync(p), true, 'the main file was repaired on disk');
+  assert.deepEqual(JSON.parse(fs.readFileSync(p, 'utf8')).tokens, { alice: 'tok-a' }, 'main repaired from .bak');
+  assert.equal(fs.readFileSync(bak, 'utf8'), bakBytesBefore, '.bak left byte-identical (backup:false — S5 lesson)');
+});
+
+test('H-ACC-059: missing main with a corrupt .bak → DEGRADED', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-tok-'));
+  const p = path.join(dir, 'refresh_tokens.json'); // main NEVER written → missing
+  fs.writeFileSync(`${p}.bak`, '{ corrupt bak');
+  assert.equal(new TokenStore(p).isDegraded(), true, 'no valid backup to recover → degrade, do not fresh-start');
+});
+
 test('S24: a throwing vault setToken does NOT escape TokenStore.set (no uncaughtException burst)', () => {
   const s = new TokenStore(mk(undefined)); // fresh install → not degraded
   const origEnabled = AccountVault.isEnabled;
@@ -110,6 +133,42 @@ test('S35b: in VAULT MODE a corrupt leftover plaintext file does NOT raise a fal
     (AccountVault as unknown as { isEnabled: () => boolean }).isEnabled = orig;
   }
   assert.equal(s.isDegraded(), true, 'and it is reported again once back in plaintext mode');
+});
+
+// ─── H-ACC-055: transient FS locks at load are NOT corruption ───────────────────
+const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: simulated`), { code });
+
+test('H-ACC-055: a transient EBUSY lock (twice then success) loads the tokens — NOT degraded', () => {
+  const good = { version: 1, tokens: { alice: 'tok-a' } };
+  const p = mk(JSON.stringify(good)); // file is genuinely intact on disk
+  const orig = fsExtra.readJsonSync;
+  let calls = 0;
+  try {
+    (fsExtra as unknown as { readJsonSync: (fp: string) => unknown }).readJsonSync = (_fp: string) => {
+      calls++;
+      if (calls <= 2) throw errno('EBUSY'); // AV scanner holding the file for the first two attempts
+      return good;
+    };
+    const s = new TokenStore(p);
+    assert.equal(s.isDegraded(), false, 'a transient lock that clears must NOT degrade a healthy file');
+    assert.equal(s.get('alice'), 'tok-a', 'tokens are loaded after the retry succeeds');
+    assert.equal(calls >= 3, true, 'the read was retried past the transient failures');
+  } finally {
+    (fsExtra as unknown as { readJsonSync: typeof orig }).readJsonSync = orig;
+  }
+});
+
+test('H-ACC-055: an ENOENT from the existsSync→read TOCTOU window loads fresh (empty, NOT degraded)', () => {
+  const p = mk(JSON.stringify({ version: 1, tokens: { alice: 'tok-a' } })); // existsSync sees it…
+  const orig = fsExtra.readJsonSync;
+  try {
+    (fsExtra as unknown as { readJsonSync: () => unknown }).readJsonSync = () => { throw errno('ENOENT'); }; // …but it vanished before the read
+    const s = new TokenStore(p);
+    assert.equal(s.isDegraded(), false, 'a vanished file is a fresh install, not corruption');
+    assert.equal(s.get('alice'), undefined, 'the store is empty (fresh), not populated');
+  } finally {
+    (fsExtra as unknown as { readJsonSync: typeof orig }).readJsonSync = orig;
+  }
 });
 
 test('S36: a fresh-install store must NOT leak tokens into a later instance (no shared EMPTY alias)', () => {

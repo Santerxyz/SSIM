@@ -29,21 +29,34 @@ const WEAR_BANDS: ReadonlyArray<{ wear: Wear; lo: number; hi: number }> = [
 
 /** Maps a float (0..1) to its CS2 wear bucket. 0.07 is Minimal Wear (band lower bound inclusive). */
 export function wearForFloat(f: number): Wear {
-  const x = Number.isFinite(f) ? f : 0;
-  for (const b of WEAR_BANDS) if (x < b.hi) return b.wear;
+  if (!Number.isFinite(f)) throw new Error('wearForFloat: non-finite float');
+  for (const b of WEAR_BANDS) if (f < b.hi) return b.wear;
   return 'Battle-Scarred';
 }
 
 /**
+ * Wears a skin can actually roll given its float range. A trade-up output float spans
+ * [minFloat, maxFloat] (outputFloatValue for avg∈(0,1)), so only wears whose band [lo, hi)
+ * intersects that range are achievable — the others name market items that don't exist.
+ * Endpoint-inclusive (over-inclusion is harmless; under-warming at boundaries is not).
+ */
+export function achievableWears(minFloat: number, maxFloat: number): Wear[] {
+  return WEAR_BANDS.filter((b) => b.lo < maxFloat && b.hi > minFloat).map((b) => b.wear);
+}
+
+/**
  * Estimated input float when the EXACT float is unknown (the pure-web inventory does not expose
- * floats): the midpoint of the item's wear band, clamped to the skin's own [min,max] range. The
+ * floats): the midpoint of the item's wear band, clamped to the skin's own [min,max] range. When
+ * the band and the [min,max] range don't intersect (schema float-range drift), resolves to the
+ * nearest range bound — skinMax if the band sits above the range, skinMin if below. The
  * GC execution path can substitute real floats; previews use this estimate (flagged in the UI).
  */
 export function wearMidpoint(wear: Wear, skinMin = 0, skinMax = 1): number {
   const b = WEAR_BANDS.find((x) => x.wear === wear) ?? WEAR_BANDS[2];
   const lo = Math.max(b.lo, skinMin);
   const hi = Math.min(b.hi === 1.01 ? 1 : b.hi, skinMax);
-  return hi >= lo ? (lo + hi) / 2 : skinMin;
+  if (hi >= lo) return (lo + hi) / 2;
+  return b.lo > skinMax ? skinMax : skinMin;
 }
 
 /** The trade-up output float for a given average input float and output skin float range. */
@@ -106,8 +119,9 @@ export type PriceFn = (marketHashName: string) => number | null;
 
 /**
  * Computes a full trade-up contract for an exact set of 10 inputs. Throws ONLY on a malformed
- * input set (not 10, mixed rarity, mixed StatTrak) — a pure validation error the caller guards
- * against before ever touching real items. Pricing gaps are tolerated (unpriced → 0 + flagged).
+ * input set (not 10, mixed rarity, mixed StatTrak, an input collection without next-rarity
+ * outputs) — a pure validation error the caller guards against before ever touching real items.
+ * Pricing gaps are tolerated (unpriced → 0 + flagged).
  */
 export function computeContract(
   inputs: TuInput[],
@@ -120,8 +134,9 @@ export function computeContract(
   const stattrak = inputs[0].stattrak;
   if (!inputs.every((i) => i.rarityId === rarityId)) throw new Error('all 10 inputs must share the same rarity');
   if (!inputs.every((i) => i.stattrak === stattrak)) throw new Error('all 10 inputs must share the same StatTrak status');
+  if (!inputs.every((i) => Number.isFinite(i.float))) throw new Error('every input needs a finite float');
 
-  const avgFloat = inputs.reduce((s, i) => s + (Number.isFinite(i.float) ? i.float : 0), 0) / 10;
+  const avgFloat = inputs.reduce((s, i) => s + i.float, 0) / 10;
 
   // Inputs per collection → that collection's share of the 10/10 probability mass.
   const perCollection = new Map<string, number>();
@@ -132,7 +147,7 @@ export function computeContract(
   const merged = new Map<string, TuOutcome>();
   for (const [collection, count] of perCollection) {
     const outs = schema.outputsFor(collection, rarityId);
-    if (outs.length === 0) continue; // eligible inputs guarantee ≥1; defensive skip
+    if (outs.length === 0) throw new Error(`collection "${collection}" has no next-rarity outputs — input set is not trade-up eligible`);
     const per = (count / 10) / outs.length;
     for (const o of outs) {
       const outFloat = outputFloatValue(avgFloat, o.minFloat, o.maxFloat);

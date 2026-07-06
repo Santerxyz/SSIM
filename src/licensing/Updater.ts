@@ -2,7 +2,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { spawn, execFile } from 'child_process';
+import { spawn, execFile, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import fsExtra from 'fs-extra';
 import axios from 'axios';
@@ -105,6 +105,42 @@ function isNewer(remote: string, local: string): boolean {
   return false;
 }
 
+/**
+ * Validate the untrusted `/version` body into a VersionInfo, or `null` if it is malformed. This runs
+ * BEFORE isNewer / download / verify, so a hijacked-manifest / MITM attacker (the exact adversary the
+ * header threat model names) can never drive an unvalidated field into a filesystem path (`sha256` →
+ * stagedArtifactPath) or the shell's version eval (`latest` → SSIM_UPDATE_DOWNLOADING → lib.rs w.eval)
+ * BEFORE the sha256/Ed25519 gate — signature verification happens too late to guard those sinks.
+ * Forward-compat: unknown extra fields are tolerated (matching the VersionInfo comment); only the
+ * KNOWN fields are shape-checked. `sha256` is normalized to lowercase here so the whole file carries a
+ * single canonical representation (folds in the case-inconsistency H-LIC-003 guards against).
+ */
+export function parseManifest(raw: unknown): VersionInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Record<string, unknown>;
+  const b64url = (v: unknown): v is string => typeof v === 'string' && v.length <= 512 && /^[A-Za-z0-9_-]+$/.test(v);
+  if (typeof m.latest !== 'string' || !/^\d+\.\d+\.\d+$/.test(m.latest)) return null;
+  if (typeof m.sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(m.sha256)) return null;
+  if (typeof m.url !== 'string') return null;
+  try { if (new URL(m.url).protocol !== 'https:') return null; } catch { return null; }
+  if (!b64url(m.sigKind)) return null;               // verify() already refuses a sig-less manifest — fail faster here
+  if (m.sig !== undefined && !b64url(m.sig)) return null;   // LEGACY field, still emitted — validate-if-present
+  if (m.kind !== undefined && m.kind !== 'single-exe' && m.kind !== 'backend') return null;
+  if (m.notes !== undefined && typeof m.notes !== 'string') return null;
+  if (m.publishedAt !== undefined && (typeof m.publishedAt !== 'string' || m.publishedAt.length > 64)) return null;
+  const info: VersionInfo = {
+    latest: m.latest,
+    url: m.url,
+    sha256: m.sha256.toLowerCase(),                  // canonical lowercase (path-safe + case-consistent)
+    sig: typeof m.sig === 'string' ? m.sig : '',
+    sigKind: m.sigKind as string,
+  };
+  if (m.kind !== undefined) info.kind = m.kind as 'single-exe' | 'backend';
+  if (typeof m.notes === 'string') info.notes = m.notes.slice(0, 4096);
+  if (typeof m.publishedAt === 'string') info.publishedAt = m.publishedAt;
+  return info;
+}
+
 /** The three outcomes of a version check, kept DISTINCT so the caller never mistakes a failed check for
  *  "up to date" (S53) — 'current' and 'check-failed' both used to collapse to a bare `null`. */
 type CheckResult =
@@ -121,7 +157,8 @@ async function check(
   try {
     const res = await get(`${LICENSE_API_URL}/version`);
     if (res.status !== 200) return { status: 'check-failed', error: `HTTP ${res.status}` };
-    const info = res.data as VersionInfo;
+    const info = parseManifest(res.data);
+    if (!info) return { status: 'check-failed', error: 'malformed manifest' };
     return isNewer(info.latest, currentVersion) ? { status: 'update', info } : { status: 'current' };
   } catch (err) {
     logger.warn(`update check failed: ${(err as Error).message}`);
@@ -621,12 +658,18 @@ export function buildSwapScript(o: {
   );
 }
 
+/** Launcher factory — the real `spawn` in production; injectable so a test can drive the WSH-blocked
+ *  ('error') path without a real wscript.exe (mirrors selfTestNewExe's injected runner). */
+export type SpawnLauncher = (cmd: string, args: string[]) => ChildProcess;
+const realLauncher: SpawnLauncher = (cmd, args) =>
+  spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+
 /**
  * 5. Write the swap script + launch it (hidden, detached) so it can replace us after we exit. Picks the
  * swap SHAPE from the runtime environment + manifest, so this single client serves the deployed two-file
  * fleet, the single-exe build, and the one-time migration between them.
  */
-function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean; reason: string } {
+export function swapAndRelaunch(newExe: string, info: VersionInfo, launcher: SpawnLauncher = realLauncher): Promise<{ updated: boolean; reason: string }> {
   const stamp = Date.now();
   const bat = path.join(os.tmpdir(), `ssim_updater_${stamp}.bat`);
   const vbs = path.join(os.tmpdir(), `ssim_updater_${stamp}.vbs`);
@@ -673,14 +716,30 @@ function swapAndRelaunch(newExe: string, info: VersionInfo): { updated: boolean;
   fsExtra.writeFileSync(bat, script);
   // Hidden + detached launcher: window style 0 = invisible, False = don't wait.
   fsExtra.writeFileSync(vbs, `CreateObject("WScript.Shell").Run "cmd /c ""${bat}""", 0, False\r\n`);
-  spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  // Tell the shell this is an UPDATE, not a crash → quit cleanly so the file frees up. The single-exe
-  // shell acts on this; the old two-file shell ignores it (it already follows its sidecar out on exit).
-  emitUpdate('SSIM_UPDATING');
-  logger.info(`update staged (${mode}) – swap script launched, exiting for replacement`);
-  // Give WScript a moment to spin the bat up as an independent process before we vanish (do NOT unref).
-  setTimeout(() => process.exit(0), 800);
-  return { updated: true, reason: 'swapping' };
+  // S9/hardening: WSH (wscript.exe) is disabled/removed on hardened & EDR-managed fleets (the same class
+  // this app already fights). A ChildProcess whose image can't launch emits an async 'error' with NO
+  // listener → uncaughtException → false crash marker + a money-ops breaker tick for a benign "your OS
+  // blocks WSH" condition. So attach 'error'/'spawn' BEFORE unref and only take the exit path once the
+  // launcher is KNOWN to have started; a failed launch means no swap happens → keep-current (no exit,
+  // no SSIM_UPDATING), classified as swap-blocked.
+  return new Promise((resolve) => {
+    const child = launcher('wscript.exe', [vbs]);
+    child.on('error', (e) => {
+      logger.error(`update swap launcher failed to start (${(e as NodeJS.ErrnoException).code}) – keeping current; manual reinstall needed`);
+      setUpdateOutcome('swap-blocked');
+      resolve({ updated: false, reason: 'swap launcher blocked (WSH disabled?)' });
+    });
+    child.on('spawn', () => {
+      child.unref();
+      // Tell the shell this is an UPDATE, not a crash → quit cleanly so the file frees up. The single-exe
+      // shell acts on this; the old two-file shell ignores it (it already follows its sidecar out on exit).
+      emitUpdate('SSIM_UPDATING');
+      logger.info(`update staged (${mode}) – swap script launched, exiting for replacement`);
+      // Give WScript a moment to spin the bat up as an independent process before we vanish (do NOT unref).
+      setTimeout(() => process.exit(0), 800);
+      resolve({ updated: true, reason: 'swapping' });
+    });
+  });
 }
 
 // ── C3: per-artifact self-test failure streak (never pin silently) ────────────
@@ -936,4 +995,4 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   return swapAndRelaunch(file, info); // does not return on success (process exits)
 }
 
-export const Updater = { check, runUpdate };
+export const Updater = { check, runUpdate, parseManifest };

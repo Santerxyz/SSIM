@@ -109,6 +109,10 @@ try {
 try { report = fs.readFileSync(path.join(selftestHome, '.ssim-selftest.out'), 'utf8').trim() || report; } catch { /* no report file */ }
 try { fs.rmSync(selftestHome, { recursive: true, force: true }); } catch { /* best-effort */ }
 if (!selftestOk || !/SSIM_SELFTEST_OK/.test(report)) {
+  // Discard this run's unverified output so no downstream consumer (make-zip.js's bare
+  // existence check) can package a build that FAILED its own anti-brick self-test. OUT was
+  // freshly (re)created this run at [4/5], so removing it drops only this run's SSIM.exe.
+  try { fs.rmSync(OUT, { recursive: true, force: true }); } catch { /* best-effort */ }
   console.error(`✗ consolidated SSIM.exe self-test FAILED — NOT shipping this build:\n${report || '(no report)'}`);
   process.exit(1);
 }

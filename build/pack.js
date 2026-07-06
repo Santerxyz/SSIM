@@ -63,19 +63,38 @@ function bakeSecret(jsFile, marker, value) {
   const literal = JSON.stringify(value);
   const re = new RegExp(`process\\.env\\.${marker}\\s*\\?\\?\\s*[^;\\n]+`);
   if (!re.test(src)) {
-    console.warn(`  • marker ${marker} not found – leaving as-is`);
-    return;
+    console.error(`  ✗ marker ${marker} did not match – bake did not land`);
+    return false;
   }
   src = src.replace(re, literal);
   fs.writeFileSync(jsFile, src);
   console.log(`  • baked ${marker}`);
+  return true;
 }
 
 const configJs = path.join(DIST, 'licensing', 'config.js');
 console.log('▸ baking secrets into dist/licensing/config.js');
-bakeSecret(configJs, 'LICENSE_PEPPER', process.env.LICENSE_PEPPER);
-bakeSecret(configJs, 'LICENSE_API_URL', process.env.LICENSE_API_URL);
-bakeSecret(configJs, 'LICENSE_PUBLIC_KEY', process.env.LICENSE_PUBLIC_KEY);
+const bakeResults = [
+  bakeSecret(configJs, 'LICENSE_PEPPER', process.env.LICENSE_PEPPER),
+  bakeSecret(configJs, 'LICENSE_API_URL', process.env.LICENSE_API_URL),
+  bakeSecret(configJs, 'LICENSE_PUBLIC_KEY', process.env.LICENSE_PUBLIC_KEY),
+];
+// Fail CLOSED: a warn-and-continue on a non-matching marker ships a DEV-placeholder licensing exe
+// that still passes the self-test (it never reads these values) → fleet-wide licensing failure found
+// only in the field, behind a green build log.
+if (bakeResults.some((ok) => !ok)) {
+  console.error('✗ a required secret bake did not land — aborting so no DEV-secret binary ships.');
+  process.exit(1);
+}
+// Catch both a non-matching regex AND any future change to config.ts's fallback text: if a DEV
+// placeholder sentinel survived the bake, abort before producing an artifact.
+const bakedConfig = fs.readFileSync(configJs, 'utf8');
+for (const sentinel of ['DEV_PEPPER_replace_at_build_time', 'license.example.com', 'DEV_PLACEHOLDER_PUBLIC_KEY']) {
+  if (bakedConfig.includes(sentinel)) {
+    console.error(`✗ DEV placeholder "${sentinel}" survived the bake — aborting (no DEV-secret binary ships).`);
+    process.exit(1);
+  }
+}
 
 // 4. Obfuscate the sensitive surface (licensing + entry). Keep it scoped – we do
 //    NOT obfuscate the whole tree (slows boot, breaks some vendor reflection).

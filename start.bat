@@ -13,6 +13,9 @@ if exist "secrets.local.bat" (
   call secrets.local.bat
 ) else (
   echo [SSIM] WARNING: secrets.local.bat missing - license environment not set.
+  echo [SSIM] Cannot start without license secrets. Create secrets.local.bat ^(set LICENSE_API_URL / LICENSE_PUBLIC_KEY / LICENSE_PEPPER^) and retry.
+  pause
+  exit /b 1
 )
 
 REM --- Local web UI -----------------------------------------------------------

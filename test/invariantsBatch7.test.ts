@@ -21,6 +21,27 @@ test('MoneyOps: blocks a concurrent claim, allows a sequential one', () => {
   assert.equal(assetKey('BOT1', '123'), assetKey('bot1', '123'), 'key is case-insensitive on username');
 });
 
+// H-TRD-102 — claimAll/releaseAll give the caller an ATOMIC all-or-nothing guard over N keys,
+// so the multi-asset invariant lives in the tested module (not a scan-then-forEach in the caller).
+test('MoneyOps: claimAll is atomic all-or-nothing, releaseAll frees all', () => {
+  // (a) claimAll over unheld keys claims every key.
+  assert.equal(MoneyOps.claimAll(['k1', 'k2']), true, 'claimAll over unheld keys succeeds');
+  assert.equal(MoneyOps.held('k1'), true);
+  assert.equal(MoneyOps.held('k2'), true);
+  MoneyOps.releaseAll(['k1', 'k2']);
+  // (b) with one key already held, claimAll refuses AND claims NOTHING (no partial claim).
+  assert.equal(MoneyOps.claim('k3'), true);
+  assert.equal(MoneyOps.claimAll(['k4', 'k3']), false, 'claimAll refuses when any key is held');
+  assert.equal(MoneyOps.held('k4'), false, 'the free key is NOT claimed on refusal');
+  MoneyOps.release('k3');
+  // (c) input duplicates do not self-collide (the has-scan runs before any add).
+  assert.equal(MoneyOps.claimAll(['k5', 'k5']), true, 'duplicate keys within the batch do not self-collide');
+  assert.equal(MoneyOps.held('k5'), true);
+  // (d) releaseAll frees every key.
+  MoneyOps.releaseAll(['k5', 'k5']);
+  assert.equal(MoneyOps.held('k5'), false, 'releaseAll frees the key');
+});
+
 // E2 / INV-E2 — the price cache only ever stores USD cents (finite, ≥0, integer) or null.
 test('PriceCache: rejects/normalizes non-cents values at the write boundary', () => {
   const file = path.join(os.tmpdir(), `ssim-prices-${process.pid}-${Date.now()}.json`);

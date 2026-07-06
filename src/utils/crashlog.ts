@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { logsDir, baseDir } from './paths';
-import { redactSecrets } from './logger';
+import { redactSecrets } from './redact';
 import { rollIfLarge, SINK_MAX_BYTES } from './rollLog';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -28,6 +28,25 @@ export const CRASH_FILE: string = (() => {
   catch { return baseDir('crash-log.txt'); }
 })();
 
+/**
+ * Serialize a NON-Error crash detail with structure preserved, so a steam-user /
+ * steamcommunity promise rejection (an EResult object, `{ eresult, message }`, a plain
+ * body) does not collapse to the content-free "[object Object]". Prefers a compact
+ * key=value join of the diagnostic own-properties (eresult/code/name/message) when the
+ * value carries any of them, else JSON.stringify; either can throw (circular refs,
+ * BigInt) so the caller degrades to String(detail). NEVER throws on its own.
+ */
+function safeSerialize(detail: unknown): string {
+  if (detail !== null && typeof detail === 'object') {
+    const d = detail as Record<string, unknown>;
+    const parts = (['eresult', 'code', 'name', 'message'] as const)
+      .filter((k) => d[k] !== undefined)
+      .map((k) => `${k}=${String(d[k])}`);
+    if (parts.length > 0) return parts.join(' ');
+  }
+  return JSON.stringify(detail) ?? String(detail);
+}
+
 /** Short current-memory tag, so a crash record shows whether RSS/heap was high at death. */
 function memTag(): string {
   try {
@@ -38,15 +57,17 @@ function memTag(): string {
 }
 
 /**
- * Appends a crash/fatal record to crash-log.txt synchronously. Credentials in the
- * stack (proxy URLs carry user:pass) are redacted with the SAME masker the logger
- * uses, so secrets never land at rest here either. Best-effort; swallows all errors.
+ * Appends a crash/fatal record to crash-log.txt synchronously. PROXY credentials in the
+ * stack (proxy URLs carry user:pass) are redacted with the SAME canonical masker the logger
+ * uses (redact.ts) — URL + legacy forms. Non-proxy secret VALUES must never be passed to a
+ * crash sink in the first place (enforced by test/logSecrecyGuard.test.ts, not scrubbed
+ * here). Best-effort; swallows all errors.
  */
 export function writeCrash(label: string, detail: unknown): void {
   try {
-    const body = detail instanceof Error
-      ? (detail.stack ?? `${detail.name}: ${detail.message}`)
-      : String(detail);
+    let body: string;
+    if (detail instanceof Error) body = detail.stack ?? `${detail.name}: ${detail.message}`;
+    else { try { body = safeSerialize(detail); } catch { body = String(detail); } }
     const record = `\n[${new Date().toISOString()}] ${label} (pid ${process.pid})${memTag()}\n${redactSecrets(body)}\n`;
     rollIfLarge(CRASH_FILE, SINK_MAX_BYTES); // S47: cap the append-only crash sink
     fs.appendFileSync(CRASH_FILE, record);

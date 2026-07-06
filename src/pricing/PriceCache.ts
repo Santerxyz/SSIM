@@ -33,13 +33,44 @@ export class PriceCache {
   private load(): void {
     try {
       if (fsExtra.existsSync(this.path)) {
-        const raw = fsExtra.readJsonSync(this.path) as Record<string, PriceEntry>;
-        for (const [k, v] of Object.entries(raw)) this.map.set(k, v);
+        const raw = fsExtra.readJsonSync(this.path) as Record<string, unknown>;
+        let dropped = 0;
+        for (const [k, v] of Object.entries(raw)) {
+          const e = PriceCache.sanitizeEntry(v);
+          if (e) this.map.set(k, e); else dropped++;
+        }
         logger.info(`PriceCache loaded (${this.map.size} entries)`);
+        // A persisted file can predate the set() unit guard, or be hand-edited / written by an old
+        // mis-scaled source (S64). Whatever the file holds is trusted verbatim on READ otherwise, so a
+        // bad cents (negative, non-finite, a string) would poison totalValueUsd. Enforce INV-E2 on load
+        // too — one aggregate warn, not one per key (this is a warm-start hot path over up to MAX_ENTRIES).
+        if (dropped) logger.warn(`PriceCache: dropped ${dropped} invalid persisted entr${dropped === 1 ? 'y' : 'ies'} on load`);
       }
     } catch (err) {
       logger.warn(`PriceCache load failed: ${(err as Error).message}`);
     }
+  }
+
+  /** The INV-E2 cents rule, shared by set() (runtime write) and sanitizeEntry() (load). A price is USD
+   *  cents — a finite, non-negative integer, or null. Anything else (NaN/Infinity/negative, or a
+   *  non-number leaked from a persisted file) becomes a null miss rather than poisoning totalValueUsd. */
+  private static normalizeCents(c: unknown): number | null {
+    if (typeof c !== 'number') return null;
+    if (!Number.isFinite(c) || c < 0) return null;
+    return Math.round(c);
+  }
+
+  /** Validate a persisted record before it is trusted as a cache entry. Used ONLY by load() — set()
+   *  supplies its own fresh fetchedAt and cannot be routed through a path that requires a persisted one.
+   *  Returns null (skip the key) when the record isn't a plain object or lacks a string fetchedAt. */
+  private static sanitizeEntry(v: unknown): PriceEntry | null {
+    if (typeof v !== 'object' || v === null) return null;
+    const rec = v as { cents?: unknown; fetchedAt?: unknown; soft?: unknown };
+    if (typeof rec.fetchedAt !== 'string') return null;
+    const cents = PriceCache.normalizeCents(rec.cents);
+    const entry: PriceEntry = { cents, fetchedAt: rec.fetchedAt };
+    if (cents == null && rec.soft === true) entry.soft = true;
+    return entry;
   }
 
   get(name: string): PriceEntry | undefined { return this.map.get(name); }
@@ -58,12 +89,9 @@ export class PriceCache {
     // value, or null. A NaN / negative / non-finite value signals a parse or unit error at
     // the source (e.g. a non-USD price source); store it as a MISS rather than poisoning
     // every totalValueUsd that sums this entry. Normalize to integer cents.
-    let v: number | null = cents;
-    if (v != null && (!Number.isFinite(v) || v < 0)) {
+    const v = PriceCache.normalizeCents(cents);
+    if (v == null && cents != null) {
       logger.warn(`PriceCache: rejected non-cents price for "${name}" (${cents}) – storing as miss`);
-      v = null;
-    } else if (v != null) {
-      v = Math.round(v);
     }
     if (!this.map.has(name) && this.map.size >= PriceCache.MAX_ENTRIES) {
       const oldest = this.map.keys().next().value;

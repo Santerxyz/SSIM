@@ -13,15 +13,22 @@ import { dataDir } from '../utils/paths';
 //  Steam-side order/offer may already exist (BACKEND_RELIABILITY.md F5, residual 1).
 //
 //  This journal closes that gap WITHOUT changing any success-path behaviour:
-//   • begin(op)   is written BEFORE the commit; resolve(op) removes it after the op
-//     RESOLVES (success OR caught failure — both run the finally). So a CLEANLY
+//   • begin(op)   is written BEFORE the commit; resolve(op) removes it on a CLEAN
+//     resolution — success or a DEFINITE (non-transport-ambiguous, S3) caught
+//     failure; callers skip resolve when the commit was transport-ambiguous
+//     (`commitMayHaveLanded`) or the call was refused (BuyService via its `refused`
+//     flag; TradeService by throwing before its try/finally opens). So a CLEANLY
 //     completed op leaves NO trace → legitimate sequential repeats are unaffected.
-//   • Only a HARD crash between begin() and resolve() leaves a LINGERING entry —
-//     an op whose Steam-side outcome is unknown. On the next run, a retry whose
-//     op-hash matches that lingering entry is refused ONCE (and the entry consumed,
-//     so a deliberate second attempt proceeds) with a "verify on Steam" message.
-//   • TTL-bounded: an entry older than the TTL is swept (a stale crash long since
-//     verified by the operator can't block forever).
+//   • A HARD crash between begin() and resolve(), OR a transport-ambiguous commit
+//     failure (S3, commitAmbiguity.ts), leaves a LINGERING entry — an op whose
+//     Steam-side outcome is unknown. On the next run a matching retry is REFUSED
+//     and the entry KEPT (S15); after an 8s min-age a deliberate retry is allowed
+//     and consumes it (see consultRefusal), with a "verify on Steam" message.
+//   • TTL-bounded (24h): an entry older than the TTL is swept. The window must
+//     outlive a crash-overnight → retry-next-morning cycle; post-S15 a lingering
+//     entry costs only one refused click + an 8s pause, so the sweep exists to
+//     bound growth/staleness, not UX — a stale crash long since verified by the
+//     operator can't block forever.
 //
 //  Every method is best-effort and NEVER throws — it must not perturb the money
 //  path (esp. the "never throw after placement" contract). Injectable path/ttl/now
@@ -31,7 +38,7 @@ import { dataDir } from '../utils/paths';
 export type MoneyOpPhase = 'initiated' | 'placed' | 'sent';
 
 export interface MoneyOpEntry {
-  op: string;        // 'buy' | 'send' — for the surfaced message
+  op: string;        // 'buy' | 'send' — forensic: identifies the op class when the on-disk journal is inspected after a crash
   phase: MoneyOpPhase;
   at: number;        // epoch ms of begin()/record()
   detail?: string;
@@ -41,7 +48,7 @@ export interface MoneyOpEntry {
   refusedAt?: number;
 }
 
-const DEFAULT_TTL_MS = 60 * 60 * 1000; // ~1h
+export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h — must outlive a crash-overnight→retry-next-morning cycle; post-S15 a lingering entry costs only one refused click + an 8s pause, so the sweep exists to bound growth/staleness, not UX
 const DEFAULT_MIN_REFUSE_MS = 8_000;   // S15: a lingering op is refused for ≥8s before a deliberate retry is allowed
 
 export class MoneyOpJournal {
@@ -60,13 +67,51 @@ export class MoneyOpJournal {
     return new MoneyOpJournal(dataDir('money-op-journal.json'), DEFAULT_TTL_MS, () => 0, false);
   }
 
-  private read(): Record<string, MoneyOpEntry> {
+  /** S54/S58: epoch ms (real clock) of the last surfaced fs-failure warn — rate-limits the warn to ≤1/min. */
+  private lastWarnAt = 0;
+
+  /**
+   * Surface a persistent read/write fs failure ONCE per minute — a persistently unwritable/unreadable data/
+   * (EPERM/EACCES after an AV or permissions change, disk full, read-only volume) silently drops the money
+   * path back to pre-B4 behaviour with no cross-restart dedup. A rate-limited warn turns that invisible loss
+   * of the S3/S15 guarantee into a diagnosable one-liner. Uses the REAL clock (not this.now) so injected test
+   * clocks neither suppress nor spam it; self-catching so it never breaks the never-throw contract.
+   */
+  private warn(kind: 'read' | 'write', err: unknown): void {
     try {
-      if (!fs.existsSync(this.filePath)) return {};
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Record<string, MoneyOpEntry> | null;
-      return parsed && typeof parsed === 'object' ? parsed : {};
+      const now = Date.now();
+      if (now - this.lastWarnAt < 60_000) return;
+      this.lastWarnAt = now;
+      logger.warn(`[money-journal] ${kind} failed (${(err as NodeJS.ErrnoException)?.code ?? (err as Error)?.message ?? 'unknown'}): cross-restart money-op dedup degraded – ${this.filePath}`);
+    } catch { /* logging must never break the never-throw contract */ }
+  }
+
+  /**
+   * Read the journal, distinguishing a genuinely-absent/corrupt file (empty is AUTHORITATIVE — the
+   * dedup memory really is nothing) from a TRANSIENT fs error on an existing file (empty is a FABRICATION
+   * we must not persist — an EBUSY/EPERM sharing violation from AV/indexer/backup, the Windows S54/S58
+   * failure mode). `unreliable` gates the destructive persists (begin's wholesale write, the sweep-persist,
+   * the no-entry rm) so a blip can never erase other accounts' lingering double-spend entries.
+   */
+  private read(): { map: Record<string, MoneyOpEntry>; unreliable: boolean } {
+    if (!fs.existsSync(this.filePath)) return { map: {}, unreliable: false };
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.filePath, 'utf8');
+    } catch (err) {
+      // ENOENT (raced deletion) is authoritative-empty; any other fs error (EBUSY/EPERM/EACCES/EIO…) is a
+      // transient failure on an existing file — degrade to empty for THIS call but never persist it.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { map: {}, unreliable: false };
+      this.warn('read', err);
+      return { map: {}, unreliable: true };
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, MoneyOpEntry> | null;
+      // An array file (external edit/corruption) passes typeof===object but JSON.stringify silently DROPS
+      // string-keyed props of arrays, so begin() would "write" but journal nothing — treat it as corrupt.
+      return { map: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}, unreliable: false };
     } catch {
-      return {}; // a corrupt journal is a lost dedup memory, not a hazard — degrade to today's behaviour
+      return { map: {}, unreliable: false }; // a corrupt journal is a lost dedup memory, not a hazard — degrade to today's behaviour
     }
   }
 
@@ -83,38 +128,48 @@ export class MoneyOpJournal {
     try {
       if (Object.keys(map).length === 0) { if (fs.existsSync(this.filePath)) fs.rmSync(this.filePath, { force: true }); return; }
       writeJsonAtomic(this.filePath, map, { spaces: 0 });
-    } catch { /* best-effort — a failed journal write must never break the money op */ }
+    } catch (err) { this.warn('write', err); /* best-effort — a failed journal write must never break the money op */ }
   }
 
   /** Record that `opHash` is being INITIATED (before the commit). */
   begin(opHash: string, op: string): void {
     if (!this.enabled) return;
     try {
-      const map = this.sweep(this.read());
-      map[opHash] = { op, phase: 'initiated', at: this.now() };
+      const { map, unreliable } = this.read();
+      if (unreliable) return; // a transient read blip — do NOT clobber the whole file to this one entry (the op proceeds unjournaled, as it does today on a failed write)
+      const swept = this.sweep(map);
+      swept[opHash] = { op, phase: 'initiated', at: this.now() };
+      this.write(swept);
+    } catch { /* never throw */ }
+  }
+
+  /** Advance the phase after the commit (so a post-commit crash records it was actually placed/sent).
+   *  UPSERT: if a transient begin() write failed (blip) or the entry was clobbered, record() is the one
+   *  call made with CERTAIN knowledge the op landed on Steam — so it CREATES the entry when absent rather
+   *  than silently no-op'ing away the highest-value crash-protection window (H-TRD-110). */
+  record(opHash: string, op: string, phase: MoneyOpPhase, detail?: string): void {
+    if (!this.enabled) return;
+    try {
+      const { map, unreliable } = this.read();
+      if (unreliable) return; // a transient read blip — do not write over an unread file
+      const existing = map[opHash];
+      map[opHash] = { op: existing?.op ?? op, phase, at: this.now(), detail };
       this.write(map);
     } catch { /* never throw */ }
   }
 
-  /** Advance the phase after the commit (so a post-commit crash records it was actually placed/sent). */
-  record(opHash: string, phase: MoneyOpPhase, detail?: string): void {
-    if (!this.enabled) return;
-    try {
-      const map = this.read();
-      if (map[opHash]) { map[opHash] = { ...map[opHash], phase, at: this.now(), detail }; this.write(map); }
-    } catch { /* never throw */ }
-  }
-
-  /** Remove the entry — call in the finally on ANY clean resolution (success OR caught failure). */
+  /** Remove the entry — call in the finally on a CLEAN resolution (success or a DEFINITE, non-transport-ambiguous caught failure; callers skip this on a transport-ambiguous commit (S3) or a refusal (S15)). */
   resolve(opHash: string): void {
     if (!this.enabled) return;
     try {
-      const map = this.read();
+      const { map, unreliable } = this.read();
+      if (unreliable) return; // a transient read blip — do not write over an unread file
       if (map[opHash]) { delete map[opHash]; this.write(map); }
     } catch { /* never throw */ }
   }
 
   /**
+   * Test-inspection helper (production refusal goes through consultRefusal since S15).
    * Return a LINGERING (crash-interrupted) entry for `opHash` within the TTL, or undefined. A non-empty
    * result means a prior identical op died mid-flight and its Steam-side outcome is unknown → the caller
    * should refuse the auto-refire and surface it. (Persists the sweep so expired entries are cleaned.)
@@ -122,9 +177,11 @@ export class MoneyOpJournal {
   findUnresolved(opHash: string): MoneyOpEntry | undefined {
     if (!this.enabled) return undefined;
     try {
-      const map = this.sweep(this.read());
-      this.write(map); // persist the sweep
-      return map[opHash];
+      const { map, unreliable } = this.read();
+      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do NOT persist the fabricated-empty sweep
+      const swept = this.sweep(map);
+      this.write(swept); // persist the sweep
+      return swept[opHash];
     } catch {
       return undefined;
     }
@@ -141,7 +198,9 @@ export class MoneyOpJournal {
   consultRefusal(opHash: string, opts?: { force?: boolean; minRefuseMs?: number }): MoneyOpEntry | undefined {
     if (!this.enabled) return undefined;
     try {
-      const map = this.sweep(this.read());
+      const { map, unreliable } = this.read();
+      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do NOT write/delete over an unread file (would erase other accounts' lingering entries)
+      this.sweep(map);
       const entry = map[opHash];
       if (!entry) { this.write(map); return undefined; } // no lingering op → allow (persist the sweep)
       const minAge = opts?.minRefuseMs ?? DEFAULT_MIN_REFUSE_MS;

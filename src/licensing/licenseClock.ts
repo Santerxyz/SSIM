@@ -13,14 +13,38 @@ export interface ClockMeta {
   maxSeenMs:    number;
 }
 
+// Tolerance below the stored high-water mark before an authoritative contact is treated as
+// evidence the mark was poisoned to the future. Mirrors the rollback guard's skew (5 min).
+const HEAL_SKEW_MS = 5 * 60 * 1000;
+
 /**
  * The next meta after an event. The anchors advance ONLY on a server-confirmed contact
  * (`serverConfirmed === true`) — never from the local clock — so a forward clock jump
  * while offline can't poison the rollback anchor. Offline → meta is left unchanged.
+ *
+ * `maxSeenMs` is NOT a pure monotone high-water mark: an authoritative (server-confirmed)
+ * contact whose time falls below the stored mark HEALS the mark down to that time. A single
+ * forward-wrong server clock (an NTP step / VM resume) can otherwise ratchet `maxSeenMs` into
+ * the future permanently, refusing offline grace to a valid user for the life of the meta file
+ * even after the server clock is corrected. A later correct contact is strictly more trustworthy
+ * than the stored ratchet, so it recedes the mark. `maxFutureSkewMs` bounds the raise direction
+ * at the caller (see `markOnline`): a server time farther ahead than that is not anchored to.
  */
-export function nextClockMeta(prev: ClockMeta | undefined, nowMs: number, serverConfirmed: boolean): ClockMeta {
+export function nextClockMeta(
+  prev: ClockMeta | undefined,
+  nowMs: number,
+  serverConfirmed: boolean,
+  maxFutureSkewMs?: number,
+): ClockMeta {
+  void maxFutureSkewMs; // threaded for the caller-side future clamp; unused in the pure branch
   if (serverConfirmed) {
-    return { lastOnlineMs: nowMs, maxSeenMs: Math.max(nowMs, prev?.maxSeenMs ?? 0) };
+    const prevMax = prev?.maxSeenMs;
+    // Heal-down: an authoritative time below the stored high-water mark means the mark was
+    // poisoned to the future — recede it to the trusted server time. Otherwise ratchet up.
+    const maxSeenMs = (prevMax !== undefined && nowMs < prevMax - HEAL_SKEW_MS)
+      ? nowMs
+      : Math.max(nowMs, prevMax ?? 0);
+    return { lastOnlineMs: nowMs, maxSeenMs };
   }
   return prev ?? { lastOnlineMs: 0, maxSeenMs: 0 };
 }

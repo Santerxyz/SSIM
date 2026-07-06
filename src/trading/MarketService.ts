@@ -6,6 +6,7 @@ import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { logger } from '../utils/logger';
+import { classifyNetworkError } from '../utils/errorClass';
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
 // ceiling 25). Per-bot anti-spam pacing (item/bot delays) still applies inside each worker.
@@ -35,10 +36,15 @@ export function sellWalletBlocked(walletCurrency: number | undefined): boolean {
   return walletCurrency != null && walletCurrency !== EUR_CURRENCY;
 }
 
-/** Classifies a Steam/network error as transient (retry) vs. hard (give up). */
+/**
+ * Classifies a Steam/network error as transient (retry) vs. hard (give up).
+ * H-XCT-001: the verdict comes from the ONE shared taxonomy (src/utils/errorClass),
+ * so the same broken-pipe/proxy blip retries here, on refresh, and on the money-commit
+ * path alike. `transient` folds in the 429/rate-limit tokens (a sell retry treats both
+ * the same); the retry-count cap below is unchanged.
+ */
 function isTransient(err: unknown): boolean {
-  const m = ((err as Error)?.message ?? '').toLowerCase();
-  return /timeout|timed out|econnreset|esockettimedout|socket hang up|econnrefused|enetunreach|ehostunreach|etimedout|network|noconnection|eresult 3|429|too many|rate.?limit|http( error)? 5\d\d|error 50\d|bad gateway|gateway time-?out|service unavailable|temporarily|tunnel|proxy|aborted/.test(m);
+  return classifyNetworkError(err).transient;
 }
 
 /** A "the listing already exists" style rejection → the item IS listed (phantom). Exported for tests. */
@@ -140,24 +146,33 @@ export class MarketService {
   busy(): boolean { return this.job.running; }
 
   /**
-   * Pre-list guard (INV-B2 / INV-D1 / C3): is this asset sellable per the cached
-   * inventory? A trade-locked or non-tradable item must never reach `sellOnMarket` —
-   * Steam is only a backstop, and a locked item must never surface as an active sell
-   * order. When the cache has no record of the asset we defer to Steam (return true),
-   * since the pre-flight already proved connectivity and `gone` handling covers staleness.
+   * Pre-list guard (INV-B2 / INV-D1 / C3): the set of asset ids in the cached inventory
+   * that must never reach `sellOnMarket` — trade-locked or non-tradable stacks, so a
+   * locked item never surfaces as an active sell order. Built ONCE per bot (H-TRD-021)
+   * from a single `getCached` snapshot (which deep-clones the whole record, INV-B12), not
+   * once per item, so a mass-sell of K items costs one clone + one scan instead of K.
+   * `undefined` when the account has no cached inventory: with no record we defer to Steam
+   * (every asset treated as sellable), since the pre-flight already proved connectivity and
+   * `gone` handling covers staleness. An asset absent from the returned set is likewise
+   * sellable — the cache simply has no record of it (same defer-to-Steam semantics).
+   * A malformed disk-cached record (non-array `items`) throws here exactly as the old
+   * per-item `inv.items.find(...)` did — H-TRD-024 contains that throw as one `failed` row.
    */
-  private isAssetSellable(username: string, assetId: string): boolean {
+  private buildUnsellableIndex(username: string): Set<string> | undefined {
     const inv = this.inventory?.getCached(username);
-    if (!inv) return true;
-    const stack = inv.items.find(s => (s.assetIds ?? []).some(id => String(id) === String(assetId)));
-    if (!stack) return true;
-    return isSellable(stack);
+    if (!inv) return undefined;
+    const unsellable = new Set<string>();
+    inv.items.forEach(stack => {
+      if (isSellable(stack)) return;
+      for (const id of stack.assetIds ?? []) unsellable.add(String(id));
+    });
+    return unsellable;
   }
 
   /** Lowest market ask (minor units of `currency`) for the buy modal's live-price
    *  button. Delegates to the pricing engine; null when no price is found. */
-  lowestAsk(name: string, appid: number, currency: number, decimals: number): Promise<number | null> {
-    return this.pricing.getLowestAsk(name, appid, currency, decimals);
+  lowestAsk(name: string, appid: number, currency: number): Promise<number | null> {
+    return this.pricing.getLowestAsk(name, appid, currency);
   }
 
   // ── Active Orders: fetch + cancel (sell listings & buy orders) ──────────────
@@ -203,7 +218,7 @@ export class MarketService {
   async preview(
     names: string[],
     strategy: SellStrategy,
-    opts?: { customCents?: number; username?: string },
+    opts?: { customCents?: number; username?: string; shouldStop?: () => boolean },
   ): Promise<Record<string, { netCents: number | null; buyerCents: number | null }>> {
     const out: Record<string, { netCents: number | null; buyerCents: number | null }> = {};
 
@@ -215,12 +230,38 @@ export class MarketService {
     }
 
     const ctx = await this.priceCtxFor(opts?.username);
-    for (const name of [...new Set(names)]) {
-      // getSellInfo runs its own 3-method cascade internally – one call suffices.
-      const info = await this.pricing.getSellInfo(name, ctx);
-      const buyer = targetBuyerCents(info, strategy);
-      out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
-    }
+    // H-TRD-022: bound the cascade to a live viewer. The sequential loop kept issuing
+    // Steam requests for a client that had already aborted (S32, client aborts at 120s);
+    // `shouldStop` (the route flips it on 'close') stops fetching and returns the partial
+    // map. A small 3-worker pool over the deduped names caps concurrency well below the
+    // mass-sell's own 25 (see runMassSell) while making preview proportional to the batch.
+    // H-PRC-002: additionally give each per-name cascade a 10s budget and stop dispatching
+    // new names once 90s total have elapsed, so the modal RESPONDS before the 120s client
+    // abort under a throttle storm. Undispatched names are returned as null-price rows so
+    // the modal renders the existing per-name retry affordance instead of a dead spinner.
+    const unique = [...new Set(names)];
+    let idx = 0;
+    const shouldStop = opts?.shouldStop;
+    const previewStart = Date.now();
+    const PREVIEW_BUDGET_MS = 90_000;   // stop dispatching new names after 90s total
+    const PER_NAME_BUDGET_MS = 10_000;  // per-name cascade budget (bounds one getSellInfo)
+    let budgetTripped = false;          // 90s cap hit → backfill the undispatched names below
+    const worker = async (): Promise<void> => {
+      while (idx < unique.length) {
+        if (shouldStop?.()) return;
+        if (Date.now() - previewStart >= PREVIEW_BUDGET_MS) { budgetTripped = true; return; }
+        const name = unique[idx++];
+        // getSellInfo runs its own 3-method cascade internally – one call suffices.
+        const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS });
+        const buyer = targetBuyerCents(info, strategy);
+        out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, unique.length) }, () => worker()));
+    // On a 90s budget stop (NOT a client disconnect, where nobody is listening), any name
+    // never dispatched gets an explicit null-price row so the modal shows the per-name retry
+    // affordance instead of omitting it silently.
+    if (budgetTripped) for (const name of unique) if (!(name in out)) out[name] = { buyerCents: null, netCents: null };
     return out;
   }
 
@@ -288,14 +329,18 @@ export class MarketService {
 
     // Fixed custom price → no lookups; otherwise getSellInfo's internal 3-method
     // cascade (via the bot proxy + cookies) resolves the price. Cached per name.
-    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }): Promise<number | null> => {
-      if (customNet != null) return customNet;
-      if (netCache.has(name)) return netCache.get(name)!;
+    // S2 (in-run): a null net is cached (and short-circuits every same-name item) ONLY
+    // when Steam actually answered (`info.authoritative`). A transport-failure null
+    // (all cascade tries threw) is NOT cached and surfaces as `transport:true` so the
+    // caller defers the item instead of failing it and poisoning the rest of the run.
+    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }): Promise<{ net: number | null; transport: boolean }> => {
+      if (customNet != null) return { net: customNet, transport: false };
+      if (netCache.has(name)) return { net: netCache.get(name)!, transport: false };
       const info = await this.pricing.getSellInfo(name, ctx);
       const buyer = targetBuyerCents(info, strategy);
       const net = buyer != null ? sellerNetFromBuyer(buyer) : null;
-      netCache.set(name, net);
-      return net;
+      if (net != null || info.authoritative) netCache.set(name, net);
+      return { net, transport: net == null && !info.authoritative };
     };
 
     const worker = async (): Promise<void> => {
@@ -308,13 +353,26 @@ export class MarketService {
           break;
         }
         const group = queue.shift()!;
-        await this.processBot(group, resolveNet, itemDelay);
+        // Bot containment (H-TRD-024): processBot's own item/preflight guards already account for
+        // everything it reached, so a rejection escaping it is unexpected. Swallow it here so this
+        // worker keeps pulling the next bot instead of dying and rejecting Promise.allSettled's
+        // sibling — counters are NOT touched (processBot already recorded what it did; the visible
+        // done < total gap plus this log is the honest record).
+        try {
+          await this.processBot(group, resolveNet, itemDelay);
+        } catch (err) {
+          logger.error(`[mass-sell] ${group.username}: bot aborted (${(err as Error)?.message ?? String(err)})`);
+        }
         if (queue.length > 0 && !this.cancelRequested) await sleep(DEFAULT_BOT_DELAY);
       }
     };
 
     const workers = Math.max(1, Math.min(concurrency, groups.length || 1));
-    await Promise.all(Array.from({ length: workers }, () => worker()));
+    // Run containment (H-TRD-024): allSettled — never allow a future worker-reject path to skip the
+    // releaseCreatedSessions / finalizer below (which would leak this run's sessions and latch the job).
+    // worker() already contains per-bot rejections, so no result here should ever reject; allSettled is
+    // the belt-and-braces guarantee the S33 outer .catch was designed to backstop.
+    await Promise.allSettled(Array.from({ length: workers }, () => worker()));
     // Release the sessions this sell created so a mass-sell doesn't leave the whole folder resident.
     await this.trades.releaseCreatedSessions(groups.map((g) => g.username), wasLiveBefore);
 
@@ -372,7 +430,7 @@ export class MarketService {
 
   private async processBot(
     group: MassSellGroup,
-    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<number | null>,
+    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
   ): Promise<void> {
     const user = group.username;
@@ -422,11 +480,28 @@ export class MarketService {
     const failedHere = new Set<string>(); // S28: identity (assetId), NOT a positional index into the shared failed[]
     let listedForBot = 0;
     let pendingForBot = 0; // listings (incl. phantoms) that still need a 2FA confirm
+    let skippedAlreadyListed = 0; // H-TRD-026: pre-existing listings (crash-rerun) — may still await a 2FA confirm
+    let transportPriceMisses = 0; // S2: consecutive price lookups that failed at the transport layer (not "no price")
+
+    // Pre-list guard, snapshotted ONCE per bot (H-TRD-021): the trade-locked / non-tradable
+    // asset ids per the cached inventory. `undefined` (no cache) or an id absent from the set
+    // ⇒ sellable (defer to Steam). Built lazily on the first item so a malformed disk-cached
+    // record throws INSIDE the item try/catch below (H-TRD-024 contains it as one `failed`
+    // row, not a fleet abort). The snapshot is at bot-start rather than at-item-time — the
+    // window is this bot's runtime, Steam stays the backstop (`gone` + INV-B2's authoritative
+    // refresh), and the cache could only change mid-bot via a concurrent refresh anyway.
+    let unsellable: Set<string> | undefined;
+    let unsellableBuilt = false;
 
     for (let i = 0; i < group.items.length; i++) {
       const item = group.items[i];
       const pos = `${i + 1}/${N}`;
 
+      // Item containment (H-TRD-024): an UNEXPECTED throw inside one item's processing (e.g.
+      // isAssetSellable hitting a malformed disk-cached stack) must cost exactly one `failed`
+      // row, never abort the bot — a bare throw here escapes to worker()/Promise.all and would
+      // strand the rest of the fleet's workers as zombies against the next run.
+      try {
       // "End Task" mid-bot: defer this item + the rest (retryable) and stop this bot.
       if (this.cancelRequested) {
         const rest = group.items.slice(i);
@@ -436,22 +511,46 @@ export class MarketService {
       }
 
       // Already listed (pre-existing or an earlier phantom) → count once, skip.
+      // H-TRD-026: a pre-existing listing may still be awaiting its 2FA confirm (crash-rerun
+      // after listings were created but before the confirm phase). Count it so the confirm
+      // gate below still fires; confirmMarketListings is idempotent when nothing is pending.
       if (listedSet.has(item.assetId)) {
-        this.job.listed++; this.job.done++;
+        this.job.listed++; this.job.done++; skippedAlreadyListed++;
         logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} already listed → skipped (${listedForBot} new this bot)`);
         continue;
       }
 
       // Pre-list guard (INV-B2 / INV-D1 / C3): never list a trade-locked or non-tradable
-      // asset. A locked item must never become an active sell listing.
-      if (!this.isAssetSellable(user, item.assetId)) {
+      // asset. A locked item must never become an active sell listing. The index is built
+      // once (H-TRD-021) on the first item that reaches this guard.
+      if (!unsellableBuilt) { unsellable = this.buildUnsellableIndex(user); unsellableBuilt = true; }
+      if (unsellable?.has(String(item.assetId))) {
         this.job.blocked.push({ username: user, assetId: item.assetId, error: 'trade-locked or not tradable' });
         this.job.done++;
         logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} is trade-locked / not tradable → blocked (not listed)`);
         continue;
       }
 
-      const net = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookies: trader.cookies });
+      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookies: trader.cookies });
+      if (net == null && transport) {
+        // S2 (in-run): the price lookup failed at the transport layer (429 storm, proxy
+        // reset, 5xx) — Steam never answered, so this is NOT "no price". Defer the item
+        // (retryable), never fail it, so one blip doesn't mass-fail every same-name item.
+        this.job.deferred.push({ username: user, assetId: item.assetId, error: 'price lookup failed (connection) – not attempted' });
+        this.job.done++;
+        transportPriceMisses++;
+        logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} – price lookup failed (connection), deferred`);
+        // Two connection-class price misses in a row → the bot's egress is down; defer the
+        // rest instead of burning a lookup per item (same philosophy as the 'deferred' outcome).
+        if (transportPriceMisses >= 2) {
+          const rest = group.items.slice(i + 1);
+          logger.warn(`[mass-sell] ${user} ${pos}: price lookups failing (connection) – deferring ${rest.length} remaining item(s)`);
+          this.deferAll(group, rest, 'price lookup failed (connection) – not attempted');
+          break;
+        }
+        continue;
+      }
+      transportPriceMisses = 0; // Steam answered (a real net or an authoritative no-price) → streak broken.
       if (net == null) {
         this.job.skippedNoPrice++;
         this.job.failed.push({ username: user, assetId: item.assetId, error: 'no market price (skipped)' });
@@ -499,17 +598,33 @@ export class MarketService {
       }
 
       if (i < group.items.length - 1) await sleep(itemDelay);
+      } catch (err) {
+        // An exception no branch above anticipated → one honest `failed` row, then carry on
+        // with the next item. This is containment (defined outcome), not a retry wrapper.
+        const msg = (err as Error)?.message ?? String(err);
+        this.job.failed.push({ username: user, assetId: item.assetId, error: 'internal error: ' + msg });
+        this.job.done++;
+        failedHere.add(item.assetId);
+        logger.error(`[mass-sell] ${user} ${pos}: ✗ internal error ${item.marketHashName} – ${msg}`);
+      }
     }
 
     // ── Confirm this bot's pending listings in one 2FA batch (Hotfix A: retry) ──
-    if (pendingForBot > 0) {
+    // H-TRD-026: also arm the confirm phase when the only "pending" work is pre-existing
+    // listings from an interrupted earlier run (skippedAlreadyListed) — those may still
+    // await mobile confirmation. confirmMarketListings is idempotent (getConfirmations
+    // returns only still-pending confirmations → resolves 0 when nothing is left).
+    if (pendingForBot + skippedAlreadyListed > 0) {
       this.job.phase = 'confirming';
-      logger.info(`[mass-sell] ${user}: confirming ${pendingForBot} listing(s) via 2FA…`);
+      logger.info(`[mass-sell] ${user}: confirming ${pendingForBot} new + ${skippedAlreadyListed} pre-existing listing(s) via 2FA…`);
       try {
         const n = await this.confirmWithRetry(trader, user);
         this.job.confirmed += n;
         logger.info(`[mass-sell] ${user}: ✓ ${n} listing(s) confirmed via 2FA`);
       } catch (err) {
+        // A failed retry chain may still have confirmed some listings before giving
+        // up; count those so `confirmed` reflects the truth (H-TRD-027).
+        this.job.confirmed += (err as { confirmedSoFar?: number }).confirmedSoFar ?? 0;
         logger.error(`[mass-sell] ${user}: confirmation FAILED after retries (${(err as Error).message}) – listings exist but await manual 2FA`);
       }
     }
@@ -543,29 +658,34 @@ export class MarketService {
    * STILL-pending confirmations, so a retry just finishes whatever is left.
    */
   private async confirmWithRetry(
-    trader: { confirmMarketListings(): Promise<number>; username: string },
+    trader: { confirmMarketListings(): Promise<{ confirmed: number; error?: Error }>; username: string },
     user: string,
   ): Promise<number> {
     let total = 0;
     let lastErr: unknown;
     for (let attempt = 0; attempt <= CONFIRM_RETRIES; attempt++) {
+      let err: Error;
       try {
-        const n = await trader.confirmMarketListings();
-        total += n;
-        return total;
-      } catch (err) {
-        lastErr = err;
-        // A partial pass may have confirmed some before failing; a retry picks up
-        // the rest (idempotent). Only retry on transient/server errors.
-        if (isTransient(err) && attempt < CONFIRM_RETRIES) {
-          logger.warn(`[mass-sell] ${user}: 2FA confirm attempt ${attempt + 1}/${CONFIRM_RETRIES + 1} failed (${(err as Error).message}) – retry in ${this.confirmBackoff / 1000}s`);
-          await sleep(this.confirmBackoff);
-          continue;
-        }
-        throw err;
+        const r = await trader.confirmMarketListings();
+        // A partial pass confirms some listings before failing; those count.
+        // The count accumulates across attempts (getConfirmations only returns the
+        // still-pending confirmations, so a retry finishes whatever is left).
+        total += r.confirmed;
+        if (!r.error) return total;
+        err = r.error;                       // mid-pass respond failure — total already banked
+      } catch (rejErr) {
+        err = rejErr instanceof Error ? rejErr : new Error(String(rejErr)); // getConfirmations threw — nothing counted this pass
       }
+      lastErr = err;
+      // Only retry on transient/server errors.
+      if (isTransient(err) && attempt < CONFIRM_RETRIES) {
+        logger.warn(`[mass-sell] ${user}: 2FA confirm attempt ${attempt + 1}/${CONFIRM_RETRIES + 1} failed (${err.message}) – retry in ${this.confirmBackoff / 1000}s`);
+        await sleep(this.confirmBackoff);
+        continue;
+      }
+      throw Object.assign(err, { confirmedSoFar: total });
     }
-    throw lastErr instanceof Error ? lastErr : new Error('confirmation failed');
+    throw Object.assign(lastErr instanceof Error ? lastErr : new Error('confirmation failed'), { confirmedSoFar: total });
   }
 
   /** Rule 1: connectivity pre-flight – probes getListedAssetIds with a couple
@@ -629,8 +749,14 @@ export class MarketService {
             return 'phantom';
           }
         } catch (probeErr) {
-          // The probe itself failed → the connection is very likely dead.
-          if (isTransient(probeErr)) return 'deferred';
+          // The probe itself failed → we cannot read this bot's own listings, so neither
+          // phantom detection nor further listing attempts are trustworthy (a dead web
+          // session throws non-transient market/mylistings HTTP 40x too, not just transient
+          // connection errors). ANY probe failure → defer: the honest, retryable bucket.
+          // The caller defers the bot's remainder, so no request is burned on a dead session.
+          const pmsg = (probeErr as Error)?.message ?? String(probeErr);
+          logger.warn(`[mass-sell] ${trader.username} ${assetId}: phantom probe failed (${pmsg}) – deferring (phantom status unknown, session suspect)`);
+          return 'deferred';
         }
 
         if (!isTransient(err)) {

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../utils/logger';
-import { parseSteamMoney } from './currencies';
+import { parseSteamMoney, knownCurrencyInfo } from './currencies';
 
 const APPID_CS2     = 730;
 /** Steam currency code for EUR. ALL market prices SSIM computes are EUR seller-net
@@ -25,6 +25,12 @@ export interface SellInfo {
   /** Median sell price (buyer-facing EUR cents) or null. */
   medianCents:   number | null;
   volume:        number | null;
+  /** True iff at least one cascade try got a HTTP 200 with `success === true` — i.e.
+   *  Steam actually answered. A null `lowestCents` with `authoritative:true` is a
+   *  genuine "no listings"; with `authoritative:false` the price was NEVER read
+   *  (all tries threw: 429 storm, proxy reset, 5xx, or a throttled `success:false`)
+   *  and must NOT be cached as "no price" for the run (S2 class). */
+  authoritative: boolean;
 }
 
 /** A per-account HTTPS agent (proxy / local-IP bound) used to route a price
@@ -36,6 +42,13 @@ export interface PriceFetchOpts {
   /** The bot's web-session cookies – required for the listings/render fallback,
    *  which Steam serves as an HTML login wall to anonymous requests. */
   cookies?: string[];
+  /** Wall-clock budget (ms) for the WHOLE getSellInfo cascade. When set, the loop
+   *  stops before a try it can't finish inside the budget, caps each try's axios
+   *  timeout to the remaining time, and skips a backoff that would cross the
+   *  deadline — so an interactive caller (sell-preview) can RESPOND before its own
+   *  120s client abort under a throttle storm (H-PRC-002). Unset = unbounded (the
+   *  background mass-sell path is unchanged). */
+  budgetMs?: number;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -71,20 +84,38 @@ function describeErr(err: unknown): string {
 export class MarketPricing {
   async getSellInfo(name: string, opts?: PriceFetchOpts): Promise<SellInfo> {
     const short = name.length > 44 ? name.slice(0, 42) + '…' : name;
-    const methods: Array<{ label: string; run: () => Promise<SellInfo> }> = [
-      { label: 'priceoverview (Chrome)',           run: () => this.viaPriceOverview(name, opts, UA_CHROME,  12_000, false) },
-      { label: 'priceoverview (Firefox+Median)',   run: () => this.viaPriceOverview(name, opts, UA_FIREFOX, 15_000, true)  },
-      { label: 'priceoverview (Mobile, aggressiv)',run: () => this.viaPriceOverview(name, opts, UA_MOBILE,  20_000, true)  },
+    const methods: Array<{ label: string; ua: string; stepTimeout: number; allowMedian: boolean }> = [
+      { label: 'priceoverview (Chrome)',           ua: UA_CHROME,  stepTimeout: 12_000, allowMedian: false },
+      { label: 'priceoverview (Firefox+Median)',   ua: UA_FIREFOX, stepTimeout: 15_000, allowMedian: true  },
+      { label: 'priceoverview (Mobile, aggressiv)',ua: UA_MOBILE,  stepTimeout: 20_000, allowMedian: true  },
     ];
 
     const t0 = Date.now();
+    // H-PRC-002: an optional wall-clock budget lets an interactive caller (sell-preview)
+    // bound the cascade so it RESPONDS before the 120s client abort under a throttle storm.
+    // deadline is Infinity when no budget is set → every gate below is a no-op (background
+    // mass-sell path unchanged).
+    const deadline = opts?.budgetMs != null ? t0 + opts.budgetMs : Infinity;
+    // A try that RETURNS (doesn't throw) got a 200 + success===true — Steam answered
+    // (viaPriceOverview throws on any non-200 or success!==true). Track it so an
+    // exhausted-with-no-price result is still authoritative if any try was answered.
+    let sawAuthoritative = false;
     for (let i = 0; i < methods.length; i++) {
       const n = i + 1;
       const m = methods[i];
+      // (a) Don't start a try we can't finish inside the budget (a full round-trip needs
+      // headroom); stop the cascade and return what we have (authoritative iff a prior try answered).
+      if (Date.now() + 2000 > deadline) {
+        plog(`[Try ${n}/3] budget exhausted for "${short}" – stopping cascade (total ${Date.now() - t0}ms)`, 'warn');
+        break;
+      }
+      // (b) Cap this try's axios timeout to the time left in the budget.
+      const timeout = Math.min(m.stepTimeout, deadline - Date.now());
       const ts = Date.now();
       plog(`[Try ${n}/3] "${short}" → trying ${m.label}…`);
       try {
-        const info = await m.run();
+        const info = await this.viaPriceOverview(name, opts, m.ua, timeout, m.allowMedian);
+        sawAuthoritative = true;
         if (info.lowestCents != null) {
           plog(`[Try ${n}/3] ✓ hit via ${m.label}: ${(info.lowestCents / 100).toFixed(2)}€ ` +
                `(method ${Date.now() - ts}ms, total ${Date.now() - t0}ms)`);
@@ -96,12 +127,17 @@ export class MarketPricing {
       }
       if (i < methods.length - 1) {
         const backoff = BACKOFF_BASE_MS * 2 ** i;
+        // (c) Skip the inter-try backoff (and the next try) when it would cross the deadline.
+        if (Date.now() + backoff >= deadline) {
+          plog(`[Try ${n}/3] budget exhausted for "${short}" – skipping backoff (total ${Date.now() - t0}ms)`, 'warn');
+          break;
+        }
         plog(`[Try ${n}/3] → Backoff ${backoff}ms (fresh IP + different UA), then fallback ${n + 1}…`, 'warn');
         await sleep(backoff);
       }
     }
-    plog(`✗ All 3 methods exhausted for "${short}" – no price (total ${Date.now() - t0}ms)`, 'warn');
-    return { lowestCents: null, medianCents: null, volume: null };
+    plog(`✗ All methods exhausted for "${short}" – no price (total ${Date.now() - t0}ms)`, 'warn');
+    return { lowestCents: null, medianCents: null, volume: null, authoritative: sawAuthoritative };
   }
 
   /**
@@ -127,9 +163,10 @@ export class MarketPricing {
     const lowest = parseEurCents(r.data.lowest_price);
     const median = parseEurCents(r.data.median_price);
     return {
-      lowestCents: lowest ?? (allowMedian ? median : null),
-      medianCents: median,
-      volume:      parseVolume(r.data.volume),
+      lowestCents:   lowest ?? (allowMedian ? median : null),
+      medianCents:   median,
+      volume:        parseVolume(r.data.volume),
+      authoritative: true, // reached only on a 200 + success===true response
     };
   }
 
@@ -139,8 +176,13 @@ export class MarketPricing {
    * currency). One direct priceoverview call; null when Steam returns no price.
    */
   async getLowestAsk(
-    name: string, appid: number, currency: number, decimals: number, opts?: PriceFetchOpts,
+    name: string, appid: number, currency: number, opts?: PriceFetchOpts,
   ): Promise<number | null> {
+    // Derive the minor-unit scale from `currency` INSIDE the module (fail closed) — never
+    // trust a caller-supplied `decimals` sourced from the DISPLAY-grade currencyInfo fallback,
+    // which guesses 2 for an unknown code and would mis-scale a real 0-decimal ask 100× (S64/B18).
+    const cInfo = knownCurrencyInfo(currency);
+    if (!cInfo) return null;
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?country=${COUNTRY}&currency=${currency}&appid=${appid}&market_hash_name=${encodeURIComponent(name)}`;
     const r = await axios.get(url, {
@@ -149,8 +191,14 @@ export class MarketPricing {
       ...(opts?.httpsAgent ? { httpsAgent: opts.httpsAgent, proxy: false as const } : {}),
       headers: { 'User-Agent': UA_CHROME, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' },
     });
-    if (r.status !== 200 || !r.data || r.data.success !== true) return null;
-    return parseSteamMoney(r.data.lowest_price, decimals) ?? parseSteamMoney(r.data.median_price, decimals);
+    // A non-200 (5xx/403/429/login-wall) or Steam-level failure (missing body / success !== true) is
+    // NOT an authoritative "no price" — it's a transient fetch failure (`success:false` is served under
+    // throttle). THROW so the buy-modal autofill surfaces an honest, retryable error instead of a silent
+    // empty field; the route's asyncHandler converts it to a 500 → the FE error toast. `null` then means
+    // ONLY an authoritative 200 + success:true with no parseable lowest/median. (S2 parity, matches
+    // SteamPriceSource.fetchPriceCents.)
+    if (r.status !== 200 || !r.data || r.data.success !== true) throw new Error(`FETCH_FAILED_${r.status}`);
+    return parseSteamMoney(r.data.lowest_price, cInfo.decimals) ?? parseSteamMoney(r.data.median_price, cInfo.decimals);
   }
 }
 

@@ -63,8 +63,30 @@ export class CsFloatService {
 
   clearKey(username: string): void { this.keys.delete(username); this.invalidate(username); }
 
+  /** Drops the cached per-account client (and the shared pricing client if it is bound to this
+   *  account) so the NEXT request rebuilds on the account's current egress network. Called when an
+   *  operator changes an account/environment proxy — the cache is otherwise keyed only by API key,
+   *  so a proxy edit would keep egressing over the retired IP until restart (INV-A4: effective proxy
+   *  = operator's last set value; the Steam session is already dropped alongside this). */
+  invalidateClient(username: string): void {
+    this.invalidate(username);
+    if (this.pricing && this.pricing.username.toLowerCase() === username.toLowerCase()) this.disposePricing();
+  }
+
   async validateKey(username: string, apiKey: string): Promise<Record<string, unknown>> {
-    return new CsFloatClient(apiKey, this.agentFor(username)).me();
+    const agent = this.agentFor(username);
+    try { return await new CsFloatClient(apiKey, agent).me(); }
+    finally { AgentFactory.destroyIfDisposable(agent); }
+  }
+
+  /** Deterministically retire every owned agent (cached per-account clients + the shared pricing
+   *  client) at teardown so a re-license → re-activate cycle does not strand a generation of
+   *  local-IP keepAlive sockets until GC. destroyIfDisposable is quiescence-safe (an in-flight
+   *  request is parked in the reaper), so this never severs a live socket. */
+  stop(): void {
+    for (const c of this.clients.values()) AgentFactory.destroyIfDisposable(c.agent);
+    this.clients.clear();
+    this.disposePricing();
   }
 
   // ── operations: documented core ──────────────────────────────────────────────
@@ -86,7 +108,9 @@ export class CsFloatService {
 
   // ── auto-accept toggle (the worker enacts it) ────────────────────────────────
   getAutoAccept(u: string): boolean { return AppSettings.getAutoAccept(u); }
-  setAutoAccept(u: string, on: boolean): void { AppSettings.setAutoAccept(u, on); }
+  /** Returns false when the toggle changed in memory but could not be persisted (the caller surfaces
+   *  a truthful "not saved" error instead of echoing the optimistic value). */
+  setAutoAccept(u: string, on: boolean): boolean { return AppSettings.setAutoAccept(u, on); }
 
   // ── F3: a client for app-wide pricing, using ANY account that has a key ──────
   pricingClient(): CsFloatClient | null {

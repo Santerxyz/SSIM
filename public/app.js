@@ -18,6 +18,8 @@ const state = {
   tf2Inventories: {},           // username → TF2 inventory (lazy-loaded on first toggle)
   wallets: {},                  // lcUser → { wallet:{currency,balance}, ts } – GLOBAL Steam wallet, NEWEST across games
   tf2Loaded: false,             // whether the TF2 cache has been fetched at least once
+  tf2LoadError: null,           // H-FE-001: error message if the first TF2 fetch failed – a failed load must
+                                //           render as a distinct error+Retry panel, never as an empty inventory
   game: 'cs2',                  // 'cs2' | 'tf2' – which inventory the views show
   globalEnvs: new Set(),        // selected environment ids for the Global Master
   aggItems: [],                 // last aggregated items WITH owners (folder-master selection source)
@@ -31,6 +33,7 @@ const state = {
   moveUsername: null,
   moveUsernames: null,   // batch multi-select move scope (array of usernames)
   banResult: null,       // last Ban Checker result { accounts, totals } for the results modal
+  banTimer: null,        // H-TRD-033: setTimeout handle for the ban-check status poll loop
   editUsername: null,
   editProxyInitial: '',         // raw saved proxy the edit field was pre-filled with (change-detection)
   editUseEnvInitial: true,      // was "Use environment proxy" on when the edit modal opened (change-detection)
@@ -527,19 +530,30 @@ async function setGame(game) {
   state.game = game;
   clearSelection();
   updateGameToggle();
-  if (game === 'tf2' && !state.tf2Loaded) {
-    try {
-      const invMap = await api('/api/inventory-tf2');
-      state.tf2Inventories = {};
-      for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
-      state.tf2Loaded = true;
-      // S29: this first TF2 load enriches + queues a server-side price fill for the cold TF2 cache, but
-      // nothing watched it (boot/refresh/source-switch all start a watch; this path did not) → TF2 prices
-      // stayed "…" until an unrelated trigger. Start the watch so prices + totals fill in live (mirrors init()).
-      void watchPriceFill(refreshActiveViewFromCache);
-    } catch (err) { toast(err.message, 'error'); }
-  }
+  if (game === 'tf2' && !state.tf2Loaded) await loadTf2Inventories();
   renderMain();
+}
+
+/** H-FE-001: the cold TF2 fetch (over the fleet's flaky proxies) is the app's flakiest load. On success it
+ *  fills state.tf2Inventories + starts the price-fill watch; on FAILURE it records state.tf2LoadError so the
+ *  render path shows a distinct "couldn't load TF2 — Retry" panel instead of a silently-empty inventory (a
+ *  failed load masquerading as a legitimate empty state — the S4/S13 UI-truth class at the display layer).
+ *  Also invoked by the Retry button in renderTf2LoadError. Keeps state.game='tf2' so the toggle stays honest. */
+async function loadTf2Inventories() {
+  try {
+    const invMap = await api('/api/inventory-tf2');
+    state.tf2Inventories = {};
+    for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
+    state.tf2Loaded = true;
+    state.tf2LoadError = null;
+    // S29: this first TF2 load enriches + queues a server-side price fill for the cold TF2 cache, but
+    // nothing watched it (boot/refresh/source-switch all start a watch; this path did not) → TF2 prices
+    // stayed "…" until an unrelated trigger. Start the watch so prices + totals fill in live (mirrors init()).
+    void watchPriceFill(refreshActiveViewFromCache);
+  } catch (err) {
+    state.tf2LoadError = err.message;
+    toast(err.message, 'error');
+  }
 }
 
 function updateGameToggle() {
@@ -607,6 +621,7 @@ async function refreshActiveViewFromCache() {
       state.tf2Inventories = {};
       for (const k of Object.keys(invMap || {})) storeTf2Inv(invMap[k]);
       state.tf2Loaded = true;
+      state.tf2LoadError = null;   // H-FE-001: a successful TF2 load heals any prior load-error panel
     } else {
       const invMap = await api('/api/inventory');
       state.inventories = {};
@@ -721,10 +736,25 @@ function fmtWallet(w) {
   if (!Number.isFinite(num)) return '—';
   return fmtMoneyMinor(walletMinor({ currency: w.currency, balance: num }), w.currency);
 }
-/** Parse a typed major amount ("2,15"/"2.15") → minor units of currency `code`. */
+/** Parse a typed major amount ("2,15"/"2.15"/"1.500,00") → minor units of currency `code`.
+ *  Disambiguates decimal-vs-grouping ONLY when unambiguous; a lone separator stays the
+ *  decimal point (today's safe under-parse), so no input ever parses HIGHER than typed. */
+function normalizeMajor(str) {
+  const s = String(str ?? '').replace(/[\s']/g, ''); // strip whitespace + apostrophe/Swiss group marks
+  const hasDot = s.indexOf('.') >= 0, hasComma = s.indexOf(',') >= 0;
+  if (hasDot && hasComma) {
+    // Both present: the LAST-occurring separator is the decimal; the other is grouping.
+    const dec = s.lastIndexOf('.') > s.lastIndexOf(',') ? '.' : ',';
+    const grp = dec === '.' ? ',' : '.';
+    return s.split(grp).join('').replace(dec, '.');
+  }
+  const sep = hasDot ? '.' : hasComma ? ',' : '';
+  if (sep && s.indexOf(sep) !== s.lastIndexOf(sep)) return s.split(sep).join(''); // 2+ of same sep → all grouping
+  return s.replace(',', '.'); // zero or one separator → treat as the decimal point (unchanged from today)
+}
 function parseMajorToMinor(str, code) {
   const c = curInfo(code);
-  const v = parseFloat(String(str ?? '').replace(',', '.').trim());
+  const v = parseFloat(normalizeMajor(str));
   return Number.isFinite(v) && v > 0 ? Math.round(v * Math.pow(10, c.d)) : null;
 }
 
@@ -803,6 +833,7 @@ const REPRICE_NO_PROGRESS_MS = 15 * 60_000;
 // multi-MB stringify server-side, plus a full renderMain/renderSidebar client-side). A fill advances
 // ~1 name/3.5s, so the old "re-pull on every advance" hammered the event loop ~every 2.5s poll for the
 // whole fill. Coalesce to at most one re-pull per this interval; the final drain still pulls immediately.
+// Keep in sync with src/pricing/repriceReconciler.ts MIN_REPULL_MS (repriceDecision models this gate).
 const REPRICE_MIN_REPULL_MS = 10_000;
 /** Decide whether the fill-watch should re-pull now: always on drain (queue empty), else only when the
  *  fill advanced AND at least REPRICE_MIN_REPULL_MS has elapsed since the last re-pull. (S10) */
@@ -1061,6 +1092,12 @@ async function watchSystemStatus() {
   while (true) {
     let st; try { st = await api('/api/system/status'); } catch { st = null; }
     if (st) {
+      // H-LIC-008: a RUNTIME revocation (or deactivation) makes the backend report `licensed:false`
+      // (server.ts, `licensed:!LicenseClient.isRevoked()`, and the rebound activation portal). The boot
+      // guard (ensureLicensed) only runs once, so this hot poll is the ONLY runtime consumer that can turn
+      // that state into the activation screen. Strict `=== false` mirrors ensureLicensed (S23): a half-up
+      // status that merely OMITS `licensed` must NOT redirect — only an explicit server-stated false does.
+      if (st.licensed === false) { window.location.replace('/'); return; }
       // S34: a user-confirmed install 202s then runs async; a SUCCESS swaps + exits (this page reloads),
       // but a KEPT-CURRENT install just returns. When the server reports no update op in flight anymore,
       // clear the "installing…" state + re-show the badge (instead of showing "installing…" forever), and
@@ -1459,7 +1496,7 @@ function renderAccountRow(acc, depth) {
           <div class="flex items-center gap-1.5">
             <p class="text-sm font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-300'}">
               ${escapeHtml(acc.displayName || acc.username)}</p>
-            ${acc.tier === 'limited' ? `<span class="shrink-0 text-3xs font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Limited — imported without a maFile. Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need a maFile. Attach one to upgrade to Full.">LTD</span>` : ''}
+            ${acc.canConfirm === false ? `<span class="shrink-0 text-3xs font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Cannot confirm trades — its maFile has no identity_secret (or none is attached). Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need one. Attach a maFile to fix.">LTD</span>` : ''}
             <span class="acct-balance ml-auto shrink-0 text-2xs font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
           </div>
           <p class="text-2xs text-slate-500 truncate">${escapeHtml(acc.username)}</p></div>
@@ -1474,7 +1511,7 @@ function renderAccountRow(acc, depth) {
         <button data-hide="${escapeAttr(acc.username)}" data-hidden="${acc.hidden ? '1' : '0'}"
           title="${acc.hidden ? 'Show' : 'Hide'}" aria-label="${acc.hidden ? 'Show' : 'Hide'} ${escapeAttr(acc.username)}"
           class="hide-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} text-2xs"></i></button>
-        ${acc.tier === 'limited' ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
+        ${acc.canConfirm === false ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
           class="attach-btn w-6 h-6 rounded-md bg-slate-900/95 text-emerald-400 hover:text-white hover:bg-emerald-700 transition flex items-center justify-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>` : ''}
       </div>
     </div>`;
@@ -1674,6 +1711,9 @@ function renderBreadcrumb() {
 function renderMain() {
   if (state.screen !== 'inventory') return;
   renderBreadcrumb();
+  // H-FE-001: the cold TF2 fetch failed → show a distinct error+Retry panel, NOT an empty inventory. A failed
+  // load must never masquerade as a legitimate empty state (S4/S13 UI-truth class). Cleared on a successful load.
+  if (state.game === 'tf2' && !state.tf2Loaded && state.tf2LoadError) { renderTf2LoadError(); return; }
   el.globalFilter.classList.toggle('hidden', state.invMode !== 'global');
   // The worth/wallet curve lives in the env-master + global-master views, for BOTH games
   // (the curve tracks the ACTIVE game's worth — TF2 items are priced against appid 440).
@@ -1689,6 +1729,38 @@ function renderMain() {
   if (state.invMode === 'folder')     return renderFolderMaster();
   if (state.invMode === 'selection')  return renderSelectionMaster();
   return renderAccountView();
+}
+
+/** H-FE-001: the TF2 cache failed its first fetch → render a distinct error panel with a Retry button in place of
+ *  the (empty) inventory body, so a failed load is never mistaken for a genuinely empty fleet. Retry re-runs the
+ *  same /api/inventory-tf2 load; on success loadTf2Inventories clears tf2LoadError and renderMain paints the real view. */
+function renderTf2LoadError() {
+  // Hide every inventory surface so only the error panel shows (mirrors renderNoAccount's teardown).
+  el.itemsWrap?.classList.add('hidden');
+  el.emptyState?.classList.add('hidden');
+  el.invLoading?.classList.add('hidden');
+  el.ordersWrap?.classList.add('hidden');
+  el.gcCatTabs?.classList.add('hidden');
+  el.facetBar?.classList.add('hidden');
+  el.globalFilter?.classList.add('hidden');
+  el.historyWrap?.classList.add('hidden');
+  el.mainHeader.innerHTML = `
+    <div class="h-full flex flex-col items-center justify-center text-center py-16">
+      <div class="w-20 h-20 rounded-2xl bg-slate-900 border border-rose-900/60 flex items-center justify-center mb-5">
+        <i class="fa-solid fa-triangle-exclamation text-3xl text-rose-400"></i>
+      </div>
+      <p class="text-slate-200 font-semibold">Couldn't load TF2 inventories</p>
+      <p class="text-slate-500 text-sm mt-1 max-w-md">${escapeHtml(state.tf2LoadError || 'The TF2 inventory fetch failed.')}</p>
+      <button id="btn-tf2-retry"
+        class="mt-5 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-light text-white text-sm font-bold transition inline-flex items-center gap-2">
+        <i class="fa-solid fa-rotate"></i><span>Retry</span></button>
+    </div>`;
+  const rb = $('btn-tf2-retry');
+  if (rb) rb.addEventListener('click', async () => {
+    rb.disabled = true; rb.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i><span>Retrying…</span>';
+    await loadTf2Inventories();
+    renderMain();   // success → clears the panel and paints the real view; failure → re-renders this panel
+  });
 }
 
 function setStatLabels(itemsLabel, lockedLabel, showLockWarn = false) {
@@ -1759,6 +1831,7 @@ function invalidateHistory() { historyCache.clear(); }
  */
 function renderHistoryChart(points) {
   const pts = Array.isArray(points) ? points.filter((p) => p && typeof p.t === 'number') : [];
+  const anyPartial = pts.some((p) => p.partial === true);
   if (pts.length < 2) {
     el.historyLegend.innerHTML = '';
     el.historyChart.innerHTML = `<p class="text-center text-slate-600 text-xs py-6">Not enough data points yet – the curve grows with the next refresh.</p>`;
@@ -1818,7 +1891,7 @@ function renderHistoryChart(points) {
       ${yLabels}
       <path d="${areaPath}" fill="url(#hist-fill)"/>
       <path d="${itemsPath}" fill="none" class="hist-line-items" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="${walletPath}" fill="none" class="hist-line-wallet" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="none"/>
+      <path d="${walletPath}" fill="none" class="hist-line-wallet" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="${anyPartial ? '4 3' : 'none'}"/>
       ${dot(x(last.t), y(last.items), 'hist-dot-items')}
       ${dot(x(last.t), y(last.wallet), 'hist-dot-wallet')}
       <text x="${PAD_L}" y="${H - 6}" class="hist-axis" font-size="10">${fmtTime(t0)}</text>
@@ -1830,7 +1903,7 @@ function renderHistoryChart(points) {
     <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--brand-rgb))"></span>
       Items worth <b class="text-slate-200">${fmtCents(last.items)}</b></span>
     <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--success-rgb))"></span>
-      Balance <b class="text-slate-200">${fmtCents(last.wallet)}</b></span>
+      Balance <b class="text-slate-200">${fmtCents(last.wallet)}</b>${last.partial === true ? ` <span class="text-slate-600" title="Some wallet balances are in a currency that cannot be converted to USD — the balance line undercounts the real total.">(incomplete)</span>` : ''}</span>
     <span class="text-slate-600">${pts.length} points</span>`;
 }
 
@@ -2186,7 +2259,12 @@ function ordersHtml(data) {
   const emptyRow = (txt) => `<div class="px-4 py-8 text-center text-slate-600 text-sm">${txt}</div>`;
   const buyInner = buys.length ? buys.map(buyOrderRow).join('') : emptyRow('No active buy orders.');
   const sellInner = sells.length ? sells.map(sellOrderRow).join('') : emptyRow('No active sell orders.');
-  return ordersShellHtml(buyInner, sellInner, { buy: buys.length, sell: sells.length });
+  // Non-blocking honesty banner: the backend flags a mid-fetch Steam/proxy error that
+  // truncated the snapshot, so the list below is partial, not authoritative.
+  const banner = data.partial
+    ? `<div class="mb-3 px-4 py-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs flex items-center gap-2"><i class="fa-solid fa-triangle-exclamation shrink-0"></i><span>Order list may be incomplete (Steam/proxy error during fetch) — refresh to retry.</span></div>`
+    : '';
+  return banner + ordersShellHtml(buyInner, sellInner, { buy: buys.length, sell: sells.length });
 }
 
 function orderIcon(o) {
@@ -2537,8 +2615,11 @@ async function onSingleOfferAction(e) {
   }))) return;
   setRowBusy(row, true);
   try {
-    await api('/api/trade/offer-action', { method: 'POST', body: JSON.stringify({ username, offerId, action }) });
-    toast(`Offer ${OFFER_VERB[action]}`, 'success');
+    const res = await api('/api/trade/offer-action', { method: 'POST', body: JSON.stringify({ username, offerId, action }) });
+    // 'unconfirmed' = the accept committed on Steam but its 2FA confirmation failed; the offer is
+    // done (remove the row) yet awaits a manual mobile confirmation — not a plain success.
+    if (res && res.status === 'unconfirmed') toast('Offer accepted — awaiting mobile confirmation', 'warn');
+    else toast(`Offer ${OFFER_VERB[action]}`, 'success');
     removeOfferRow(row);
   } catch (err) {
     toast(`${OFFER_LABEL[action]} failed: ${err.message}`, 'error');
@@ -2567,11 +2648,19 @@ async function batchOffers(rows, action) {
     return;
   }
   const byKey = new Map((data.results || []).map((r) => [`${String(r.username).toLowerCase()}|${r.offerId}`, r]));
+  // 'unconfirmed' rows COMMITTED on Steam (ok:true) but their 2FA confirmation failed — they are
+  // no longer actionable (a re-run hits an already-accepted offer), so remove them like a success
+  // and surface the awaiting-mobile-confirmation count separately rather than as a failure.
+  let unconfirmed = 0;
   for (const r of rows) {
     const res = byKey.get(`${r.dataset.username.toLowerCase()}|${r.dataset.offerId}`);
-    if (res && res.ok) removeOfferRow(r); else setRowBusy(r, false);
+    if (res && res.ok) { if (res.status === 'unconfirmed') unconfirmed++; removeOfferRow(r); }
+    else setRowBusy(r, false);
   }
-  toast(`${OFFER_LABEL[action]}: ${data.ok} ok${data.fail ? `, ${data.fail} failed` : ''}`, data.fail ? 'warn' : 'success');
+  const parts = [`${data.ok} ok`];
+  if (unconfirmed) parts.push(`${unconfirmed} await mobile confirmation`);
+  if (data.fail)   parts.push(`${data.fail} failed`);
+  toast(`${OFFER_LABEL[action]}: ${parts.join(', ')}`, data.fail ? 'warn' : (unconfirmed ? 'warn' : 'success'));
   updateOffersSelCounts();
 }
 
@@ -3516,6 +3605,7 @@ function pollRefresh() {
         state.tf2Inventories = {};
         for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
         state.tf2Loaded = true;
+        state.tf2LoadError = null;   // H-FE-001: a successful TF2 refresh heals any prior load-error panel
       } else {
         const invMap = await api('/api/inventory');
         state.inventories = {};
@@ -3938,7 +4028,8 @@ function closeCsFloat() { el.csfloatOverlay.classList.add('hidden'); }
 //  canonical OTP + getConfirmations/respond; this panel only renders + refreshes
 //  from truth (no optimistic-only state). Acts on EXACTLY the selected account.
 // ════════════════════════════════════════════════════════════════════════════
-const SDA = { username: null, otpTimer: null, barTimer: null, code: '·····', confs: [], open: false };
+const SDA = { username: null, otpTimer: null, barTimer: null, code: '·····', confs: [], open: false, otpErr: false };
+const SDA_OTP_RETRY_MS = 5000;
 
 async function openSda(username) {
   SDA.username = username; SDA.open = true; SDA.code = '·····';
@@ -3964,6 +4055,7 @@ async function startSdaOtp(username) {
   try {
     const { code, msRemaining } = await api(`/api/accounts/${encodeURIComponent(username)}/otp`);
     if (!SDA.open || SDA.username !== username) return;
+    SDA.otpErr = false;
     SDA.code = code;
     if (el.sdaOtp) el.sdaOtp.textContent = code;
     const total = 30000;
@@ -3978,9 +4070,15 @@ async function startSdaOtp(username) {
     // Re-fetch the FRESH code a hair past the boundary so the displayed value is never stale.
     SDA.otpTimer = setTimeout(() => { if (SDA.open && SDA.username === username) startSdaOtp(username); }, remaining + 300);
   } catch (e) {
+    if (!SDA.open || SDA.username !== username) return;
     if (el.sdaOtp) el.sdaOtp.textContent = '—';
     if (el.sdaOtpBar) el.sdaOtpBar.style.width = '0%';
-    toast(e.message || 'could not load Steam Guard code', 'error');
+    // Toast once per error streak (not every retry) so a transient blip isn't a toast storm.
+    if (!SDA.otpErr) { SDA.otpErr = true; toast(e.message || 'could not load Steam Guard code', 'error'); }
+    // A single transient failure must NOT kill the auto-roll forever (S17 class): schedule a
+    // bounded, guarded retry so the display self-recovers once the backend returns. The guard
+    // stops the retry the moment the modal closes or the account changes (mirrors the success path).
+    SDA.otpTimer = setTimeout(() => { if (SDA.open && SDA.username === username) startSdaOtp(username); }, SDA_OTP_RETRY_MS);
   }
 }
 
@@ -4027,7 +4125,7 @@ function renderSdaConfirmations() {
       ${c.iconUrl ? `<img src="${escapeAttr(safeIconUrl(c.iconUrl))}" alt="" loading="lazy" class="w-9 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : `<i class="fa-solid ${typeIcon(c.typeName)} text-slate-500 w-9 text-center shrink-0"></i>`}
       <div class="min-w-0 flex-1">
         <div class="text-sm text-slate-200 truncate" title="${escapeAttr(c.title)}">${escapeHtml(c.title)}</div>
-        <div class="text-2xs text-slate-500">${escapeHtml(c.typeName)}${c.receiving ? ' · ' + escapeHtml(c.receiving) : ''}</div>
+        <div class="text-2xs text-slate-500 truncate">${escapeHtml(c.typeName)}${c.sending ? ' · gives ' + escapeHtml(c.sending) : ''}${c.receiving ? ' · gets ' + escapeHtml(c.receiving) : ''}</div>
       </div>
       <button data-conf-approve="${escapeAttr(c.id)}" class="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-check"></i><span>Approve</span></button>
     </div>`).join('');
@@ -4270,14 +4368,17 @@ function csfBuyOrderRow(o) {
 async function csfLoadTrades() {
   el.csfloatBody.innerHTML = csfSkeleton(3);
   try {
-    const [auto, tradesRes] = await Promise.all([ csfApi('/auto-accept').catch(() => ({ enabled: false })), csfApi('/trades?limit=50') ]);
+    // Do NOT coerce a failed /auto-accept fetch to a fake OFF (that made a transient error
+    // indistinguishable from genuinely off, and fed the next PUT a fabricated default). Let a
+    // failure fall to the tab's error surface (csfError) below, exactly like the other CSF tabs.
+    const [auto, tradesRes] = await Promise.all([ csfApi('/auto-accept'), csfApi('/trades?limit=50') ]);
     const trades = csfArr(tradesRes);
     const acc = state.allAccounts.find((a) => a.username === CSF.username);
-    const limited = !!(acc && acc.tier === 'limited');
+    const limited = !!(acc && acc.canConfirm === false);
     el.csfloatBody.innerHTML = `
       <div class="surface flex items-center justify-between px-4 py-3 mb-4">
-        <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? 'Unavailable on Limited accounts (no maFile to confirm the Steam delivery).' : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
-        <button data-csf="autoaccept" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
+        <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? "Unavailable — this account's maFile has no identity_secret to confirm the Steam delivery. Attach a maFile with one to enable." : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
+        <button data-csf="autoaccept" data-enabled="${auto.enabled ? '1' : '0'}" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
       </div>
       ${trades.length ? `<div class="space-y-2">${trades.map(csfTradeRow).join('')}</div>` : csfEmpty('fa-right-left', 'No trades yet.')}`;
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
@@ -4381,7 +4482,9 @@ async function csfToggleExperimental() {
   catch (err) { toast(err.message, 'error'); }
 }
 async function csfToggleAutoAccept(btn) {
-  const cur = btn.textContent.includes('ON');
+  // Derive the current state from data-enabled, which is set only on a successful /auto-accept
+  // fetch (csfLoadTrades) — never from button text, which could reflect a fabricated default.
+  const cur = btn.getAttribute('data-enabled') === '1';
   try { const r = await csfApi('/auto-accept', { method: 'PUT', body: JSON.stringify({ enabled: !cur }) }); toast(`Auto-accept ${r.enabled ? 'enabled' : 'disabled'}`, 'success'); csfSwitchTab('trades'); }
   catch (err) { toast(err.message, 'error'); }
 }
@@ -4646,27 +4749,74 @@ const BAN_CATS = [
   { key: 'error',     label: 'Lookup Failed',         icon: 'fa-triangle-exclamation', text: 'text-slate-400',  badge: 'bg-slate-600/30 text-slate-300',     movable: false },
 ];
 
-/** Opens the Ban Checker for a set of accounts and renders the result modal. */
+/** Opens the Ban Checker for a set of accounts and renders the result modal.
+ *  H-TRD-033: a cold whole-fleet check can run past the client's 120s request budget, so we START a
+ *  detached backend job (202) then POLL /api/bans/status until it delivers a result — the modal shows
+ *  advancing progress and completes even when the run exceeds two minutes, and a second start while one
+ *  is running gets the 409 toast instead of piling a concurrent run on top. */
 async function openBanChecker(usernames, scopeLabel) {
   const list = [...new Set((usernames || []).filter(Boolean))];
   if (list.length === 0) { toast('No accounts to check', 'warn'); return; }
   state.banResult = null;
+  clearTimeout(state.banTimer);
   el.banScope.textContent = scopeLabel ? `· ${scopeLabel}` : `· ${list.length} account(s)`;
-  el.banSummary.innerHTML = `<div class="text-sm text-slate-400 flex items-center gap-2"><i class="fa-solid fa-spinner cs2-spin"></i>Checking ${list.length} account(s) for Steam bans…</div>`;
+  el.banSummary.innerHTML = `<div class="text-sm text-slate-400 flex items-center gap-2"><i class="fa-solid fa-spinner cs2-spin"></i>Starting ban check for ${list.length} account(s)…</div>`;
   el.banBody.innerHTML = '';
   el.banOverlay.classList.remove('hidden');   // → FB-04 onModalOpen
-  let res;
   try {
-    res = await api('/api/bans/check', { method: 'POST', body: JSON.stringify({ usernames: list }) });
+    await api('/api/bans/check', { method: 'POST', body: JSON.stringify({ usernames: list }) });
   } catch (err) {
+    // A 409 (already running) is an expected single-flight rejection — surface it plainly and toast.
+    if (err.status === 409) toast(err.message || 'A ban check is already running', 'warn');
     el.banSummary.innerHTML = `<div class="text-sm text-rose-400"><i class="fa-solid fa-circle-exclamation mr-1.5"></i>${escapeHtml(err.message)}</div>`;
     return;
   }
-  state.banResult = res;
-  renderBanResult(res);
+  resetPoller('ban'); resetPoller('banErr'); // clean stall windows for this run (#27)
+  pollBanCheck();
 }
 
-function closeBan() { state.banResult = null; el.banOverlay.classList.add('hidden'); }
+/** Polls the detached ban-check job every 1.5s, rendering live progress until a result/error arrives.
+ *  S17: a transient status-fetch error retries (bounded) rather than killing the poll while the job runs. */
+function pollBanCheck() {
+  clearTimeout(state.banTimer);
+  state.banTimer = setTimeout(async () => {
+    let job;
+    try { job = await api('/api/bans/status'); resetPoller('banErr'); }
+    catch (err) {
+      // Bound the error-retry loop: stop after POLL_STALL_MS of continuous status errors (S17).
+      if (pollerStalled('banErr', 0)) {
+        resetPoller('banErr');
+        el.banSummary.innerHTML = `<div class="text-sm text-rose-400"><i class="fa-solid fa-circle-exclamation mr-1.5"></i>${escapeHtml(err.message || 'Lost contact with the ban check')}</div>`;
+        return;
+      }
+      state.banTimer = setTimeout(pollBanCheck, 1500); return;
+    }
+    if (job.result) { resetPoller('ban'); state.banResult = job.result; renderBanResult(job.result); return; }
+    if (!job.running && job.error) {
+      resetPoller('ban');
+      el.banSummary.innerHTML = `<div class="text-sm text-rose-400"><i class="fa-solid fa-circle-exclamation mr-1.5"></i>${escapeHtml(job.error)}</div>`;
+      return;
+    }
+    // Still running — show which phase we're in and advance the stall guard on any counter movement.
+    const p = job.progress || {};
+    const done = (p.resolved || 0) + (p.keysAcquired || 0) + (p.checked || 0);
+    if (pollerStalled('ban', done)) {
+      resetPoller('ban');
+      el.banSummary.innerHTML = `<div class="text-sm text-amber-400"><i class="fa-solid fa-triangle-exclamation mr-1.5"></i>The ban check appears stuck (no progress) — stopping the live updater. Check the server.</div>`;
+      return;
+    }
+    const total = p.total || 0;
+    const label = (p.checked || 0) > 0
+      ? `Checked ${p.checked} of ${total}…`
+      : (p.keysAcquired || 0) > 0
+        ? `Acquiring keys… (${p.keysAcquired} ready)`
+        : `Resolving SteamIDs… (${p.resolved || 0} of ${total})`;
+    el.banSummary.innerHTML = `<div class="text-sm text-slate-400 flex items-center gap-2"><i class="fa-solid fa-spinner cs2-spin"></i>${escapeHtml(label)}</div>`;
+    pollBanCheck();
+  }, 1500);
+}
+
+function closeBan() { state.banResult = null; clearTimeout(state.banTimer); el.banOverlay.classList.add('hidden'); }
 
 /** Account-level trigger (single account from the sidebar row). */
 function checkAccountBans(username) {
@@ -4923,7 +5073,7 @@ async function submitTrade(ev) {
     // own post-trade refresh waits ~8s too), so re-pull the affected accounts after that window
     // to reflect the new truth without a manual refresh. (INV-E1.)
     const affected = target.toUsername ? [from, target.toUsername] : [from];
-    setTimeout(() => { try { startInventoryRefresh({ usernames: affected }); } catch (_) { /* best-effort */ } }, 9000);
+    setTimeout(() => { try { startInventoryRefresh({ usernames: affected, game: state.game }); } catch (_) { /* best-effort */ } }, 9000);
   } catch (err) {
     // Money-safety (#28): a send that failed AFTER dispatch may still have placed an
     // offer. If the backend flagged verifyBeforeRetry, refresh the sender and warn
@@ -5040,7 +5190,7 @@ function pollMass() {
       await refreshActiveViewFromCache();
       // Bubble Steam's ACTUAL failure reasons up to the operator (incl. full-inventory).
       if (job.failed.length) surfaceTradeFailures(job.failed);
-      const verb = job.cancelled ? 'ended' : 'done';
+      const verb = job.stopReason ? `stopped (${job.stopReason})` : (job.cancelled ? 'ended' : 'done');
       toast(`Mass trade ${verb}: ${job.confirmed} confirmed${job.failed.length ? `, ${job.failed.length} failed` : ''}`, job.failed.length ? 'warn' : 'success');
       setTimeout(() => el.massProgress.classList.add('hidden'), 3500);
     } catch (err) {
@@ -5427,6 +5577,11 @@ async function submitBulk() {
     const res = await api('/api/mafiles/import', { method: 'POST', body: JSON.stringify({ files, environmentId, folderId }) });
     if (res.vault) {
       toast(`${res.imported} bot(s) imported into the vault${res.migrated ? `, ${res.migrated} migrated` : ''}`, res.imported ? 'success' : 'info');
+      // H-ACC-078: never let a ticked file no-op silently — surface why each skipped file failed.
+      if (Array.isArray(res.reasons) && res.reasons.length) {
+        const first = res.reasons.slice(0, 5).map((r) => `${r.file}: ${r.reason}`).join('; ');
+        toast(`${res.reasons.length} file(s) could not be imported — ${first}${res.reasons.length > 5 ? '…' : ''}`, 'warn');
+      }
     } else {
       const skipMsg = res.skipped.length ? `, ${res.skipped.length} skipped` : '';
       toast(`${res.added.length} bot(s) imported${skipMsg}`, res.added.length ? 'success' : 'warn');
@@ -5451,6 +5606,11 @@ async function onBulkCsv(ev) {
     const r = await api('/api/import/csv', { method: 'POST', body: JSON.stringify({ csv, environmentId, folderId }) });
     show(`Imported ${r.imported} new, ${r.skipped} skipped.`, r.imported ? 'text-emerald-400' : 'text-amber-400');
     toast(`CSV import: ${r.imported} added, ${r.skipped} skipped`, r.imported ? 'success' : 'info');
+    // H-ACC-078: parser-dropped rows are lost input — name the first few so the operator can fix them.
+    if (Array.isArray(r.rejected) && r.rejected.length) {
+      const first = r.rejected.slice(0, 5).map((x) => `line ${x.line}: ${x.reason}`).join('; ');
+      toast(`${r.rejected.length} row(s) could not be imported — ${first}${r.rejected.length > 5 ? '…' : ''}`, 'warn');
+    }
     if (r.imported) { closeBulk(); await reloadAll(); if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard(); }
   } catch (err) {
     show(err.message, 'text-rose-400');
@@ -5985,6 +6145,11 @@ const OVERLAY_CLOSERS = new Map([
   ['confirm-overlay', () => closeConfirm(false)],   // FB-01: Esc / registry-close = safe cancel (no-op)
 ]);
 const FB04 = { stack: [], triggers: new WeakMap(), lastTrigger: null };
+// H-FE-010: teardown hooks run when a modal reaches onModalClose (any close path — X, backdrop,
+// Esc). The lazily-built Trade-Up/Casket overlays self-reschedule status pollers; without a close
+// hook those timers keep firing status fetches + DOM writes into a hidden overlay after close.
+// Keyed by overlay id; runs exactly on hide.
+const MODAL_TEARDOWNS = new Map();
 function modalOverlays() { return Array.from(document.querySelectorAll('[id$="-overlay"]')); }
 function topOpenOverlay() {
   const open = modalOverlays().filter((o) => !o.classList.contains('hidden'));
@@ -6020,6 +6185,7 @@ function isRestorable(node) {
     && typeof node.focus === 'function';
 }
 function onModalClose(overlay) {
+  MODAL_TEARDOWNS.get(overlay.id)?.();   // H-FE-010: stop any per-modal poller before draining state
   const i = FB04.stack.indexOf(overlay);
   if (i >= 0) FB04.stack.splice(i, 1);
   const trigger = FB04.triggers.get(overlay);
@@ -6033,6 +6199,18 @@ function onModalClose(overlay) {
     // safe default: do nothing — focus stays on <body> rather than a hidden element
   }, 0);
 }
+// Wire a modal overlay's hidden↔shown class toggles to the FB-04 open/close lifecycle. Applied to
+// every static overlay at boot AND to lazily-built feature overlays (Trade-Up/Casket) at creation,
+// so their close reliably reaches onModalClose and never strands the scroll-lock (H-FE-009).
+function observeOverlay(overlay) {
+  new MutationObserver(() => {
+    const hidden = overlay.classList.contains('hidden');
+    const tracked = FB04.stack.includes(overlay);
+    if (!hidden && !tracked) onModalOpen(overlay);
+    else if (hidden && tracked) onModalClose(overlay);
+  }).observe(overlay, { attributes: true, attributeFilter: ['class'] });
+}
+
 function setupModalInfra() {
   // FB-04 hardening: track the last element focused OUTSIDE any modal → the trigger to
   // restore focus to on close. focusin (capture) is PRIMARY and covers keyboard opens
@@ -6044,14 +6222,7 @@ function setupModalInfra() {
     const t = e.target && e.target.closest && e.target.closest('button, a, [role="button"], input, select, textarea, [tabindex]');
     if (outsideModal(t)) FB04.lastTrigger = t;
   }, true);
-  modalOverlays().forEach((overlay) => {
-    new MutationObserver(() => {
-      const hidden = overlay.classList.contains('hidden');
-      const tracked = FB04.stack.includes(overlay);
-      if (!hidden && !tracked) onModalOpen(overlay);
-      else if (hidden && tracked) onModalClose(overlay);
-    }).observe(overlay, { attributes: true, attributeFilter: ['class'] });
-  });
+  modalOverlays().forEach(observeOverlay);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' && e.key !== 'Tab') return;
     const top = topOpenOverlay();
@@ -6418,6 +6589,7 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
     <div data-foot class="px-6 py-2.5 border-t border-slate-800 shrink-0 text-2xs text-slate-500"></div>
   </div>`;
   document.body.appendChild(ov);
+  observeOverlay(ov); // route hidden↔shown through the FB-04 lifecycle (H-FE-009: no stranded scroll-lock)
   const close = () => ov.classList.add('hidden');
   ov.querySelector('[data-close]').addEventListener('click', close);
   ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
@@ -6426,6 +6598,9 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
 
 // ── Trade-Ups ────────────────────────────────────────────────────────────────
 const tuState = { username: null, candidates: [], selected: new Set(), execTimer: null };
+// H-FE-010: closing the Trade-Up overlay stops its execute-status poller (otherwise it keeps
+// firing /api/tradeup/execute-status + writing the hidden foot until the job reports running:false).
+MODAL_TEARDOWNS.set('tradeup-overlay', () => { clearTimeout(tuState.execTimer); tuState.execTimer = null; });
 
 async function openTradeUpModal(username) {
   const ov = ensureFeatureOverlay('tradeup-overlay', 'Trade-Ups', 'fa-arrow-trend-up', 'max-w-5xl');
@@ -6434,8 +6609,7 @@ async function openTradeUpModal(username) {
   ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div class="empty-title">Scan this account for profitable trade-up contracts.</div><div class="empty-sub">Reads the inventory and computes positive-EV contracts from its skins.</div></div>`;
   ov.querySelector('[data-foot]').textContent = '';
   renderTuToolbar();
-  ov.classList.remove('hidden');
-  onModalOpen(ov);
+  ov.classList.remove('hidden'); // observeOverlay (H-FE-009) fires onModalOpen off the class mutation
 }
 
 function renderTuToolbar() {
@@ -6540,9 +6714,11 @@ function tuPollExec() {
   const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
   const foot = ov.querySelector('[data-foot]');
   clearTimeout(tuState.execTimer);
+  resetPoller('tuExecErr'); // S17: start a clean error-retry window for this execution
   const tick = async () => {
     try {
       const j = await api('/api/tradeup/execute-status');
+      resetPoller('tuExecErr'); // S17: a good poll clears the error-retry window
       const confirmed = (j.results || []).filter(r => r.confirmed).length;
       const line = j.enabled
         ? `Executing ${j.done}/${j.total} · submitted ${j.crafted} (${confirmed} confirmed) · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}`
@@ -6555,13 +6731,26 @@ function tuPollExec() {
         const failMsg = (j.results || []).filter(r => r.error)[0]?.error;
         if (!j.enabled && failMsg) toast(failMsg, 'warn'); else if (j.crafted) toast(`Trade-ups: ${j.crafted} submitted, ${confirmed} confirmed`, 'success');
       }
-    } catch { /* stop polling on error */ }
+    } catch {
+      // S17: a transient status-fetch error must not permanently kill the poller while the trade-up
+      // keeps running server-side — it DESTROYS 10 real items per contract, so a frozen "Executing 2/5"
+      // (its completion toast never firing) is the worst place to silently die. Bounded retry, mirroring
+      // the refresh/mass/sell/casket pollers: keep polling at the same 1.2s cadence until POLL_STALL_MS
+      // of CONTINUOUS errors, then give up with a visible terminal line — shown as status LOST, never as
+      // success (do not fabricate a "done"); the operator must verify the irreversible outcome in-game.
+      if (!pollerStalled('tuExecErr', 0)) { tuState.execTimer = setTimeout(tick, 1200); return; }
+      resetPoller('tuExecErr');
+      if (foot) foot.innerHTML = '<span class="text-amber-400">Lost contact with the job — status stopped; verify in-game.</span>';
+    }
   };
   tick();
 }
 
 // ── Storage Units (caskets) ──────────────────────────────────────────────────
 const ckState = { username: null, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', error: null, moveTimer: null };
+// H-FE-010: closing the Storage-Unit overlay stops its move-status poller (a long casket move would
+// otherwise poll /api/casket/move-status + write the hidden foot for minutes after close).
+MODAL_TEARDOWNS.set('casket-overlay', () => { clearTimeout(ckState.moveTimer); ckState.moveTimer = null; });
 
 async function openCasketModal(username) {
   const ov = ensureFeatureOverlay('casket-overlay', 'Storage Units', 'fa-box-archive', 'max-w-5xl');
@@ -6569,8 +6758,7 @@ async function openCasketModal(username) {
   ov.querySelector('[data-scope]').textContent = `· ${username}`;
   ov.querySelector('[data-toolbar]').innerHTML = `<label class="text-2xs uppercase tracking-wide text-slate-500 font-semibold">Storage unit</label><select data-ck-unit class="field !w-auto !py-1.5 text-sm"><option value="">— loading… —</option></select>`;
   ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-spinner cs2-spin"></i></div><div class="empty-title">Connecting to the game coordinator…</div></div>`;
-  ov.classList.remove('hidden');
-  onModalOpen(ov);
+  ov.classList.remove('hidden'); // observeOverlay (H-FE-009) fires onModalOpen off the class mutation
   // Load units (needs the GC library; degrades clearly if unavailable — shown in the unit panel).
   try {
     const r = await api(`/api/casket/${encodeURIComponent(username)}/list`);
@@ -6709,22 +6897,53 @@ function casketPollMove() {
   const ov = document.getElementById('casket-overlay'); if (!ov) return;
   const foot = ov.querySelector('[data-foot]');
   clearTimeout(ckState.moveTimer);
+  resetPoller('casketErr'); // S17: start a clean error-retry window for this move
   const tick = async () => {
     try {
       const j = await api('/api/casket/move-status');
-      const line = j.error ? `<span class="text-amber-400">${escapeHtml(j.error)}</span>`
-        : `<span class="text-slate-300">${j.direction}: ${j.done}/${j.total} · moved ${j.moved}${j.unconfirmed ? ' · unconfirmed ' + j.unconfirmed : ''} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}</span>`;
+      resetPoller('casketErr'); // S17: a good poll clears the error-retry window
+      // An 'aborted' throw (mid-move backstop) carries real partial counters — show them WITH the error,
+      // never error-only (that would tell the user a 150-items-deep move did nothing). A 'preflight' throw
+      // (done/moved/unconfirmed all 0) still renders error-only.
+      const hadProgress = j.done > 0 || j.moved > 0 || j.unconfirmed > 0;
+      const counters = `<span class="text-slate-300">${j.direction}: ${j.done}/${j.total} · moved ${j.moved}${j.unconfirmed ? ' · unconfirmed ' + j.unconfirmed : ''} · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}</span>`;
+      const line = j.error
+        ? (hadProgress ? counters + ` <span class="text-amber-400">${escapeHtml(j.error)}</span>` : `<span class="text-amber-400">${escapeHtml(j.error)}</span>`)
+        : counters;
       foot.innerHTML = line + (j.running ? ` <button data-ck-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
       foot.querySelector('[data-ck-cancel]')?.addEventListener('click', () => api('/api/casket/move-cancel', { method: 'POST' }).catch(() => {}));
       if (j.running) { ckState.moveTimer = setTimeout(tick, 1000); }
-      else if (!j.error && (j.moved || j.unconfirmed)) {
+      else if (j.moved || j.unconfirmed) {
         // Reload the unit's contents on ANY sent move (confirmed OR unconfirmed) so the panel
         // reflects reality — an "unconfirmed" item may well have moved (the SO just didn't echo).
-        if (j.moved) toast(`Storage: ${j.moved} ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}${j.unconfirmed ? ' (' + j.unconfirmed + ' unconfirmed — verify in-game)' : ''}`, j.unconfirmed ? 'warn' : 'success');
-        else toast(`Storage: ${j.unconfirmed} sent but unconfirmed — verify in-game`, 'warn');
-        await loadCasketContents(); renderCasketPanels();
+        // This runs even when j.error is set: an 'aborted' (mid-move backstop) throw still moved real
+        // items, so we reconcile the panel and surface the error toast alongside the progress toast.
+        if (j.error) toast(j.error, 'error');
+        // H-TRD-081: a budget-stop (S16 cooperative break) left the rest UNATTEMPTED — say so
+        // explicitly (warn tone), never the success-flavoured "N deposited"; a cancel-after-current
+        // gets a "Cancelled — " prefix so the toast never reads as a full completion.
+        if (j.stoppedReason === 'budget') {
+          toast(`Storage: ${j.done}/${j.total} attempted — ${j.total - j.done} not attempted; run the move again to continue`, 'warn');
+        } else {
+          const prefix = j.stoppedReason === 'cancelled' ? 'Cancelled — ' : '';
+          if (j.moved) toast(`${prefix}Storage: ${j.moved} ${j.direction === 'deposit' ? 'deposited' : 'withdrawn'}${j.unconfirmed ? ' (' + j.unconfirmed + ' unconfirmed — verify in-game)' : ''}`, j.unconfirmed ? 'warn' : 'success');
+          else toast(`${prefix}Storage: ${j.unconfirmed} sent but unconfirmed — verify in-game`, 'warn');
+        }
+        // Backend reconciled this account's inventory post-move (H-TRD-084), so re-pull the coalesced
+        // /api/inventory cache (reuse the S10 entry point — no new fetch path) BEFORE re-rendering, so
+        // the deposit panel drops the moved items in the same modal session (they'd otherwise stay as
+        // owned/tradable in the stale cache, inviting a duplicate deposit).
+        await loadCasketContents(); await refreshActiveViewFromCache(); renderCasketPanels();
       }
-    } catch { /* stop on error */ }
+    } catch {
+      // S17: a transient status-fetch error must not permanently kill the poller while the move keeps
+      // running server-side (its completion re-pull/toast would then never fire, freezing the footer).
+      // Bounded retry, mirroring the refresh/mass/sell pollers: keep polling until POLL_STALL_MS of
+      // CONTINUOUS errors, then give up with a give-up line (backend reconcile per H-TRD-084 covers the job).
+      if (!pollerStalled('casketErr', 0)) { ckState.moveTimer = setTimeout(tick, 2_000); return; }
+      resetPoller('casketErr');
+      if (foot) foot.innerHTML = '<span class="text-amber-400">status unavailable — the move may still be running; reopen Storage to reload the unit</span>';
+    }
   };
   tick();
 }

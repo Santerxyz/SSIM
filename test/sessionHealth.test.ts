@@ -9,6 +9,8 @@ test('webCookiesFresh: fresh within the window, stale beyond it', () => {
   assert.equal(webCookiesFresh(new Date(now - (WEB_COOKIE_MAX_AGE_MS + 60_000)), now), false); // beyond window → stale
   assert.equal(webCookiesFresh(undefined, now), false);                   // no cookies → not ready
   assert.equal(webCookiesFresh('not-a-date', now), false);                // corrupt → not ready
+  assert.equal(webCookiesFresh(new Date(now + 60_000), now), false);      // future timestamp → unmeasurable → stale
+  assert.equal(webCookiesFresh(new Date(now), now), true);                // zero age stays fresh
 });
 
 // C17 / INV-A6 — a bulk op may release only a session its own call originated.

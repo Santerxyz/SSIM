@@ -22,10 +22,10 @@ test('S45: a 429 backoff frees the single-flight slot so an interactive request 
 
   let bgCalls = 0;
   (bg as unknown as { http: { request: Req } }).http = {
-    request: async () => { bgCalls++; return bgCalls === 1 ? { status: 429, data: {} } : { status: 200, data: 'BG' }; },
+    request: async () => { bgCalls++; return bgCalls === 1 ? { status: 429, data: {} } : { status: 200, data: { tag: 'BG' } }; },
   };
   (inter as unknown as { http: { request: Req } }).http = {
-    request: async () => ({ status: 200, data: 'INTERACTIVE' }),
+    request: async () => ({ status: 200, data: { tag: 'INTERACTIVE' } }),
   };
 
   const order: string[] = [];

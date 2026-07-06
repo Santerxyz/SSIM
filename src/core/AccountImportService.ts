@@ -3,7 +3,7 @@ import QRCode from 'qrcode';
 import { LoginSession, EAuthTokenPlatformType, EAuthSessionGuardType } from 'steam-session';
 import type { AccountManager } from './AccountManager';
 import type { SessionManager } from './SessionManager';
-import type { NetworkConfig } from '../types/account';
+import { normalizeProxy } from '../network/AgentFactory';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -36,7 +36,7 @@ export type ImportState =
 
 const SESSION_TTL_MS        = 5 * 60_000; // prune a finished/dead import session after this
 const MAX_ACTIVE_IMPORTS    = 10;         // hard ceiling on concurrent in-flight imports
-const QR_LOGIN_TIMEOUT_MS   = 120_000;    // QR challenge stays pollable this long, then 'expired'
+const LOGIN_TIMEOUT_MS      = 120_000;    // a QR/credentials login stays pollable this long, then 'expired'
 
 interface ImportSession {
   id:              string;
@@ -90,13 +90,13 @@ export class AccountImportService {
 
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
     // loginTimeout must be set BEFORE polling begins (i.e. before startWithQR resolves).
-    session.loginTimeout = QR_LOGIN_TIMEOUT_MS;
+    session.loginTimeout = LOGIN_TIMEOUT_MS;
 
     const id = uuidv4();
     const now = Date.now();
     const rec: ImportSession = {
       id, method: 'qr', state: 'waiting', session, environmentId: envId,
-      createdAt: now, expiresAt: now + QR_LOGIN_TIMEOUT_MS,
+      createdAt: now, expiresAt: now + LOGIN_TIMEOUT_MS,
     };
     this.active.set(id, rec);
     this.wireEvents(rec);
@@ -110,6 +110,9 @@ export class AccountImportService {
       rec.state = 'error';
       rec.error = (err as Error).message;
       rec.finishedAt = Date.now();
+      // A QR session may already be polling (e.g. toDataURL threw after startWithQR resolved) —
+      // cancel it so it stops immediately instead of at the library's 120s timeout.
+      try { session.cancelLoginAttempt(); } catch { /* settled */ }
       logger.error(`[import ${id.slice(0, 8)}] QR start failed: ${rec.error}`);
     }
     return this.snapshot(rec);
@@ -131,17 +134,33 @@ export class AccountImportService {
     if (this.accounts.get(accountName)) throw new Error(`Account "${accountName}" already exists`);
 
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
+    // loginTimeout must be set BEFORE polling begins — confirmation-only guards start
+    // polling via setImmediate as soon as startWithCredentials resolves, and the setter
+    // throws once polling has started. Without this the credentials path silently used
+    // the library's 30s default while expiresAt advertised the full window below.
+    session.loginTimeout = LOGIN_TIMEOUT_MS;
     const id = uuidv4();
     const now = Date.now();
     const rec: ImportSession = {
       id, method: 'credentials', state: 'waiting', session, environmentId: envId,
-      createdAt: now, expiresAt: now + QR_LOGIN_TIMEOUT_MS,
+      createdAt: now, expiresAt: now + LOGIN_TIMEOUT_MS,
     };
     this.active.set(id, rec);
     this.wireEvents(rec);
 
-    // startWithCredentials rejects on bad password / rate-limit — let it bubble to the route.
-    const result = await session.startWithCredentials({ accountName, password: p.password });
+    // startWithCredentials rejects on bad password / rate-limit — finish the rec and cancel the
+    // login attempt (else it keeps a capacity slot / keeps polling for the full window) before
+    // rethrowing so the route's RateLimit→429 mapping still fires.
+    let result;
+    try {
+      result = await session.startWithCredentials({ accountName, password: p.password });
+    } catch (err) {
+      rec.state = 'error';
+      rec.error = (err as Error).message;
+      rec.finishedAt = Date.now();
+      try { session.cancelLoginAttempt(); } catch { /* settled */ }
+      throw err;
+    }
     if (result.actionRequired) {
       const codeAction = (result.validActions ?? []).find(
         a => a.type === EAuthSessionGuardType.DeviceCode || a.type === EAuthSessionGuardType.EmailCode,
@@ -167,19 +186,33 @@ export class AccountImportService {
     if (!trimmed) throw new Error('a Steam Guard code is required');
     // Rejects on wrong code (e.g. TwoFactorCodeMismatch) — bubble to the route; state stays 'guard' for retry.
     await rec.session.submitSteamGuardCode(trimmed);
+    // Polling (and thus the library's loginTimeout) only starts now for code guards —
+    // re-anchor the service-side deadline so prune/snapshot match the real window.
+    rec.expiresAt = Date.now() + LOGIN_TIMEOUT_MS;
     return this.snapshot(rec);
   }
 
   // ── Status / cancel ─────────────────────────────────────────────────────────
 
   getStatus(sessionId: string): ImportStatus | undefined {
+    // Evaluate expiry on the read path — the frontend's 1.5s poll then fires hard-expiry/TTL cleanup on
+    // time, so an abandoned guard session honestly reports 'expired' instead of 'guard' forever (code
+    // guards never start library polling, so no 'timeout' event moves them off 'guard' on their own).
+    this.prune();
     const rec = this.active.get(sessionId);
     return rec ? this.snapshot(rec) : undefined;
   }
 
   cancel(sessionId: string): void {
+    this.prune();
     const rec = this.active.get(sessionId);
     if (!rec) return;
+    // Mark terminal BEFORE deleting so a poll response that lands mid-cancel (steam-session
+    // emits 'authenticated' after its network await with no post-await cancel re-check) cannot
+    // finalize on a rec we've already discarded — the 'authenticated'/'error' guards observe finishedAt.
+    rec.state = 'error';
+    rec.error = 'cancelled';
+    rec.finishedAt = Date.now();
     try { rec.session.cancelLoginAttempt(); } catch { /* already settled */ }
     this.active.delete(sessionId);
     logger.info(`[import ${sessionId.slice(0, 8)}] cancelled`);
@@ -191,6 +224,7 @@ export class AccountImportService {
     const tag = rec.id.slice(0, 8);
     // An 'error' listener is mandatory — Node throws on an unhandled 'error' event.
     rec.session.on('error', (err: Error) => {
+      if (rec.finishedAt) return;   // a late poll error must not overwrite 'imported'/'expired'/cancelled
       rec.state = 'error';
       rec.error = err.message;
       rec.finishedAt = Date.now();
@@ -206,6 +240,7 @@ export class AccountImportService {
       if (rec.state === 'waiting') rec.state = 'scanned';
     });
     rec.session.on('authenticated', () => {
+      if (rec.finishedAt || !this.active.has(rec.id)) return;   // cancelled/expired/errored → never finalize
       rec.state = 'approved';
       this.finalizeImport(rec).catch((err) => {
         rec.state = 'error';
@@ -224,10 +259,15 @@ export class AccountImportService {
     const steamId = (() => { try { return rec.session.steamID?.getSteamID64(); } catch { return undefined; } })();
 
     // 1) Persist the refresh token through the SessionManager's TokenStore (vault or file).
-    this.sessions.rememberRefreshToken(username, token);
+    const persisted = this.sessions.rememberRefreshToken(username, token);
 
     // 2) Org record. Token-only ⇒ no password, no maFile ⇒ LIMITED. accounts.json stays secret-free.
     const existing = this.accounts.get(username);
+    // INV-A2: a NEW token-only account whose ONLY credential never reached disk (vault/disk problem, the
+    // S24/B2 swallow) would become a permanently login-less record after restart. Abort BEFORE creating it
+    // so no org record exists without a login path; the wireEvents .catch surfaces this as state 'error' and
+    // a retry after fixing storage re-mints cleanly. An existing account keeps whatever login path it had.
+    if (!existing && !persisted) throw new Error('refresh token could not be persisted (vault/disk problem) — import aborted; fix storage and retry');
     if (!existing) {
       this.accounts.add({
         username, password: '', maFilePath: '',
@@ -246,16 +286,15 @@ export class AccountImportService {
     logger.info(`[import ${rec.id.slice(0, 8)}] ${rec.isUpdate ? 'refreshed' : 'imported'} "${username}" as LIMITED`);
   }
 
-  /** Maps the chosen environment's proxy to steam-session network options (one of the set). */
+  /** Maps the environment's proxy (or none) to steam-session network options.
+   *  Normalizes via the same normalizeProxy every other network path applies (B24),
+   *  so legacy non-URL env proxies (host:port:user:pass etc.) work here too; reads the
+   *  B20 single-source envProxyFor so vault mode never uses a stale in-memory copy. */
   private networkOptions(environmentId: string): { localAddress?: string; httpProxy?: string; socksProxy?: string } {
-    const env = this.accounts.getEnvironment(environmentId);
-    const net: NetworkConfig = env?.proxy?.trim()
-      ? { type: 'proxy', value: env.proxy.trim() }
-      : { type: 'localip', value: '0.0.0.0' };
-    if (net.type === 'localip') {
-      return net.value && net.value !== '0.0.0.0' ? { localAddress: net.value } : {};
-    }
-    return /^socks/i.test(net.value) ? { socksProxy: net.value } : { httpProxy: net.value };
+    const raw = this.accounts.envProxyFor(environmentId);
+    if (!raw) return {};
+    const url = normalizeProxy(raw);
+    return /^socks[45h]?:\/\//i.test(url) ? { socksProxy: url } : { httpProxy: url };
   }
 
   private resolveEnvironment(environmentId: string): string {

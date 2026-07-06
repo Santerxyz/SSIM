@@ -84,7 +84,9 @@ export class InventoryManager {
     const descByKey     = new Map<string, RawDescription>(); // dedup across pages
     let   startAssetId: string | undefined;
     let   totalCount    = 0;
+    let   sawTotal      = false; // did Steam ever send total_inventory_count? (absent ≠ authoritative 0)
     let   hitPageCap    = false; // true if we stopped while Steam still had more pages
+    let   midPageFail   = false; // true if a page ≥1 came back unusable / the cursor stalled (partial read)
 
     for (let page = 0; page < MAX_INVENTORY_PAGES; page++) {
       const url =
@@ -118,12 +120,19 @@ export class InventoryManager {
       // SAME open connection (no full re-login, no IP hop) and retry THIS page once.
       if (res.status !== 200 && res.status !== 429) {
         logger.warn(`[${username}] inventory call (page ${page}) returned HTTP ${res.status} – refreshing web session and retrying once`);
+        // Only the cookie renewal is guarded: on refresh failure we keep the old `res` and fall
+        // through to the status checks. The retried request runs OUTSIDE the try so a transport
+        // rejection (ETIMEDOUT/ECONNRESET) propagates to the caller and is classified transient
+        // by fetchRawRetrying — instead of being swallowed here, leaving `res` on the stale status
+        // and throwing a lying "private inventory (HTTP 403)" the S50 retry ladder never retries.
+        let refreshed = false;
         try {
           await refreshWebSession(session);
-          res = await doRequest();
+          refreshed = true;
         } catch (refreshErr) {
           logger.warn(`[${username}] silent web-session refresh failed: ${(refreshErr as Error).message}`);
         }
+        if (refreshed) res = await doRequest();
       }
 
       if (res.status === 429) {
@@ -154,20 +163,31 @@ export class InventoryManager {
         logger.error(`[${username}] inventory page 0 body is NOT an authoritative Steam response (success!=1) – treating as a FETCH FAILURE, not an empty inventory  body=${snippet}`);
         throw new Error(`[${username}] inventory page 0 unusable (not success:1): ${snippet}`);
       }
-      if (!body || body.success === 0) {
-        // Later pages only (page 0 is handled above): a break preserves the pages already fetched (#33).
+      if (page > 0 && !authoritative) {
+        // Later pages only (page 0 is handled above by the throw): an unusable body (null / HTML /
+        // {success:0} / {}) must NOT masquerade as the complete inventory — a break preserves the
+        // pages already fetched (#33) but flags the result PARTIAL so the fuller-cache guard fires.
+        logger.warn(`[${username}] inventory page ${page} body not authoritative (${describeBody(body)}) – keeping ${assets.length} assets fetched so far, result marked PARTIAL`);
+        midPageFail = true;
         break;
       }
 
       for (const a of body.assets ?? []) assets.push(a);
       for (const d of body.descriptions ?? []) descByKey.set(`${d.classid}_${d.instanceid}`, d);
-      totalCount = body.total_inventory_count ?? totalCount;
+      if (body.total_inventory_count != null) { totalCount = body.total_inventory_count; sawTotal = true; }
 
       // Continue only while Steam signals more pages AND advances the cursor.
       if (body.more_items && body.last_assetid && body.last_assetid !== startAssetId) {
         if (page === MAX_INVENTORY_PAGES - 1) { hitPageCap = true; break; } // more pages exist but we hit the cap
         startAssetId = body.last_assetid;
         continue;
+      }
+      // Reaching here with more_items still truthy means Steam claims more pages but the cursor did
+      // not advance (missing / repeated last_assetid) → a stuck cursor. Stop, but flag PARTIAL so the
+      // half read does not clobber the fuller cache as authoritative.
+      if (body.more_items) {
+        logger.warn(`[${username}] inventory pagination cursor stalled after page ${page} (more_items set, last_assetid=${body.last_assetid ?? '<none>'}) – keeping ${assets.length} assets fetched so far, result marked PARTIAL`);
+        midPageFail = true;
       }
       break;
     }
@@ -184,7 +204,9 @@ export class InventoryManager {
       `[${username}] raw inventory: ${assets.length} assets, ` +
       `${descByKey.size} descriptions (total_inventory_count=${totalCount})`,
     );
-    return { assets, descriptions: [...descByKey.values()], total_inventory_count: totalCount, success: 1, truncated: hitPageCap };
+    // Preserve the distinction between an EXPLICIT total_inventory_count:0 (authoritative empty,
+    // used downstream to converge a genuinely-emptied cache) and an OMITTED field (unknown → protect).
+    return { assets, descriptions: [...descByKey.values()], total_inventory_count: sawTotal ? totalCount : undefined, success: 1, truncated: hitPageCap || midPageFail };
   }
 
   // ── 2) Parse raw assets + descriptions → CS2Item[] ──────────────────────────
@@ -253,7 +275,8 @@ export class InventoryManager {
    * Collapses duplicate items into stacks. Two items only stack when they share
    * the SAME market_hash_name AND the SAME trade-lock expiry – items locked until
    * different dates must remain separate stacks. Each stack carries quantity and
-   * the full list of underlying asset IDs.
+   * the full list of underlying asset IDs. Accepts both single items and
+   * already-stacked inputs (quantity>1) — merging is quantity-aware.
    */
   static stack(items: CS2Item[]): CS2Item[] {
     const stacks = new Map<string, CS2Item>();
@@ -261,12 +284,15 @@ export class InventoryManager {
     for (const item of items) {
       // Trade-lock timestamp (or 'none') is part of the key → different locks split.
       const lockKey = item.tradeLockExpiry ? item.tradeLockExpiry.toISOString() : 'none';
-      const key = `${item.marketHashName}__${lockKey}`;
+      // Pending-2FA listings must not collapse into confirmed ones (C9 / INV-D4) —
+      // non-listed items have listingConfirmed === undefined → constant 'ok' suffix.
+      const stateKey = item.listingConfirmed === false ? 'pending' : 'ok';
+      const key = `${item.marketHashName}__${lockKey}__${stateKey}`;
 
       const existing = stacks.get(key);
       if (existing) {
-        existing.quantity += 1;
-        existing.assetIds.push(item.assetId);
+        existing.quantity += item.quantity;
+        existing.assetIds.push(...item.assetIds);
       } else {
         // Clone so we never mutate the caller's input item.
         stacks.set(key, { ...item, assetIds: [...item.assetIds] });
@@ -310,6 +336,7 @@ export class InventoryManager {
       fetchedAt:  new Date(),
       fromCache:  false,
       partial:    !!raw.truncated, // honest flag: a page-capped read is incomplete (C12)
+      reportedTotal: raw.total_inventory_count, // Steam's own total (undefined when omitted) → authoritative-empty signal (H-INV-005)
     };
   }
 }

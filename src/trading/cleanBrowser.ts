@@ -124,11 +124,16 @@ export function buildIsolatedSession(input: {
         } else if (/^socks/i.test(scheme)) {
           warnings.push('this account uses an AUTHENTICATED SOCKS proxy — the clean browser cannot apply SOCKS auth; refusing rather than opening on a failing proxy');
           proxyServer = null;
+        } else if (/^https$/i.test(scheme)) {
+          warnings.push('this account uses an AUTHENTICATED TLS (https://) proxy — the clean-browser relay would send its credentials in cleartext; refusing rather than downgrading');
+          proxyServer = null;
         } else {
           proxyAuth = { host: p.host, port: Number(p.port), username: p.username, password: p.password ?? '', scheme };
         }
       }
     }
+  } else if (input.network?.type === 'localip' && input.network.value && input.network.value !== '0.0.0.0') {
+    warnings.push(`this account is pinned to local interface ${input.network.value}; a browser cannot bind a source IP and will egress via the DEFAULT interface — this may differ from its normal egress and risk a Steam lock`);
   } else {
     warnings.push('this account has NO proxy (runs on the host IP) — opening on the local IP may differ from its normal egress and risk a Steam lock');
   }
@@ -172,7 +177,7 @@ function freePort(): Promise<number> {
 export function startProxyRelay(
   auth: NonNullable<IsolatedSessionSpec['proxyAuth']>,
   label = 'clean-browser',
-  opts?: { maxConns?: number; firstByteTimeoutMs?: number },
+  opts?: { maxConns?: number; firstByteTimeoutMs?: number; handshakeTimeoutMs?: number },
 ): Promise<{ port: number; close: () => void }> {
   const credHeader = `Proxy-Authorization: Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
 
@@ -201,6 +206,7 @@ export function startProxyRelay(
       buf = Buffer.concat([buf, chunk]);
       const end = buf.indexOf('\r\n\r\n');               // wait for the full request header block
       if (end === -1) { if (buf.length > 65536) client.destroy(); return; }
+      client.pause();                                    // hold client bytes until the later client.pipe(upstream) resumes — a flowing Readable with no 'data' listener discards data
       client.removeListener('data', onData);
 
       const headerBlock = buf.slice(0, end).toString('latin1');
@@ -209,11 +215,17 @@ export function startProxyRelay(
       const connect = /^CONNECT\s+(\S+)\s+HTTP\/1\.[01]/i.exec(firstLine);
 
       const upstream = net.connect(auth.port, auth.host);
+      // Bound the CONNECT/replay handshake: a connected-but-unresponsive proxy would otherwise
+      // pin both sockets (and an activeConns slot) until Chromium's own timeout gives up.
+      const hsTimer = setTimeout(() => { try { client.end('HTTP/1.1 504 Gateway Timeout\r\n\r\n'); } catch { /* ignore */ } upstream.destroy(); }, opts?.handshakeTimeoutMs ?? 20_000);
+      hsTimer.unref?.();
       upstream.on('error', (e) => {
+        clearTimeout(hsTimer);
         logger.warn(`[${label}] proxy relay: cannot reach upstream proxy ${auth.host}:${auth.port} — ${(e as Error).message}`);
         try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ }
       });
       client.on('error', () => upstream.destroy());
+      client.on('close', () => upstream.destroy());
 
       upstream.once('connect', () => {
         if (connect) {
@@ -223,6 +235,7 @@ export function startProxyRelay(
           let upBuf = Buffer.alloc(0);
           const onUp = (uc: Buffer): void => {
             upBuf = Buffer.concat([upBuf, uc]);
+            if (upBuf.length > 65536) { try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ } upstream.destroy(); return; }
             const he = upBuf.indexOf('\r\n\r\n');
             if (he === -1) return;
             upstream.removeListener('data', onUp);
@@ -236,15 +249,20 @@ export function startProxyRelay(
             const leftover = upBuf.slice(he + 4);
             if (leftover.length) client.write(leftover);   // tunneled bytes that rode in with the 200
             if (rest.length) upstream.write(rest);          // early client bytes (rare for CONNECT)
+            clearTimeout(hsTimer);
             upstream.pipe(client); client.pipe(upstream);
           };
           upstream.on('data', onUp);
         } else {
           // Plain-HTTP (absolute-form) request: inject auth after the request line, replay, splice.
-          const lines = headerBlock.split('\r\n');
-          lines.splice(1, 0, credHeader);
+          // Force Connection: close (dropping any client-sent Proxy-Connection/Connection header) so the
+          // upstream ends after one response — Chromium then opens a FRESH relay connection per request, and
+          // every request re-enters onData and gets Proxy-Authorization (keep-alive reuse would skip auth → 407).
+          const lines = headerBlock.split('\r\n').filter((l, i) => i === 0 || !/^(proxy-)?connection\s*:/i.test(l));
+          lines.splice(1, 0, credHeader, 'Connection: close');
           upstream.write(lines.join('\r\n') + '\r\n\r\n');
           if (rest.length) upstream.write(rest);
+          clearTimeout(hsTimer);
           upstream.pipe(client); client.pipe(upstream);
         }
       });
@@ -258,9 +276,68 @@ export function startProxyRelay(
   });
 }
 
-/** One CDP request/response over the page's debugger WebSocket. */
-async function cdp(ws: WebSocket, id: number, method: string, params: unknown): Promise<void> {
-  ws.send(JSON.stringify({ id, method, params }));
+/** Registered awaiters for in-flight CDP commands, keyed by request id. */
+type CdpPending = Map<number, { resolve: () => void; reject: (e: Error) => void }>;
+
+/**
+ * One CDP request/response over the page's debugger WebSocket: send the command, register an
+ * awaiter in `pending`, and resolve only when the matching `{id}` reply arrives (via the single
+ * `ws.onmessage` handler set up by injectSessionOverCdp) — or reject on a 3s per-command timeout.
+ * An error/failure reply rejects, so a refused `Network.setCookie` no longer looks like success.
+ */
+function cdp(ws: WebSocket, pending: CdpPending, id: number, method: string, params: unknown): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, 3000);
+    t.unref?.();
+    pending.set(id, { resolve: () => { clearTimeout(t); resolve(); }, reject: (e) => { clearTimeout(t); reject(e); } });
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+}
+
+/**
+ * Inject ONE account's cookies over the page debugger WS at `wsUrl` and navigate to Steam.
+ * Response-awaited: enables Network, sets every cookie, and navigates, awaiting each CDP reply —
+ * so a rejected setCookie / failed navigate rejects here (the caller's catch surfaces a real 500
+ * and skips the false "clean browser opened" log) instead of the old fire-and-forget 400ms flush
+ * that reported success regardless. Exported as the injection test seam (H-TRD-060).
+ */
+export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[]): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    let id = 0;
+    const pending: CdpPending = new Map();
+    const t = setTimeout(() => { try { ws.close(); } catch { /* ignore */ } reject(new Error('debugger handshake timed out')); }, 8000);
+    ws.onmessage = (ev: { data: unknown }) => {
+      let m: { id?: number; error?: { message?: string }; result?: { success?: boolean } };
+      try { m = JSON.parse(String(ev.data)); } catch { return; }
+      if (typeof m.id !== 'number') return;
+      const p = pending.get(m.id);
+      if (!p) return;
+      pending.delete(m.id);
+      if (m.error) p.reject(new Error('CDP error: ' + (m.error.message ?? 'unknown')));
+      else if (m.result && m.result.success === false) p.reject(new Error('CDP setCookie rejected'));
+      else p.resolve();
+    };
+    ws.onopen = async () => {
+      try {
+        await cdp(ws, pending, ++id, 'Network.enable', {});
+        for (const c of cookies) {
+          await cdp(ws, pending, ++id, 'Network.setCookie', { name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly });
+        }
+        await cdp(ws, pending, ++id, 'Page.navigate', { url: STEAM_URL });
+        clearTimeout(t);
+        try { ws.close(); } catch { /* ignore */ }
+        resolve();
+      } catch (e) {
+        // A throw inside this bare async handler would otherwise become an unhandled rejection — route
+        // it to reject so the caller's catch (H-TRD-064's gated teardown) sees the failure.
+        clearTimeout(t);
+        try { ws.close(); } catch { /* ignore */ }
+        reject(e as Error);
+      }
+    };
+    ws.onerror = () => { clearTimeout(t); reject(new Error('debugger connection failed')); };
+  });
 }
 
 // ── Ephemeral-session lifetime ──────────────────────────────────────────────
@@ -271,15 +348,105 @@ async function cdp(ws: WebSocket, id: number, method: string, params: unknown): 
 // We instead watch the browser's own debug port (which survives the hand-off) and tear down when
 // IT disappears, with a process-shutdown backstop so nothing leaks if SSIM exits first.
 const liveTeardowns = new Set<() => void>();
+// Ephemeral profile dirs owned by THIS process (added right after mkdtempSync, removed on teardown).
+// The stale-profile sweep uses this to never touch a profile a live browser from THIS run is still using.
+const liveProfiles = new Set<string>();
 let shutdownHooked = false;
 function hookShutdownOnce(): void {
   if (shutdownHooked) return;
   shutdownHooked = true;
   const all = (): void => { for (const t of [...liveTeardowns]) { try { t(); } catch { /* ignore */ } } };
+  // Teardown rides the 'exit' hook because every JS-capable termination path in index.ts funnels
+  // through process.exit; paths that run no JS (SIGKILL, native fast-fail) are covered by the
+  // stale-profile sweep (H-TRD-062), not by handlers — so we must NOT install signal handlers here
+  // (they truncated index.ts's graceful shutdown mid-logoutAll and forced exit code 0).
   process.once('exit', all);
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-    try { process.once(sig, () => { all(); process.exit(0); }); } catch { /* signal N/A on this platform */ }
+}
+
+/**
+ * Best-effort sweep of stale ephemeral profile dirs left in %TEMP% by a PREVIOUS run that died
+ * without running its 'exit' hook (taskkill /F, SIGKILL, the 0xC0000409 native fast-fail) or whose
+ * teardown hit an EBUSY at exit. Each `ssim-clean-*` dir holds this account's LIVE steamLoginSecure
+ * web session, so leaving them at rest bypasses the vault-encryption posture — hence the sweep.
+ * Restricted to the `ssim-clean-` prefix inside os.tmpdir(); profiles this process still owns
+ * (liveProfiles) are skipped. On Windows a still-open browser from a previous run holds file locks,
+ * so `rmSync` throws on that dir and we correctly leave it — only truly abandoned dirs get removed.
+ */
+export function sweepStaleCleanProfiles(): void {
+  const tmp = os.tmpdir();
+  let names: string[];
+  try { names = fs.readdirSync(tmp); } catch { return; } // tmpdir unreadable — nothing to sweep
+  for (const name of names) {
+    if (!name.startsWith('ssim-clean-')) continue;
+    const full = path.join(tmp, name);
+    if (liveProfiles.has(full)) continue;
+    try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* locked by a live browser from a previous run — leave it */ }
   }
+}
+
+/**
+ * Watch the browser's own debug port and tear down (close relay + delete profile) when it
+ * disappears — the port follows the real browser across Edge/Chrome's hand-off, so the relay
+ * no longer dies under a live window. Used by BOTH the success path and the failure path
+ * (H-TRD-064) so a browser that outlived a post-spawn error is torn down when IT closes, not
+ * before. A probe counts as ALIVE only if `/json/version` answers with JSON carrying a
+ * `Browser` field — a recycled ephemeral port answering with anything else must NOT pin the
+ * relay open forever.
+ */
+export function armPortWatch(
+  port: number,
+  teardown: () => void,
+  opts?: { fetchImpl?: typeof fetch; intervalMs?: number },
+): void {
+  const doFetch = opts?.fetchImpl ?? fetch;
+  let misses = 0;      // definitive "browser gone" signals (ECONNREFUSED / port answers as non-browser)
+  let softMisses = 0;  // transient local trouble (EMFILE/ENOBUFS/EADDRNOTAVAIL/… under fleet-refresh socket pressure)
+  const watch = setInterval(() => {
+    doFetch(`http://127.0.0.1:${port}/json/version`).then(
+      async (r) => {
+        try {
+          const info = (await r.json()) as { Browser?: unknown };
+          if (info && typeof info.Browser !== 'undefined') { misses = 0; softMisses = 0; return; } // real browser still listening
+        } catch { /* not JSON — treat as a miss below */ }
+        if (++misses >= 6) { clearInterval(watch); teardown(); } // ~9s answering as a non-browser ⇒ window closed
+      },
+      // A rejected loopback probe is NOT proof the window closed. Under a 537-account fleet refresh
+      // (thousands of concurrent sockets, ECONNRESET storms) the connect can fail with local resource
+      // pressure (EMFILE/ENOBUFS/EADDRNOTAVAIL/EADDRINUSE) while the browser is alive and listening.
+      // Only ECONNREFUSED (nothing listening) actually means the window is gone — treat everything else
+      // with patience so a ~9s local blip cannot tear the relay from under a live window (S65).
+      (e: unknown) => {
+        const code = (e as { cause?: { code?: string } })?.cause?.code;
+        if (code === 'ECONNREFUSED') { if (++misses >= 6) { clearInterval(watch); teardown(); } } // ~9s refused ⇒ window closed
+        else if (++softMisses >= 40) { clearInterval(watch); teardown(); } // ~60s of weird-but-persistent trouble ⇒ give up
+      },
+    );
+  }, opts?.intervalMs ?? 1500);
+  watch.unref?.();
+}
+
+/**
+ * Best-effort: ask a still-listening browser to close itself over CDP (`Browser.close` on the
+ * browser target). Used on the failure path (H-TRD-064) so a window orphaned by a post-spawn error
+ * closes itself rather than being left broken. Never throws — a browser that won't answer is left to
+ * the operator + the port watcher.
+ */
+async function closeBrowserBestEffort(port: number): Promise<void> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) });
+    const info = (await r.json()) as { webSocketDebuggerUrl?: string };
+    const wsUrl = info?.webSocketDebuggerUrl;
+    if (!wsUrl) return; // no browser target to talk to
+    await new Promise<void>((resolve) => {
+      const ws = new WebSocket(wsUrl);
+      const done = (): void => { try { ws.close(); } catch { /* ignore */ } resolve(); };
+      const t = setTimeout(done, 2000);
+      t.unref?.();
+      ws.onopen = () => { try { ws.send(JSON.stringify({ id: 1, method: 'Browser.close' })); } catch { /* ignore */ } };
+      ws.onmessage = () => { clearTimeout(t); done(); };
+      ws.onerror = () => { clearTimeout(t); done(); };
+    });
+  } catch { /* browser not reachable — leave it to the operator + the watcher */ }
 }
 
 /**
@@ -290,16 +457,27 @@ function hookShutdownOnce(): void {
 export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<{ profileDir: string; proxyUsed: string | null; proxyAuthApplied: boolean }> {
   const exe = findChromium();
   if (!exe) throw new Error('no Chromium browser (Edge/Chrome) found to open a clean session — set SSIM_BROWSER_EXE');
+  sweepStaleCleanProfiles(); // clear secret-bearing profile dirs a prior run (crash/SIGKILL/EBUSY) never deleted
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-clean-'));
+  liveProfiles.add(profileDir);
   let relay: { port: number; close: () => void } | null = null;
   let child: ChildProcess | undefined;
   let tornDown = false;
+  let port = -1;            // the debug port (hoisted so the failure-path catch can reach the live browser, H-TRD-064)
+  let portAnswered = false; // did the debug port ever respond? (guards the failure-path teardown, H-TRD-064)
   const teardown = (): void => {
     if (tornDown) return;
     tornDown = true;
     liveTeardowns.delete(teardown);
+    liveProfiles.delete(profileDir);
     try { relay?.close(); } catch { /* ignore */ }
-    try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(profileDir, { recursive: true, force: true });
+    } catch {
+      // Edge may still be flushing profile files at teardown (EBUSY on Windows — force does not
+      // override in-use locks); retry once after the browser has fully exited, then leave it to the sweep.
+      setTimeout(() => { try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* give up; next sweep gets it */ } }, 5000).unref?.();
+    }
   };
   try {
     // Resolve the --proxy-server Chromium will use. An AUTHENTICATED proxy is NEVER handed to
@@ -314,7 +492,16 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
       proxyAuthApplied = true;
     }
 
-    const port = await freePort();
+    port = await freePort();
+    // S65 (adjacent surface): --remote-debugging-port opens an UNAUTHENTICATED CDP endpoint on
+    // 127.0.0.1:<port> for the browser's whole lifetime (until the operator closes the window). CDP
+    // has no auth mechanism, so any local process can hit /json/list, attach a WS, and Network.getAllCookies
+    // → exfiltrate steamLoginSecure (strictly stronger than the relay above, which only forwards traffic).
+    // It exists because SSIM needs it for cookie injection (injectSessionOverCdp below) and as the liveness
+    // signal for teardown (armPortWatch). A closed-loop pipe (--remote-debugging-pipe over fds 3/4) would
+    // remove the loopback port, but Edge/Chrome hand off to a DETACHED browser that would not inherit the
+    // pipe — so the port path stays default; a pipe experiment is env-gated (SSIM_BROWSER_PIPE), never on
+    // by default until an Edge hand-off smoke passes. Recorded here as an accepted risk alongside S65.
     const args = [
       `--user-data-dir=${profileDir}`,
       `--remote-debugging-port=${port}`,
@@ -329,34 +516,26 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     child.on('error', () => { /* spawn failure surfaces as the debugger-discovery timeout below */ });
     child.unref();
 
-    // Discover the page debugger WS endpoint (poll — Chromium needs a moment).
+    // Discover the page debugger WS endpoint (poll — Chromium needs a moment). 15s budget: a cold
+    // Edge start on a busy host can exceed 6s, and a false negative here orphans a LIVE window
+    // (H-TRD-064). portAnswered records that the debug port ever responded — the catch below uses it
+    // to keep the relay+profile alive under a browser that outlived the error, instead of ripping them.
     let wsUrl = '';
-    for (let i = 0; i < 40 && !wsUrl; i++) {
+    for (let i = 0; i < 100 && !wsUrl; i++) {
       await sleep(150);
       try {
         const r = await fetch(`http://127.0.0.1:${port}/json/list`);
+        portAnswered = true;
         const tabs = (await r.json()) as Array<{ type: string; webSocketDebuggerUrl?: string }>;
         wsUrl = tabs.find((t) => t.type === 'page' && t.webSocketDebuggerUrl)?.webSocketDebuggerUrl ?? '';
       } catch { /* not up yet */ }
     }
     if (!wsUrl) throw new Error('could not reach the browser debugger to inject the session');
 
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
-      let id = 0;
-      const t = setTimeout(() => { try { ws.close(); } catch { /* ignore */ } reject(new Error('debugger handshake timed out')); }, 8000);
-      ws.onopen = async () => {
-        await cdp(ws, ++id, 'Network.enable', {});
-        for (const c of spec.cookies) {
-          await cdp(ws, ++id, 'Network.setCookie', { name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly });
-        }
-        await cdp(ws, ++id, 'Page.navigate', { url: STEAM_URL });
-        clearTimeout(t);
-        // Give the commands a tick to flush, then detach (the page keeps running).
-        setTimeout(() => { try { ws.close(); } catch { /* ignore */ } resolve(); }, 400);
-      };
-      ws.onerror = () => { clearTimeout(t); reject(new Error('debugger connection failed')); };
-    });
+    // Response-awaited injection: every CDP command is awaited to its reply, so a rejected setCookie
+    // or a failed navigate throws to the catch below (real 500, no false success log) instead of the
+    // old fire-and-forget 400ms flush that always "succeeded". (H-TRD-060.)
+    await injectSessionOverCdp(wsUrl, spec.cookies);
 
     const authNote = proxyAuthApplied ? 'yes (via local relay)' : (spec.proxyServer ? 'no (open proxy)' : 'n/a');
     logger.info(`[${spec.username}] clean browser opened (proxy=${spec.proxyServer ?? 'LOCAL IP'}, proxy auth: ${authNote}, cookies=${spec.cookies.map((c) => c.name).join('+') || 'none'})`);
@@ -366,19 +545,26 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     // the relay no longer dies under a live window. Backstop: tear everything down if SSIM exits.
     hookShutdownOnce();
     liveTeardowns.add(teardown);
-    let misses = 0;
-    const watch = setInterval(() => {
-      fetch(`http://127.0.0.1:${port}/json/version`).then(
-        () => { misses = 0; },
-        () => { if (++misses >= 6) { clearInterval(watch); teardown(); } }, // ~9s of no debug port ⇒ window closed
-      );
-    }, 1500);
-    watch.unref?.();
+    armPortWatch(port, teardown);
 
     return { profileDir, proxyUsed: spec.proxyServer, proxyAuthApplied };
   } catch (err) {
-    try { child?.kill(); } catch { /* ignore */ }
-    teardown();
+    // A post-spawn failure (debugger not found in time, WS handshake error/timeout) does NOT mean the
+    // browser died — Edge/Chrome hand off to a detached window that outlives the launcher and this error
+    // (H-TRD-064). If the debug port ever answered, a LIVE window is open: best-effort close it, and if it
+    // stays up, keep the relay+profile alive under it via the watcher instead of ripping them away (which
+    // reintroduces the ERR_PROXY_CONNECTION_FAILED + orphaned-secret-dir the design eliminated).
+    if (portAnswered) {
+      await closeBrowserBestEffort(port);
+      hookShutdownOnce();
+      liveTeardowns.add(teardown);
+      armPortWatch(port, teardown); // relay+profile outlive the browser exactly as on the success path
+    } else {
+      // The port never answered — the browser presumably never started. Kill the spawned launcher (covers a
+      // not-yet-handed-off Chrome) and tear the relay+profile down inline.
+      try { child?.kill(); } catch { /* ignore */ }
+      teardown();
+    }
     throw err;
   }
 }

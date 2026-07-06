@@ -11,6 +11,7 @@
 import fs from 'fs';
 import { logsDir } from './utils/paths';
 import { SINK_MAX_BYTES } from './utils/rollLog';
+import { redactSecrets } from './utils/redact';
 
 process.noDeprecation = true;
 
@@ -67,8 +68,10 @@ try {
   fs.mkdirSync(logsDir(), { recursive: true });
   const stderrTrace = logsDir('stderr-trace.log');
   const orig = process.stderr.write.bind(process.stderr) as (...a: unknown[]) => boolean;
-  const mask = (s: string): string =>
-    s.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@'); // scrub proxy creds
+  // The one canonical proxy-cred masker (redact.ts is dependency-free, so it's safe to pull
+  // in this early — no winston/AgentFactory). Covers URL + legacy proxy forms; the same
+  // superset the logger/crash sinks use, from a single source of truth.
+  const mask = redactSecrets;
   // S47: cap this append-only sink. It's written on EVERY stderr write (a spewing vendor library could
   // flood it), so track bytes IN-PROCESS — no statSync per write — and roll to .1 once past the cap. The
   // counter is seeded from the current on-disk size so a pre-existing large file still rolls.
@@ -84,8 +87,10 @@ try {
         : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       const out = mask(s);
       if (written > SINK_MAX_BYTES) {
-        try { fs.renameSync(stderrTrace, stderrTrace + '.1'); } catch { /* rename raced — ignore */ }
-        written = 0;
+        let rolled = false;
+        try { fs.renameSync(stderrTrace, stderrTrace + '.1'); rolled = true; }
+        catch { /* file locked / rename raced — leave counter high so we retry next write */ }
+        if (rolled) written = 0;
       }
       fs.appendFileSync(stderrTrace, out);
       written += Buffer.byteLength(out);

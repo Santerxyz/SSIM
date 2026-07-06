@@ -7,7 +7,7 @@ import { listenAndAnnounce, clearStalePortFile, clearOwnPortFile } from './utils
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
-import { HwidService } from './licensing/HwidService';
+import { HwidService, HwidUnavailableError } from './licensing/HwidService';
 import { LicenseClient } from './licensing/LicenseClient';
 import { Updater } from './licensing/Updater';
 import { consumeCrashMarker } from './utils/crashMarker';
@@ -21,7 +21,8 @@ import { runUnlockPortal } from './core/unlockPortal';
 import { ProcessHealth } from './core/ProcessHealth';
 import { AccountVault } from './core/AccountVault';
 import { unlockVault, migrateAccountsIntoVault } from './core/vaultBoot';
-import { installSteamTotpTimeout } from './trading/steamTotpTimeout';
+import { installSteamTotpTimeout, primeSteamTotpOffset } from './trading/steamTotpTimeout';
+import { quiesceMoneyOps } from './utils/quiesce';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../package.json') as { version: string };
 
@@ -35,6 +36,26 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 let deps: ReturnType<typeof createDeps> | undefined;
 let server: Server | undefined;
 let activePort = PORT; // the actually-bound port (PORT, or the next free one)
+
+// S14 / H-XCT-005: the SINGLE source of truth for "an interruptible real-item op is in
+// flight". The update SWAP defers on this (isBusy below), and so do the graceful-shutdown
+// and re-license teardown paths (quiesceMoneyOps), so a buy/sell/trade/craft/move is never
+// severed mid-commit by an exit. A mass-sell, trade-up craft or casket move hard-exited mid-
+// flight loses unconfirmed listings / an irreversible craft's outcome / an in-flight move.
+const isBusy = (): boolean => !!deps && (
+  deps.trades.busy() || deps.buy.busy() || deps.inventory.busy() ||
+  deps.market.busy() || deps.tradeup.busy() || deps.casket.busy()
+);
+// Bounded drain budget shared by shutdown() and teardownFullApp(); the hard-exit fallback
+// and the shell close watchdog (lib.rs) both strictly exceed this so the drain has room.
+const QUIESCE_TIMEOUT_MS = 6000;
+// H-BOOT-001: brief pause before the single re-license re-bind retry, giving the OS / an AV hold
+// time to release the previously-bound port before we dead-end.
+const RELICENSE_REBIND_RETRY_MS = 750;
+// H-LIC-016: back-off between retries when the hardware fingerprint is momentarily degraded (a
+// transient machineId read / MAC churn on first boot). We NEVER bind a seat to a degraded id — that
+// burns a second seat on the next healthy boot — so we wait for the factors to recover instead.
+const HWID_RETRY_MS = 2000;
 
 // ── Single-instance lock (extracted to core/singleInstance.ts for testability) ──
 // See that module: an ATOMIC (fs.open 'wx'), FAIL-SAFE guard that makes a double-run —
@@ -63,6 +84,20 @@ function printBanner(): void {
 
 let licenseHwid = '';
 let relicensing = false; // guard against concurrent re-activation triggers
+// H-BOOT-001: true once the UI port has been bound at least once. FIRST boot dead-ends on a
+// bind failure (nothing to lose); a re-bind during a runtime re-license (onLicenseLost) instead
+// throws BindFailedError so the caller can return to the portal rather than hard-kill the process.
+let everBound = false;
+
+/** A recoverable UI-port bind failure raised on a re-license re-bind (NOT first boot). Signals
+ *  onLicenseLost to retry/return-to-portal instead of process.exit — a momentary EADDRINUSE in the
+ *  sub-second teardown→rebind gap must not kill the operator's window. (H-BOOT-001.) */
+class BindFailedError extends Error {
+  constructor(public readonly code: string | undefined, message: string) {
+    super(message);
+    this.name = 'BindFailedError';
+  }
+}
 
 /** Sidecar mode: the Tauri shell writes "quit" to our stdin when its window closes, so we
  *  shut down gracefully (clean Steam logout) instead of being force-killed. */
@@ -82,8 +117,36 @@ function listenForShellQuit(): void {
   } catch { /* no stdin available → ignore */ }
 }
 
-/** Builds the real app and starts listening. Called ONLY once licensed. */
-async function startFullApp(): Promise<void> {
+/** Bind-failure handler shared by startFullApp. On a re-license re-bind (`!firstBoot`) it THROWS
+ *  BindFailedError so onLicenseLost can return to the portal / retry rather than hard-kill the
+ *  process and every live Steam session. On FIRST boot it keeps the original dead-end behaviour
+ *  BYTE-IDENTICAL (print the lockscreen + schedule exit in 250ms) and returns, so startFullApp's
+ *  caller does not observe a throw on boot. (H-BOOT-001.) */
+function handleListenError(e: NodeJS.ErrnoException, opts: { firstBoot: boolean }): void {
+  writeCrash('SERVER LISTEN ERROR', e); // 250ms exit can outrun winston's async file write
+  if (!opts.firstBoot) {
+    // Recoverable: the previous server just released this port; a transient EADDRINUSE in the
+    // teardown→rebind gap must not dead-end the re-license. Hand the classification to the caller.
+    logger.warn(`re-license re-bind failed on ${HOST}:${activePort} (${e.code ?? e.message}) – returning to caller`);
+    throw new BindFailedError(e.code, e.message);
+  }
+  if (e.code === 'EADDRINUSE') {
+    printLockScreen(`Port ${activePort} is already in use.`, 'Is SSIM already running? Close the other instance, or set PORT=<free>.');
+    logger.error(`server cannot bind ${HOST}:${activePort} – EADDRINUSE (walk exhausted)`);
+  } else {
+    printLockScreen('The server failed to start.', e.message);
+    logger.error(`server listen error: ${e.message}`);
+  }
+  setTimeout(() => process.exit(1), 250);
+}
+
+/** Builds the real app and starts listening. Called ONLY once licensed.
+ *  `firstBoot` is false when re-invoked after a prior successful bind (a runtime re-license):
+ *  a bind failure then THROWS BindFailedError instead of exiting, so the caller can recover.
+ *  Returns true once the UI port is bound. On a FIRST-BOOT bind failure handleListenError
+ *  schedules exit(1) and RETURNS (no throw), so this returns false — gateAndRun then stops
+ *  before arming the heartbeat/update scheduler against a server that never listened. (H-BOOT-002.) */
+async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }): Promise<boolean> {
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && HOST !== '::1') {
     logger.warn(
       `SECURITY: SSIM is binding to ${HOST} – the API (credentials, trading, ` +
@@ -119,18 +182,14 @@ async function startFullApp(): Promise<void> {
   try {
     activePort = await listenAndAnnounce(srv, HOST, activePort);
   } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    writeCrash('SERVER LISTEN ERROR', e); // 250ms exit can outrun winston's async file write
-    if (e.code === 'EADDRINUSE') {
-      printLockScreen(`Port ${activePort} is already in use.`, 'Is SSIM already running? Close the other instance, or set PORT=<free>.');
-      logger.error(`server cannot bind ${HOST}:${activePort} – EADDRINUSE (walk exhausted)`);
-    } else {
-      printLockScreen('The server failed to start.', e.message);
-      logger.error(`server listen error: ${e.message}`);
-    }
-    setTimeout(() => process.exit(1), 250);
-    return;
+    // On first boot handleListenError schedules exit(1) and RETURNS (dead-end, as before) → we
+    // return false without arming post-bind services. On a re-license re-bind it THROWS
+    // BindFailedError (recoverable) → propagates to onLicenseLost, which retries / returns to the
+    // portal. (H-BOOT-001 / H-BOOT-002.)
+    handleListenError(err as NodeJS.ErrnoException, { firstBoot: opts.firstBoot });
+    return false;
   }
+  everBound = true; // H-BOOT-001: a re-bind after this point can recover instead of hard-exiting
   if (!IS_SIDECAR_MODE) printBanner();
   logger.info(`SSIM server started on ${HOST}:${activePort} (pid ${process.pid})`);
   openUiWindow(`http://localhost:${activePort}`);
@@ -139,10 +198,15 @@ async function startFullApp(): Promise<void> {
     writeCrash('SERVER RUNTIME ERROR', err);
     logger.error(`server runtime error: ${err.message}`);
   });
+  return true; // bound — gateAndRun may now arm the heartbeat + update scheduler. (H-BOOT-002.)
 }
 
 /** Tears the running app down cleanly and frees the port (for re-activation). */
 async function teardownFullApp(): Promise<void> {
+  // H-XCT-005: let an in-flight buy/sell/trade/craft/move settle (bounded) BEFORE severing
+  // sessions, so a re-license does not tear a money op's web session out mid-commit.
+  const drained = await quiesceMoneyOps(isBusy, { timeoutMs: QUIESCE_TIMEOUT_MS });
+  logger.info(`re-license teardown: money-op drain ${drained}`);
   LicenseClient.stopHeartbeat();
   stopUpdateScheduler();
   stopMemHeartbeat();
@@ -151,10 +215,11 @@ async function teardownFullApp(): Promise<void> {
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();
+    deps.csfloat.stop(); // deterministically retire the cached CSFloat agents (else stranded until GC)
     deps.inventory.store.flush();
     deps.inventory.tf2Store.flush();
     deps.inventory.gcStore.flush();
-    deps.history.flush();
+    deps.history.shutdown();
     AccountVault.flush();
     deps.sessions.shutdown(); // stop the idle-session reaper (B40) before discarding the manager
     await deps.sessions.logoutAll().catch(() => undefined);
@@ -218,25 +283,29 @@ async function gateAndRun(): Promise<void> {
   // Unlock (or create) the portable account vault BEFORE constructing anything that touches
   // credentials. Sidecar (Tauri) mode has no console, so it unlocks via the in-window web portal;
   // dev (CLI prompt) and headless (SSIM_VAULT_PASSWORD) keep using unlockVault().
-  if (IS_SIDECAR_MODE && !process.env.SSIM_VAULT_PASSWORD) {
-    await runUnlockPortal(activePort, HOST);
-  } else {
-    await unlockVault();
+  // A runtime re-gate (onLicenseLost) reaches here with the vault still unlocked — the sidecar env
+  // var is long gone by then, so skip the unlock step entirely rather than route to the portal.
+  if (!AccountVault.isEnabled()) {
+    if (IS_SIDECAR_MODE && !process.env.SSIM_VAULT_PASSWORD) {
+      await runUnlockPortal(activePort, HOST);
+    } else {
+      await unlockVault();
+    }
   }
-  await startFullApp();
+  // H-BOOT-001: firstBoot is false once the port has been bound before (a runtime re-license
+  // re-bind) → a transient EADDRINUSE throws BindFailedError for onLicenseLost to recover from,
+  // instead of hard-killing the process.
+  // H-BOOT-002: a first-boot bind failure returns false (exit already scheduled) — stop here so the
+  // heartbeat + update scheduler are NEVER armed against a server that never listened.
+  if (!(await startFullApp({ firstBoot: !everBound }))) return;
   LicenseClient.startHeartbeat(licenseHwid);
   // Periodic (6h) update-availability check + the manual "check/install now" path (C5). CHECK-ONLY on
   // the timer; the only mid-session SWAP is a user-confirmed install, and only while no money op / refresh
   // is in flight (isBusy). Boot-time auto-update above is unchanged.
   startUpdateScheduler({
     currentVersion: pkg.version,
-    // S14: gate the mid-session swap on EVERY interruptible real-item op, not just trade/buy/refresh —
-    // a mass-sell, trade-up craft or casket move hard-exited by the swap loses unconfirmed listings /
-    // an irreversible craft's outcome / an in-flight move.
-    isBusy: () => !!deps && (
-      deps.trades.busy() || deps.buy.busy() || deps.inventory.busy() ||
-      deps.market.busy() || deps.tradeup.busy() || deps.casket.busy()
-    ),
+    // S14: gate the mid-session swap on EVERY interruptible real-item op (shared isBusy).
+    isBusy,
   });
 }
 
@@ -253,7 +322,30 @@ async function onLicenseLost(reason: string): Promise<void> {
   try {
     await teardownFullApp();
     LicenseClient.clearToken(); // force a fresh online check / new key
-    await gateAndRun();
+    try {
+      await gateAndRun();
+    } catch (err) {
+      if (!(err instanceof BindFailedError)) throw err;
+      // H-BOOT-001: the re-bind hit a transient port hold in the sub-second teardown→rebind gap
+      // (OS not yet releasing the listen socket, an AV/EDR briefly holding it). Do NOT dead-end —
+      // that would kill the operator's window on a recoverable re-license. Wait a beat and retry
+      // the bind ONCE (classified failure, not a blind loop — owner no-band-aid rule). If the port
+      // is still held after that, it is a genuine conflict → fall through to the terminal lockscreen.
+      // First tear down the PARTIAL construction the failed startFullApp left armed (createDeps()
+      // already started the exchange + CSFloat workers and built the session manager before the
+      // bind threw) so the retry does not orphan those workers/sockets. teardownFullApp is idempotent.
+      await teardownFullApp();
+      logger.warn(`re-license re-bind failed (${err.code ?? err.message}) – retrying once in ${RELICENSE_REBIND_RETRY_MS}ms`);
+      await new Promise<void>((r) => setTimeout(r, RELICENSE_REBIND_RETRY_MS));
+      try {
+        await gateAndRun();
+      } catch (err2) {
+        if (!(err2 instanceof BindFailedError)) throw err2;
+        printLockScreen('The UI port is still in use.', 'SSIM could not rebind after re-licensing. Free the port (or close the app holding it) and relaunch.');
+        logger.error(`re-license re-bind still failing after retry (${err2.code ?? err2.message}) – dead-ending`);
+        setTimeout(() => process.exit(1), 250);
+      }
+    }
   } finally {
     relicensing = false;
   }
@@ -264,13 +356,36 @@ async function onLicenseLost(reason: string): Promise<void> {
 // until the local HWID + license key validate against the remote backend.
 // If unlicensed (or revoked at runtime), we don't dead-end – we run a friendly
 // web portal so the user can paste a key. Once valid, the real app takes over.
+/**
+ * H-LIC-016: resolve the licensing HWID, WAITING OUT a transient factor failure rather than binding a
+ * seat to a degraded fingerprint. getHwid() throws HwidUnavailableError on the pre-pin path when a live
+ * factor read failed (machineId/MAC sentinel); that id would be recomputed on the next healthy boot →
+ * HWID mismatch → re-activate → a SECOND seat consumed. So we retry on a short back-off until the
+ * fingerprint is healthy enough to also be pinned — never proceeding into the license gate with a
+ * degraded id, never exiting, never pinning. A pinned or healthy id returns on the first attempt.
+ */
+async function resolveHwid(): Promise<string> {
+  for (;;) {
+    try {
+      return HwidService.getHwid();
+    } catch (err) {
+      if (!(err instanceof HwidUnavailableError)) throw err;
+      // Honest signal: this is a TRANSIENT hardware-read wait, NOT a license failure — do not render the
+      // "LICENSE DENIED" lockscreen (that would mislabel a self-healing condition). The warning below is
+      // the operational trace; the loop recovers automatically the moment the factors read cleanly.
+      logger.warn(`hardware fingerprint unavailable (${err.message}) – waiting ${HWID_RETRY_MS}ms then retrying (a seat is never bound to a degraded id)`);
+      await new Promise<void>((r) => setTimeout(r, HWID_RETRY_MS));
+    }
+  }
+}
+
 async function bootstrap(): Promise<void> {
   // S6: bound steam-totp's getTimeOffset (no vendor timeout) + cache the offset, so a stalled QueryTime
   // can never wedge every confirmation/money path until restart. Process-wide, before any money op.
   installSteamTotpTimeout();
-  // One-time: move vault.enc + accounts.json into the portable Vault/ folder BEFORE anything
-  // reads them (else an existing vault would be ignored and a fresh one created).
-  migrateVaultDir();
+  // Learn the Steam time offset now (fire-and-forget, bounded by the S6 timer) so the login path
+  // usually has it before the first credential login — codes survive a skewed local clock.
+  primeSteamTotpOffset();
   // Single-instance guard: a 2nd SSIM would fight over the port + Steam sessions.
   if (!acquireInstanceLock()) {
     // Leave a trace: a second instance bailing on the lock otherwise exits with NO
@@ -283,6 +398,11 @@ async function bootstrap(): Promise<void> {
     setTimeout(() => process.exit(1), 250);
     return;
   }
+  // One-time: move vault.enc + accounts.json into the portable Vault/ folder BEFORE anything
+  // reads them (else an existing vault would be ignored and a fresh one created). Runs UNDER the
+  // single-instance lock just acquired, so a refused 2nd instance never mutates the vault files
+  // (H-BOOT-022): the credential-file rename is the one disk mutation the lock must cover.
+  migrateVaultDir();
   // Remove a stale data/ssim.port from a prior run so it can never point the shell at a foreign
   // port before this process binds + announces the real one. (BUG 2.)
   clearStalePortFile();
@@ -299,7 +419,9 @@ async function bootstrap(): Promise<void> {
     setPriorCrash({ at: priorCrash.at, code: priorCrash.code, signal: priorCrash.signal, logTail: priorCrash.logTail });
     logger.warn(`SSIM crashed on the previous run at ${new Date(priorCrash.at).toISOString()} (code=${priorCrash.code ?? '?'}) – surfacing a banner; see logs/shell.log`);
   }
-  licenseHwid = HwidService.getHwid();
+  // H-LIC-016: wait out a transient factor failure before we ever transact — a degraded, un-pinnable id
+  // must not be bound to a seat (it would burn a second seat on the next healthy boot).
+  licenseHwid = await resolveHwid();
   logger.info(`license gate: validating seat for hwid ${licenseHwid.slice(0, 12)}…`);
   // Runtime revocation → re-activation flow instead of hard exit.
   LicenseClient.onRevocation((reason) => void onLicenseLost(reason));
@@ -330,10 +452,14 @@ process.on('uncaughtException', (err) => {
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return; // idempotent — SIGINT/SIGTERM/stdin-quit/stdin-EOF (S51) can co-fire
-  shuttingDown = true;
+  shuttingDown = true; // set BEFORE the first await so co-firing signals can't double-enter
   logger.info(`${signal} received – shutting down…`);
   releaseInstanceLock();
   clearOwnPortFile(); // S52: only remove OUR announced port file (never a refused-instance false-delete)
+  // H-XCT-005: let an in-flight buy/sell/trade/craft/move settle (bounded) BEFORE logoutAll severs
+  // its web session — the ambiguous-commit interruption S14 fixed for the update swap, on the exit path.
+  const drained = await quiesceMoneyOps(isBusy, { timeoutMs: QUIESCE_TIMEOUT_MS });
+  logger.info(`shutdown: money-op drain ${drained}`);
   LicenseClient.stopHeartbeat();
   stopUpdateScheduler();
   stopMemHeartbeat();
@@ -342,30 +468,36 @@ async function shutdown(signal: string): Promise<void> {
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();
+    deps.csfloat.stop(); // deterministically retire the cached CSFloat agents (else stranded until GC)
     deps.inventory.store.flush();
     deps.inventory.tf2Store.flush();
     deps.inventory.gcStore.flush();
-    deps.history.flush();
+    deps.history.shutdown();
     AccountVault.flush();
+    deps.sessions.shutdown(); // stop the idle-session reaper (B40) before discarding the manager
     await deps.sessions.logoutAll().catch(() => undefined);
   }
   if (server) server.close(() => process.exit(0));
-  // Hard-exit fallback if connections linger
-  setTimeout(() => process.exit(0), 3000).unref();
+  // Hard-exit fallback if connections linger — must strictly exceed the quiesce budget so the
+  // bounded money-op drain above always has room to complete before this fires. (H-XCT-005)
+  setTimeout(() => process.exit(0), QUIESCE_TIMEOUT_MS + 3000).unref();
 }
 
 process.on('SIGINT',  () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 // ── External-termination breadcrumbs ──────────────────────────────────────────
 // The packaged app is GUI-subsystem (no console), so the old console-close → SIGHUP →
-// hard-kill crash CANNOT occur there. These handlers remain a harmless safety net for the
-// dev/headless console build and for logoff/shutdown: record a breadcrumb and exit cleanly,
-// so any external termination is traceable instead of a "silent vanish".
+// hard-kill crash CANNOT occur there. These handlers remain a safety net for the
+// dev/headless console build and for logoff/shutdown: record a breadcrumb naming the
+// EXTERNAL cause, then route through the SAME bounded graceful path as SIGINT/SIGTERM
+// (H-XCT-006). `shutdown()` is idempotent, flushes the stores + vault, logs out sessions,
+// and has its own 3s hard-exit fallback — so a console-close mid-fleet-op no longer
+// severs sessions or discards a debounced inventory/history/vault write. (releaseInstanceLock
+// runs inside shutdown(); no separate exit(130) — the breadcrumb still records the cause.)
 for (const sig of ['SIGHUP', 'SIGBREAK'] as const) {
   process.on(sig, () => {
     writeCrash(`${sig} (console closed / parent terminated – EXTERNAL, not a crash)`, new Error(sig));
-    try { releaseInstanceLock(); } catch { /* best-effort */ }
-    process.exit(130);
+    void shutdown(sig);
   });
 }
 // Belt-and-braces (#38): release the single-instance lock on ANY process exit so a

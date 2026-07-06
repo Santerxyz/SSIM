@@ -14,20 +14,24 @@
 //   • createBuyOrder marks the response-leg-lost case with `verifyBeforeRetry`
 //     (its resting-order probe couldn't confirm through the same broken proxy).
 //   • trade sends have no such flag → match the transport signal on message/code.
-//   • a definite Steam rejection carries a numeric `eresult` → NOT ambiguous
-//     (Steam answered, so the op did not land).
+//   • a definite Steam rejection carries a numeric `eresult` → NOT ambiguous,
+//     EXCEPT the ambiguous-by-definition codes (16 Timeout).
 //
 //  Pure + side-effect-free; the DO-NOT-TOUCH createBuyOrder finalize re-POST is
 //  never involved (this only reads the error it already throws).
+//
+//  The transport-string verdict comes from the shared taxonomy (H-XCT-001); the
+//  verifyBeforeRetry / numeric-eresult semantics stay here.
 // ════════════════════════════════════════════════════════════════════════════
 
-const TRANSPORT_AMBIGUOUS =
-  /econnreset|etimedout|esockettimedout|socket hang ?up|timed?\s*out|timeout|econnaborted|epipe|\baborted\b|no response/i;
+import { classifyNetworkError } from '../utils/errorClass';
+
+const AMBIGUOUS_ERESULTS = new Set([16]); // EResult.Timeout — Steam's trade backend timed out; the offer may have been created anyway
 
 export function isAmbiguousCommitFailure(err: unknown): boolean {
   const e = err as { verifyBeforeRetry?: boolean; eresult?: number; message?: string; code?: string } | null | undefined;
   if (!e || typeof e !== 'object') return false;
   if (e.verifyBeforeRetry === true) return true;             // explicit "the order may already exist"
-  if (typeof e.eresult === 'number') return false;           // Steam rejected it → the op did not land
-  return TRANSPORT_AMBIGUOUS.test(`${e.code ?? ''} ${e.message ?? ''}`);
+  if (typeof e.eresult === 'number') return AMBIGUOUS_ERESULTS.has(e.eresult); // Steam answered → the op did not land, except the ambiguous-by-definition codes
+  return classifyNetworkError(e).ambiguousCommit;
 }

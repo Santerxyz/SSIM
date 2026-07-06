@@ -59,6 +59,8 @@ export interface ParsedSteamTradeError {
   eresult?: number;
   /** Recognised cause string from the trade-offer lib, when present. */
   cause?: string;
+  /** Node/axios transport code (e.g. 'ECONNRESET'), when present on the raw error. */
+  code?: string;
   /** True when Steam's own text says the recipient's inventory is full. */
   inventoryFull: boolean;
 }
@@ -68,23 +70,24 @@ export interface ParsedSteamTradeError {
  * Priority: full-inventory text → recognised cause → EResult code → raw Steam text.
  */
 export function parseSteamTradeError(err: unknown): ParsedSteamTradeError {
-  const e = err as { message?: unknown; eresult?: unknown; cause?: unknown } | null | undefined;
+  const e = err as { message?: unknown; eresult?: unknown; cause?: unknown; code?: unknown } | null | undefined;
   const raw = typeof e?.message === 'string' && e.message.trim() ? e.message.trim() : '';
   const eresult = typeof e?.eresult === 'number' && Number.isFinite(e.eresult) ? e.eresult : undefined;
   const cause = typeof e?.cause === 'string' ? e.cause : undefined;
+  const code = typeof e?.code === 'string' && e.code ? e.code : undefined;
 
   // 1) Receiver's inventory is full — the most actionable, surface it explicitly.
   if (raw && INVENTORY_FULL_RE.test(raw)) {
     return {
       message: "The recipient's inventory is full — there is no free space for these items.",
-      eresult, cause, inventoryFull: true,
+      eresult, cause, code, inventoryFull: true,
     };
   }
 
   // 2) A recognised cause has a clearer explanation than the generic Steam text.
   if (cause && CAUSE_MESSAGES[cause]) {
     const tail = eresult != null ? ` (Steam Error ${eresult})` : '';
-    return { message: `${CAUSE_MESSAGES[cause]}${tail}`, eresult, cause, inventoryFull: false };
+    return { message: `${CAUSE_MESSAGES[cause]}${tail}`, eresult, cause, code, inventoryFull: false };
   }
 
   // 3) Known EResult code → "Steam Error 15: Access Denied".
@@ -92,12 +95,12 @@ export function parseSteamTradeError(err: unknown): ParsedSteamTradeError {
     const name = ERESULT_NAMES[eresult];
     return {
       message: name ? `Steam Error ${eresult}: ${name}` : `Steam Error ${eresult}${raw ? ` – ${raw}` : ''}`,
-      eresult, cause, inventoryFull: false,
+      eresult, cause, code, inventoryFull: false,
     };
   }
 
   // 4) No code/cause — pass Steam's exact text through (or a generic fallback).
-  return { message: raw || 'Unknown trade error', eresult, cause, inventoryFull: false };
+  return { message: raw || 'Unknown trade error', eresult, cause, code, inventoryFull: false };
 }
 
 /** Convenience: the clean reason string only. */

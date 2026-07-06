@@ -1,3 +1,4 @@
+import path from 'path';
 import fsExtra from 'fs-extra';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
@@ -37,9 +38,10 @@ export interface HistoryPoint {
   items: number;
   /** Total wallet balance in USD cents (converted like the dashboard does). */
   wallet: number;
-  /** S66: true when at least one loaded account held a wallet balance in a currency we can't convert to USD
-   *  (FX covers only USD↔EUR), so `wallet` UNDERCOUNTS the real total for this point. Lets the UI flag the
-   *  wallet series as incomplete instead of silently plotting a too-low value as if it were exact. */
+  /** True when this point UNDERCOUNTS: either a loaded account held a wallet balance in a currency we
+   *  can't convert to USD (FX covers only USD↔EUR — S66), or one or more items had prices that were
+   *  missing/transiently unfetchable at record time (H-INV-022). Lets the UI flag the series as
+   *  incomplete instead of silently plotting a too-low value as if it were exact. */
   partial?: boolean;
 }
 
@@ -62,7 +64,9 @@ export class ValueHistoryService {
   private flushTimer?: NodeJS.Timeout;
   // S67: a snapshot requested WHILE a price fill is draining is deferred (the item totals would be
   // undercounted). `pending` remembers the request; `fillWatch` polls until the fill drains, then records it.
-  private pending?: { reason: string; game?: GameId };
+  // `retry` marks a pending that already fired ITS OWN ensureFilled for cache-missing names (H-INV-022): on
+  // the drain pass it records flagged rather than deferring again — exactly one bounded retry, no starvation.
+  private pending?: { reason: string; game?: GameId; retry?: boolean };
   private fillWatch?: NodeJS.Timeout;
 
   constructor(
@@ -83,12 +87,71 @@ export class ValueHistoryService {
     try {
       if (fsExtra.existsSync(HISTORY_PATH)) {
         const parsed = fsExtra.readJsonSync(HISTORY_PATH) as HistoryFile;
-        if (parsed && typeof parsed.series === 'object') return { version: 1, series: parsed.series ?? {} };
+        if (parsed && typeof parsed.series === 'object') return { version: 1, series: this.sanitizeSeries(parsed.series ?? {}) };
+        // File exists but the shape is wrong (`{}`, `null`, an array, a missing `series`). Unlike
+        // InventoryStore, value history is NOT refetchable — the only record of the past — so preserve
+        // the current bytes before starting fresh (S12/S5 clobber class).
+        this.preserveHistory('unexpected shape');
       }
     } catch (err) {
-      logger.warn(`value_history.json unreadable, starting fresh: ${(err as Error).message}`);
+      // ANY read/parse throw (incl. a transient Windows EBUSY/EPERM from an AV scanner at boot):
+      // preserve the current bytes before overwriting the only copy on the next flush.
+      this.preserveHistory((err as Error).message);
     }
     return { version: 1, series: {} };
+  }
+
+  /** H-INV-020: the top-level `series` check passing does NOT prove each series is an array of
+   *  valid points — a hand-edited file or partial disk corruption that still parses can leave a
+   *  string/number/object where an array belongs, which later throws inside `append()` (`arr.push`
+   *  is not a function) on the very next refresh, 500ing single-refresh routes and feeding the
+   *  money breaker via the bare-setInterval fill-watch. Keep only array series, and within each
+   *  only well-formed points (finite `t`, numeric `items`/`wallet`); carry the `partial` honesty
+   *  flag through, drop any other extras. Warn ONCE with the dropped counts if anything was cut. */
+  private sanitizeSeries(series: Record<string, HistoryPoint[]>): Record<string, HistoryPoint[]> {
+    const clean: Record<string, HistoryPoint[]> = {};
+    let droppedSeries = 0, droppedPoints = 0;
+    for (const [id, arr] of Object.entries(series)) {
+      if (!Array.isArray(arr)) { droppedSeries++; continue; }
+      const points: HistoryPoint[] = [];
+      for (const p of arr) {
+        if (p && typeof p.t === 'number' && Number.isFinite(p.t)
+            && typeof p.items === 'number' && typeof p.wallet === 'number') {
+          points.push(p.partial === true
+            ? { t: p.t, items: p.items, wallet: p.wallet, partial: true }
+            : { t: p.t, items: p.items, wallet: p.wallet });
+        } else {
+          droppedPoints++;
+        }
+      }
+      clean[id] = points;
+    }
+    if (droppedSeries > 0 || droppedPoints > 0) {
+      logger.warn(`value_history.json sanitized on load: dropped ${droppedSeries} non-array series and ${droppedPoints} malformed point(s)`);
+    }
+    return clean;
+  }
+
+  /** Best-effort: copy the current (unreadable/malformed) value_history.json to a
+   *  `.corrupt-<ts>` sibling before load() starts fresh, so a transient boot-time lock
+   *  or a corruption event can't silently destroy the only record of the past. Keeps the
+   *  newest 2 preserved copies (older ones are pruned). Failures are swallowed — a failed
+   *  preserve (e.g. the file is still locked) must never block boot. */
+  private preserveHistory(why: string): void {
+    try {
+      const preserved = `${HISTORY_PATH}.corrupt-${Date.now()}`;
+      fsExtra.copySync(HISTORY_PATH, preserved);
+      logger.warn(`value_history.json unusable (${why}) – preserved to ${preserved}, starting fresh`);
+      // Bound growth: keep only the newest 2 `.corrupt-*` siblings.
+      const dir = path.dirname(HISTORY_PATH);
+      const base = path.basename(HISTORY_PATH);
+      const olds = fsExtra.readdirSync(dir)
+        .filter((f) => f.startsWith(`${base}.corrupt-`))
+        .sort(); // ascending by the timestamp suffix (fixed-width, lexicographic = chronological)
+      for (const f of olds.slice(0, Math.max(0, olds.length - 2))) {
+        try { fsExtra.unlinkSync(path.join(dir, f)); } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
   }
 
   private scheduleFlush(): void {
@@ -107,6 +170,17 @@ export class ValueHistoryService {
     } catch (err) {
       logger.warn(`failed to persist value_history.json: ${(err as Error).message}`);
     }
+  }
+
+  /** Real teardown (H-INV-027): disarm the S67 `fillWatch` interval and drop any deferred snapshot
+   *  before the final flush. `flush()` alone leaves `fillWatch` armed, so on a runtime license-loss
+   *  re-gate (teardownFullApp → new ValueHistoryService in the SAME process) the OLD instance's zombie
+   *  tick would fire and clobber the new instance's freshly-loaded history. A pending point dropped at
+   *  teardown is recreated on the next refresh — cheaper than letting it fire on a dead `deps`. */
+  shutdown(): void {
+    if (this.fillWatch) { clearInterval(this.fillWatch); this.fillWatch = undefined; }
+    this.pending = undefined;
+    this.flush();
   }
 
   // ── Reads ────────────────────────────────────────────────────────────────────
@@ -141,16 +215,16 @@ export class ValueHistoryService {
     const cursors = series.map(() => 0); // per-series carry-forward index (timestamps ascending)
     const out: HistoryPoint[] = [];
     for (const t of timestamps) {
-      let items = 0, wallet = 0;
+      let items = 0, wallet = 0, partial = false;
       for (let s = 0; s < series.length; s++) {
         const arr = series[s];
         let i = cursors[s];
         while (i + 1 < arr.length && arr[i + 1].t <= t) i++;
         cursors[s] = i;
         const p = arr[i];
-        if (p && p.t <= t) { items += p.items; wallet += p.wallet; } // before first point → 0
+        if (p && p.t <= t) { items += p.items; wallet += p.wallet; if (p.partial) partial = true; } // before first point → 0
       }
-      out.push({ t, items, wallet });
+      out.push(partial ? { t, items, wallet, partial: true } : { t, items, wallet });
     }
     return out.length > MAX_POINTS_PER_SERIES ? out.slice(out.length - MAX_POINTS_PER_SERIES) : out;
   }
@@ -171,7 +245,7 @@ export class ValueHistoryService {
     const st = this.pricing.status();
     if (st.running || st.queued > 0) {
       this.pending = (this.pending && this.pending.game !== game)
-        ? { reason: 'fill-drain', game: undefined }
+        ? { reason: 'fill-drain', game: undefined, retry: this.pending.retry } // merge games → OR the retry flag
         : { reason, game };
       this.armFillWatch();
       logger.debug(`[history] snapshot deferred until the price fill drains (${reason}${game ? `, ${game}` : ''})`);
@@ -180,17 +254,37 @@ export class ValueHistoryService {
     this.doSnapshot(reason, game);
   }
 
-  private doSnapshot(reason: string, game?: GameId): void {
+  /**
+   * S67 hole-closer (H-INV-022): the snapshot is COMPLETE-or-honestly-FLAGGED. `computeGame` derives every
+   * row without appending and reports the names it couldn't price. If `!isRetry` and any name is cache-missing,
+   * we queue exactly those names (ensureFilled), remember a retry-pending, arm the watch and record NOTHING —
+   * so a snapshot that settled while prices were stale no longer captures a permanent undercount. On the drain
+   * pass (`isRetry`) any names still missing/soft-nulled no longer defer: the row records with `partial: true`
+   * (matching the S66 "honest, no fabricated data" pattern). Exactly one retry — no loop, no starvation.
+   */
+  private doSnapshot(reason: string, game?: GameId, isRetry = false): void {
     const now = Date.now();
     // Snapshot ONLY the game(s) that actually refreshed. Snapshotting BOTH on every call
     // let a TF2 refresh rewrite a recent CS2 point (and vice-versa) via burst-coalescing in
     // append() — last-writer-wins on the curve. `game` undefined → snapshot both (manual/
     // post-trade where the caller doesn't scope it). (C21 / INV-E6.)
     const which = snapshotGames(game);
-    if (which.cs2) this.snapshotGame(now, this.store, '');        // CS2 → '<id>' / 'global'
-    if (which.tf2) this.snapshotGame(now, this.tf2Store, 'tf2:'); // TF2 → 'tf2:<id>' / 'tf2:global'
+    const rows: Array<{ seriesId: string; items: number; wallet: number; partial: boolean }> = [];
+    const missing: Array<{ name: string; appid: number }> = [];
+    if (which.cs2) { const g = this.computeGame(now, this.store, '');        rows.push(...g.rows); missing.push(...g.missing); }
+    if (which.tf2) { const g = this.computeGame(now, this.tf2Store, 'tf2:'); rows.push(...g.rows); missing.push(...g.missing); }
+
+    if (!isRetry && missing.length > 0) {
+      // Prices are stale/missing → don't record an undercounted point. Queue the fill, defer ONCE.
+      this.pricing.ensureFilled(missing);
+      this.pending = { reason, game, retry: true };
+      this.armFillWatch();
+      logger.debug(`[history] snapshot deferred — ${missing.length} price(s) missing, filling (${reason}${game ? `, ${game}` : ''})`);
+      return;
+    }
+    for (const r of rows) this.append(r.seriesId, now, r.items, r.wallet, r.partial);
     this.scheduleFlush();
-    logger.debug(`[history] snapshot taken (${reason}${game ? `, ${game}` : ''})`);
+    logger.debug(`[history] snapshot taken (${reason}${game ? `, ${game}` : ''}${isRetry ? ', retry' : ''})`);
   }
 
   /** S67: while a fill is draining, poll on an interval; take the deferred snapshot once it drains. */
@@ -205,11 +299,22 @@ export class ValueHistoryService {
     if (st.running || st.queued > 0) return; // still filling → wait
     if (this.fillWatch) { clearInterval(this.fillWatch); this.fillWatch = undefined; }
     const pend = this.pending; this.pending = undefined;
-    if (pend) this.doSnapshot(pend.reason, pend.game);
+    // Pass the pending's retry flag: a pending we ourselves deferred for missing prices (retry) records
+    // flagged on this pass rather than deferring again — exactly one bounded retry. (H-INV-022.)
+    if (pend) this.doSnapshot(pend.reason, pend.game, pend.retry === true);
   }
 
-  /** Snapshots ONE game's cache into '<prefix><envId>' + '<prefix>global' series. */
-  private snapshotGame(now: number, store: { get(u: string): AccountInventory | undefined }, prefix: string): void {
+  /**
+   * Pure computation of ONE game's rows ('<prefix><envId>' + '<prefix>global') from the cache — NO append.
+   * Returns the rows to record plus the unique-per-account cache-missing names so the caller can defer+fill.
+   * A row is `partial` when the S66 wallet condition holds OR the env had ANY missing/soft-nulled price
+   * (the items total silently undercounts those). Keeps the `loaded === 0 → no point` rule (empty-coercion guard).
+   */
+  private computeGame(_now: number, store: { get(u: string): AccountInventory | undefined }, prefix: string):
+    { rows: Array<{ seriesId: string; items: number; wallet: number; partial: boolean }>; missing: Array<{ name: string; appid: number }> } {
+    // `_now` is unused here — rows carry no timestamp; doSnapshot's append() stamps them. Kept for signature parity.
+    const rows: Array<{ seriesId: string; items: number; wallet: number; partial: boolean }> = [];
+    const missing: Array<{ name: string; appid: number }> = [];
     let globalItems = 0, globalWallet = 0, globalLoaded = 0, globalPartial = false;
     for (const env of this.accounts.getEnvironments()) {
       let items = 0, wallet = 0, loaded = 0, partial = false;
@@ -217,20 +322,29 @@ export class ValueHistoryService {
         const inv = store.get(acc.username);
         if (!inv) continue;
         loaded++;
-        this.pricing.enrich(inv); // cache-only: prices + totalValueUsd refreshed in place
-        items  += inv.totalValueUsd ?? 0;
+        const t = this.pricing.totalsOf(inv); // READ-ONLY: never mutates the cached record (H-INV-022 / INV-B12)
+        items += t.totalCents;
+        // H-INV-022: an item whose price was missing (queued this pass) or a fresh transient soft error-miss
+        // means the items total undercounts for this point — flag it, and collect missing names for the fill.
+        if (t.missing.length > 0 || t.softNull > 0) partial = true;
+        missing.push(...t.missing);
         const w = inv.wallet;
         const cents = this.walletUsdCents(w);
         // S66: a wallet we couldn't convert (non-USD/EUR) but that HAS a real balance means `wallet` is
         // undercounted for this point — flag it partial rather than silently plotting a too-low total.
-        if (cents == null && w && typeof w.balance === 'number' && w.balance > 0) partial = true;
+        // H-INV-024: an ABSENT/malformed wallet (never wallet-refreshed, tri-state "—") is unknown, not 0 —
+        // flag it too so unknown never coerces to a silent 0. The hasWallet=false → balance 0 case has a
+        // real numeric balance and converts to an exact 0, so it stays unflagged (Directive 2 tri-state).
+        if (!w || typeof w.balance !== 'number') partial = true;
+        else if (cents == null && w.balance > 0) partial = true;
         wallet += cents ?? 0;
       }
       if (loaded === 0) continue; // nothing cached → no meaningful point
-      this.append(prefix + env.id, now, items, wallet, partial);
+      rows.push({ seriesId: prefix + env.id, items, wallet, partial });
       globalItems += items; globalWallet += wallet; globalLoaded += loaded; globalPartial = globalPartial || partial;
     }
-    if (globalLoaded > 0) this.append(prefix + GLOBAL_SERIES, now, globalItems, globalWallet, globalPartial);
+    if (globalLoaded > 0) rows.push({ seriesId: prefix + GLOBAL_SERIES, items: globalItems, wallet: globalWallet, partial: globalPartial });
+    return { rows, missing };
   }
 
   /** Steam wallet → USD cents (USD=1 as-is, EUR=3 via live rate, else skip). */
@@ -245,8 +359,18 @@ export class ValueHistoryService {
   private append(seriesId: string, t: number, items: number, wallet: number, partial = false): void {
     const arr = this.data.series[seriesId] ?? (this.data.series[seriesId] = []);
     const last = arr[arr.length - 1];
-    if (last && t - last.t < MIN_INTERVAL_MS) {
+    const dt = last ? t - last.t : Infinity;
+    if (last && dt >= 0 && dt < MIN_INTERVAL_MS) {
       last.t = t; last.items = items; last.wallet = wallet;
+      if (partial) last.partial = true; else delete last.partial; // S66: keep the flag accurate on coalesce
+      return;
+    }
+    if (last && dt < 0) {
+      // H-INV-025: wall-clock stepped BACKWARD (NTP correction, VM/laptop resume). A recorded timestamp
+      // never moves backward — merge values into the last point but KEEP last.t, or the series would go
+      // non-chronological (breaking aggregate()'s cursor and the chart's span math). Self-heals once the
+      // clock passes last.t + MIN_INTERVAL_MS: normal appends resume, no data dropped.
+      last.items = items; last.wallet = wallet;
       if (partial) last.partial = true; else delete last.partial; // S66: keep the flag accurate on coalesce
       return;
     }

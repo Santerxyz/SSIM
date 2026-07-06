@@ -26,9 +26,15 @@ function extractFunction(src: string, name: string): string {
 
 const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
 const setGame = extractFunction(APP_JS, 'setGame');
+// H-FE-001 relocated the TF2 first-load body from setGame into a reusable loadTf2Inventories()
+// (so the load-error Retry button can re-run it); setGame now delegates the first load to it.
+// The S29 watch-start guarantee is unchanged — it now lives in loadTf2Inventories.
+const loadTf2 = extractFunction(APP_JS, 'loadTf2Inventories');
 
-test('S29: setGame starts a price-fill watch on the first TF2 load', () => {
-  assert.ok(/tf2Loaded/.test(setGame), 'setGame guards the first TF2 load');
-  assert.ok(setGame.includes('watchPriceFill(refreshActiveViewFromCache)'),
+test('S29: the first TF2 load starts a price-fill watch', () => {
+  assert.ok(setGame.includes('loadTf2Inventories') || setGame.includes('tf2Loaded'),
+    'setGame guards + drives the first TF2 load');
+  assert.ok(/tf2Loaded/.test(loadTf2), 'the TF2 load guards/records the first-load state');
+  assert.ok(loadTf2.includes('watchPriceFill(refreshActiveViewFromCache)'),
     'the first TF2 load must start watchPriceFill so TF2 prices fill in live (S29)');
 });

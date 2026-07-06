@@ -27,6 +27,18 @@ import { logger } from '../utils/logger';
 //  (destroys 10 items) → stays behind the explicit SSIM_GC_VERIFIED flag.
 // ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Thrown by `withSession` when the per-account single-op slot is already held (concurrency 1).
+ * Distinguished from a real failure because it can ONLY fire BEFORE the craft is sent (the
+ * inFlight guard rejects pre-connect) — so a busy rejection ⇔ nothing was sent, always safe to wait out.
+ */
+export class GcBusyError extends Error {
+  constructor(username: string) {
+    super(`a GC operation is already running for ${username}`);
+    this.name = 'GcBusyError';
+  }
+}
+
 const CS2_APPID = 730;
 const CONNECT_TIMEOUT_MS = 35_000; // GC hello has exponential backoff; allow a couple of rounds
 const MOVE_VERIFY_TIMEOUT_MS = 15_000;
@@ -69,13 +81,15 @@ function loadGc(): (new (client: unknown) => GcLike) | undefined {
   return GcCtor;
 }
 
-/** The real globaloffensive surface this layer uses (verified against v3.3.0). */
+/** The real globaloffensive surface this layer uses (verified against v3.3.0). The stale-`_helloTimer`
+ *  heal in `connect` reaches private v3.x fields (`_helloTimer`/`_isInCSGO`) — re-verify on any 4.x upgrade. */
 interface GcLike {
   haveGCSession: boolean;
   inventory?: GcItem[];
   on(ev: string, cb: (...a: unknown[]) => void): void;
   once(ev: string, cb: (...a: unknown[]) => void): void;
   removeListener(ev: string, cb: (...a: unknown[]) => void): void;
+  removeAllListeners(ev: string): void;                        // present on EventEmitter
   getCasketContents(casketId: string, cb: (err: Error | null, items?: GcItem[]) => void): void;
   addToCasket(casketId: string, itemId: string): void;       // fire-and-forget (no callback)
   removeFromCasket(casketId: string, itemId: string): void;  // fire-and-forget (no callback)
@@ -117,6 +131,9 @@ export class GcActionLayer {
   }
 
   available(): boolean { return !!loadGc(); }
+
+  /** True while this account holds the single per-account GC-op slot (a storage move / float read is running). */
+  opInFlight(username: string): boolean { return this.inFlight.has(username.toLowerCase()); }
 
   /**
    * Trade-up CRAFT gate (irreversible — destroys 10 items). Resolution:
@@ -181,15 +198,22 @@ export class GcActionLayer {
    */
   private async withSession<T>(username: string, fn: (go: GcLike) => Promise<T>, timeoutMs = 60_000): Promise<T> {
     const key = username.toLowerCase();
-    if (this.inFlight.has(key)) throw new Error(`a GC operation is already running for ${username}`);
+    if (this.inFlight.has(key)) throw new GcBusyError(username);
     this.inFlight.add(key);
+    // B40: this is a genuine op entry — touch it now and keep it fresh so the idle reaper (30-min TTL)
+    // can never log the account out mid-move/mid-craft (a large casket move legitimately runs 10-35+ min).
+    this.sessions.markUsed(username);
+    const keepAlive = setInterval(() => this.sessions.markUsed(username), 60_000);
+    keepAlive.unref?.();
     let client: unknown;
     try {
       const go = this.getHandle(username);
       client = (this.sessions.getSession(username)!.client as unknown);
       await sleep(JITTER_MIN_MS + Math.floor(Math.random() * (JITTER_MAX_MS - JITTER_MIN_MS))); // anti-lockstep
-      await this.connect(go, client);
       try {
+        // connect() is inside the guard so a connect timeout/error still runs disconnect() (gamesPlayed([]))
+        // — otherwise the account stays in-game CS2 with the lib's hello retry loop firing indefinitely.
+        await this.connect(go, client);
         // S16: the backstop budget is caller-scaled (a per-item op loop scales it by item count, and gives
         // the loop its OWN shorter deadline so it self-aborts first). withTimeout can't cancel fn(go), so a
         // premature fire would abandon a detached loop — the scaling makes it fire only as a true backstop.
@@ -198,6 +222,7 @@ export class GcActionLayer {
         this.disconnect(client); // drop the GC session (keep the bounded handle for reuse)
       }
     } finally {
+      clearInterval(keepAlive);
       this.inFlight.delete(key);
     }
   }
@@ -218,6 +243,13 @@ export class GcActionLayer {
       const timer = setTimeout(() => done(new Error('GC connect timeout (account may not own CS2, or the GC is busy)')), CONNECT_TIMEOUT_MS);
       go.once('connectedToGC', onConn);
       go.once('error', onErr);
+      // Heal the globaloffensive v3.3.0 bug: a prior ClientLogonFatalError does `clearTimeout(this._helloTimer)`
+      // but never nulls it (handlers.js:16), and `handleAppQuit` clears the misnamed `_helloInterval` instead
+      // (index.js:70-74), so the stale (cleared, truthy) Timeout permanently makes `_connect()` refuse to send a
+      // hello ("has helloTimer", index.js:104-107) → every later op on this reused handle fakes a connect timeout.
+      // The guard touches only provably-dead state — a live hello loop (`_isInCSGO` true) is never disturbed.
+      const priv = go as unknown as { _helloTimer?: NodeJS.Timeout | null; _isInCSGO?: boolean };
+      if (!go.haveGCSession && !priv._isInCSGO && priv._helloTimer) { clearTimeout(priv._helloTimer); priv._helloTimer = null; }
       try { (client as { gamesPlayed(apps: number[]): void }).gamesPlayed([CS2_APPID]); }
       catch (e) { done(e as Error); }
     });
@@ -235,7 +267,8 @@ export class GcActionLayer {
     return this.withSession(username, async (go) => {
       const out = new Map<string, number>();
       for (const it of go.inventory ?? []) {
-        if (typeof it.paint_wear === 'number' && it.id != null) out.set(String(it.id), it.paint_wear);
+        const w = it.paint_wear;
+        if (typeof w === 'number' && Number.isFinite(w) && it.id != null) out.set(String(it.id), w);
       }
       return out;
     });
@@ -255,7 +288,19 @@ export class GcActionLayer {
   /** Reads one storage unit's contents (read-only). */
   async getCasketContents(username: string, casketId: string): Promise<GcItem[]> {
     return this.withSession(username, (go) => new Promise<GcItem[]>((resolve, reject) => {
-      go.getCasketContents(casketId, (err, items) => err ? reject(err) : resolve(Array.isArray(items) ? items : []));
+      go.getCasketContents(casketId, (err, items) => {
+        if (err) {
+          // globaloffensive v3.x: the 30s timeout path fires the error callback but never sets `timedOut`
+          // nor detaches its `itemCustomizationNotification` listener (index.js:399-405), so it orphans one
+          // listener + closure on this reused handle (and a late notification would fire callback twice).
+          // We are the sole listener for that event and the inFlight guard means ≤1 read is pending per
+          // handle, so clearing it on the error settle is safe.
+          try { go.removeAllListeners('itemCustomizationNotification'); } catch { /* noop */ }
+          reject(err);
+        } else {
+          resolve(Array.isArray(items) ? items : []);
+        }
+      });
     }));
   }
 
@@ -275,7 +320,7 @@ export class GcActionLayer {
     direction: 'deposit' | 'withdraw',
     onProgress?: (p: { done: number; total: number; current: string; moved: number; failed: number }) => void,
     shouldCancel?: () => boolean,
-  ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }> }> {
+  ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }>; stopped: 'completed' | 'budget' | 'cancelled' }> {
     // S16: a per-item move costs ~0.9–1.8s (verify + pacing), so the old FIXED 60s backstop falsely
     // "timed out" any move above ~50 items AND — since withTimeout cannot cancel fn(go) — left the loop
     // running DETACHED (a 2nd GC op could then interleave). Scale the backstop by item count, and give the
@@ -285,8 +330,14 @@ export class GcActionLayer {
     const MOVE_PER_ITEM_MS = 3_000; // generous upper bound; a normal item finishes in ~half this
     const loopBudgetMs = MOVE_BASE_MS + MOVE_PER_ITEM_MS * Math.max(1, itemIds.length);
     return this.withSession(username, async (go) => {
+      // A stale/wrong casketId (unit deleted in-game since listCaskets) otherwise burns the whole
+      // budget crawling misleading "unconfirmed" items against a unit that does not exist: deposits
+      // empty-coerce a missing unit to `current = 0` and pass the cap; withdraws never look it up at
+      // all. Caskets are always in the SO cache (listCaskets reads it), so a missing unit is a hard,
+      // pre-send failure for BOTH directions — fail fast with nothing sent (lands runMove's 'preflight').
+      const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
+      if (!unit) throw new Error(`storage unit ${casketId} not found in the live GC inventory — refresh the unit list and retry`);
       if (direction === 'deposit') {
-        const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
         const current = Number(unit?.casket_contained_item_count) || 0;
         if (current + itemIds.length > CASKET_CAPACITY) {
           throw new Error(`deposit would exceed the ${CASKET_CAPACITY}-item cap (unit holds ${current})`);
@@ -296,12 +347,14 @@ export class GcActionLayer {
       const moved: string[] = [];
       const unconfirmed: string[] = [];
       const failed: Array<{ itemId: string; error: string }> = [];
+      let stopped: 'completed' | 'budget' | 'cancelled' = 'completed';
       for (let i = 0; i < itemIds.length; i++) {
-        if (shouldCancel?.()) break;
+        if (shouldCancel?.()) { stopped = 'cancelled'; break; }
         if (Date.now() >= deadline) {
           // S16: abort CLEANLY before the backstop timeout — return the partial result so far (honest
           // counts, no detached loop). The remaining items were not attempted; a re-run continues.
           logger.warn(`[gc] ${username} ${direction}: move budget reached at item ${i}/${itemIds.length} – stopping cleanly (partial); the rest were NOT attempted (re-run to continue)`);
+          stopped = 'budget';
           break;
         }
         const itemId = String(itemIds[i]);
@@ -320,7 +373,7 @@ export class GcActionLayer {
         await sleep(350 + Math.floor(Math.random() * 400)); // gentle pacing between GC writes
       }
       logger.info(`[gc] ${username} ${direction}: ${moved.length} moved, ${unconfirmed.length} unconfirmed, ${failed.length} failed`);
-      return { moved, unconfirmed, failed };
+      return { moved, unconfirmed, failed, stopped };
     }, loopBudgetMs + 20_000); // backstop > the loop's own deadline → the loop self-aborts first (no detached zombie)
   }
 
@@ -346,8 +399,9 @@ export class GcActionLayer {
    * via the `craftingComplete` event (which returns the produced item id). NEVER re-sends.
    */
   async craftTradeUp(username: string, p: { inputAssetIds: string[]; inputRarityId: string; stattrak: boolean }):
-    Promise<{ submitted: boolean; confirmed: boolean; outputItemId?: string }> {
+    Promise<{ submitted: boolean; confirmed: boolean; rejected?: boolean; outputItemId?: string }> {
     if (p.inputAssetIds.length !== 10) throw new Error('a trade-up needs exactly 10 input asset ids');
+    if (new Set(p.inputAssetIds.map(String)).size !== 10) throw new Error('a trade-up needs 10 UNIQUE input asset ids');
     if (!this.craftVerified()) {
       throw new Error('trade-up craft is disabled — set SSIM_GC_VERIFIED=1 after verifying on a test account (irreversible: destroys 10 items)');
     }
@@ -361,7 +415,7 @@ export class GcActionLayer {
       if (missing.length) { reject(new Error(`inputs no longer present: ${missing.join(', ')} — refresh & recompute`)); return; }
 
       let settled = false;
-      const finish = (val: { submitted: boolean; confirmed: boolean; outputItemId?: string }): void => {
+      const finish = (val: { submitted: boolean; confirmed: boolean; rejected?: boolean; outputItemId?: string }): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -370,12 +424,17 @@ export class GcActionLayer {
       };
       const onDone = (_recipe: unknown, idList: unknown): void => {
         const ids = Array.isArray(idList) ? idList.map(String) : [];
+        const rec = Number(_recipe);
+        if (rec >= 0 && rec !== recipe) return; // another craft's response — keep waiting
+        // The GC answers a REFUSED craft with recipe -1 and an empty id list (lib README: "-1 on
+        // failure"); a successful trade-up ALWAYS yields exactly one item, so no id can never be success.
+        if (rec === -1 || ids.length === 0) { finish({ submitted: true, confirmed: false, rejected: true }); return; }
         finish({ submitted: true, confirmed: true, outputItemId: ids[0] });
       };
       // After the send we NEVER reject — a thrown post-submit error would invite a duplicate craft
       // (destroying another 10 items). An unconfirmed result means "submitted; verify in-game".
       const timer = setTimeout(() => finish({ submitted: true, confirmed: false }), CRAFT_CONFIRM_TIMEOUT_MS);
-      go.once('craftingComplete', onDone);
+      go.on('craftingComplete', onDone);
       try {
         go.craft(p.inputAssetIds.map(String), recipe);
         logger.info(`[gc] ${username} trade-up submitted (recipe ${recipe}, 10 inputs)`);

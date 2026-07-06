@@ -21,10 +21,13 @@ import { logger, redactSecrets } from '../utils/logger';
 //  flags together (the public profile XML only exposes VAC + trade state).
 //
 //  GetPlayerBans needs a Steam Web API key. We never ask the operator to paste
-//  one: a single key checks ARBITRARY SteamIDs, so we obtain ONE key from any
-//  of our own logged-in accounts (auto-creating it with the account's
-//  identity_secret if needed) and cache it for the process lifetime. An explicit
-//  STEAM_WEB_API_KEY env var, when set, wins (zero Steam round-trips).
+//  one: a single key checks ARBITRARY SteamIDs, so we obtain key(s) from accounts
+//  WITHIN each environment (auto-creating them with the account's identity_secret
+//  if needed) and cache them PER-ENVIRONMENT for the process lifetime — a repeat
+//  check of the same fleet re-uses the cached keys and logs in nobody. A key is
+//  evicted only when Steam rejects it (401/403), so the next run re-mints just
+//  that one. An explicit STEAM_WEB_API_KEY env var, when set, wins globally (zero
+//  Steam round-trips) and is never cached.
 //
 //  SteamIDs are resolved WITHOUT a login wherever possible (live session →
 //  maFile Session.SteamID → the maFile filename, which is the SteamID64), so a
@@ -107,6 +110,23 @@ export interface BanCheckResult {
   apiKeyFrom?: string;
 }
 
+/** Live progress of the single ban-check job (the UI polls this). */
+export interface BanJobProgress {
+  total:        number; // resolved-to-known accounts in the run
+  resolved:     number; // SteamID-resolve phase completions
+  keysAcquired: number; // env key acquisitions completed
+  checked:      number; // GetPlayerBans records fetched (across chunks)
+}
+
+/** Snapshot of the ban-check job (delivered once via `status()`; `result` retained until next start). */
+export interface BanJobStatus {
+  running:   boolean;
+  startedAt: number;
+  progress:  BanJobProgress;
+  result?:   BanCheckResult;
+  error?:    string;
+}
+
 /** Raw GetPlayerBans player record (only the fields we use). */
 interface SteamBanRecord {
   SteamId?:          string;
@@ -128,9 +148,17 @@ interface CommunityWithKey {
 }
 
 export class BanService {
-  /** Cached Steam Web API key (process-lifetime). Cleared if Steam rejects it. */
-  private apiKey?: string;
-  private apiKeyFrom?: string;
+  /** Single live ban-check job (polled by the UI). A whole-fleet cold check can exceed the client's
+   *  120s request budget, so the run is detached and the modal polls `status()` instead of awaiting
+   *  the whole POST (which would time out the modal while the backend kept working). `result` is
+   *  retained until the next `startCheck`, so a poll that lands after completion still receives it. */
+  private job: BanJobStatus = {
+    running: false, startedAt: 0,
+    progress: { total: 0, resolved: 0, keysAcquired: 0, checked: 0 },
+  };
+  /** Per-environment Web API key cache (process-lifetime). A key is evicted only when Steam
+   *  rejects it (401/403), after which the next run re-acquires one for that env. */
+  private readonly envKeys = new Map<string, string[]>();
   /** Read-only token reader (vault-aware) → SteamID from the refresh-token JWT, no login. */
   private readonly tokens = new TokenStore();
 
@@ -143,11 +171,42 @@ export class BanService {
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /**
+   * Starts the ban check as a DETACHED job and returns immediately. Single-flight: throws if a job
+   * is already running. The whole run (which can exceed the client's 120s request budget on a cold
+   * fleet) executes in the background; the caller polls `status()`. The S33 finalizer clears
+   * `running` and records any thrown error on every exit path, so a crash never latches the job.
+   */
+  startCheck(usernames: string[]): void {
+    if (this.job.running) throw new Error('A ban check is already running');
+    this.job = {
+      running: true, startedAt: Date.now(),
+      progress: { total: 0, resolved: 0, keysAcquired: 0, checked: 0 },
+    };
+    void this.checkBans(usernames, this.job.progress)
+      .then((result) => { this.job.result = result; })
+      .catch((err) => {
+        this.job.error = redactSecrets((err as Error).message);
+        logger.error(`[bans] check job crashed – ${this.job.error}`);
+      })
+      .finally(() => { this.job.running = false; });
+  }
+
+  /** Snapshot of the live ban-check job. `result` is delivered once complete and retained until the
+   *  next `startCheck`, so a poll landing after the run finishes still gets it. */
+  status(): BanJobStatus {
+    return {
+      running: this.job.running, startedAt: this.job.startedAt,
+      progress: { ...this.job.progress }, result: this.job.result, error: this.job.error,
+    };
+  }
+
+  /**
    * Checks every given account for all Steam ban types and returns the
    * categorised result. Per-account failures (no SteamID, Steam didn't return a
    * record) surface as `error` on that account and NEVER abort the others.
+   * `progress` (when given, via `startCheck`) is incremented in place so the UI can poll live counts.
    */
-  async checkBans(usernames: string[]): Promise<BanCheckResult> {
+  async checkBans(usernames: string[], progress?: BanJobProgress): Promise<BanCheckResult> {
     // De-dupe (case-insensitively) + resolve to known accounts, preserving order.
     const seen = new Set<string>();
     const accs: AccountConfig[] = [];
@@ -159,19 +218,27 @@ export class BanService {
       seen.add(key);
       accs.push(acc);
     }
+    if (progress) progress.total = accs.length;
 
     const infos: AccountBanInfo[] = [];
     const bySteamId = new Map<string, AccountBanInfo>();
     const unresolved: Array<{ account: AccountConfig; info: AccountBanInfo }> = [];
     for (const acc of accs) {
       const steamId = this.resolveSteamId(acc);
+      if (progress) progress.resolved++;
       const info: AccountBanInfo = {
         username: acc.username, displayName: acc.displayName, steamId,
         vacBanned: false, vacCount: 0, gameBanned: false, gameCount: 0,
         communityBanned: false, economyBan: 'none', daysSinceLastBan: 0, categories: [],
       };
       infos.push(info);
-      if (steamId) bySteamId.set(steamId, info);
+      // Two accounts can never legitimately share one SteamID64: a duplicate here means a config
+      // anomaly (two entries pointing at one maFile, a stale cached steamId, a re-import under an
+      // alias). First-in wins deterministically; the loser is flagged, not silently overwritten and
+      // reported clean. Null-steamId accounts still go to `unresolved` exactly as before.
+      const prev = steamId ? bySteamId.get(steamId) : undefined;
+      if (steamId && !prev) bySteamId.set(steamId, info);
+      else if (prev) info.error = `Duplicate SteamID64 — same Steam account as "${prev.username}"; fix the duplicate registration`;
       else unresolved.push({ account: acc, info });
     }
 
@@ -195,6 +262,10 @@ export class BanService {
       }
     }
 
+    // Diagnostic ONLY: which key source served this run. A run-local var (not instance state) so a
+    // run that resolved no target reports `undefined` instead of the previous run's value, a rejected
+    // per-env key doesn't null it mid-run, and two concurrent checks can't overwrite each other's.
+    let keySource: 'env' | 'per-env' | undefined;
     const targets = [...bySteamId.keys()];
     if (targets.length > 0) {
       // ── F3c: PER-ENVIRONMENT key scoping ──────────────────────────────────────
@@ -204,16 +275,17 @@ export class BanService {
       // at BANS_PER_KEY accounts/key and rotated across same-env keys — never cross-env.
       const overrideKey = (process.env.STEAM_WEB_API_KEY ?? '').trim();
       if (overrideKey) {
-        this.apiKeyFrom = 'env';
+        keySource = 'env';
         const batches: string[][] = [];
         for (let i = 0; i < targets.length; i += BANS_BATCH) batches.push(targets.slice(i, i + BANS_BATCH));
-        await mapLimit(batches, BAN_CHECK_CONCURRENCY, (batch) => this.fetchChunk(overrideKey, batch, bySteamId));
-        return this.finalize(infos);
+        await mapLimit(batches, BAN_CHECK_CONCURRENCY, (batch) => this.fetchChunk(overrideKey, batch, bySteamId, undefined, progress));
+        return this.finalize(infos, keySource);
       }
-      await this.checkPerEnvironment(accs, bySteamId);
+      keySource = 'per-env';
+      await this.checkPerEnvironment(accs, bySteamId, progress);
     }
 
-    return this.finalize(infos);
+    return this.finalize(infos, keySource);
   }
 
   /**
@@ -222,7 +294,7 @@ export class BanService {
    * 20-per-key chunks with strict per-env isolation. Accounts an env can't cover (more accounts
    * than 20 × the keys it could provide) are surfaced with a clear, actionable error.
    */
-  private async checkPerEnvironment(accs: AccountConfig[], bySteamId: Map<string, AccountBanInfo>): Promise<void> {
+  private async checkPerEnvironment(accs: AccountConfig[], bySteamId: Map<string, AccountBanInfo>, progress?: BanJobProgress): Promise<void> {
     // envId → all usernames in it (potential key sources); and the resolved (steamId,env) targets.
     const envUsernames = new Map<string, string[]>();
     for (const acc of accs) {
@@ -243,10 +315,10 @@ export class BanService {
     // Acquire keys per env (sized to what that env needs), sourced ONLY from that env's accounts.
     // Threaded ACROSS environments (BAN_CHECK_CONCURRENCY): several envs mint at once, but each env
     // still mints sequentially WITHIN itself, so concurrent logins stay bounded (≈ the concurrency).
-    this.apiKeyFrom = 'per-env';
     const acquired = await mapLimit([...targetsByEnv], BAN_CHECK_CONCURRENCY, async ([envId, sids]) => {
       const needed = Math.ceil(sids.length / BANS_PER_KEY);
       const keys = await this.acquireEnvKeys(envId, envUsernames.get(envId) ?? [], needed);
+      if (progress) progress.keysAcquired += keys.length;
       return [envId, keys] as [string, string[]];
     });
     const keysByEnv = new Map<string, string[]>(acquired);
@@ -260,7 +332,10 @@ export class BanService {
     await mapLimit(assignments, BAN_CHECK_CONCURRENCY, async (a) => {
       const key = keysByEnv.get(a.envId)?.[a.keyIndex];
       if (!key) return; // defensive — planner never emits an assignment beyond keyCounts
-      await this.fetchChunk(key, a.steamIds, bySteamId);
+      await this.fetchChunk(key, a.steamIds, bySteamId, () => {
+        const arr = this.envKeys.get(a.envId);
+        if (arr) this.envKeys.set(a.envId, arr.filter((k) => k !== key));
+      }, progress);
     });
     // Surface uncovered accounts (env had more accounts than its keys could cover, or none).
     for (const u of uncovered) {
@@ -284,7 +359,9 @@ export class BanService {
     const ready = candidates.filter((u) => this.sessions.isReady(u));
     const rest  = candidates.filter((u) => !this.sessions.isReady(u));
     const ordered = [...new Set([...ready, ...rest])];
-    const keys: string[] = [];
+    // Seed from the process-lifetime cache: a prior run's keys for this env need no re-login. The
+    // `keys.length >= needed` guard below then skips ALL minting when the cache already covers us.
+    const keys: string[] = [...(this.envKeys.get(envId) ?? [])];
     let logins = 0;
     for (const username of ordered) {
       if (keys.length >= needed) break;
@@ -294,44 +371,58 @@ export class BanService {
       // the account live only for the one getWebApiKey/createWebApiKey call below.
       const wasLiveBefore = this.sessions.isLive(username);
       if (willLogin) logins++; // count the ATTEMPT up front so a timeout still respects the login cap
+      // Whole per-account mint (login + key fetch/create). Hoisted so the release can chain to THIS
+      // promise: a stalled call is abandoned by the ~20s budget below (the account provides no key,
+      // instead of hanging the run), but the session release still fires the moment OUR mint settles.
+      const mint = (async () => {
+        const trader = await this.trades.getTrader(username); // logs in if needed
+        const community = trader.community as unknown as CommunityWithKey;
+        let k = await this.getExistingKey(community);
+        if (!k) k = await this.createKey(community, this.identitySecretOf(username));
+        return k;
+      })();
       try {
-        // Whole per-account mint (login + key fetch/create) under ONE ~20s budget: a stalled Steam
-        // call is abandoned and the account simply provides no key, instead of hanging the run.
-        const key = await withTimeout((async () => {
-          const trader = await this.trades.getTrader(username); // logs in if needed
-          const community = trader.community as unknown as CommunityWithKey;
-          let k = await this.getExistingKey(community);
-          if (!k) k = await this.createKey(community, this.identitySecretOf(username));
-          return k;
-        })(), KEY_MINT_TIMEOUT_MS, `${username} key mint`);
+        const key = await withTimeout(mint, KEY_MINT_TIMEOUT_MS, `${username} key mint`);
         if (key) keys.push(key);
       } catch (err) {
         logger.warn(`[bans] env ${envId}: ${username} could not provide a key (${(err as Error).message})`);
       } finally {
-        // Release the session this key-mint created (now + after the budget, in case a timed-out
-        // login lands late), so a multi-env check never leaves sessions resident. Best-effort.
-        if (!wasLiveBefore) this.releaseSoon(username);
+        // Release the session this key-mint created — chained to the mint promise, so a login that
+        // lands after our timeout releases when IT settles, not at a blind later instant. Best-effort.
+        if (!wasLiveBefore) this.releaseWhenSettled(username, mint);
       }
     }
+    this.envKeys.set(envId, keys); // cache for the process lifetime; evicted only on a Steam 401/403
     logger.info(`[bans] env ${envId}: acquired ${keys.length}/${needed} key(s) (${logins} login(s))`);
     return keys;
   }
 
-  /** Release a session WE created to mint a key — now if it's already live, and again after the
-   *  mint budget, so a login that lands AFTER we stopped waiting (timeout) can't leave a resident
-   *  session (the resident-session accumulation the refresh-storm hardening guards against). */
-  private releaseSoon(username: string): void {
+  /** Release a session WE created to mint a key — chained to OUR OWN login/mint promise, not a blind
+   *  wall-clock timer. On the happy/failed path `op` is already settled so `drop` runs on the next
+   *  microtask (identical to the old immediate drop); on the timeout path the release fires the
+   *  moment OUR login/mint actually lands (or fails) — including a semaphore-queued login that lands
+   *  long after our timeout — so it can never yank a session another flow just created, and never
+   *  leaves the post-horizon leak a fixed 20s timer misses. If `op` never settles, the idle reaper
+   *  (S11) reclaims the session — a bounded outcome, not the old timer's blind blast radius. */
+  private releaseWhenSettled(username: string, op: Promise<unknown>): void {
     const drop = (): void => { if (this.sessions.isLive(username)) void this.sessions.logoutAccount(username).catch(() => undefined); };
-    drop();
-    setTimeout(drop, KEY_MINT_TIMEOUT_MS).unref();
+    void op.then(drop, drop);
   }
 
   /** Fetches one chunk of SteamIDs with `apiKey` and folds the results into `bySteamId`.
-   *  Per-account failures stay scoped to this chunk and never abort the others. */
-  private async fetchChunk(apiKey: string, batch: string[], bySteamId: Map<string, AccountBanInfo>): Promise<void> {
+   *  Per-account failures stay scoped to this chunk and never abort the others. When Steam
+   *  rejects the key (401/403), `onKeyRejected` (if given) evicts it from the per-env cache so
+   *  the next run re-mints — the env-override key passes none (it is never cached). */
+  private async fetchChunk(
+    apiKey: string,
+    batch: string[],
+    bySteamId: Map<string, AccountBanInfo>,
+    onKeyRejected?: () => void,
+    progress?: BanJobProgress,
+  ): Promise<void> {
     if (batch.length === 0) return;
     try {
-      const players = await this.fetchBans(apiKey, batch);
+      const players = await this.fetchBansWithRetry(apiKey, batch);
       const returned = new Set<string>();
       for (const p of players) {
         const sid = String(p.SteamId ?? '');
@@ -352,19 +443,44 @@ export class BanService {
         if (info && !info.error) info.error = 'Steam returned no ban record';
       }
     } catch (err) {
-      const msg = `Ban lookup failed: ${(err as Error).message}`;
+      if ((err as { keyRejected?: boolean }).keyRejected) onKeyRejected?.();
+      const msg = `Ban lookup failed: ${redactSecrets((err as Error).message)}`;
       for (const sid of batch) {
         const info = bySteamId.get(sid);
         if (info && !info.error) info.error = msg;
       }
-      logger.warn(`[bans] ${redactSecrets(msg)}`);
+      logger.warn(`[bans] ${msg}`);
+    } finally {
+      if (progress) progress.checked += batch.length; // chunk processed (fetched or errored) → advance
+    }
+  }
+
+  /** Calls `fetchBans` with a bounded, classified retry: at most 3 attempts (1s then 4s back-off),
+   *  retrying ONLY a transient failure (429/5xx, a login-wall/malformed 200) or an untagged network
+   *  throw (axios ECONNRESET etc. — no `transient` tag). A `keyRejected` (401/403) or any other
+   *  permanent failure (other 4xx) throws on the first attempt unchanged — a retry can't fix it and
+   *  would waste the key. Worst-case added latency ≤ ~5s per chunk. The thrown error is surfaced by
+   *  `fetchChunk` per-account with its (now accurate) message. */
+  private async fetchBansWithRetry(apiKey: string, batch: string[]): Promise<SteamBanRecord[]> {
+    const delays = [1_000, 4_000]; // between attempts 1→2 and 2→3
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await this.fetchBans(apiKey, batch);
+      } catch (err) {
+        const e = err as { transient?: boolean; keyRejected?: boolean };
+        // Retry a tagged-transient error OR an untagged network throw (no `transient`, not keyRejected).
+        const retryable = e.transient === true || (e.transient === undefined && !e.keyRejected);
+        if (!retryable || attempt >= delays.length) throw err;
+        await sleep(delays[attempt++]);
+      }
     }
   }
 
   // ── Categorisation ───────────────────────────────────────────────────────────
 
   /** Assigns each account's category buckets and computes the totals. */
-  private finalize(infos: AccountBanInfo[]): BanCheckResult {
+  private finalize(infos: AccountBanInfo[], apiKeyFrom?: string): BanCheckResult {
     const totals: BanCheckTotals = { total: infos.length, clean: 0, vac: 0, game: 0, community: 0, economy: 0, error: 0 };
     for (const info of infos) {
       if (info.error) { info.categories = []; totals.error++; continue; }
@@ -376,7 +492,7 @@ export class BanService {
       if (cats.length === 0)    { cats.push('clean');     totals.clean++; }
       info.categories = cats;
     }
-    return { accounts: infos, totals, apiKeyFrom: this.apiKeyFrom };
+    return { accounts: infos, totals, apiKeyFrom };
   }
 
   // ── SteamID resolution (no login required) ───────────────────────────────────
@@ -451,19 +567,27 @@ export class BanService {
         const { account, info } = queue.shift()!;
         // The SteamID is read synchronously right after login, so this login is ours to release.
         const wasLiveBefore = this.sessions.isLive(account.username);
+        // Hoisted so the release chains to THIS login promise (not a blind timer): a login that lands
+        // after our timeout releases when it settles, and can't yank a session another flow started.
+        const login = this.trades.getTrader(account.username); // logs in if needed (+ persists a refresh token)
         try {
           // ~20s budget so a stuck login can't hang the resolve pass either.
-          await withTimeout(this.trades.getTrader(account.username), KEY_MINT_TIMEOUT_MS, `${account.username} login`); // logs in if needed (+ persists a refresh token)
+          await withTimeout(login, KEY_MINT_TIMEOUT_MS, `${account.username} login`);
           const sid = this.sessions.getSession(account.username)?.steamId;
-          if (sid && STEAMID64.test(sid)) { info.steamId = sid; bySteamId.set(sid, info); }
+          if (sid && STEAMID64.test(sid)) {
+            const prev = bySteamId.get(sid);
+            // Same guard as registration: first-in wins, a duplicate is flagged not overwritten.
+            if (prev && prev !== info) info.error = `Duplicate SteamID64 — same Steam account as "${prev.username}"; fix the duplicate registration`;
+            else { info.steamId = sid; bySteamId.set(sid, info); }
+          }
           else info.error = 'Logged in but no SteamID was returned';
         } catch (err) {
-          info.error = `Login failed: ${(err as Error).message}`;
+          info.error = `Login failed: ${redactSecrets((err as Error).message)}`;
           logger.warn(`[bans] ${account.username}: SteamID login-resolve failed (${(err as Error).message})`);
         } finally {
-          // Release the session this resolve created (now + after the budget, in case a timed-out
-          // login lands late) so a big CSV-import check never leaves sessions resident. Best-effort.
-          if (!wasLiveBefore) this.releaseSoon(account.username);
+          // Release the session this resolve created — chained to the login promise, so a login that
+          // lands after our timeout releases when IT settles, not at a blind later instant. Best-effort.
+          if (!wasLiveBefore) this.releaseWhenSettled(account.username, login);
         }
       }
     };
@@ -505,18 +629,28 @@ export class BanService {
   /**
    * Calls ISteamUser/GetPlayerBans for up to 100 SteamIDs. Routed DIRECT (proxy:false)
    * like the other api.steampowered.com reads — ban data is independent of egress IP.
-   * A 401/403 invalidates the cached key so the next run re-acquires one.
+   * A 401/403 tags the throw `keyRejected` so `fetchChunk` evicts the key from the per-env
+   * cache; the next run re-mints one for that environment.
    */
   private async fetchBans(apiKey: string, steamIds: string[]): Promise<SteamBanRecord[]> {
     const url = `https://api.steampowered.com/ISteamUser/GetPlayerBans/v1/` +
       `?key=${encodeURIComponent(apiKey)}&steamids=${steamIds.join(',')}`;
     const r = await axios.get(url, { timeout: 15_000, proxy: false, validateStatus: () => true });
     if (r.status === 401 || r.status === 403) {
-      if (this.apiKeyFrom !== 'env') { this.apiKey = undefined; this.apiKeyFrom = undefined; } // re-acquire next time
-      throw new Error('Steam rejected the Web API key');
+      // Per-env cache eviction is fetchChunk's onKeyRejected (keyed off the keyRejected tag below);
+      // the env-override key is never cached (fetchChunk passes no callback), so nothing to evict here.
+      throw Object.assign(new Error('Steam rejected the Web API key'), { transient: false, keyRejected: true });
     }
-    if (r.status !== 200 || !r.data || !Array.isArray(r.data.players)) {
-      throw new Error(`Steam HTTP ${r.status}`);
+    if (r.status === 429 || r.status >= 500) {
+      throw Object.assign(new Error(`Steam HTTP ${r.status}`), { transient: true }); // rate-limit / server error → retry
+    }
+    if (r.status !== 200) {
+      throw Object.assign(new Error(`Steam HTTP ${r.status}`), { transient: false }); // other 4xx → permanent
+    }
+    if (!r.data || !Array.isArray(r.data.players)) {
+      // 200 with a login-wall/maintenance HTML body or a malformed shape → treat as transient (retry).
+      throw Object.assign(new Error('Steam returned an unexpected body (login wall or malformed response)'),
+        { transient: true });
     }
     return r.data.players as SteamBanRecord[];
   }
@@ -589,3 +723,5 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
     p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
   });
 }
+
+function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }

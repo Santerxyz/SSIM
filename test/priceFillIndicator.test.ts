@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { priceFillIndicator, formatFillEta, repriceDecision, type RepriceState, type PricingStatus } from '../src/pricing/repriceReconciler';
+import { priceFillIndicator, formatFillEta, repriceDecision, MIN_REPULL_MS, type RepriceState, type PricingStatus } from '../src/pricing/repriceReconciler';
 
 // ─── BUG 1: a boot-time price fill must live-update the UI + show/clear an indicator ──
 // The watcher (watchPriceFill) is now started right after the first inventory render on
 // startup. This test scripts the exact "load with missing prices → status busy → prices
 // land → drained" sequence and proves the LOGIC that drives it: the indicator shows the
 // N-left / X-done counts while busy and clears on completion, and the reconciler re-pulls
-// on every progress step and does a final re-pull + stop when the queue drains.
+// on a progress step (subject to the S10 MIN_REPULL_MS coalescing cadence) and does a
+// final re-pull + stop when the queue drains.
 
 test('priceFillIndicator: hidden when idle, visible with counts while busy, hidden when drained', () => {
   // Assert the core show/left/done fields (the eta/long fields are covered separately below).
@@ -54,7 +55,9 @@ test('BUG 1 boot scenario: missing prices → busy → progress → drained live
     const ind = priceFillIndicator(st);
     assert.equal(ind.show, i < timeline.length - 1, `indicator visibility at step ${i}`);
 
-    const d = repriceDecision(state, st, (i + 1) * 1000);
+    // Step the clock by MIN_REPULL_MS per snapshot so each new-prices advance clears the S10
+    // coalescing window (the runtime seeds lastRepulledAt=0, so the first advance always re-pulls).
+    const d = repriceDecision(state, st, (i + 1) * MIN_REPULL_MS);
     state = d.state;
     if (d.repull) repulls.push(st.fetched ?? 0);
     if (d.stop) { stopped = true; break; }

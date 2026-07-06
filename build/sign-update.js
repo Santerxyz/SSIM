@@ -5,11 +5,12 @@
 //  auto-updater (the publishing side the license backend serves).
 //
 //  The client (src/licensing/Updater.ts) fetches GET {LICENSE_API_URL}/version,
-//  expecting:  { latest, url, sha256, sig }
-//  and only runs the new exe if sha256 matches AND `sig` is a valid Ed25519
-//  signature over the ASCII string  `${latest}:${sha256}`  under the baked
-//  LICENSE_PUBLIC_KEY. This tool produces exactly that, signing with your PRIVATE
-//  key (passed at runtime — NEVER committed; this script never writes/logs it).
+//  expecting:  { latest, url, sha256, sig, sigKind }
+//  and only runs the new exe if sha256 matches AND `sigKind` is a valid Ed25519
+//  signature over the ASCII string  `${latest}:${sha256}:${kind ?? 'backend'}`
+//  under the baked LICENSE_PUBLIC_KEY. `sig` (LEGACY, kind-less, over `${latest}:${sha256}`)
+//  is still emitted for the pre-C14 deployed fleet. This tool produces BOTH, signing with your
+//  PRIVATE key (passed at runtime — NEVER committed; this script never writes/logs it).
 //
 //  USAGE (sign an update):
 //    node build/sign-update.js \
@@ -18,6 +19,7 @@
 //      --url https://your-cdn/ssim-backend-1.1.6.exe \
 //      --key path/to/license_private.pem        # or set env LICENSE_PRIVATE_KEY (PEM)
 //      [--out version.json]                      # also write the manifest to a file
+//      [--kind single-exe]                       # only for a migration cut; default tag 'backend'
 //    → prints the /version JSON body to stdout (serve it verbatim).
 //    → if env LICENSE_PUBLIC_KEY is set, self-verifies the signature first.
 //
@@ -71,17 +73,30 @@ const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
 const signedString = `${version}:${sha256}`;
 const sig = crypto.sign(null, Buffer.from(signedString), privateKey).toString('base64url');
 
-const manifest = { latest: version, url, sha256, sig };
+// Kind-inclusive signature the CURRENT client verifies (Updater.ts); WITHOUT it every kind-aware
+// client REFUSES the update. kindTag defaults to 'backend' identically to the server (signing.js
+// kindTagOf) and the client (`info.kind ?? 'backend'`), so all three sign/verify the same bytes.
+const kindTag = (arg('kind') || '').trim() || 'backend';
+const kindSignedString = `${version}:${sha256}:${kindTag}`;
+const sigKind = crypto.sign(null, Buffer.from(kindSignedString), privateKey).toString('base64url');
+
+const manifest = { latest: version, url, sha256, sig, sigKind };
+// Echo `kind` only when explicitly set (matches publish.js): both sides default the tag, so
+// emitting kind:'backend' is redundant and would diverge from what the server's finalize stores.
+if (has('kind')) manifest.kind = kindTag;
 
 // Self-check against the public key (if available) so a key mismatch is caught NOW, not by clients.
 const pubPem = (process.env.LICENSE_PUBLIC_KEY || '').trim();
 if (pubPem) {
-  let ok = false;
-  try { ok = crypto.verify(null, Buffer.from(signedString), crypto.createPublicKey(normPem(pubPem)), Buffer.from(sig, 'base64url')); } catch { ok = false; }
-  if (!ok) die('signature does NOT verify against LICENSE_PUBLIC_KEY — wrong private key for this build?');
-  console.error('✓ signature verifies against LICENSE_PUBLIC_KEY');
+  const pub = crypto.createPublicKey(normPem(pubPem));
+  let ok = false, okKind = false;
+  try { ok = crypto.verify(null, Buffer.from(signedString), pub, Buffer.from(sig, 'base64url')); } catch { ok = false; }
+  try { okKind = crypto.verify(null, Buffer.from(kindSignedString), pub, Buffer.from(sigKind, 'base64url')); } catch { okKind = false; }
+  if (!ok) die('legacy signature does NOT verify against LICENSE_PUBLIC_KEY — wrong private key for this build?');
+  if (!okKind) die('kind-inclusive signature (sigKind) does NOT verify — the current fleet would REFUSE this update.');
+  console.error('✓ sig + sigKind verify against LICENSE_PUBLIC_KEY');
 } else {
-  console.error('• tip: set LICENSE_PUBLIC_KEY to self-verify the signature before publishing');
+  console.error('• tip: set LICENSE_PUBLIC_KEY to self-verify sig + sigKind before publishing');
 }
 console.error(`• ${exe}  ${(buf.length / 1048576).toFixed(1)} MB  ·  sha256 ${sha256.slice(0, 16)}…  ·  version ${version}`);
 

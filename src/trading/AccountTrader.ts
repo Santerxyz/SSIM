@@ -103,6 +103,10 @@ export interface ActiveBuyOrder {
 export interface MarketOrders {
   sellOrders: ActiveSellOrder[];
   buyOrders:  ActiveBuyOrder[];
+  /** True when a page ≥ 1 or the buy-order landing fallback failed mid-fetch, so the
+   *  returned rows are a partial (not authoritative) snapshot — the UI labels it as such
+   *  instead of presenting a truncated list as complete. */
+  partial?:   boolean;
 }
 
 // ── Trade Offers (sent + received) ────────────────────────────────────────────
@@ -358,6 +362,7 @@ export class AccountTrader {
     const cookies = this.session.webSession?.cookies ?? [];
     const seenSell = new Map<string, ActiveSellOrder>();
     const seenBuy = new Map<string, ActiveBuyOrder>();
+    let partial = false; // a page ≥ 1 or the buy-order fallback failed → snapshot is incomplete
     const PAGE = 100;
     const MAX_PAGES = 30; // up to 3000 listings
 
@@ -380,13 +385,24 @@ export class AccountTrader {
       const start = page * PAGE;
       const { status, data } = await get(
         `https://steamcommunity.com/market/mylistings/render/?query=&start=${start}&count=${PAGE}&norender=1`);
-      if (status !== 200)            { if (page === 0) throw new Error(`market/mylistings HTTP ${status}`); break; }
-      if (!data || typeof data !== 'object') { if (page === 0) throw new Error('market/mylistings: malformed response'); break; }
+      if (status !== 200)            { if (page === 0) throw new Error(`market/mylistings HTTP ${status}`); partial = true; break; }
+      if (!data || typeof data !== 'object') { if (page === 0) throw new Error('market/mylistings: malformed response'); partial = true; break; }
 
       // Canonical parse → Active Orders sell rows. Same membership rule as the
       // inventory "Listed" bucket, so the two views can never disagree. Deduped by
       // listingId; pending listings appear too (projected with confirmed=false upstream).
-      for (const l of parseMyListings(data).listings) {
+      // parseMyListings throws on a non-listings body ({"success":false}/shapeless) so a
+      // hiccup is never coerced to "no orders": page 0 surfaces it (mirrors the status/
+      // shape handling above); later pages stop (partial-page semantics).
+      let parsed;
+      try {
+        parsed = parseMyListings(data);
+      } catch (err) {
+        if (page === 0) throw err;
+        partial = true;
+        break;
+      }
+      for (const l of parsed.listings) {
         const key = l.listingId || `asset:${l.assetId}`;
         if (!seenSell.has(key)) seenSell.set(key, toSellOrder(l));
       }
@@ -404,11 +420,12 @@ export class AccountTrader {
       try {
         const { status, data } = await get('https://steamcommunity.com/market/mylistings/?norender=1');
         if (status === 200 && data && typeof data === 'object') collectBuyOrders(data, seenBuy);
-      } catch { /* buy-order fallback is best-effort – never fail the whole fetch over it */ }
+        else partial = true; // fetched but non-200 / malformed → buy orders unknown, not "none"
+      } catch { partial = true; /* fallback threw → buy orders unknown; the fetch itself never fails over it */ }
     }
 
-    logger.info(`[${this.username}] market orders: ${seenSell.size} sell / ${seenBuy.size} buy`);
-    return { sellOrders: [...seenSell.values()], buyOrders: [...seenBuy.values()] };
+    logger.info(`[${this.username}] market orders: ${seenSell.size} sell / ${seenBuy.size} buy${partial ? ' (partial)' : ''}`);
+    return { sellOrders: [...seenSell.values()], buyOrders: [...seenBuy.values()], partial };
   }
 
   /**
@@ -580,11 +597,18 @@ export class AccountTrader {
    * Accepts ONE incoming trade offer. Reuses acceptOffer(), which also clears the
    * mobile 2FA confirmation when the offer has items WE give away (a two-sided swap).
    */
-  async acceptTradeOffer(offerId: string): Promise<void> {
+  async acceptTradeOffer(
+    offerId: string,
+    opts?: { beforeAccept?: (itemsToGive: Array<{ assetid?: string }>) => void },
+  ): Promise<'accepted' | 'unconfirmed'> {
     const offer = await this.getOfferById(offerId);
     if (offer.isOurOffer) throw new Error('cannot accept an offer we sent ourselves');
-    await this.acceptOffer(offer);
-    logger.info(`[${this.username}] offer ${offerId} accepted`);
+    // Cross-service asset guard hook (D2 / INV-D2): a throw here aborts BEFORE anything is sent
+    // (e.g. an item in this offer is busy in another money op — sell/send/craft).
+    opts?.beforeAccept?.(Array.isArray(offer.itemsToGive) ? offer.itemsToGive : []);
+    const status = await this.acceptOffer(offer);
+    logger.info(`[${this.username}] offer ${offerId} accepted${status === 'unconfirmed' ? ' (UNCONFIRMED)' : ''}`);
+    return status;
   }
 
   getTradeUrl(): Promise<string> {
@@ -629,7 +653,7 @@ export class AccountTrader {
       // confirmation failure here — we report it as 'unconfirmed' for manual review
       // (mirrors the buy path's "never throw after placed" money-safety rule).
       try {
-        await this.confirmOffer(offer.id);
+        await this.confirmOffer(offer.id, 'sent');
         return { offerId: offer.id, status: 'confirmed' };
       } catch (err) {
         logger.error(
@@ -644,23 +668,61 @@ export class AccountTrader {
 
   // ── Feature 5: accept an incoming offer (+confirm if we also give items) ──
 
-  async acceptOffer(offer: any): Promise<void> {
+  async acceptOffer(offer: any): Promise<'accepted' | 'unconfirmed'> {
     await new Promise<void>((resolve, reject) => {
       offer.accept((err: Error | null) => (err ? reject(err) : resolve()));
     });
     // Receiving items never needs a mobile confirmation; only giving does.
     if (Array.isArray(offer.itemsToGive) && offer.itemsToGive.length > 0) {
-      await this.confirmOffer(offer.id);
+      // The accept is now COMMITTED on Steam. A throw past this point would propagate as a
+      // retryable 5xx and invite a re-run against an already-accepted offer, so we never
+      // rethrow a confirmation failure here — we report it as 'unconfirmed' for manual review
+      // (mirrors sendTrade's "never throw after committed" money-safety rule).
+      try {
+        await this.confirmOffer(offer.id, 'accepted');
+      } catch (err) {
+        logger.error(
+          `[${this.username}] offer ${offer.id} ACCEPTED but 2FA confirmation failed ` +
+          `(${(err as Error).message}) – left UNCONFIRMED, NOT retrying`,
+        );
+        return 'unconfirmed';
+      }
     }
+    return 'accepted';
   }
 
   // ── Mobile 2FA confirmation via identity_secret ──────────────────────────
 
-  async confirmOffer(offerId: string): Promise<void> {
+  async confirmOffer(offerId: string, kind: 'sent' | 'accepted'): Promise<void> {
     // Route through the bounded retry+backoff wrapper: Steam's mobile-conf servers
     // return transient 5xx under load, and a single un-retried failure would strand
     // a sent-but-unconfirmed offer (it previously called the lib method exactly once).
-    await this.acceptConfirmationForObject(offerId, `trade ${offerId}`);
+    try {
+      await this.acceptConfirmationForObject(offerId, `trade ${offerId}`);
+    } catch (err) {
+      // The retry loop exhausted. But if attempt 1's ajaxop LANDED on Steam and only
+      // its response was lost (timeout/RST on the response leg), attempts 2–4 find no
+      // confirmation for the object and we throw — even though the offer is already
+      // cleared. Disambiguate via the offer's state before propagating a status lie.
+      let cleared = false;
+      let state: number | undefined;
+      try {
+        const offer = await this.getOfferById(offerId);
+        state = Number(offer?.state);
+        // A sent offer whose confirmation cleared leaves CreatedNeedsConfirmation (9)
+        // for Active (2)/Accepted (3); an accept-side confirmation still pending leaves
+        // the offer Active (2), so the accepted path only trusts Accepted (3).
+        cleared = kind === 'sent'
+          ? state !== Number(ETradeOfferState.CreatedNeedsConfirmation)
+          : state === Number(ETradeOfferState.Accepted);
+      } catch {
+        // The state probe itself failed — the outcome is unproven, so surface the
+        // ORIGINAL confirmation error (never claim success on an unprovable state).
+      }
+      if (!cleared) throw err;
+      logger.info(`[${this.username}] trade ${offerId} verified cleared via offer state (${state}) after a lost-response confirmation`);
+      return;
+    }
     logger.info(`[${this.username}] trade ${offerId} auto-confirmed via 2FA`);
   }
 
@@ -824,6 +886,20 @@ export class AccountTrader {
     }
     logger.info(`[${this.username}] createbuyorder ${p.marketHashName} x${qty} total=${priceTotal} cur=${p.currency} → HTTP ${status} success=${data?.success}`);
 
+    // A returned 5xx is a Steam-EDGE failure (validateStatus:() => true means it did NOT
+    // throw): the create MIGHT have executed before the upstream answer was lost — the same
+    // response-leg-lost case as the network throw above, just with a status instead of an
+    // ECONNRESET. Probe for a matching resting order; if found, report placed. Otherwise
+    // surface the EXPLICIT verify-before-retry signal so the operator confirms before re-buying.
+    if (status >= 500) {
+      const recovered = await probeResting();
+      if (recovered) return recovered;
+      throw Object.assign(
+        new Error(`createbuyorder HTTP ${status} – order state UNKNOWN, verify open orders before retrying`),
+        { verifyBeforeRetry: true },
+      );
+    }
+
     // Active immediately (no confirmation required).
     if (status === 200 && data && data.success === 1) {
       return {
@@ -985,11 +1061,15 @@ export class AccountTrader {
 
   /**
    * Confirms ALL pending market-listing mobile confirmations for this account in
-   * one pass (trade confirmations are deliberately left untouched). Returns the
-   * number of listings confirmed. Mirrors steamcommunity's per-object confirm but
-   * filters to ConfirmationType.MarketListing so a batch of sells is cleared at once.
+   * one pass (trade confirmations are deliberately left untouched). Resolves with
+   * { confirmed } — the number of listings confirmed. Mirrors steamcommunity's
+   * per-object confirm but filters to ConfirmationType.MarketListing so a batch of
+   * sells is cleared at once. A mid-pass respond failure resolves { confirmed, error }
+   * (the count of listings confirmed BEFORE the failure is preserved, so the caller's
+   * retry accumulates honestly); only a getConfirmations failure — where nothing was
+   * counted — rejects.
    */
-  confirmMarketListings(): Promise<number> {
+  confirmMarketListings(): Promise<{ confirmed: number; error?: Error }> {
     const identitySecret = this.session.maFile?.identity_secret;
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot confirm market listings`));
@@ -998,7 +1078,7 @@ export class AccountTrader {
       getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
     };
 
-    return new Promise<number>((resolve, reject) => {
+    return new Promise<{ confirmed: number; error?: Error }>((resolve, reject) => {
       SteamTotp.getTimeOffset((offErr, offset) => {
         const off = offErr ? 0 : offset;
         const time = SteamTotp.time(off);
@@ -1006,17 +1086,24 @@ export class AccountTrader {
         community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
           if (err) { reject(err); return; }
           const listings = (confs ?? []).filter(c => c?.type === CONF_TYPE_MARKET_LISTING);
-          if (listings.length === 0) { resolve(0); return; }
+          if (listings.length === 0) { resolve({ confirmed: 0 }); return; }
 
           let idx = 0, confirmed = 0;
           let firstErr: Error | null = null;
+          let prevT = 0;
           const next = (): void => {
             if (idx >= listings.length) {
-              if (firstErr) reject(firstErr); else resolve(confirmed);
+              // A mid-pass respond failure still resolves with the count confirmed
+              // before it, so confirmWithRetry accumulates across attempts.
+              resolve(firstErr ? { confirmed, error: firstErr } : { confirmed });
               return;
             }
             const conf = listings[idx++];
-            const t = SteamTotp.time(off) + idx; // unique time per accept
+            // Monotonic-fresh time: strictly unique AND increasing per accept, but
+            // bounded to ≤1s beyond real server time for any batch size — a fresh
+            // base plus a running index would sign the Nth accept N seconds in the
+            // future, risking rejection once outside Steam's tolerance at 200-500 listings.
+            const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;
             const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
             conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) => {
               if (rErr) { if (!firstErr) firstErr = rErr; }
@@ -1083,10 +1170,14 @@ export class AccountTrader {
           if (targets.length === 0) { resolve({ done: 0, failed: [] }); return; }
           const tag = accept ? 'accept' : 'reject';
           let idx = 0, done = 0; const failed: string[] = [];
+          let prevT = 0;
           const next = (): void => {
             if (idx >= targets.length) { resolve({ done, failed }); return; }
             const conf = targets[idx++];
-            const t = SteamTotp.time(off) + idx;                       // unique time per response
+            // Monotonic-fresh time: unique + increasing per response, bounded to ≤1s
+            // beyond real time (a fresh base + running index would sign the tail of an
+            // "action all" batch far in the future and risk key rejection at scale).
+            const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;   // unique time per response
             const key = SteamTotp.getConfirmationKey(identitySecret, t, tag);
             conf.respond(t, { tag, key }, accept, (rErr: Error | null) => {
               if (rErr) failed.push(String(conf?.id)); else done++;

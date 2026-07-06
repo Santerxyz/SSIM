@@ -110,7 +110,9 @@
     var rows = logEl.querySelectorAll('.row');
     for (var i=0;i<rows.length;i++){
       var r = rows[i];
-      r.style.display = visible(r.dataset.lv, r.dataset.msg) ? '' : 'none';
+      var vis = visible(r.dataset.lv, r.dataset.msg);
+      r.style.display = vis ? '' : 'none';
+      r.classList.toggle('hidden', !vis);   // keep class ⇔ display in sync so refreshCount() stays honest
     }
     if (follow) logEl.scrollTop = logEl.scrollHeight;
     refreshCount();

@@ -31,7 +31,8 @@ export interface MarketListing {
   pricePerItemMinor: number;
   currency:          number;   // Steam ECurrencyCode (0 = unknown)
   quantity:          number;
-  /** false ⇒ awaiting mobile confirmation (pending_listings / listings_to_confirm). */
+  /** true ⇒ live sell (`listings`) or a server-side hold (`listings_on_hold`);
+   *  false ⇒ awaiting mobile confirmation (`pending_listings` / `listings_to_confirm`). */
   confirmed:         boolean;
 }
 
@@ -44,6 +45,13 @@ export interface ParsedMyListings {
    * `assets` map + pending arrays) so nothing can leak back into the Owned bucket.
    */
   assetIdsByApp: Map<number, Set<string>>;
+  /**
+   * Listing-identity keys already accumulated across pages, so a listing re-fetched
+   * after a mid-pagination shift (Steam's newest-first order changes while we page)
+   * is merged once, not twice. Lazily built by `mergeParsed` from `listings` when a
+   * hand-built accumulator lacks it. Key = listingId || 'asset:'+appId/contextId/assetId.
+   */
+  seenKeys?: Set<string>;
 }
 
 function iconUrlOf(desc: any): string {
@@ -66,6 +74,17 @@ function addId(map: Map<number, Set<string>>, appId: number, id: string): void {
 export function parseMyListings(d: any): ParsedMyListings {
   const out: ParsedMyListings = { listings: [], assetIdsByApp: new Map() };
   if (!d || typeof d !== 'object') return out;
+  // A non-listings payload (Steam error body such as {"success":false} — served
+  // HTTP 200 on market-subsystem hiccups — or any shapeless JSON) must NOT parse
+  // to "successfully empty", which would wipe the Listed bucket. Reject unless the
+  // body carries a listings-shaped key. Accept boolean success (market) AND numeric
+  // 1 (inventory) — see DEDUP baseline §D. A legit empty account keeps parsing.
+  const structural =
+    ('listings' in d) || ('assets' in d) || ('total_count' in d) ||
+    ('pending_listings' in d) || ('listings_to_confirm' in d);
+  if (d.success === false || d.success === 0 || !structural) {
+    throw new Error('mylistings: not a listings payload (success=' + String((d as any).success) + ')');
+  }
   const assets = d.assets ?? {};
 
   const toListing = (l: any, confirmed: boolean): MarketListing | null => {
@@ -77,7 +96,7 @@ export function parseMyListings(d: any): ParsedMyListings {
     const desc  = assets?.[String(appId)]?.[ctx]?.[id] ?? {}; // may be absent → {}
     const price = Number(l?.price) || 0;                    // seller-net (minor units)
     const fee   = Number(l?.fee)   || 0;
-    const currency = l?.currencyid != null ? Math.max(0, Number(l.currencyid) - 2000) : 0;
+    const cid = Number(l?.currencyid); const currency = Number.isFinite(cid) ? Math.max(0, cid - 2000) : 0;
     addId(out.assetIdsByApp, appId, id);
     return {
       listingId:         l?.listingid != null ? String(l.listingid) : '',
@@ -106,6 +125,13 @@ export function parseMyListings(d: any): ParsedMyListings {
       if (ml) out.listings.push(ml);
     }
   }
+  // On-hold listings ARE confirmed sells — Steam is holding the item (device-change
+  // window etc.), the hold is server-side, not an awaiting-2FA state. Keep them in the
+  // Listed bucket so the operator can see/cancel them; do NOT overload confirmed:false.
+  for (const l of Array.isArray(d.listings_on_hold) ? d.listings_on_hold : []) {
+    const ml = toListing(l, true);
+    if (ml) out.listings.push(ml);
+  }
   // Safety net: any asset id present in the `assets` map is market-held even if no
   // listing object referenced it → keep it in the dedup superset (never Owned).
   for (const appKey of Object.keys(assets)) {
@@ -118,9 +144,29 @@ export function parseMyListings(d: any): ParsedMyListings {
   return out;
 }
 
-/** Merge a freshly-parsed page into a multi-page accumulator. */
+/** Listing-identity key: the cancel handle when present, else the asset composite
+ *  (unique within app+context — pending listings can have listingId ''). */
+function listingKey(l: MarketListing): string {
+  return l.listingId || `asset:${l.appId}/${l.contextId}/${l.assetId}`;
+}
+
+/**
+ * Merge a freshly-parsed page into a multi-page accumulator, deduping by listing
+ * identity: multi-page reads are snapshots seconds apart while listings can change
+ * (SSIM's own mass-sell adds/removes), so a listing shifted past a page boundary is
+ * re-fetched — keeping both copies inflates the Listed stack quantity and worth.
+ */
 export function mergeParsed(acc: ParsedMyListings, page: ParsedMyListings): void {
-  acc.listings.push(...page.listings);
+  if (!acc.seenKeys) {                             // backfill for hand-built accumulators
+    acc.seenKeys = new Set<string>();
+    for (const l of acc.listings) acc.seenKeys.add(listingKey(l));
+  }
+  for (const l of page.listings) {
+    const key = listingKey(l);
+    if (acc.seenKeys.has(key)) continue;           // already merged from an earlier page
+    acc.seenKeys.add(key);
+    acc.listings.push(l);
+  }
   for (const [appId, ids] of page.assetIdsByApp) {
     let s = acc.assetIdsByApp.get(appId);
     if (!s) { s = new Set<string>(); acc.assetIdsByApp.set(appId, s); }
@@ -129,7 +175,7 @@ export function mergeParsed(acc: ParsedMyListings, page: ParsedMyListings): void
 }
 
 export function emptyParsed(): ParsedMyListings {
-  return { listings: [], assetIdsByApp: new Map() };
+  return { listings: [], assetIdsByApp: new Map(), seenKeys: new Set() };
 }
 
 export function listingsForApp(p: ParsedMyListings, appId: number): MarketListing[] {
@@ -159,8 +205,9 @@ export interface BucketInput {
 export function bucketOf(item: BucketInput, nowMs: number = Date.now()): ItemBucket {
   if (item.category === 'listed') return 'listed';
   const exp = item.tradeLockExpiry ? new Date(item.tradeLockExpiry).getTime() : 0;
+  if (Number.isNaN(exp)) return 'tradelocked'; // unparseable lock date ⇒ fail closed
   if (exp && exp > nowMs) return 'tradelocked';
-  if (item.tradable === false) return 'tradelocked'; // untradable-for-any-reason ≠ tradable
+  if (item.tradable !== true) return 'tradelocked'; // untradable-for-any-reason ≠ tradable
   return 'tradable';
 }
 
@@ -169,9 +216,9 @@ export function bucketOf(item: BucketInput, nowMs: number = Date.now()): ItemBuc
 /** True iff the item may be listed on the market or sent in a trade right now. */
 export function isSellable(item: BucketInput, nowMs: number = Date.now()): boolean {
   const exp = item.tradeLockExpiry ? new Date(item.tradeLockExpiry).getTime() : 0;
+  if (Number.isNaN(exp)) return false; // unparseable lock date ⇒ fail closed
   if (exp && exp > nowMs) return false; // trade-locked
-  if (item.tradable === false) return false; // not tradable
-  return true;
+  return item.tradable === true; // must be affirmatively tradable
 }
 
 /** Throws when the item is trade-locked or non-tradable. */

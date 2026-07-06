@@ -43,18 +43,33 @@ test('OTP: msUntilNextTotp aligns to the 30s boundary', () => {
 });
 
 // ── Confirmations: dedup + deterministic order (thin view of getConfirmations) ──
-test('shapeConfirmations: dedups by id, orders newest-first deterministically', () => {
+test('shapeConfirmations: real CConfirmation shape (ISO time / Date timestamp) orders newest-first', () => {
+  const older = new Date('2026-07-05T10:00:00.000Z');
+  const newer = new Date('2026-07-05T12:00:00.000Z');
   const raw = [
-    { id: '100', type: 3, title: 'Sell A', time: 1000 },
-    { id: '200', type: 2, title: 'Trade B', time: 3000 },
-    { id: '100', type: 3, title: 'Sell A dup', time: 1000 }, // duplicate confirmation id
-    { id: '150', type: 3, title: 'Sell C', time: 3000 },     // ties 200's time → tie-break by id
+    // CConfirmation shape: ISO STRING `time` + numeric `timestamp` (Date) — the live producer.
+    { id: '100', type: 3, title: 'Sell A', time: older.toISOString(), timestamp: older },
+    { id: '200', type: 2, title: 'Trade B', time: newer.toISOString(), timestamp: newer },
+    { id: '100', type: 3, title: 'Sell A dup', time: older.toISOString(), timestamp: older }, // duplicate confirmation id
+    { id: '150', type: 3, title: 'Sell C', time: newer.toISOString(), timestamp: newer },     // ties 200's time → tie-break by id
   ];
   const v = shapeConfirmations(raw);
   assert.equal(v.length, 3, 'duplicate id removed');
   assert.deepEqual(v.map((c) => c.id), ['150', '200', '100'], 'time desc, tie-break id asc');
+  assert.equal(v[0].timeMs, newer.getTime(), 'ISO/Date timestamp → real ms epoch');
+  assert.equal(v[2].timeMs, older.getTime());
   assert.equal(v[1].typeName, 'trade');
   assert.equal(v[2].typeName, 'market');
+  // Raw getlist JSON tolerance: a numeric `time` in seconds still gets the s→ms heuristic.
+  const num = shapeConfirmations([{ id: '9', type: 3, title: 'N', time: 1500 }]);
+  assert.equal(num[0].timeMs, 1500 * 1000, 'numeric seconds time → ms');
+  // Unparseable time → 0 (never NaN).
+  const bad = shapeConfirmations([{ id: '8', type: 3, title: 'B', time: 'garbage' }]);
+  assert.equal(bad[0].timeMs, 0, 'unparseable time → 0');
+  // Give-side outflow (summary[0]) surfaces alongside the receive side — the safety-critical half.
+  const both = shapeConfirmations([{ id: '7', type: 2, title: 'Trade D', sending: '1 item', receiving: 'Nothing' }]);
+  assert.equal(both[0].sending, '1 item', 'sending carries the give-side summary');
+  assert.equal(both[0].receiving, 'Nothing', 'receiving preserved');
   assert.deepEqual(shapeConfirmations(null), [], 'empty/garbage input → empty list');
 });
 
@@ -144,12 +159,25 @@ test('A.2d — an authed SOCKS proxy REFUSES (cannot apply SOCKS auth) rather th
   assert.ok(spec.warnings.some((w) => /SOCKS/i.test(w)), 'warns it cannot apply SOCKS auth');
 });
 
+test('A.2e — an authed https:// (TLS) proxy REFUSES rather than downgrading creds to cleartext', () => {
+  const spec = buildIsolatedSession({ username: 'ivan', cookieStrings: ['steamLoginSecure=X'], network: { type: 'proxy', value: 'https://user:pass@1.2.3.4:8080' } });
+  assert.equal(spec.proxyServer, null, 'refuses — the relay would send creds in cleartext');
+  assert.ok(spec.warnings.some((w) => /https/i.test(w)), 'warns about the TLS (https://) proxy downgrade');
+});
+
 test('A.3 — no-proxy WARNS instead of leaking the host IP', () => {
-  for (const network of [{ type: 'localip', value: '192.168.1.5' }, null]) {
+  for (const network of [{ type: 'localip', value: '0.0.0.0' }, null]) {
     const spec = buildIsolatedSession({ username: 'dan', cookieStrings: ['steamLoginSecure=Z'], network });
     assert.equal(spec.proxyServer, null, 'never the host IP');
     assert.ok(spec.warnings.some((w) => /NO proxy/i.test(w)), 'warns about the missing proxy');
   }
+});
+
+test('A.3b — a localip-pinned account WARNS with its pinned IP (browser cannot bind a source IP)', () => {
+  const spec = buildIsolatedSession({ username: 'iris', cookieStrings: ['steamLoginSecure=Z'], network: { type: 'localip', value: '192.168.1.10' } });
+  assert.equal(spec.proxyServer, null, 'never the host IP');
+  assert.ok(spec.warnings.some((w) => /192\.168\.1\.10/.test(w)), 'names the pinned interface in the warning');
+  assert.ok(!spec.warnings.some((w) => /NO proxy/i.test(w)), 'not the generic no-proxy warning');
 });
 
 // ── Feature A: the local relay actually AUTHENTICATES the browser to the proxy ──

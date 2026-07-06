@@ -21,7 +21,7 @@ function mockAxios(responder: () => { data: unknown }): () => void {
 
 const tmp = (): string => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-fx-')), 'exchange_rate.json');
 
-type Internals = { refresh: () => Promise<void>; retryTimer?: NodeJS.Timeout; retryAttempt: number };
+type Internals = { refresh: () => Promise<void>; retryTimer?: NodeJS.Timeout; retryAttempt: number; stopped: boolean };
 
 test('S44: a failed refresh arms a short retry (not a 12h wait)', async () => {
   const svc = new ExchangeRateService(tmp());
@@ -64,5 +64,24 @@ test('S44: backoff is bounded — at MAX_RETRIES no further retry is scheduled (
     (svc as unknown as Internals).retryAttempt = 4; // MAX_RETRIES
     await (svc as unknown as Internals).refresh();
     assert.equal((svc as unknown as Internals).retryTimer, undefined, 'past the cap, wait for the next 12h tick');
+  } finally { restore(); svc.stop(); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-PRC-018 — teardown-quiescence: a refresh() in flight when stop() runs must not
+//  re-arm a retry (or persist) on the torn-down instance. The re-activation flow
+//  stops this instance and builds a fresh one; the orphan must go quiet.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('H-PRC-018: a refresh() that fails after stop() does not re-arm a retry on the dead instance', async () => {
+  const svc = new ExchangeRateService(tmp());
+  // reject only after a tick, so stop() runs while the request is in flight
+  const restore = mockAxios(() => { throw new Error('ECONNRESET'); });
+  try {
+    const pending = (svc as unknown as Internals).refresh(); // do NOT await
+    svc.stop();
+    await pending;
+    assert.equal((svc as unknown as Internals).retryTimer, undefined, 'no retry timer armed after teardown');
+    assert.equal((svc as unknown as Internals).stopped, true, 'the instance latched stopped');
   } finally { restore(); svc.stop(); }
 });

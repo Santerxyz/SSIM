@@ -14,6 +14,8 @@
 //                                                    #   for a real release; adds a full artifact download)
 //    npm run publish-update -- --skip-selftest       # escape hatch: publish WITHOUT re-booting the artifact
 //    npm run publish-update -- --no-notes            # escape hatch: publish WITHOUT release notes/announcement
+//    npm run publish-update -- --skip-sig-verify     # escape hatch: publish WITHOUT the served-signature gate
+//                                                    #   (only when LICENSE_PUBLIC_KEY is deliberately absent)
 //
 //  WHICH ONE? If your installed clients are the two-file build (SSIM.exe shell + separate
 //  ssim-backend.exe — i.e. 1.2.0/1.2.1/1.2.2), they can ONLY consume --legacy-backend. A consolidated
@@ -42,8 +44,10 @@
 //    2. UPLOAD INTEGRITY — the local sha256 of the exact bytes uploaded must equal the sha256 the server
 //       stored; a corrupt transfer aborts BEFORE finalize.
 //    3. POST-PUBLISH VERIFICATION — GET /version must then advertise this exact build (latest + sha256 +
-//       url, and kind:'single-exe' on --migrate). --verify-download additionally re-downloads the served
-//       artifact and re-hashes it (true served==built proof).
+//       url, and kind:'single-exe' on --migrate), AND its served signature must verify against the fleet's
+//       LICENSE_PUBLIC_KEY (the only enforced proof the fleet can install it). A missing LICENSE_PUBLIC_KEY
+//       fails CLOSED before login (bypass only with --skip-sig-verify, loud warning). --verify-download
+//       additionally re-downloads the served artifact and re-hashes it (true served==built proof).
 //    4. ROLLBACK — any post-publish failure rolls /version back to the manifest that was live before this
 //       run (POST /admin/api/release/rollback); if the server lacks that route it prints the exact manual
 //       restore values instead of leaving a bad version live.
@@ -77,6 +81,10 @@ const VERSION = require(path.join(ROOT, 'package.json')).version;
 // match the bot's. Unset → announce is skipped (the bot's /version poll still catches the release).
 const BOT_ANNOUNCE_URL = (process.env.BOT_ANNOUNCE_URL || '').replace(/\/+$/, '');
 const ANNOUNCE_HMAC_SECRET = process.env.ANNOUNCE_HMAC_SECRET || '';
+// Per-request response deadline (ms) for every non-stage call. 120 s default; a stalled connection
+// (server accepts but never responds) aborts here instead of parking the publish forever. Overridable
+// only to tune/test — the ~185 MB stage upload passes its own larger value at the call site.
+const REQUEST_TIMEOUT_MS = Number(process.env.PUBLISH_REQUEST_TIMEOUT_MS) || 120_000;
 
 // ── Publish target ───────────────────────────────────────────────────────────
 // Two kinds of client are in the wild, and they consume INCOMPATIBLE artifacts:
@@ -111,6 +119,10 @@ const MIGRATE = process.argv.includes('--migrate');
 const ALLOW_DOWNGRADE = process.argv.includes('--allow-downgrade');
 // Release notes are REQUIRED by default (no silent empty announcement); --no-notes is the escape hatch.
 const NO_NOTES = process.argv.includes('--no-notes');
+// The served-signature gate (Gate 3) is the ONLY enforced check that the release's signature validates
+// against the FLEET's public key. It fails CLOSED on a missing LICENSE_PUBLIC_KEY (see the guard below);
+// --skip-sig-verify is the explicit, loud escape hatch for the rare intentional case (mirrors --skip-selftest).
+const SKIP_SIG_VERIFY = process.argv.includes('--skip-sig-verify');
 if (LEGACY && MIGRATE) { console.error('\n✗ --legacy-backend and --migrate are mutually exclusive\n'); process.exit(1); }
 const PRIMARY = LEGACY ? 'ssim-backend.exe' : 'SSIM.exe';
 const KIND = MIGRATE ? 'single-exe' : undefined; // server-echoed manifest hint; only the dual updater reads it
@@ -122,6 +134,12 @@ const FILES = [{ name: PRIMARY }];
 function fail(m) { console.error(`\n✗ ${m}\n`); process.exit(1); }
 if (!API) fail('LICENSE_API_URL (or PUBLISH_API_URL) not set — add it to secrets.local.bat');
 if (!PW) fail('SSIM_ADMIN_PASSWORD not set — add  set "SSIM_ADMIN_PASSWORD=…"  to secrets.local.bat');
+// Fail CLOSED on a missing production public key. Gate 3's served-signature check is, in practice, the
+// only enforced proof that the release's signature validates against the FLEET's key (the server-side
+// EXPECTED_PUBKEY_FPR pin is off by default). publish can run WITHOUT --build, so make-tauri.js's
+// required-secret check never runs here — a shell where secrets.local.bat wasn't sourced would otherwise
+// let Gate 3 silently no-op and publish a fleet-unverifiable signature while reporting success.
+if (!process.env.LICENSE_PUBLIC_KEY && !SKIP_SIG_VERIFY) fail('LICENSE_PUBLIC_KEY not set — cannot verify the served signature validates against the fleet key; add it to secrets.local.bat, or pass --skip-sig-verify to acknowledge the risk');
 
 // ── Release notes ────────────────────────────────────────────────────────────
 // The owner writes the diff-block body (the +/- lines) into RELEASE_NOTES.md; we send it to the
@@ -173,18 +191,26 @@ function selfTestArtifact(exePath) {
   return { ok, report: (marker || stdout).trim() };
 }
 
-/** sha256 (hex) of the bytes served at a URL — streams, never buffers the whole exe. No redirect-follow. */
+/**
+ * sha256 (hex) of the bytes served at a URL — streams, never buffers the whole exe. No redirect-follow.
+ * Same stalled-connection hazard as request(): this streams the full ~185 MB served artifact during
+ * Gate-3, so a half-open socket (proxy drop mid-download, server accepting but never sending) would
+ * park the publish here forever. The socket setTimeout bounds idle time between chunks and destroys →
+ * rejects with a labelled error (600 s, matching the stage upload's deadline) rather than hanging.
+ */
 function sha256OfUrl(urlStr) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const lib = u.protocol === 'https:' ? https : http;
-    lib.get(u, (res) => {
+    const req = lib.get(u, (res) => {
       if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode} fetching ${urlStr}`)); }
       const h = crypto.createHash('sha256');
       res.on('data', (c) => h.update(c));
       res.on('end', () => resolve(h.digest('hex')));
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.setTimeout(600_000, () => req.destroy(new Error(`request timeout (600000ms): GET ${urlStr}`)));
+    req.on('error', reject);
   });
 }
 
@@ -192,7 +218,14 @@ function sha256OfUrl(urlStr) {
 async function rollback(prev, cookie) {
   if (!prev || !prev.latest) { console.error('  ✗ no previous manifest captured — cannot auto-rollback; restore /version manually.'); return; }
   try {
-    const r = await request('POST', `${API}/admin/api/release/rollback`, { cookie, body: { to: prev.latest, manifest: prev } });
+    // If the previously-live manifest was a kind:'single-exe' migration cut, the server's rollback route
+    // (admin.js S1a) 409s unless we confirm the re-arm. Restoring the manifest that was live at the START
+    // of this run is by definition the operator's prior intent, so supply the confirmation — but only for
+    // that kind, and log it so the re-arm is never silent (H-SHL-008).
+    const isSingleExe = prev.kind === 'single-exe';
+    if (isSingleExe) console.error('  ↩ prior manifest was a single-exe migration cut — confirming its restore');
+    const body = { to: prev.latest, manifest: prev, ...(isSingleExe ? { confirmSingleExe: true } : {}) };
+    const r = await request('POST', `${API}/admin/api/release/rollback`, { cookie, body });
     if (r.status === 200 || r.status === 201) { console.error(`  ↩ rolled /version back to the previously-live v${prev.latest}`); return; }
     console.error(`  ✗ rollback route returned HTTP ${r.status}. Manually re-point /version to v${prev.latest} (sha ${String(prev.sha256).slice(0, 12)}…).`);
   } catch (e) { console.error(`  ✗ rollback error: ${e.message}. Manually restore /version to v${prev.latest}.`); }
@@ -218,8 +251,14 @@ async function announce({ version, url, notes, publishedAt }) {
   }
 }
 
-/** Minimal cookie-aware HTTP(S) request → { status, headers, body }. Extra `headers` merge last. */
-function request(method, urlStr, { body, raw, cookie, headers } = {}) {
+/**
+ * Minimal cookie-aware HTTP(S) request → { status, headers, body }. Extra `headers` merge last.
+ * `timeoutMs` bounds the whole exchange: a stalled connection (server accepts but never responds,
+ * or the response read hangs) rejects with a labelled error instead of parking the publish forever.
+ * Defaults to REQUEST_TIMEOUT_MS (120 s); the ~185 MB `stage` upload passes a larger value. Timeouts
+ * destroy → reject, never resolve to a fake success, so a lost finalize response reaches rollback (H-SHL-005).
+ */
+function request(method, urlStr, { body, raw, cookie, headers, timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const lib = u.protocol === 'https:' ? https : http;
@@ -236,6 +275,8 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
       const chunks = []; res.on('data', (c) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
     });
+    const deadline = timeoutMs || REQUEST_TIMEOUT_MS;
+    req.setTimeout(deadline, () => req.destroy(new Error(`request timeout (${deadline}ms): ${method} ${urlStr}`)));
     req.on('error', reject);
     if (data) req.write(data);
     req.end();
@@ -274,7 +315,7 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
   let primarySha = '';
   for (const f of FILES) {
     const bytes = fs.readFileSync(path.join(DIR, f.name));
-    const r = await request('POST', `${API}/admin/api/release/stage?version=${VERSION}&name=${encodeURIComponent(f.name)}`, { raw: true, body: bytes, cookie });
+    const r = await request('POST', `${API}/admin/api/release/stage?version=${VERSION}&name=${encodeURIComponent(f.name)}`, { raw: true, body: bytes, cookie, timeoutMs: 600_000 });
     if (r.status !== 201) fail(`stage ${f.name} failed (HTTP ${r.status}) — is the server running the updated code? ${r.body}`);
     const j = JSON.parse(r.body);
     // Gate 2: prove the server stored EXACTLY the bytes we sent (no truncation/corruption in transit).
@@ -292,18 +333,35 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
   if (KIND) finalizeBody.kind = KIND; // server must echo this into GET /version for the dual updater to read it
   if (ALLOW_DOWNGRADE) finalizeBody.allowDowngrade = true; // accept re-finalizing the same/older version (manifest refresh)
   if (NOTES) finalizeBody.notes = NOTES; // → version.json.notes + changelog (display text, unsigned)
-  const fin = await request('POST', `${API}/admin/api/release/finalize`, { cookie, body: finalizeBody });
-  if (fin.status !== 201) fail(`finalize failed (HTTP ${fin.status}): ${fin.body}`);
-  const info = JSON.parse(fin.body);
-  console.log(`\n✓ published v${VERSION} — live for auto-update (${LEGACY ? 'legacy two-file' : 'single-exe'}: ${info.files.map((f) => f.name).join(', ')})`);
-  if (info.notNewerThanPrevious) {
-    console.log(`  ⚠ v${VERSION} is NOT newer than the previous publish (v${info.previousVersion}) — existing clients will NOT pick it up.`);
+
+  // finalize makes version.json LIVE server-side BEFORE it returns 201 — so from the moment the
+  // request bytes leave, the manifest may already be live. Any failure AFTER the request was sent
+  // (a lost/hung response, or a 201 with an unparseable body) must therefore route to the SAME
+  // rollback path as a Gate-3 failure, not bail via bare fail() with an unverified manifest stranded
+  // live. Only a pre-send failure (connection refused before any bytes) is safe to fail() directly.
+  const issues = [];
+  let liveManifest = null;
+  let info = null;
+  try {
+    const fin = await request('POST', `${API}/admin/api/release/finalize`, { cookie, body: finalizeBody });
+    if (fin.status !== 201) throw new Error(`finalize failed (HTTP ${fin.status}): ${fin.body}`);
+    info = JSON.parse(fin.body);
+  } catch (e) {
+    // ECONNREFUSED before any bytes went out → nothing changed server-side; fail() is safe.
+    if (e && e.code === 'ECONNREFUSED') fail(`finalize failed (connection refused, manifest unchanged): ${e.message}`);
+    issues.push(`finalize outcome UNKNOWN — the manifest may already be live: ${e.message}. Rolling back to the pre-run manifest.`);
+  }
+  if (info) {
+    console.log(`\n✓ published v${VERSION} — live for auto-update (${LEGACY ? 'legacy two-file' : 'single-exe'}: ${info.files.map((f) => f.name).join(', ')})`);
+    if (info.notNewerThanPrevious) {
+      console.log(`  ⚠ v${VERSION} is NOT newer than the previous publish (v${info.previousVersion}) — existing clients will NOT pick it up.`);
+    }
   }
 
   // ── Gate 3: post-publish verification (the served manifest == this build) ─────
-  const issues = [];
-  let liveManifest = null;
-  try {
+  // Skip the served-manifest checks when finalize already failed (info is null); the finalize issue
+  // above already routes to rollback via the issues[] path below.
+  if (info) try {
     const pv = await request('GET', `${API}/version`);
     if (pv.status !== 200) issues.push(`GET /version returned HTTP ${pv.status}`);
     else {
@@ -317,9 +375,11 @@ function request(method, urlStr, { body, raw, cookie, headers } = {}) {
       // update that passes every OTHER gate here but that EVERY kind-aware client REJECTS
       // (verifyUpdateSignature fails) → a fleet-wide can't-install with no rollback path. This
       // mirrors build/verify-version-signatures.js so publish.js fails BEFORE going broad.
+      // Reachable with an empty pubPem ONLY via the explicit --skip-sig-verify opt-out (the top-level
+      // guard fails closed otherwise). Warn LOUDLY so the acknowledged risk is never a quiet console.log.
       const pubPem = (process.env.LICENSE_PUBLIC_KEY || '').replace(/\\n/g, '\n');
       if (!pubPem) {
-        console.log('  ⚠ LICENSE_PUBLIC_KEY not set — skipping the served-signature verification (run build/verify-version-signatures.js manually before broad rollout)');
+        console.error('  ⚠⚠ --skip-sig-verify: LICENSE_PUBLIC_KEY not set — SKIPPING the served-signature verification. This is the ONLY enforced check that the release validates against the FLEET key; run build/verify-version-signatures.js manually before broad rollout.');
       } else if (!live.sigKind) {
         issues.push('/version has no sigKind — the kind-aware client cannot verify/install this update');
       } else {

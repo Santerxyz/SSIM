@@ -1,9 +1,9 @@
 import EventEmitter from 'events';
 import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
-import { SessionState, type ManagedSession, type WebSession } from '../types/session';
-import { AgentFactory } from '../network/AgentFactory';
-import { loadMaFile, buildLogOnOptions, generateTotpCode, msUntilNextTotp } from './LoginFlow';
+import { SessionState, type ManagedSession, type WebSession, type SessionManagerEvents } from '../types/session';
+import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
+import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
 import { webCookiesFresh, ownsCreatedSession } from './sessionHealth';
@@ -113,6 +113,19 @@ function classifyLoginError(err: LoginError): LoginErrorKind {
 
 // ─── SessionManager ───────────────────────────────────────────────────────────
 
+// Declaration merging wires the hand-written SessionManagerEvents contract onto the
+// class's inherited EventEmitter surface: this.emit and every external on/once/off
+// subscriber are now type-checked against SessionManagerEvents instead of bare
+// (event: string, ...args: any[]). Renaming an event, changing an argument, or
+// altering a payload type becomes a compile error instead of a runtime break.
+// Listeners that declare fewer parameters than the signature stay assignable.
+export interface SessionManager {
+  on<K extends keyof SessionManagerEvents>(event: K, listener: SessionManagerEvents[K]): this;
+  once<K extends keyof SessionManagerEvents>(event: K, listener: SessionManagerEvents[K]): this;
+  off<K extends keyof SessionManagerEvents>(event: K, listener: SessionManagerEvents[K]): this;
+  emit<K extends keyof SessionManagerEvents>(event: K, ...args: Parameters<SessionManagerEvents[K]>): boolean;
+}
+
 export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly tokenStore = new TokenStore();
@@ -152,7 +165,7 @@ export class SessionManager extends EventEmitter {
   /** Logs out LOGGED_IN sessions untouched for longer than the idle TTL, freeing resident slots.
    *  Skips any account with an in-flight login. Serialized-ish (best-effort; failures ignored). */
   private async reapIdleSessions(now: number = Date.now()): Promise<void> {
-    const victims: string[] = [];
+    const victims: Array<{ key: string; session: ManagedSession }> = [];
     for (const [key, s] of this.sessions) {
       if (this.loginsInFlight.has(key)) continue;               // a login is mid-flight → leave it
       // S11: reap SETTLED-live sessions AND settled-dead ones (DISCONNECTED/ERROR). The disconnected/error
@@ -163,10 +176,22 @@ export class SessionManager extends EventEmitter {
         || s.state === SessionState.DISCONNECTED || s.state === SessionState.ERROR;
       if (!reapable) continue;
       const last = s.lastActivityAt?.getTime() ?? s.loggedInAt?.getTime() ?? 0;
-      if (now - last >= IDLE_SESSION_TTL_MS) victims.push(s.account.username);
+      if (now - last >= IDLE_SESSION_TTL_MS) victims.push({ key, session: s });
     }
-    for (const username of victims) {
-      try { await this.logoutAccount(username); logger.info(`[${username}] idle session reaped (>${Math.round(IDLE_SESSION_TTL_MS / 60000)}min unused) – slot freed`); }
+    // H-ACC-002: re-validate identity+idleness at the destroy site against the LIVE map — the victims list
+    // was snapshotted before the per-victim await gap, so a session markUsed'd (the anti-reap signal) or
+    // re-logged-in (a fresh session swapped into the key) AFTER the scan but BEFORE its turn must be skipped,
+    // not torn down mid-op. The checks and the destroy run with NO await between them → race-free on the one
+    // thread. Call destroySession DIRECTLY, not logoutAccount, whose await-in-flight-then-destroy would
+    // re-open the very gap this closes (and could tear down a replacement session).
+    for (const { key, session } of victims) {
+      const username = session.account.username;
+      if (this.loginsInFlight.has(key)) continue;               // a re-login started in the gap → leave it
+      const cur = this.sessions.get(key);
+      if (cur !== session) continue;                            // replaced (or already gone) → not our victim
+      const last = cur.lastActivityAt?.getTime() ?? cur.loggedInAt?.getTime() ?? 0;
+      if (Date.now() - last < IDLE_SESSION_TTL_MS) continue;    // markUsed'd in the gap → rescued
+      try { await this.destroySession(key); logger.info(`[${username}] idle session reaped (>${Math.round(IDLE_SESSION_TTL_MS / 60000)}min unused) – slot freed`); }
       catch (err) { logger.warn(`[${username}] idle-session reap failed: ${(err as Error).message}`); }
     }
   }
@@ -270,8 +295,9 @@ export class SessionManager extends EventEmitter {
    * so a QR/credentials-imported account logs in TOKEN-FIRST with no further prompts —
    * landing in the portable vault in vault mode, or refresh_tokens.json otherwise.
    */
-  rememberRefreshToken(username: string, token: string): void {
-    if (typeof token === 'string' && token) this.tokenStore.set(username, token);
+  rememberRefreshToken(username: string, token: string): boolean {
+    if (typeof token === 'string' && token) return this.tokenStore.set(username, token);
+    return false;
   }
 
   private async doLoginAccount(account: AccountConfig, key: string): Promise<ManagedSession> {
@@ -290,18 +316,19 @@ export class SessionManager extends EventEmitter {
         return await this.attemptLogin(account, { refreshToken: storedToken }, maFile, 'token');
       } catch (err) {
         const kind = (err as LoginError).loginErrorKind ?? 'connection';
-        if (kind === 'auth' && onTokenAuthFailure(!!maFile) === 'delete-and-retry') {
-          // STRONG evidence the token is bad AND we have a maFile fallback → delete the
-          // token and re-login via credentials.
+        if (kind === 'auth' && onTokenAuthFailure({ hasMaFile: !!maFile, hasPassword: !!resolvePassword(account) }) === 'delete-and-retry') {
+          // STRONG evidence the token is bad AND we have a usable credential fallback
+          // (maFile + password) → delete the token and re-login via credentials.
           logger.warn(`[${account.username}] refresh token is INVALID (${(err as Error).message}) – deleting token, full login`);
           this.tokenStore.delete(account.username);
           await this.destroySession(key);
           // …fall through to the credential login below.
         } else if (kind === 'auth') {
-          // Token-only account (no maFile): the refresh token is its SOLE credential.
-          // PRESERVE it — a misclassified/transient 'auth' verdict must never permanently
-          // strand the account — and surface a re-import requirement. (INV-A2 / C8.)
-          logger.error(`[${account.username}] token login failed (auth) with no maFile fallback – token PRESERVED; account needs re-import (QR/credentials)`);
+          // No usable credential fallback (needs maFile + password): the refresh token is
+          // this account's SOLE credential. PRESERVE it — a misclassified/transient 'auth'
+          // verdict must never permanently strand the account — and surface a re-import
+          // requirement. (INV-A2 / C8.)
+          logger.error(`[${account.username}] token login failed (auth) with no usable credential fallback (needs maFile + password) – token PRESERVED; account needs re-import (QR/credentials)`);
           throw err;
         } else {
           // Connection/proxy problem after all retries → the token is almost
@@ -335,6 +362,12 @@ export class SessionManager extends EventEmitter {
 
     for (let attempt = 1; attempt <= MAX_CONNECTION_ATTEMPTS; attempt++) {
       try {
+        // The credential payload's TOTP is valid for one 30s window; a retry re-sends the
+        // SAME object minutes later. Re-stamp a current-window code before every retry so
+        // attempt 2 logs in on its first logOn instead of losing the stale-code Steam Guard
+        // race against the 15s login timeout. Attempt 1 keeps the just-built code; the token
+        // path ({ refreshToken }) carries no maFile and is untouched.
+        if (attempt > 1 && pathLabel === 'credential' && maFile) restampTotp(logOnOptions, maFile);
         return await this.performLogin(account, logOnOptions, maFile);
       } catch (err) {
         lastErr = err as LoginError;
@@ -402,9 +435,18 @@ export class SessionManager extends EventEmitter {
 
     // ── Per-account network isolation ──────────────────────────────────────
     // httpsAgent is stored on the session and reused by the InventoryManager.
-    // AccountManager always attaches a resolved `network` (env proxy or override);
-    // fall back to local IP if it's somehow missing.
-    const network = account.network ?? { type: 'localip' as const, value: '0.0.0.0' };
+    // AccountManager ALWAYS attaches a resolved `network` (env proxy or override) via
+    // withNetwork on every query path. A missing `network` means a caller hand-built an
+    // AccountConfig and bypassed that layer — REFUSE rather than fail open to the host IP,
+    // which would log a proxy-isolated farm account in from the operator's real IP with no
+    // error (Steam then links the account to the home IP). Mirrors the server.ts:724 refusal.
+    if (!account.network) {
+      throw Object.assign(
+        new Error(`${account.username}: no resolved network attached (caller bypassed AccountManager.withNetwork) – refusing to log in without the account's proxy/binding`),
+        { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true }, // S49: deterministic config error → not retried in-slot
+      );
+    }
+    const network = account.network;
     const { steamUserOptions, httpsAgent } = AgentFactory.create(network);
 
     // ── Create a fresh, isolated SteamUser instance ────────────────────────
@@ -541,7 +583,7 @@ export class SessionManager extends EventEmitter {
         session.loggedInAt = new Date();
         session.loginAttempts++;
 
-        logger.info(`[${account.username}] Logged in  SteamID=${session.steamId}  via ${network.type}:${network.value}  – awaiting web session…`);
+        logger.info(`[${account.username}] Logged in  SteamID=${session.steamId}  via ${network.type}:${network.type === 'proxy' ? redactProxyCredentials(network.value) : network.value}  – awaiting web session…`);
 
         this.transition(session, SessionState.LOGGING_IN, SessionState.LOGGED_IN);
         this.emit('loggedIn', account.username, session.steamId ?? '');
@@ -740,7 +782,7 @@ export class SessionManager extends EventEmitter {
       username:   s.account.username,
       state:      s.state,
       steamId:    s.steamId,
-      network:    s.account.network ? `${s.account.network.type}:${s.account.network.value}` : 'unknown',
+      network:    s.account.network ? `${s.account.network.type}:${s.account.network.type === 'proxy' ? redactProxyCredentials(s.account.network.value) : s.account.network.value}` : 'unknown',
       loggedInAt: s.loggedInAt?.toISOString(),
     }));
   }

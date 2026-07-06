@@ -25,37 +25,67 @@ const DEFAULTS: SettingsFile = { version: 1, priceSource: 'steam', csfloatExperi
 
 class AppSettingsImpl {
   private file: SettingsFile;
-  constructor() { this.file = this.load(); }
+  /** True when app_settings.json EXISTS but could not be read/parsed → the on-disk settings are
+   *  untrustworthy. We surface it and REFUSE to write, so the present-but-corrupt file is never
+   *  clobbered by a later toggle — recover it, then restart. A MISSING file (fresh install) is NOT
+   *  degraded. Mirrors CsFloatKeyStore's S12 pattern; the OLD code silently reset to defaults, and
+   *  the next set() then persisted that empty state over the good file → csfloatExperimental flips
+   *  OFF and every account's auto-accept map is lost. (H-BOOT-012.) */
+  private degraded = false;
+
+  // Path injectable for tests; production uses the module SETTINGS_PATH default.
+  constructor(private readonly filePath: string = SETTINGS_PATH) { this.file = this.load(); }
+
+  /** True when app_settings.json is present-but-unreadable → toggles will not persist until the file
+   *  is restored (or deleted) and the app restarted. Surfaces a banner rather than silently swallowing. */
+  isDegraded(): boolean { return this.degraded; }
 
   private load(): SettingsFile {
+    if (!fsExtra.existsSync(this.filePath)) { fsExtra.ensureDirSync(path.dirname(this.filePath)); return { ...DEFAULTS, csfloatAutoAccept: {} }; }
     try {
-      if (!fsExtra.existsSync(SETTINGS_PATH)) { fsExtra.ensureDirSync(path.dirname(SETTINGS_PATH)); return { ...DEFAULTS, csfloatAutoAccept: {} }; }
-      const p = fsExtra.readJsonSync(SETTINGS_PATH) as Partial<SettingsFile> | null;
+      const p = fsExtra.readJsonSync(this.filePath) as Partial<SettingsFile> | null;
+      if (!p || typeof p !== 'object' || (p.csfloatAutoAccept !== undefined && (typeof p.csfloatAutoAccept !== 'object' || p.csfloatAutoAccept === null))) {
+        // Present but wrong SHAPE → untrustworthy. DEGRADE instead of silently resetting to defaults
+        // (which the next save() would persist, clobbering the good file). (H-BOOT-012)
+        this.degraded = true;
+        logger.error(`${this.filePath} is present but malformed – refusing to overwrite it. Settings will NOT persist; restore ${path.basename(this.filePath)} from a backup (or delete it) and restart.`);
+        return { ...DEFAULTS, csfloatAutoAccept: {} };
+      }
       return {
         version:             1,
         priceSource:         p?.priceSource === 'csfloat' ? 'csfloat' : 'steam',
         csfloatExperimental: !!p?.csfloatExperimental,
         csfloatAutoAccept:   (p?.csfloatAutoAccept && typeof p.csfloatAutoAccept === 'object') ? p.csfloatAutoAccept as Record<string, boolean> : {},
       };
-    } catch { logger.warn('app_settings.json unreadable — using defaults'); return { ...DEFAULTS, csfloatAutoAccept: {} }; }
+    } catch (err) {
+      this.degraded = true;
+      logger.error(`${this.filePath} unreadable – refusing to overwrite it (${(err as Error).message}). Settings will NOT persist; restore ${path.basename(this.filePath)} from a backup (or delete it) and restart.`);
+      return { ...DEFAULTS, csfloatAutoAccept: {} };
+    }
   }
 
-  private save(): void {
-    try { writeJsonAtomic(SETTINGS_PATH, this.file, { spaces: 2, backup: false }); }
-    catch (err) { logger.warn(`could not persist app settings: ${(err as Error).message}`); }
+  /** Persist to disk. Returns false (and logs) when the write was refused/failed — the mutation is
+   *  memory-only and will NOT survive a restart; callers surface this instead of reporting success. */
+  private save(): boolean {
+    if (this.degraded) {
+      logger.warn('app_settings.json is degraded — refusing to overwrite; per-account auto-accept toggles will not persist until the file is restored and the app restarted');
+      return false;
+    }
+    try { writeJsonAtomic(this.filePath, this.file, { spaces: 2, backup: false }); return true; }
+    catch (err) { logger.warn(`could not persist app settings: ${(err as Error).message}`); return false; }
   }
 
   getPriceSource(): PriceSource { return this.file.priceSource; }
-  setPriceSource(s: PriceSource): void { this.file.priceSource = s === 'csfloat' ? 'csfloat' : 'steam'; this.save(); }
+  setPriceSource(s: PriceSource): boolean { this.file.priceSource = s === 'csfloat' ? 'csfloat' : 'steam'; return this.save(); }
 
   isCsfloatExperimental(): boolean { return this.file.csfloatExperimental; }
-  setCsfloatExperimental(on: boolean): void { this.file.csfloatExperimental = !!on; this.save(); }
+  setCsfloatExperimental(on: boolean): boolean { this.file.csfloatExperimental = !!on; return this.save(); }
 
   getAutoAccept(username: string): boolean { return !!this.file.csfloatAutoAccept[username.toLowerCase()]; }
-  setAutoAccept(username: string, on: boolean): void {
+  setAutoAccept(username: string, on: boolean): boolean {
     const k = username.toLowerCase();
     if (on) this.file.csfloatAutoAccept[k] = true; else delete this.file.csfloatAutoAccept[k];
-    this.save();
+    return this.save();
   }
   autoAcceptUsernames(): string[] { return Object.keys(this.file.csfloatAutoAccept); }
 }

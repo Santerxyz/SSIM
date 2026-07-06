@@ -32,6 +32,15 @@ const VAULT_VERSION = 1;
 /** Distinct error a caller can detect to show "update SSIM first" instead of the
  *  wrong-password screen (B30). */
 export const VAULT_NEWER_VERSION_ERROR = 'VAULT_NEWER_VERSION';
+/** Message for an UNREADABLE/mis-shaped vault envelope (unparseable JSON, wrong magic, out-of-bounds
+ *  KDF params, garbage scrypt cost). A recoverable corruption shape: the catch in unlockOrCreate
+ *  probes the .bak for it exactly like a GCM auth failure (H-ACC-037). */
+const VAULT_CORRUPT_ERROR = 'vault.enc is corrupt or not an SSIM vault';
+/** Prefix for a TRANSIENT fs error reading vault.enc (EBUSY/EPERM/EACCES/ENOENT/EMFILE — an AV lock,
+ *  a race with a restore, a permissions blip). The file itself may be intact, so this NEVER triggers
+ *  .bak recovery (recovering an intact-but-locked main from a one-generation-older .bak would silently
+ *  lose the newest generation); it is retryable (H-ACC-037). */
+export const VAULT_READ_ERROR_PREFIX = 'VAULT_READ_ERROR:';
 // scrypt cost: N=2^15 (~tens of ms / derivation) — strong vs. brute force, fine for
 // a once-per-boot unlock. maxmem raised to fit N (≈128·N·r ≈ 33 MB).
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, keylen: 32, maxmem: 96 * 1024 * 1024 };
@@ -106,32 +115,73 @@ export class AccountVaultImpl {
   }
 
   /**
+   * Validates the plaintext envelope shape + CLAMPS the header-controlled KDF cost params, then
+   * returns the decoded salt + (bounded) params + iv/tag/ct + version, or null for a bad envelope.
+   * The header is UNAUTHENTICATED (GCM's tag only covers `ct`), so a crafted/corrupt file could
+   * otherwise force `scryptSync` into a multi-GB allocation + a minutes-long synchronous freeze
+   * (H-ACC-036). N/r/p are refused unless integer, N a power of two in 2^12–2^17, r in 1–16,
+   * p in 1–4, AND 128·N·r ≤ 256 MiB — SSIM's own writes (N=2^15/r=8/p=1) sit well inside these.
+   * A file with NO header N/r/p yields params=undefined (deriveKey falls back to the defaults).
+   */
+  private parseEnvelope(file: unknown): { salt: Buffer; params?: { N: number; r: number; p: number }; iv: string; tag: string; ct: string; v: number } | null {
+    const f = file as VaultFileFormat;
+    if (!f || f.magic !== MAGIC || !f.kdf?.salt || !f.iv || !f.tag || !f.ct) return null;
+    let params: { N: number; r: number; p: number } | undefined;
+    if (Number.isInteger(f.kdf.N) && Number.isInteger(f.kdf.r) && Number.isInteger(f.kdf.p)) {
+      const { N, r, p } = f.kdf;
+      const powerOfTwo = N > 0 && (N & (N - 1)) === 0;
+      if (!powerOfTwo || N < 4096 || N > 131072 || r < 1 || r > 16 || p < 1 || p > 4 || 128 * N * r > 256 * 1024 * 1024) {
+        return null; // out-of-bounds header cost params → treat exactly like a corrupt envelope
+      }
+      params = { N, r, p };
+    }
+    return { salt: Buffer.from(f.kdf.salt, 'base64'), params, iv: f.iv, tag: f.tag, ct: f.ct, v: f.v };
+  }
+
+  /**
    * Reads + envelope-validates a vault file and derives the key from ITS OWN header salt,
    * then decrypts. Returns the derived key/salt + plaintext, or throws:
    *   • Error('WRONG_PASSWORD')       — GCM auth failed (wrong key OR a corrupt ciphertext)
    *   • Error(VAULT_NEWER_VERSION…)   — the file's version is newer than this binary (B30)
    *   • Error('vault.enc is corrupt') — not an SSIM vault / unreadable envelope
+   *   • Error('VAULT_READ_ERROR:<code>') — a TRANSIENT fs error (AV lock / permissions); retryable,
+   *     never a .bak-recovery trigger (H-ACC-037)
    */
   private decryptFile(vaultPath: string, password: string): { key: Buffer; salt: Buffer; plain: string } {
-    const file = fsExtra.readJsonSync(vaultPath) as VaultFileFormat;
-    if (!file || file.magic !== MAGIC || !file.kdf?.salt || !file.iv || !file.tag || !file.ct) {
-      throw new Error('vault.enc is corrupt or not an SSIM vault');
+    // A read that throws is either a TRANSIENT fs error (EBUSY/EPERM/… — AV lock / partial restore:
+    // the file may be intact, so DON'T recover from an older .bak) or unparseable/truncated JSON
+    // (a genuine corruption shape → recoverable from .bak). Classify the two apart (H-ACC-037).
+    let file: VaultFileFormat;
+    try {
+      file = fsExtra.readJsonSync(vaultPath) as VaultFileFormat;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code) throw new Error(`${VAULT_READ_ERROR_PREFIX}${code}`);
+      throw new Error(VAULT_CORRUPT_ERROR); // SyntaxError (unparseable/truncated) → corrupt, recoverable
+    }
+    const env = this.parseEnvelope(file);
+    if (!env) {
+      throw new Error(VAULT_CORRUPT_ERROR);
     }
     // Envelope version gate (B30): a file written by a NEWER SSIM must be refused with a
     // DISTINCT error (never decrypted-then-rewritten, which would strip its newer sections).
-    if (Number.isFinite(Number(file.v)) && Number(file.v) > VAULT_VERSION) {
+    if (Number.isFinite(Number(env.v)) && Number(env.v) > VAULT_VERSION) {
       throw new Error(VAULT_NEWER_VERSION_ERROR);
     }
-    const salt = Buffer.from(file.kdf.salt, 'base64');
-    const params = (Number.isInteger(file.kdf.N) && Number.isInteger(file.kdf.r) && Number.isInteger(file.kdf.p))
-      ? { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p }
-      : undefined;
-    const key = this.deriveKey(password, salt, params);
+    const salt = env.salt;
+    // scrypt can throw on garbage header cost params that slip the clamp (or an internal limit) —
+    // treat that as a corrupt envelope (recoverable from .bak), consistent with H-ACC-036's clamp.
+    let key: Buffer;
+    try {
+      key = this.deriveKey(password, salt, env.params);
+    } catch {
+      throw new Error(VAULT_CORRUPT_ERROR);
+    }
     let plain: string;
     try {
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(file.iv, 'base64'));
-      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
-      plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+      plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
     } catch {
       throw new Error('WRONG_PASSWORD'); // GCM auth failure → wrong key OR corrupt ciphertext
     }
@@ -140,25 +190,33 @@ export class AccountVaultImpl {
 
   /**
    * Unlock an existing vault.enc, or CREATE a new empty one with `password`.
+   * If vault.enc is MISSING but a vault.enc.bak decrypts with `password`, the vault is RESTORED
+   * from the backup instead of a fresh empty one being created (AV quarantine of vault.enc, a
+   * partial restore, an accidental deletion — the password proves ownership of the .bak). Pass
+   * `opts.createEmptyAnyway` to skip that probe and deliberately start a NEW empty vault (H-ACC-039).
    * Throws:
-   *   • Error('WRONG_PASSWORD')            — the password is wrong (both vault.enc AND its .bak fail)
+   *   • Error('WRONG_PASSWORD')            — the password is wrong (both vault.enc AND its .bak fail,
+   *                                          OR vault.enc is missing but the .bak did not decrypt)
    *   • Error(VAULT_NEWER_VERSION_ERROR)   — the vault was written by a newer SSIM (B30)
    *   • Error('vault.enc is corrupt …')    — not an SSIM vault
    */
-  unlockOrCreate(password: string): { created: boolean } {
+  unlockOrCreate(password: string, opts?: { createEmptyAnyway?: boolean }): { created: boolean } {
     if (this.exists()) {
       let key: Buffer, salt: Buffer, plain: string;
       try {
         ({ key, salt, plain } = this.decryptFile(this.vaultFile, password));
       } catch (err) {
-        // A GCM failure means EITHER a wrong password OR a corrupt main file. Distinguish
-        // them with the .bak (B33): if the SAME password decrypts vault.enc.bak, the FILE
-        // is bad (not the password) → recover from the backup and restore it. Only when the
-        // .bak ALSO fails (or doesn't exist) is it a genuine wrong password. A newer-version
-        // refusal is NOT a decrypt failure and is rethrown as-is.
-        if ((err as Error).message !== 'WRONG_PASSWORD') throw err;
+        // A decrypt failure is either a wrong password OR a corrupt main file (bad ciphertext,
+        // unparseable JSON, mis-shaped/garbage-KDF envelope). Both are recoverable: if the SAME
+        // password decrypts vault.enc.bak, the FILE is bad (not the password) → recover from the
+        // backup and restore it. Only when the .bak ALSO fails (or doesn't exist) is it a genuine
+        // wrong password. A newer-version refusal and a TRANSIENT read error (VAULT_READ_ERROR:*,
+        // AV lock — the intact main must NOT be replaced by an older .bak) are NOT decrypt
+        // failures and are rethrown as-is (H-ACC-037).
+        const em = (err as Error).message;
+        if (em !== 'WRONG_PASSWORD' && em !== VAULT_CORRUPT_ERROR) throw err;
         const rec = this.tryRecoverFromBak(password);
-        if (!rec) throw err; // both main and .bak fail the same password → wrong password
+        if (!rec) throw err; // both main and .bak fail → genuine wrong password / corrupt-both
         logger.error('[vault] vault.enc failed to decrypt but vault.enc.bak did — the main file is CORRUPT (password is correct). Recovering from the backup.');
         this.payload = rec.payload; this.key = rec.key; this.salt = rec.salt;
         // S5: rewrite a healthy vault.enc WITHOUT a backup pass. The default backup:true would first
@@ -166,7 +224,11 @@ export class AccountVaultImpl {
         // between that copy and the rename would leave BOTH files corrupt → total, unrecoverable farm
         // credential loss. Writing atomically without touching .bak keeps the good backup intact: a
         // crash mid-recovery leaves vault.enc corrupt but .bak good, so the next boot re-recovers.
-        this.save({ backup: false });
+        // H-ACC-038: the fields above are set FIRST because save() reads them, but a persist throw
+        // (disk-full/EPERM/AV-lock) would otherwise leave isEnabled()===true with nothing on disk while
+        // the caller is told the unlock failed. Roll them back so a throw restores the locked state.
+        try { this.save({ backup: false }); }
+        catch (e) { this.key = this.salt = this.payload = undefined; throw e; }
         logger.info(`[vault] recovered from backup + rewrote vault.enc (${this.accountCount()} account(s))`);
         return { created: false };
       }
@@ -176,12 +238,39 @@ export class AccountVaultImpl {
       logger.info(`[vault] unlocked (${this.accountCount()} account(s))`);
       return { created: false };
     }
+    // vault.enc is MISSING. Before treating this as a first run, probe for a recoverable
+    // vault.enc.bak: if the SAME password decrypts the backup, vault.enc was quarantined/deleted
+    // but the farm's credentials survive → RESTORE from the .bak rather than silently creating an
+    // empty vault over the operator's only remaining copy (H-ACC-039). `createEmptyAnyway` is the
+    // deliberate escape hatch (portal confirm / SSIM_VAULT_CREATE=1) for a genuine fresh start.
+    let bakExists = false;
+    try { bakExists = fsExtra.existsSync(this.vaultBak); } catch { bakExists = false; }
+    if (!opts?.createEmptyAnyway && bakExists) {
+      const rec = this.tryRecoverFromBak(password);
+      if (rec) {
+        this.payload = rec.payload; this.key = rec.key; this.salt = rec.salt;
+        // S5: rewrite vault.enc WITHOUT a backup pass (never copy anything over the proven-good .bak).
+        // H-ACC-038: roll the fields back on a persist throw so the caller-observed failure keeps the
+        // vault locked (isEnabled()===false) rather than half-enabled with an unpersisted payload.
+        try { this.save({ backup: false }); }
+        catch (e) { this.key = this.salt = this.payload = undefined; throw e; }
+        logger.info('[vault] vault.enc was missing but vault.enc.bak decrypted — restored the vault from the backup');
+        logger.info(`[vault] restored from backup (${this.accountCount()} account(s))`);
+        return { created: false };
+      }
+      // A .bak exists but did NOT decrypt with this password: do NOT create a fresh vault over a
+      // possibly-recoverable farm on a typo. Report a wrong password (delete BOTH files to reset).
+      throw new Error('WRONG_PASSWORD');
+    }
     // First run: create a fresh vault with a new random salt.
     const salt = crypto.randomBytes(16);
     this.salt = salt;
     this.key = this.deriveKey(password, salt);
     this.payload = { version: VAULT_VERSION, accounts: {}, tokens: {}, csfloatKeys: {}, envProxies: {}, accountProxies: {} };
-    this.save();
+    // H-ACC-038: roll the fields back on a persist throw so a save failure during create leaves the
+    // vault locked (isEnabled()===false) instead of enabled-in-memory with no vault.enc on disk.
+    try { this.save(); }
+    catch (e) { this.key = this.salt = this.payload = undefined; throw e; }
     logger.info('[vault] new vault created + unlocked');
     return { created: true };
   }
@@ -225,14 +314,18 @@ export class AccountVaultImpl {
   /** Debounced save for high-frequency writes (token churn during mass login). */
   private scheduleSave(): void {
     if (this.saveTimer) return;
-    this.saveTimer = setTimeout(() => { this.saveTimer = undefined; this.save(); }, 1_500);
+    this.saveTimer = setTimeout(() => { this.saveTimer = undefined; try { this.save(); } catch (e) { logger.warn(`[vault] debounced save failed — token/CSFloat-key changes since the last successful save remain unpersisted until the next save or the shutdown flush: ${(e as Error).message}`); } }, 1_500);
     this.saveTimer.unref?.();
   }
 
-  /** Flush any pending debounced save (call on shutdown). */
-  flush(): void {
+  /** Flush any pending debounced save (call on shutdown). Returns true if persisted (or nothing
+   *  to persist); false if the save threw — the failure is logged loudly but NEVER propagated, so
+   *  a locked/read-only vault dir at exit cannot wedge the graceful-shutdown latch (H-ACC-041). */
+  flush(): boolean {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = undefined; }
-    this.save();
+    if (!this.isEnabled()) return true;
+    try { this.save(); return true; }
+    catch (e) { logger.error(`[vault] flush failed — token/key changes since the last successful save are NOT persisted: ${(e as Error).message}`); return false; }
   }
 
   /**
@@ -243,46 +336,64 @@ export class AccountVaultImpl {
   verifyDiskRoundTrip(): boolean {
     if (!this.key) return false;
     try {
-      const file = fsExtra.readJsonSync(this.vaultFile) as VaultFileFormat;
-      if (!file || file.magic !== MAGIC || !file.iv || !file.tag || !file.ct) return false;
-      const decipher = crypto.createDecipheriv('aes-256-gcm', this.key, Buffer.from(file.iv, 'base64'));
-      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
-      const plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+      const env = this.parseEnvelope(fsExtra.readJsonSync(this.vaultFile));
+      if (!env) return false;
+      const decipher = crypto.createDecipheriv('aes-256-gcm', this.key, Buffer.from(env.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+      const plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
       return !!JSON.parse(plain) && typeof JSON.parse(plain) === 'object';
     } catch { return false; }
   }
 
   /** Decrypts an EXTERNAL vault.enc (from another device) with the given password, WITHOUT
-   *  touching this process's own vault. Returns its accounts+tokens, or null on wrong
-   *  password / corrupt file. Used by "Import SSIM Vault" to merge another farm. */
-  decryptExternalVault(rawContent: string, password: string): { accounts: Record<string, VaultAccount>; tokens: Record<string, string> } | null {
+   *  touching this process's own vault. Returns its accounts + tokens + per-account CSFloat keys
+   *  + per-account (token-only/QR) proxies, or null on wrong password / corrupt file. Throws
+   *  Error(VAULT_NEWER_VERSION_ERROR) when the source file was written by a NEWER SSIM
+   *  (B30/H-ACC-043) so the caller can tell the operator to update rather than collapsing it into
+   *  a password error. Used by "Import SSIM Vault" to merge a farm. `envProxies` is DELIBERATELY
+   *  excluded: source `environmentId`s are meaningless in the target farm (H-ACC-044). */
+  decryptExternalVault(rawContent: string, password: string): { accounts: Record<string, VaultAccount>; tokens: Record<string, string>; csfloatKeys: Record<string, string>; accountProxies: Record<string, string> } | null {
     try {
-      const file = JSON.parse(rawContent) as VaultFileFormat;
-      if (!file || file.magic !== MAGIC || !file.kdf?.salt || !file.iv || !file.tag || !file.ct) return null;
-      const salt = Buffer.from(file.kdf.salt, 'base64');
-      const params = (Number.isInteger(file.kdf.N) && Number.isInteger(file.kdf.r) && Number.isInteger(file.kdf.p))
-        ? { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p } : undefined;
-      if (Number.isFinite(Number(file.v)) && Number(file.v) > VAULT_VERSION) return null; // newer file → don't guess
-      const key = this.deriveKey(password, salt, params);
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(file.iv, 'base64'));
-      decipher.setAuthTag(Buffer.from(file.tag, 'base64'));
-      const plain = Buffer.concat([decipher.update(Buffer.from(file.ct, 'base64')), decipher.final()]).toString('utf8');
+      const env = this.parseEnvelope(JSON.parse(rawContent));
+      if (!env) return null;
+      // A source vault from a NEWER SSIM must NOT collapse into the wrong-password `null` (B30):
+      // surface it as VAULT_NEWER_VERSION_ERROR so the import route can tell the operator to update
+      // SSIM instead of re-typing a correct password forever. Rethrown from the catch below so the
+      // generic swallow can't turn it back into null. H-ACC-043.
+      if (Number.isFinite(Number(env.v)) && Number(env.v) > VAULT_VERSION) throw new Error(VAULT_NEWER_VERSION_ERROR);
+      const key = this.deriveKey(password, env.salt, env.params);
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+      const plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
       const payload = normalizePayload(JSON.parse(plain));
-      return { accounts: payload.accounts, tokens: payload.tokens };
-    } catch { return null; }
+      return { accounts: payload.accounts, tokens: payload.tokens, csfloatKeys: payload.csfloatKeys, accountProxies: payload.accountProxies };
+    } catch (e) {
+      if ((e as Error).message === VAULT_NEWER_VERSION_ERROR) throw e; // distinct error survives the generic catch
+      return null;
+    }
   }
 
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   getAccount(username: string): VaultAccount | undefined {
-    return this.payload?.accounts[username.toLowerCase()];
+    // Defensive copy: never hand a live reference into the encrypted payload — a caller
+    // mutating the record (e.g. the PATCH route setting v.password) must not touch the store
+    // until it explicitly upserts, so a later-failed edit leaves memory/disk untorn.
+    const rec = this.payload?.accounts[username.toLowerCase()];
+    return rec ? structuredClone(rec) : undefined;
   }
   hasAccount(username: string): boolean { return !!this.getAccount(username); }
+  /** Full-record usernames (lowercase) currently in the vault — for the boot vault→org heal
+   *  (re-link a vaulted account that lost its accounts.json record). H-ACC-011. */
+  listAccountUsernames(): string[] { return this.payload ? Object.keys(this.payload.accounts) : []; }
+  /** Token-only usernames (lowercase) currently in the vault (QR/LIMITED imports whose sole
+   *  credential is the refresh token) — same boot vault→org heal. H-ACC-011. */
+  listTokenUsernames(): string[] { return this.payload ? Object.keys(this.payload.tokens) : []; }
 
   /** Add or replace an account's secrets; saves immediately (a credential change). */
   upsertAccount(acc: VaultAccount): void {
     if (!this.payload) throw new Error('vault not unlocked');
-    this.payload.accounts[acc.username.toLowerCase()] = acc;
+    this.payload.accounts[acc.username.toLowerCase()] = structuredClone(acc);
     this.save();
   }
 
@@ -296,7 +407,7 @@ export class AccountVaultImpl {
     if (!acc.maFile?.shared_secret || !acc.password) return false;
     const k = acc.username.toLowerCase();
     if (this.payload.accounts[k]) return false;
-    this.payload.accounts[k] = acc;
+    this.payload.accounts[k] = structuredClone(acc);
     return true;
   }
 
@@ -336,8 +447,14 @@ export class AccountVaultImpl {
   getCsFloatKey(username: string): string | undefined { return this.payload?.csfloatKeys[username.toLowerCase()]; }
   setCsFloatKey(username: string, key: string): void {
     if (!this.payload) return;
-    this.payload.csfloatKeys[username.toLowerCase()] = key;
-    this.scheduleSave();
+    const k = username.toLowerCase();
+    // First-set (B32 parity): the first CSFloat key for an account is its sole marketplace
+    // credential; a 1.5s debounced+unref'd save could be lost to a kill/power-loss in the window,
+    // stranding an account the operator was told is "configured". Persist a FIRST key
+    // SYNCHRONOUSLY; keep the debounce only for key ROTATION churn (an existing key updating).
+    const firstSet = !this.payload.csfloatKeys[k];
+    this.payload.csfloatKeys[k] = key;
+    if (firstSet) this.save(); else this.scheduleSave();
   }
   deleteCsFloatKey(username: string): void {
     if (!this.payload) return;

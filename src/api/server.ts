@@ -14,16 +14,17 @@ import { InventoryService } from '../core/InventoryService';
 import { ValueHistoryService, GLOBAL_SERIES } from '../core/ValueHistoryService';
 import { ProcessHealth } from '../core/ProcessHealth';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
-import { AccountVault } from '../core/AccountVault';
+import { AccountVault, VAULT_NEWER_VERSION_ERROR } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
-import { loadMaFile, generateTotpCode, msUntilNextTotp } from '../core/LoginFlow';
+import { loadMaFile, generateTotpCode, msUntilNextTotp, identitySecretPresence } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
 import { LicenseClient } from '../licensing/LicenseClient';
 import { getAvailableUpdate, getBlockedUpdate, getPriorCrash, getUpdateOutcome } from '../licensing/updateStatus';
 import { checkOnly, canInstallNow, installNow, isUpdateOpInFlight } from '../licensing/updateScheduler';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
+import { isAmbiguousCommitFailure } from '../trading/commitAmbiguity';
 import { MarketService, type MassSellGroup } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
 import { BanService } from '../trading/BanService';
@@ -32,7 +33,8 @@ import { CasketService } from '../trading/CasketService';
 import { GcActionLayer } from '../trading/GcActionLayer';
 import { cs2Schema } from '../core/Cs2SchemaService';
 import type { SellStrategy } from '../pricing/MarketPricing';
-import { AgentFactory, normalizeProxy, parseProxy } from '../network/AgentFactory';
+import { AgentFactory, normalizeProxy, redactProxyCredentials } from '../network/AgentFactory';
+export { redactProxyCredentials } from '../network/AgentFactory';
 import { PricingService } from '../pricing/PricingService';
 import { currencyInfo } from '../pricing/currencies';
 import { ExchangeRateService } from '../pricing/ExchangeRateService';
@@ -52,6 +54,11 @@ const pkg = require('../../package.json') as { version: string };
 const MAFILES_DIR = maFilesDir();
 const POST_TRADE_REFRESH_MS = 8_000; // wait for Steam to actually move the items before refetching
 const LOG_TAIL_BYTES = 512 * 1024;   // per-account logs modal reads only the tail (non-blocking)
+
+// One-time warn de-dupe for malformed protectedUntil values (H-ACC-090): keyed by
+// username+"\0"+value so a NEW bad hand-edit warns once, not every request. Grows only
+// on a first-seen malformed value (a hand-edit event, not a hot path); a restart clears it.
+const warnedBadProtectedUntil = new Set<string>();
 
 // ── Money-operation route matcher (circuit-breaker gate, #16 / B13) ────────────
 // Every POST that spends money, moves an asset, or approves a pending confirmation
@@ -112,12 +119,15 @@ export function createDeps(): ApiDeps {
   // Shared GC action layer (trade-up + casket execution; gated behind SSIM_GC_VERIFIED).
   const gc        = new GcActionLayer(sessions);
   const tradeup   = new TradeUpService(inventory, pricing, cs2Schema, gc);
-  const casket    = new CasketService(gc);
+  const casket    = new CasketService(gc, inventory);
   // GC-preferred reader so the worth curve counts GC records (incl. listed items), not just web.
+  // peekCached (H-INV-023): clone-free read — the snapshot only sums two numbers per account and
+  // treats the record read-only (totalsOf never mutates it), so cloning the fleet per snapshot is
+  // pure event-loop stall.
   const history   = new ValueHistoryService(
     accounts,
-    { get: (u) => inventory.getCached(u, 'cs2') }, // CS2 (GC-preferred merged view)
-    { get: (u) => inventory.getCached(u, 'tf2') }, // TF2 (parallel worth curve)
+    { get: (u) => inventory.peekCached(u, 'cs2') }, // CS2 (GC-preferred merged view)
+    { get: (u) => inventory.peekCached(u, 'tf2') }, // TF2 (parallel worth curve)
     pricing, exchange,
   );
   exchange.start();
@@ -165,12 +175,25 @@ export function createApp(deps: ApiDeps): Express {
    */
   const applyManualLock = (inv: AccountInventory): AccountInventory => {
     const acc = accounts.get(inv.username);
-    const until = acc?.protectedUntil ? new Date(acc.protectedUntil) : null;
-    if (until && until.getTime() > Date.now()) {
-      const iso = until.toISOString();
+    const raw = acc?.protectedUntil;
+    if (!raw) return inv;
+    const t = Date.parse(raw);
+    if (Number.isNaN(t)) {
+      // Malformed hand-edit (e.g. German-locale "31.12.2026"): the protection the
+      // operator meant to set is NOT active. Fail open (indefinite fail-closed would
+      // silently freeze legitimate operations), but say so once so it's not silent.
+      const key = `${inv.username}\0${raw}`;
+      if (!warnedBadProtectedUntil.has(key)) {
+        warnedBadProtectedUntil.add(key);
+        logger.warn(`[${inv.username}] protectedUntil "${raw}" is not a parseable date — manual protection is NOT active (use ISO 8601, e.g. 2026-12-31)`);
+      }
+      return inv;
+    }
+    if (t > Date.now()) {
+      const iso = new Date(t).toISOString();
       for (const it of inv.items) {
         const cur = it.tradeLockExpiry ? new Date(it.tradeLockExpiry) : null;
-        if (!cur || until > cur) it.tradeLockExpiry = iso as unknown as Date;
+        if (!cur || t > cur.getTime()) it.tradeLockExpiry = iso as unknown as Date;
       }
     }
     return inv;
@@ -201,46 +224,14 @@ export function createApp(deps: ApiDeps): Express {
   };
 
   // ── Security hardening ─────────────────────────────────────────────────────
-  // 1) NO CORS layer: the dashboard is served same-origin from this very server,
-  //    so no cross-origin caller is ever legitimate. (An open `cors()` would let
-  //    any website the operator visits script against this credential-bearing API.)
-  // 2) Host-header allowlist (anti DNS-rebinding): a malicious page can point its
-  //    own domain at 127.0.0.1 and bypass the browser's same-origin protection –
-  //    the Host header is the reliable tell. Enforced only for the default
-  //    loopback deployment; an explicit HOST=<LAN-IP> opt-in skips the check.
-  const boundHost = process.env.HOST ?? '127.0.0.1';
-  const LOOPBACK_BOUND = boundHost === '127.0.0.1' || boundHost === 'localhost' || boundHost === '::1';
-  if (LOOPBACK_BOUND) {
-    app.use((req: Request, res: Response, next: NextFunction) => {
-      const host = hostnameOnly(req.headers.host ?? '');
-      if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') return next();
-      logger.warn(`blocked request with foreign Host header "${req.headers.host}" (possible DNS rebinding)`);
-      res.status(403).json({ error: 'Forbidden' });
-    });
-  }
-  // 2b) Anti-CSRF (#26, defense-in-depth atop the Host allow-list): reject a MUTATING
-  //     request whose Origin/Referer is a FOREIGN site, so a malicious page the operator
-  //     visits cannot drive this credential-bearing API. Same-origin and tool requests
-  //     (no Origin) pass. NOTE: this does NOT authenticate other LOCAL processes — a
-  //     boot-token cookie is the recommended next step for that (AUDIT_LEDGER #26).
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
-    const src = req.headers.origin ?? req.headers.referer;
-    if (typeof src === 'string' && src) {
-      try {
-        const host = new URL(src).hostname.toLowerCase();
-        // Allow the server's OWN origin — including a deliberate LAN HOST=<ip> opt-in, where
-        // the dashboard is served from that host so its same-origin POSTs carry that Origin.
-        const ok = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === boundHost.toLowerCase();
-        if (!ok) {
-          logger.warn(`blocked cross-origin ${req.method} ${req.path} from "${src}"`);
-          return res.status(403).json({ error: 'Forbidden (cross-origin request)' });
-        }
-      } catch { return res.status(403).json({ error: 'Forbidden (malformed Origin)' }); }
-    }
-    next();
-  });
-  // 3) JSON body limit raised: mass-send/mass-sell payloads with thousands of
+  // NO CORS layer: the dashboard is served same-origin from this very server, so no
+  // cross-origin caller is ever legitimate. (An open `cors()` would let any website the
+  // operator visits script against this credential-bearing API.)
+  // The DNS-rebind (Host allowlist) + anti-CSRF (Origin/Referer) checks live in ONE place —
+  // `sameOriginGuard` (mounted below). It was previously duplicated by two inline layers here,
+  // whose fixed boundHost allowlist wrong-blocked the sanctioned LAN opt-in (HOST=<LAN-IP>) that
+  // the guard already handles via same-origin match; the inline layers were removed (H-API-005).
+  // JSON body limit raised: mass-send/mass-sell payloads with thousands of
   //    asset ids exceed express' 100kb default (→ silent HTTP 413 failures).
   app.use(express.json({ limit: '5mb' }));
   // SECURITY (B25): redact secrets from EVERY JSON error string in one place. Many money/route
@@ -416,6 +407,11 @@ export function createApp(deps: ApiDeps): Express {
     const { name, proxy, color } = req.body ?? {};
     try {
       const env = accounts.updateEnvironment(req.params.id, { name, proxy: typeof proxy === 'string' && proxy.trim() ? normalizeProxy(proxy) : proxy, color });
+      // A changed environment proxy changes every inheriting account's egress → drop their CSFloat
+      // clients so the next request rebuilds on the new IP (mirrors the per-account PATCH above).
+      if (proxy !== undefined) {
+        for (const a of accounts.getAll().filter(a => a.environmentId === req.params.id)) csfloat.invalidateClient(a.username);
+      }
       res.json(sanitizeEnvironment(env));
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
@@ -788,8 +784,10 @@ export function createApp(deps: ApiDeps): Express {
   }));
   app.delete('/api/csfloat/:username/key', (req: Request, res: Response) => {
     if (!csAccount(req, res)) return;
-    csfloat.clearKey(req.params.username);
-    res.json({ ok: true, configured: false });
+    try {
+      csfloat.clearKey(req.params.username);
+      res.json({ ok: true, configured: false });
+    } catch (err) { res.status(400).json({ error: (err as Error).message }); }
   });
 
   // ── documented core ──
@@ -903,7 +901,9 @@ export function createApp(deps: ApiDeps): Express {
     if (enabled && acc.tier === 'limited') {
       return res.status(400).json({ error: 'Limited accounts cannot auto-deliver sales (no maFile to confirm). Attach a maFile to upgrade to Full first.' });
     }
-    csfloat.setAutoAccept(req.params.username, enabled);
+    if (!csfloat.setAutoAccept(req.params.username, enabled)) {
+      return res.status(500).json({ error: 'Setting changed in memory but could not be saved to disk; it will not survive a restart. Check disk space / file permissions on data/app_settings.json.' });
+    }
     res.json({ enabled: csfloat.getAutoAccept(req.params.username) });
   });
 
@@ -930,7 +930,20 @@ export function createApp(deps: ApiDeps): Express {
     const changes: Partial<AccountConfig> = {};
 
     if (typeof displayName === 'string') changes.displayName = displayName.trim() || undefined;
-    if (typeof maFilePath === 'string' && maFilePath.trim()) changes.maFilePath = maFilePath.trim();
+
+    // maFile: VALIDATE FIRST, on every mode, before any state is touched (INV-A1 / C5, second
+    // write path). A typo'd/invalid filename 400s here instead of persisting silently. Mirror the
+    // attach route's tier semantics — flip a LIMITED account to FULL when the new maFile can confirm
+    // — but, unlike attach-mafile, do NOT 400 on a missing identity_secret: PATCH may legitimately
+    // replace a shared_secret-only maFile (the "can confirm" surface is governed by canConfirm).
+    let newMaFile;
+    if (typeof maFilePath === 'string' && maFilePath.trim()) {
+      try { newMaFile = loadMaFileFromDisk(maFilePath.trim()); }
+      catch (e) { return res.status(400).json({ error: `maFile: ${(e as Error).message}` }); }
+      changes.maFilePath = maFilePath.trim();
+      if (newMaFile.identity_secret && account.tier === 'limited') changes.tier = 'full';
+    }
+    const maFileChanged = !!newMaFile && maFilePath.trim() !== account.maFilePath;
 
     // proxy: absent = unchanged; null = inherit env; '' = force local IP; string = set proxy.
     const proxyChanged = proxy !== undefined;
@@ -953,10 +966,8 @@ export function createApp(deps: ApiDeps): Express {
       }
       if (v) {
         if (typeof password === 'string' && password.length) v.password = password;
-        if (typeof maFilePath === 'string' && maFilePath.trim()) {
-          try { v.maFile = loadMaFileFromDisk(maFilePath.trim()); }
-          catch (e) { return res.status(400).json({ error: `maFile: ${(e as Error).message}` }); }
-        }
+        if (newMaFile) v.maFile = newMaFile; // already validated (400'd) above
+
         if (proxyChanged) {
           v.proxy = (typeof proxy === 'string' && proxy.trim()) ? normalizeProxy(proxy.trim()) : undefined;
         }
@@ -993,8 +1004,16 @@ export function createApp(deps: ApiDeps): Express {
 
     try {
       const updated = accounts.update(account.username, changes);
-      // The new proxy only applies on the next login → drop the current session.
-      if (proxyChanged) await sessions.logoutAccount(account.username).catch(() => undefined);
+      // A new proxy (next login re-logs-in through it) OR a new maFile (a resident session loads
+      // its maFile ONCE at login → keeps the stale object, so a still-live session can't confirm
+      // with the freshly-attached identity_secret; INV-A1 / C5) only applies on the next login →
+      // drop the current session. Best-effort: a logout hiccup never fails the edit.
+      if (proxyChanged || maFileChanged) {
+        await sessions.logoutAccount(account.username).catch(() => undefined);
+      }
+      if (proxyChanged) {
+        csfloat.invalidateClient(account.username); // rebuild the CSFloat client on the new egress IP too
+      }
       res.json(sanitizeAccount(updated));
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
@@ -1253,13 +1272,17 @@ export function createApp(deps: ApiDeps): Express {
       const cached = inventory.getCached(account.username, 'tf2');
       if (cached) return res.json(enrichInv(cached));
     }
-    res.json(enrichInv(await inventory.refreshOne(account.username, 'tf2')));
+    const inv = await inventory.refreshOne(account.username, 'tf2');
+    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (TF2 refresh)
+    res.json(enrichInv(inv));
   }));
 
   app.post('/api/inventory-tf2/:username/refresh', asyncHandler(async (req, res) => {
     const account = accounts.get(req.params.username);
     if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
-    res.json(enrichInv(await inventory.refreshOne(account.username, 'tf2')));
+    const inv = await inventory.refreshOne(account.username, 'tf2');
+    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (TF2 refresh)
+    res.json(enrichInv(inv));
   }));
 
   // GET returns the cached inventory INSTANTLY (even if stale). ?refresh=1 forces
@@ -1295,7 +1318,11 @@ export function createApp(deps: ApiDeps): Express {
     const u = req.params.username;
     if (!accounts.get(u)) return res.status(404).json({ error: 'account not found' });
     const sess = sessions.getSession(u);
-    const live = sess?.wallet?.hasWallet ? { currency: sess.wallet.currency, balance: sess.wallet.balance } : undefined;
+    // Tri-state (DIRECTIVES #2): a live session that fired a wallet event is authoritative even when
+    // empty — normalise the refreshed-empty case to a real 0 (matching InventoryService's attach rule)
+    // instead of dropping it and falling back to a possibly-stale funded cache.
+    const sw = sess?.wallet;
+    const live = sw ? { currency: sw.currency, balance: sw.hasWallet ? sw.balance : 0 } : undefined;
     const cached = inventory.getCached(u, 'cs2')?.wallet ?? inventory.getCached(u, 'tf2')?.wallet;
     const wallet = live ?? cached ?? null;
     res.json({ wallet, source: live ? 'session' : cached ? 'cache' : 'none' });
@@ -1391,10 +1418,21 @@ export function createApp(deps: ApiDeps): Express {
       // returns status:'unconfirmed' below — so a throw here means the offer was NOT
       // confirmed-sent, but a network send can still time out post-dispatch.
       const msg = (err as Error).message;
+      // S15 refuse-once: a marked pre-commit refusal is an honest duplicate-precondition, not a
+      // retryable gateway fault — answer 409 so a blind retry-on-502 client cannot re-fire it.
+      if ((err as { moneyOpRefused?: boolean }).moneyOpRefused) return res.status(409).json({ error: msg, refused: true });
       if (/already in flight|already running/i.test(msg)) return res.status(409).json({ error: msg });
       if (/not found|not ready|no cookies|requires either|trade ?url|trade-link|same account|disabled|empty/i.test(msg)) {
         return res.status(400).json({ error: msg });
       }
+      // H-TRD-125: a DEFINITE Steam rejection (eresult / recognised cause / full inventory) means the
+      // offer does NOT exist — surface the plain reason, not the ambiguous "verify before retry" warning.
+      // Transport-ambiguous / structure-less faults keep today's safe verifyBeforeRetry default.
+      const f = err as { eresult?: number; cause?: string; inventoryFull?: boolean };
+      const definite = !isAmbiguousCommitFailure(err)
+        && f.eresult !== 16 // belt: Steam's may-have-sent code (H-TRD-104)
+        && (f.eresult != null || !!f.cause || f.inventoryFull === true);
+      if (definite) return res.status(502).json({ error: msg, eresult: f.eresult, cause: f.cause, inventoryFull: f.inventoryFull === true });
       return res.status(502).json({ error: msg, verifyBeforeRetry: true });
     }
 
@@ -1562,8 +1600,10 @@ export function createApp(deps: ApiDeps): Express {
       return res.status(400).json({ error: `action must be one of ${VALID_OFFER_ACTIONS.join(', ')}` });
     }
     try {
-      await trades.offerAction(username, offerId.trim(), action);
-      res.json({ ok: true, username, offerId: offerId.trim(), action });
+      // 'unconfirmed' = a two-sided accept that COMMITTED on Steam but whose 2FA confirmation
+      // failed; it is not a failure (no 502) — the offer awaits a manual mobile confirmation.
+      const status = await trades.offerAction(username, offerId.trim(), action);
+      res.json({ ok: true, username, offerId: offerId.trim(), action, ...(status === 'unconfirmed' ? { status } : {}) });
     } catch (err) {
       res.status(502).json({ error: (err as Error).message });
     }
@@ -1603,6 +1643,11 @@ export function createApp(deps: ApiDeps): Express {
     if (!Array.isArray(names) || !names.every(n => typeof n === 'string')) {
       return res.status(400).json({ error: 'names must be a string array' });
     }
+    // H-TRD-022: sanity bound — a real selection is far below 500; refuse an absurd list
+    // rather than launch a tens-of-minutes cascade for one interactive request.
+    if (names.length > 500) {
+      return res.status(400).json({ error: 'too many names' });
+    }
     if (!VALID_STRATEGIES.includes(strategy)) {
       return res.status(400).json({ error: `strategy must be one of ${VALID_STRATEGIES.join(', ')}` });
     }
@@ -1610,9 +1655,14 @@ export function createApp(deps: ApiDeps): Express {
     if (strategy === 'custom' && custom == null) {
       return res.status(400).json({ error: 'customCents (EUR cents ≥ 1) is required for strategy "custom"' });
     }
+    // H-TRD-022: when the client disconnects (its 120s abort, or a manual close), stop the
+    // backend cascade instead of running it to completion for an already-dead request.
+    let clientGone = false;
+    req.on('close', () => { clientGone = true; });
     res.json(await market.preview(names, strategy, {
       customCents: custom ?? undefined,
       username: typeof username === 'string' ? username : undefined,
+      shouldStop: () => clientGone || res.writableEnded || req.destroyed,
     }));
   }));
 
@@ -1679,7 +1729,7 @@ export function createApp(deps: ApiDeps): Express {
     const game = appid === 440 ? 'tf2' : 'cs2';
     const currency = inventory.getCached(username, game)?.wallet?.currency ?? 3;
     const info = currencyInfo(currency);
-    const lowestMinor = await market.lowestAsk(name, appid, currency, info.decimals);
+    const lowestMinor = await market.lowestAsk(name, appid, currency);
     res.json({ lowestMinor, currency, currencyIso: info.iso, decimals: info.decimals });
   }));
 
@@ -1766,6 +1816,9 @@ export function createApp(deps: ApiDeps): Express {
       // Classify: a precondition/duplicate must NOT look like a retryable gateway
       // fault on a money endpoint (a blind retry-on-502 could double-spend).
       const msg = (err as Error).message;
+      // S15 refuse-once: a marked pre-commit refusal is an honest duplicate-precondition, not a
+      // retryable gateway fault — answer 409 so a blind retry-on-502 client cannot re-fire it.
+      if ((err as { moneyOpRefused?: boolean }).moneyOpRefused) return res.status(409).json({ error: msg, refused: true });
       if (/already running/i.test(msg)) return res.status(409).json({ error: msg });
       if (/not found|no sessionid|no steamloginsecure|no identity_secret|wallet currency|exceeds|invalid/i.test(msg)) {
         return res.status(400).json({ error: msg });
@@ -1886,7 +1939,11 @@ export function createApp(deps: ApiDeps): Express {
   // via ISteamUser/GetPlayerBans and returns them categorised. Read-only; per-account
   // failures surface as { error } rows and never abort the others. Scoped to the
   // submitted usernames only (single account, a folder's accounts, or a multi-selection).
-  app.post('/api/bans/check', asyncHandler(async (req, res) => {
+  //
+  // H-TRD-033: a cold whole-fleet check (sequential per-env key mints) can far exceed the client's
+  // 120s request budget, so we START a detached job and return 202 immediately; the UI polls
+  // /api/bans/status. Single-flight — a second request while one runs gets 409, no pile-up.
+  app.post('/api/bans/check', (req: Request, res: Response) => {
     const { usernames } = req.body ?? {};
     if (!Array.isArray(usernames) || usernames.length === 0) {
       return res.status(400).json({ error: 'usernames must be a non-empty array' });
@@ -1894,12 +1951,20 @@ export function createApp(deps: ApiDeps): Express {
     const known = usernames.filter((u: unknown): u is string => typeof u === 'string' && !!accounts.get(u));
     if (known.length === 0) return res.status(400).json({ error: 'no known accounts in usernames' });
 
-    const result = await bans.checkBans(known);
-    logger.info(`[bans] checked ${result.totals.total} account(s): ` +
-      `clean=${result.totals.clean} vac=${result.totals.vac} game=${result.totals.game} ` +
-      `community=${result.totals.community} economy=${result.totals.economy} error=${result.totals.error}`);
-    res.json(result);
-  }));
+    try {
+      bans.startCheck(known);
+      logger.info(`[bans] started check for ${known.length} account(s)`);
+      res.status(202).json({ started: true });
+    } catch (err) {
+      res.status(409).json({ error: (err as Error).message });
+    }
+  });
+
+  // GET /api/bans/status — live snapshot of the running/last ban-check job (read-only). The result
+  // is retained until the next check, so a poll landing after completion still receives it.
+  app.get('/api/bans/status', (_req: Request, res: Response) => {
+    res.json(bans.status());
+  });
 
   // ════════════════════════════════════════════════════════════════════════
   //  Feature 1 – Automated Max-Profit Trade-Ups (single account only)
@@ -1993,8 +2058,8 @@ export function createApp(deps: ApiDeps): Express {
       return res.status(400).json({ error: 'CSV import requires the vault — set a master password at startup' });
     }
     try {
-      const { imported, skipped } = importCsvIntoVault(accounts, csv, environmentId, folderId ?? null);
-      res.json({ imported, skipped });
+      const { imported, skipped, rejected } = importCsvIntoVault(accounts, csv, environmentId, folderId ?? null);
+      res.json({ imported, skipped, rejected });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
     }
@@ -2014,9 +2079,18 @@ export function createApp(deps: ApiDeps): Express {
     // folder is chosen, the source's folder organisation is recreated in the target environment.
     // An explicit folderId from the modal takes precedence (all bots land in that one folder).
     const orgJson = typeof accountsJson === 'string' && accountsJson.trim() ? accountsJson : undefined;
-    const r = importExternalVault(accounts, vault, password, orgJson, environmentId, folderId ?? null);
-    if (r === null) return res.status(401).json({ error: 'wrong password, or this is not an SSIM vault file' });
-    res.json(r);
+    try {
+      const r = importExternalVault(accounts, vault, password, orgJson, environmentId, folderId ?? null);
+      if (r === null) return res.status(401).json({ error: 'wrong password, or this is not an SSIM vault file' });
+      res.json(r);
+    } catch (e) {
+      // A source vault from a NEWER SSIM is a distinct, actionable outcome — not a password error
+      // (B30/H-ACC-043): tell the operator to update SSIM on THIS machine before importing again.
+      if ((e as Error).message === VAULT_NEWER_VERSION_ERROR) {
+        return res.status(409).json({ error: 'This vault file was exported by a NEWER SSIM version. Update SSIM on this machine, then import again.' });
+      }
+      res.status(400).json({ error: (e as Error).message });
+    }
   });
 
   // Lists *.maFile in ./mafiles/ that are not yet registered to an account.
@@ -2039,8 +2113,15 @@ export function createApp(deps: ApiDeps): Express {
       // Vault mode: import ONLY the SELECTED maFiles from the drop zone into the vault + create
       // org entries in the chosen environment + folder. Honours the selection; never imports an
       // un-ticked file or guesses a target. Non-destructive; idempotent.
-      const { imported, skipped } = importDropZoneIntoVault(accounts, environmentId, folderId ?? null, files.map(String));
-      return res.json({ vault: true, imported, skipped, migrated: 0, added: [] });
+      try {
+        const { imported, skipped, reasons } = importDropZoneIntoVault(accounts, environmentId, folderId ?? null, files.map(String));
+        return res.json({ vault: true, imported, skipped, reasons, migrated: 0, added: [] });
+      } catch (e) {
+        // A transiently-locked accounts.txt (EBUSY/EPERM) is named, not a generic 500 — the whole
+        // import aborts before any mutation, so the operator can close the file and retry.
+        if ((e as { code?: string }).code === 'ACCOUNTS_TXT_LOCKED') return res.status(409).json({ error: (e as Error).message });
+        throw e;
+      }
     }
 
     const creds = readCredentialsFile();
@@ -2238,7 +2319,16 @@ function sanitizeTree(tree: import('../types/account').AccountTree): unknown {
 
 /** Strips the password and redacts proxy credentials (resolved + override). */
 function numQ(v: unknown): number | undefined { const n = Number(v); return Number.isFinite(n) ? n : undefined; }
-function csErr(err: unknown): number { return (err as { status?: number }).status === 429 ? 429 : 400; }
+// H-API-002: classify CSFloat failures so transient upstream/network faults are retryable, not a
+// permanent-looking 400. Preserve rate-limit (429) and genuine client errors (4xx, e.g. 401/403 auth);
+// map upstream 5xx and status-less transport failures (timeout/ECONN*) to a retryable 502 gateway error.
+export function csErr(err: unknown): number {
+  const st = (err as { status?: number }).status;
+  if (st === 429) return 429;
+  if (typeof st === 'number' && st >= 500) return 502;
+  if (typeof st === 'number' && st >= 400) return st;
+  return 502;
+}
 function parseSearch(q: Record<string, unknown>): ListingSearchParams {
   const num = (v: unknown): number | undefined => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
@@ -2257,10 +2347,10 @@ function sanitizeAccount(account: AccountConfig): Record<string, unknown> {
   return {
     ...rest,
     // INV-A1 / C5: the dashboard should show the REAL "can confirm trades" capability
-    // (maFile identity_secret), not the raw tier label. tier is now a projection of this.
+    // (maFile identity_secret, resolved vault THEN disk like login does), not the raw tier
+    // label. tier is a projection of this — consulted only when the maFile is unreadable.
     canConfirm: canConfirm({
-      vaultEnabled: AccountVault.isEnabled(),
-      vaultMaFileHasIdentitySecret: !!AccountVault.getAccount(account.username)?.maFile?.identity_secret,
+      identitySecret: identitySecretPresence(account),
       tier: account.tier,
     }),
     network: account.network
@@ -2290,17 +2380,6 @@ export function hostnameOnly(hostHeader: string): string {
   const h = hostHeader.trim().toLowerCase();
   if (h.startsWith('[')) { const end = h.indexOf(']'); return end >= 0 ? h.slice(0, end + 1) : h; }
   return h.split(':')[0];
-}
-
-/** Redacts proxy credentials for display. Handles the URL form directly AND the legacy
- *  non-URL formats (host:port:user:pass etc.) via parseProxy, so a value stored by a
- *  pre-normalizeProxy version can never surface its user:pass in the env/account list (B24). */
-export function redactProxyCredentials(value: string): string {
-  const urlMasked = value.replace(/\/\/[^@/]+@/, '//***:***@');
-  if (urlMasked !== value) return urlMasked;              // URL form → already masked
-  const p = parseProxy(value);                            // legacy form → mask if it carries creds
-  if (p && p.username) return `${p.scheme}://***:***@${p.host}:${p.port}`;
-  return value;
 }
 
 /**

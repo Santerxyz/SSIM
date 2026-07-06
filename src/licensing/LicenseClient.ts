@@ -136,6 +136,10 @@ export function clearToken(): void {
 // pepper so a casual hand-edit of the file is rejected (raises cost; not unbreakable).
 const LICENSE_META_FILE = 'license.meta.json';
 const CLOCK_SKEW_MS = 5 * 60 * 1000; // tolerate minor NTP corrections
+// A server time farther ahead than this of the local clock is not a value we anchor to: a
+// forward-wrong upstream clock (NTP step / VM host drift) would otherwise ratchet maxSeenMs
+// into the future. Belt-and-suspenders for the heal-down in nextClockMeta (H-LIC-022).
+const SERVER_TIME_MAX_FUTURE_MS = 24 * 60 * 60 * 1000;
 
 interface LicenseMeta { lastOnlineMs: number; maxSeenMs: number; }
 
@@ -171,10 +175,17 @@ function markOnline(serverTimeMs?: number): void {
   // S26: anchor the rollback high-water mark to the SERVER'S time (accurate, NTP-synced) rather than the
   // LOCAL clock. A machine running with a forward-wrong clock WHILE online otherwise wrote that future
   // value into maxSeenMs on every beat; after the clock was corrected, an expired-token boot hit
-  // `now < maxSeenMs - skew → rollback-refused` — offline grace dead until real time caught up. Fall back
-  // to the local clock only when the server reported none (an old server → today's behaviour, no worse).
-  const anchor = (typeof serverTimeMs === 'number' && Number.isFinite(serverTimeMs) && serverTimeMs > 0) ? serverTimeMs : Date.now();
-  writeMeta(nextClockMeta(readMeta(), anchor, true));
+  // `now < maxSeenMs - skew → rollback-refused` — offline grace dead until real time caught up.
+  // H-LIC-005: NEVER fall back to the local clock. An anchor advance is legitimate only when the server
+  // told us its time; anchoring from Date.now() is the exact S26 poison (a markerless/pre-S26-server 200
+  // is precisely the case where the local clock must not be trusted). No serverTime → do not advance.
+  if (typeof serverTimeMs !== 'number' || !Number.isFinite(serverTimeMs) || serverTimeMs <= 0) return;
+  // H-LIC-022: refuse to anchor to an implausibly-far-future server time (> a day ahead of the
+  // local clock). It would only ratchet maxSeenMs into the future and lock out a valid offline
+  // user; there is no rollback-protection value in a far-future mark. The heal-down in
+  // nextClockMeta recovers an already-poisoned mark; this stops fresh poisoning at the raise.
+  if (serverTimeMs > Date.now() + SERVER_TIME_MAX_FUTURE_MS) return;
+  writeMeta(nextClockMeta(readMeta(), serverTimeMs, true, SERVER_TIME_MAX_FUTURE_MS));
   licenseRevoked = false; // a successful server contact means the seat is live
 }
 
@@ -316,13 +327,15 @@ async function onlineRecheck(hwid: string, token: string): Promise<void> {
   try {
     // Rider (C4) so the server learns clientVersion/last-outcome at BOOT, not one 45-min beat later.
     const res = await http.post('/validate', { hwid, token, ...telemetryRider() });
-    if (res.status === 200) {
-      if (res.data?.status === 'revoked') {
-        logger.error('LICENSE REVOKED by backend.');
-        void handleRevoked('This license has been revoked.');
-      } else {
-        markOnline(res.data?.serverTime); // S26: anchor to the server's time, not the local clock
-      }
+    // H-LIC-005: require the server's POSITIVE contract marker (server.js:104 → 200 {status:'ok'}) before
+    // treating this as a live, authoritative contact. A markerless/HTML 200 (a trusted-CA TLS-inspection
+    // proxy or a pre-S26 server) is authenticated only NEGATIVELY ("not revoked") and must NOT advance the
+    // offline-grace anchor — it rides the grace window like any other non-answer.
+    if (res.status === 200 && res.data?.status === 'revoked') {
+      logger.error('LICENSE REVOKED by backend.');
+      void handleRevoked('This license has been revoked.');
+    } else if (res.status === 200 && res.data?.status === 'ok') {
+      markOnline(res.data?.serverTime); // S26: anchor to the server's time, not the local clock
     }
   } catch {
     /* offline → grace window governs; ignore */
@@ -371,11 +384,17 @@ async function heartbeat(hwid: string): Promise<void> {
       return;
     }
     if (res.status === 200) {
-      markOnline(res.data?.serverTime); // S26: anchor to the server's time, not the local clock
+      // H-LIC-005: gate the anchor advance on POSITIVE proof. A real license-server 200 ALWAYS carries a
+      // freshly-signed rolled token (server.js:129) + serverTime; a markerless/tokenless 200 is a trusted-CA
+      // TLS-inspection proxy or a pre-S26 server, not the license server, so it must NOT advance the
+      // offline-grace anchor. Verify the rolled token first; anchor (and roll the window) only if it verifies.
       if (typeof res.data?.token === 'string') {
-        // backend may hand back a freshly-extended token → roll the offline window
         const next = verifyToken(res.data.token);
-        if (next && next.hwid === hwid) storeToken(res.data.token);
+        if (next && next.hwid === hwid) {
+          // backend handed back a verifiable, HWID-matching token → roll the offline window AND anchor
+          storeToken(res.data.token);
+          markOnline(res.data?.serverTime); // S26: anchor to the server's time, not the local clock
+        }
       }
     }
   } catch {

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { logsDir } from './paths';
+import { logger } from './logger';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  crashMarker.ts — the shell→backend "prior run crashed" handoff (B1).
@@ -32,15 +33,28 @@ export const crashMarkerFile = (): string => logsDir('last-crash.json');
  */
 export function consumeCrashMarker(file: string = crashMarkerFile()): CrashMarker | undefined {
   const f = file;
-  try {
-    if (!fs.existsSync(f)) return undefined;
-    const raw = JSON.parse(fs.readFileSync(f, 'utf8')) as CrashMarker;
-    try { fs.unlinkSync(f); } catch { /* best-effort */ }
-    if (!Number.isFinite(raw?.at)) return undefined;
-    return raw;
-  } catch {
+  const dropCorrupt = (): undefined => {
     // Corrupt/half-written marker → drop it so it can't wedge every boot.
     try { fs.unlinkSync(f); } catch { /* best-effort */ }
     return undefined;
+  };
+  if (!fs.existsSync(f)) return undefined;
+  // A transient read failure (EBUSY/EPERM/EACCES from an AV lock, EMFILE at boot) must NOT
+  // destroy a real crash banner — leave the file in place so it re-fires next boot.
+  let text: string;
+  try {
+    text = fs.readFileSync(f, 'utf8');
+  } catch (err) {
+    logger.warn('last-crash.json unreadable this boot (' + ((err as NodeJS.ErrnoException)?.code ?? 'IO error') + ') — leaving in place');
+    return undefined;
   }
+  let raw: CrashMarker;
+  try {
+    raw = JSON.parse(text) as CrashMarker;
+  } catch {
+    return dropCorrupt();
+  }
+  if (!Number.isFinite(raw?.at)) return dropCorrupt();
+  try { fs.unlinkSync(f); } catch { /* best-effort */ }
+  return raw;
 }

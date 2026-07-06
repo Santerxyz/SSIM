@@ -114,10 +114,40 @@ export class PricingService {
       const e = this.cache.get(this.cacheKey(item.marketHashName, appid, sid));
       const fresh = e && this.isFresh(e);
       if (!fresh) { item.price = undefined; missing.push({ name: item.marketHashName, appid }); }
-      else { item.price = e!.cents ?? undefined; if (e!.cents) total += e!.cents * item.quantity; }
+      else {
+        // Tri-state (INV-E1, price analogue of DIRECTIVES #2): an AUTHORITATIVE no-price
+        // (cents===null && !soft) → null ("—"); a transient error-miss (cents===null && soft)
+        // → undefined ("…", still effectively pending); a real price → the number.
+        const cents = e!.cents;
+        item.price = cents == null ? (e!.soft ? undefined : null) : cents;
+        if (cents) total += cents * item.quantity;
+      }
     }
     inv.totalValueUsd = total;
     return missing;
+  }
+
+  /**
+   * READ-ONLY twin of enrich (same walk, lines 108-121) that NEVER assigns item.price or
+   * inv.totalValueUsd — for aggregation callers that must not mutate the cached record. Returns the
+   * priced total plus the honesty signals the snapshot needs: `missing` = names with no fresh cache
+   * entry (unpriced/stale, must be queued), `softNull` = names whose fresh cache hit is a transient
+   * error-miss (soft, cents null — S2) so the total silently undercounts them. (H-INV-022.)
+   */
+  totalsOf(inv: AccountInventory): { totalCents: number; missing: Array<{ name: string; appid: number }>; softNull: number } {
+    const appid = inv.game === 'tf2' ? APPID_TF2 : APPID_CS2;
+    const sid = this.activeSource().id;
+    const missing: Array<{ name: string; appid: number }> = [];
+    let totalCents = 0;
+    let softNull = 0;
+    for (const item of inv.items) {
+      const e = this.cache.get(this.cacheKey(item.marketHashName, appid, sid));
+      const fresh = e && this.isFresh(e);
+      if (!fresh) { missing.push({ name: item.marketHashName, appid }); }
+      else if (e!.cents == null) { if (e!.soft) softNull++; } // fresh soft error-miss → undercounted, not truly 0
+      else { totalCents += e!.cents * item.quantity; }
+    }
+    return { totalCents, missing, softNull };
   }
 
   /** Queues unique (name, appid) pairs for background fetching; starts if idle. */

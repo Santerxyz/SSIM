@@ -56,13 +56,16 @@ export class CsFloatKeyStore {
     }
   }
 
-  private save(): void {
+  /** True when the write reached disk; false when it was refused (degraded) or threw. Callers in
+   *  plaintext mode roll back their optimistic in-memory mutation on false so has()/keyInfo() never
+   *  report a key the disk does not hold (S12 write-path residue). */
+  private save(): boolean {
     if (this.degraded) {
       logger.warn(`CSFloat key store is DEGRADED – NOT persisting (would clobber the corrupt ${path.basename(this.filePath)} + its .bak). Fix the file and restart.`);
-      return;
+      return false;
     }
-    try { writeJsonAtomic(this.filePath, this.file, { spaces: 2, mode: 0o600, backup: true }); }
-    catch (err) { logger.warn(`could not persist CSFloat keys: ${(err as Error).message}`); }
+    try { writeJsonAtomic(this.filePath, this.file, { spaces: 2, mode: 0o600, backup: true }); return true; }
+    catch (err) { logger.warn(`could not persist CSFloat keys: ${(err as Error).message}`); return false; }
   }
 
   private key(u: string): string { return u.toLowerCase(); }
@@ -75,13 +78,31 @@ export class CsFloatKeyStore {
 
   set(username: string, apiKey: string): void {
     if (AccountVault.isEnabled()) AccountVault.setCsFloatKey(username, apiKey);
-    else { this.file.keys[this.key(username)] = apiKey; this.save(); }
+    else {
+      // Mutate memory optimistically, then persist; if the write did not reach disk (degraded or a
+      // thrown atomic write), roll the map back and throw so the store never claims a key it lost —
+      // otherwise keyInfo() reports { configured: true } while the next boot re-reads an absent key. (S12)
+      const prev = this.file.keys[this.key(username)];
+      this.file.keys[this.key(username)] = apiKey;
+      if (!this.save()) {
+        if (prev === undefined) delete this.file.keys[this.key(username)]; else this.file.keys[this.key(username)] = prev;
+        throw new Error('CSFloat key was NOT saved — the key store is unwritable (corrupt csfloat_keys.json or disk error). Fix it and re-add the key.');
+      }
+    }
     logger.info(`[${username}] CSFloat API key stored`);
   }
 
   delete(username: string): void {
     if (AccountVault.isEnabled()) { AccountVault.deleteCsFloatKey(username); logger.info(`[${username}] CSFloat API key cleared`); return; }
-    if (this.file.keys[this.key(username)]) { delete this.file.keys[this.key(username)]; this.save(); logger.info(`[${username}] CSFloat API key cleared`); }
+    const prev = this.file.keys[this.key(username)];
+    if (prev !== undefined) {
+      delete this.file.keys[this.key(username)];
+      if (!this.save()) {
+        this.file.keys[this.key(username)] = prev;
+        throw new Error('CSFloat key was NOT cleared — the key store is unwritable (corrupt csfloat_keys.json or disk error). Fix it and re-try.');
+      }
+      logger.info(`[${username}] CSFloat API key cleared`);
+    }
   }
 
   /** Lowercase usernames that currently have a key (vault or file) — for F3 "any available key". */

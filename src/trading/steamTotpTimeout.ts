@@ -24,7 +24,11 @@ import { logger } from '../utils/logger';
 //
 //  NOT a band-aid: it bounds an unbounded await and uses the documented fallback;
 //  it never retries-to-hide or restarts anything. Timeouts/errors are NOT cached,
-//  so the next call re-attempts the real offset (still bounded).
+//  so the next call re-attempts the real offset (still bounded). A cold fallback
+//  (no cached offset) surfaces the failure `err` with offset 0 rather than a
+//  silent 0, so a consumer that memoizes on success — steamcommunity confirmations
+//  pins _timeOffset for 12h — re-fetches next call instead of pinning our fallback
+//  (H-TRD-090); a warm fallback delivers the real cached offset with err=null.
 // ════════════════════════════════════════════════════════════════════════════
 
 type OffsetCb = (err: Error | null, offset: number, latency?: number) => void;
@@ -34,6 +38,10 @@ export interface TotpTimeoutOpts {
   timeoutMs?: number;
   cacheTtlMs?: number;
   now?: () => number;
+  monotonicNow?: () => number;
+  /** Fired with a REAL (cacheable) offset each time one is learned — lets the login path mirror the
+   *  same authoritative Steam clock the money paths already trust. Never fired on a stall/error. */
+  onRealOffset?: (offsetSec: number) => void;
 }
 
 /** Wrap a getTimeOffset(cb) with a timeout + per-process offset cache. Pure/testable — the caller
@@ -42,44 +50,129 @@ export function makeTimeoutGetOffset(original: GetOffset, opts: TotpTimeoutOpts 
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const cacheTtlMs = opts.cacheTtlMs ?? 60 * 60 * 1000;
   const now = opts.now ?? (() => Date.now());
+  const monotonicNow = opts.monotonicNow ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
   let cachedOffset: number | undefined;
   let cachedAt = 0;
+  let cachedAtMono = 0;
+  // Single-flight: while one QueryTime fetch is in flight, concurrent cache-misses subscribe to it
+  // instead of each firing their own raw https request + their own 10s stall (S6/H-TRD-088).
+  let inflight: OffsetCb[] | null = null;
+  // Fast-failure fallbacks (ENOTFOUND/ECONNREFUSED/HTTP-500/malformed/sync throw) settle in ms — only the
+  // full stall path logs, so forensics on "offset 0, all confirmations failing, why?" finds nothing. Emit a
+  // rate-limited (≥60s) warn on the fast paths so the failure mode is attributable without log-flooding a
+  // fleet refresh (S6/H-TRD-093). No secrets in the message.
+  let lastErrLogAt = 0;
+  const logErrFallback = (err: Error): void => {
+    if (now() - lastErrLogAt < 60_000) return;
+    lastErrLogAt = now();
+    logger.warn('[steam-totp] QueryTime failed (' + err.message + ') – using offset ' + (cachedOffset ?? 0) + ' (S6)');
+  };
 
   return (cb: OffsetCb): void => {
-    // Fresh cache → answer instantly, no network (the offset is process-stable).
-    if (cachedOffset !== undefined && now() - cachedAt < cacheTtlMs) { cb(null, cachedOffset, 0); return; }
+    // Fresh cache → answer instantly, no network (the offset is process-stable). A wall-clock step
+    // (clock fix, W32Time correction, VM RTC resync, resume) diverges wall vs monotonic elapsed → the
+    // cached offset is no longer valid, so treat the entry as expired and re-fetch (S6/H-TRD-087).
+    if (cachedOffset !== undefined) {
+      const wallElapsed = now() - cachedAt;
+      const monoElapsed = monotonicNow() - cachedAtMono;
+      const stepped = wallElapsed < 0 || Math.abs(wallElapsed - monoElapsed) > 5_000;
+      // Defer the warm-cache dispatch to a microtask so the process-wide patch keeps getTimeOffset's
+      // documented-async contract (the real https round trip always calls back async); capture the value
+      // first so a concurrent cache write can't swap it mid-dispatch (H-TRD-089).
+      if (!stepped && wallElapsed < cacheTtlMs) { const v = cachedOffset; queueMicrotask(() => cb(null, v, 0)); return; }
+    }
+    // A fetch is already running → subscribe and let its single terminal result fan out to us.
+    if (inflight) { inflight.push(cb); return; }
+    const subscribers: OffsetCb[] = [cb];
+    inflight = subscribers;
     let settled = false;
-    // A stall/error uses the best-known offset (last cache, else 0) and is NOT cached, so the next call
-    // re-attempts the real value; a real success IS cached. Never surfaces an error (parity with the
-    // callers' own `off = err ? 0 : offset`), so the confirmation proceeds bounded instead of hanging.
-    const done = (offset: number, cacheable: boolean): void => {
+    // A real success IS cached and surfaces err=null. A stall/error falls back: if we hold a real cached
+    // offset we deliver that with err=null (a genuine value — a downstream memo of it is correct); with NO
+    // cache we surface the failure `err` + offset 0, so a consumer that memoizes on success (steamcommunity
+    // confirmations pins _timeOffset for 12h) re-fetches next call instead of pinning our 0. Our own
+    // AccountTrader callers do `off = err ? 0 : offset`, so the no-cache case stays byte-identical (off 0).
+    // Fallbacks are NOT cached, so the next call re-attempts the real value (H-TRD-090).
+    // Drains every coalesced subscriber with the identical result, then ends the in-flight window.
+    const done = (err: Error | null, offset: number, cacheable: boolean): void => {
       if (settled) return;
       settled = true;
-      if (cacheable) { cachedOffset = offset; cachedAt = now(); }
-      cb(null, offset, 0);
+      if (cacheable) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); opts.onRealOffset?.(offset); }
+      inflight = null;
+      // Warm cache → a real offset with no error; cold fallback → surface the cause so no memo pins our 0.
+      const outErr = cacheable || cachedOffset !== undefined ? null : err;
+      const outOff = cacheable ? offset : (cachedOffset ?? 0);
+      for (const sub of subscribers) sub(outErr, outOff, 0);
     };
     const timer = setTimeout(() => {
       logger.warn(`[steam-totp] QueryTime stalled >${timeoutMs}ms – using offset ${cachedOffset ?? 0} (S6)`);
-      done(cachedOffset ?? 0, false);
+      done(new Error(`QueryTime timed out after ${timeoutMs}ms`), 0, false);
     }, timeoutMs);
     timer.unref?.();
     try {
-      original((err, offset) => { clearTimeout(timer); done(err ? (cachedOffset ?? 0) : offset, !err); });
-    } catch {
+      // A non-finite "success" (the vendor's missing-return bug: a 200 whose server_time is truthy-non-numeric
+      // fires callback(null, NaN)) is treated exactly like the error path — fallback + NOT cached — so NaN never
+      // poisons the cache for an hour and SteamTotp.time(NaN)→BigInt(NaN) never throws (H-TRD-092).
+      original((err, offset) => {
+        clearTimeout(timer);
+        const ok = !err && Number.isFinite(offset);
+        // Cache a real success INDEPENDENTLY of `settled`: under sustained >timeoutMs latency the timer
+        // settles first and `done` early-returns before its own cache write, so the real offset would be
+        // thrown away and the cache never populates (every call keeps paying the full stall). Writing it
+        // here lets one slow-but-successful response end that regime; the already-delivered fallback is
+        // not re-fired — only future calls benefit (H-TRD-091).
+        if (ok) { cachedOffset = offset; cachedAt = now(); cachedAtMono = monotonicNow(); }
+        if (!ok) {
+          const outErr = err ?? new Error('QueryTime returned a non-finite offset');
+          if (!settled) logErrFallback(outErr);
+          done(outErr, 0, false);
+        } else {
+          done(null, offset, true);
+        }
+      });
+    } catch (e) {
       clearTimeout(timer);
-      done(cachedOffset ?? 0, false);
+      const outErr = e instanceof Error ? e : new Error(String(e));
+      if (!settled) logErrFallback(outErr);
+      done(outErr, 0, false);
     }
   };
 }
 
 let installed = false;
 
+// Process-wide mirror of the last REAL Steam time offset the S6 layer learned (seconds). The login
+// path (LoginFlow.generateTotpCode / msUntilNextTotp, the SDA OTP route) reads this so credential
+// logins and displayed codes survive local-vs-Steam clock skew exactly like the money paths already do.
+// Offset never learned (network down / QueryTime stalled) → stays 0 → byte-identical to the old raw-clock
+// behaviour; no error is surfaced (parity with S6's documented fallback).
+let lastKnownOffsetSec = 0;
+
+/** The last REAL Steam time offset in seconds (0 until one is learned; the finiteness guard excludes a
+ *  bogus vendor offset poisoning the mirror). Feed to SteamTotp.generateAuthCode(secret, offset). */
+export function getSteamTotpOffsetSeconds(): number {
+  return Number.isFinite(lastKnownOffsetSec) ? lastKnownOffsetSec : 0;
+}
+
+/** Learn the offset once, fire-and-forget, so it is usually known before the first login (a stalled prime
+ *  carries the same lingering-socket exposure as today's first confirmation call — no new class). Call
+ *  after installSteamTotpTimeout so the patched, timeout-bounded getTimeOffset is used. */
+export function primeSteamTotpOffset(): void {
+  const totp = SteamTotp as unknown as { getTimeOffset: GetOffset };
+  totp.getTimeOffset(() => { /* fire-and-forget: onRealOffset populates the mirror; error/stall → stays 0 */ });
+}
+
 /** Patch the real steam-totp.getTimeOffset process-wide. Idempotent. Call once at boot. */
 export function installSteamTotpTimeout(opts?: TotpTimeoutOpts): void {
   if (installed) return;
   installed = true;
+  const callerOnRealOffset = opts?.onRealOffset;
+  const wired: TotpTimeoutOpts = {
+    ...opts,
+    onRealOffset: (offsetSec: number) => { lastKnownOffsetSec = offsetSec; callerOnRealOffset?.(offsetSec); },
+  };
   const totp = SteamTotp as unknown as { getTimeOffset: GetOffset };
   const original = totp.getTimeOffset.bind(totp);
-  totp.getTimeOffset = makeTimeoutGetOffset(original, opts);
-  logger.info('[steam-totp] getTimeOffset wrapped with a 10s timeout + per-process cache (S6)');
+  totp.getTimeOffset = makeTimeoutGetOffset(original, wired);
+  const t = opts?.timeoutMs ?? 10_000;
+  logger.info(`[steam-totp] getTimeOffset wrapped with a ${t}ms timeout + per-process cache (S6)`);
 }

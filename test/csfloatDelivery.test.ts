@@ -59,6 +59,48 @@ test('S39: a successful write resets the failure streak (a transient blip self-h
     'the successful write persisted the ids buffered during the blip');
 });
 
+// S39 residue / INV-F1 — the in-memory latch is lost on the very crash it defends against (the last-good
+// file lacks the buffered ids), so a fresh boot would resume delivery and re-send them. A sidecar marker
+// makes the degraded state SURVIVE a restart until an operator clears the fault.
+test('S39: a persist-failure latch survives a restart (marker keeps delivery paused)', () => {
+  const file = freshDeliveredPath();
+  const marker = `${file}.persist_failed`;
+  const store = new CsFloatDeliveredStore(file);
+  withWriteFailing(() => {
+    store.add('id-1'); store.add('id-2'); store.add('id-3'); // 3rd consecutive failure → latch + marker
+  });
+  assert.equal(store.isDegraded(), true, 'auto-delivery disabled after N persist failures');
+  assert.equal(fs.existsSync(marker), true, 'the latch wrote a durable marker sidecar');
+  // Simulate a process bounce: a brand-new instance reads the SAME (last-good, id-less) file + the marker.
+  const rebooted = new CsFloatDeliveredStore(file);
+  assert.equal(rebooted.isDegraded(), true, 'a fresh boot stays paused while the marker is present');
+});
+
+test('S39: a self-healed write clears the marker so a later boot is not falsely stranded', () => {
+  const file = freshDeliveredPath();
+  const marker = `${file}.persist_failed`;
+  const store = new CsFloatDeliveredStore(file);
+  withWriteFailing(() => { store.add('a'); store.add('b'); store.add('c'); }); // latch + marker
+  assert.equal(fs.existsSync(marker), true);
+  store.add('d'); // writable now → persists the FULL list and clears the marker
+  assert.equal(fs.existsSync(marker), false, 'a successful persist clears the marker');
+  assert.equal(store.isDegraded(), true, 'the current instance stays latched (in-memory) for this run');
+  const rebooted = new CsFloatDeliveredStore(file); // marker gone → a fresh boot is not degraded
+  assert.equal(rebooted.isDegraded(), false, 'a fresh boot after self-heal resumes normally');
+});
+
+// H-FLT-011 — add() must SIGNAL persist durability so the worker stops launching new deliveries on
+// the first non-durable record (instead of after PERSIST_FAIL_LIMIT). TRUE = durable, FALSE = memory-only.
+test('H-FLT-011: add() returns true on a durable persist and false when the write fails', () => {
+  const file = freshDeliveredPath();
+  const store = new CsFloatDeliveredStore(file);
+  assert.equal(store.add('ok-1'), true, 'a durable persist returns true');
+  assert.equal(store.add('ok-1'), true, 'a duplicate is already durably recorded → true');
+  withWriteFailing(() => {
+    assert.equal(store.add('fail-1'), false, 'a thrown write → the id is in memory only → false');
+  });
+});
+
 // F-2 / INV-F1 — never send to an unverified destination (undocumented CSFloat payload).
 test('isValidDeliveryTarget: accepts valid steamID/trade-URL, rejects malformed', () => {
   assert.equal(isValidDeliveryTarget({ assetId: '123', partnerSteamId: '76561198000000000' }), true);

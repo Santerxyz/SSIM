@@ -51,10 +51,12 @@ test('S12: while DEGRADED, a set() does NOT clobber the corrupt file or write a 
   const p = mk(corrupt);
   const s = new CsFloatKeyStore(p);
   assert.equal(s.isDegraded(), true);
-  s.set('carol', 'key-c'); // must NOT persist
+  // H-FLT-009: a degraded set() throws instead of silently keeping a phantom in-memory key —
+  // the disk state (corrupt file, no .bak) is still left byte-for-byte untouched.
+  assert.throws(() => s.set('carol', 'key-c'), /NOT saved/, 'a degraded set must not claim success');
   assert.equal(fs.readFileSync(p, 'utf8'), corrupt, 'the corrupt file is left byte-for-byte untouched');
   assert.equal(fs.existsSync(`${p}.bak`), false, 'no .bak written (would clobber the last-good backup)');
-  assert.equal(s.get('carol'), 'key-c', 'in-memory still works for THIS run');
+  assert.equal(s.get('carol'), undefined, 'a refused write leaves NO phantom in-memory key');
 });
 
 test('S12: a healthy store persists a key to disk (baseline — degraded is the only no-write path)', () => {

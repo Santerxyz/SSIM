@@ -26,7 +26,10 @@ export class RateLimiter {
     return new Promise<T>((resolve, reject) => {
       const task = (): void => {
         this.active++;
-        fn().then(resolve, reject).finally(() => { this.active--; this.pump(); });
+        let p: Promise<T>;
+        try { p = fn(); }
+        catch (e) { this.active--; reject(e); this.pump(); return; }
+        p.then(resolve, reject).finally(() => { this.active--; this.pump(); });
       };
       (priority < 0 ? this.lo : this.hi).push(task);
       this.pump();

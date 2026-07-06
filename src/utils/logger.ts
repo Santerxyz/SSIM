@@ -12,21 +12,31 @@ fsExtra.ensureDirSync(LOG_DIR);
 export const LOG_FILE = path.join(LOG_DIR, 'ssim.log');
 
 /**
- * Strips credentials from a string before it is logged or surfaced to a client.
- * Proxy agents embed `scheme://user:pass@host:port`; a failed proxied request puts
- * that full URL (creds included) into Error.message, which must never land at rest
- * in ssim.log or be returned over the API. Masks the userinfo of any URL-like token.
+ * The canonical secret redactor, applied to every record's message + stack (below) and
+ * re-exported for the res.json error middleware / crash sink. It covers PROXY CREDENTIALS
+ * (URL userinfo + legacy host:port:user:pass forms) — the one class that can reach a sink
+ * as part of an Error string. It does NOT scrub non-proxy secret VALUES (identity_secret /
+ * shared_secret / tokens / password / license key); those must never be passed to a sink,
+ * which is enforced by test/logSecrecyGuard.test.ts, not by scrubbing here. See redact.ts.
  */
-export function redactSecrets(input: string): string {
-  if (!input) return input;
-  return input.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@');
-}
+export { redactSecrets } from './redact';
+import { redactSecrets } from './redact';
 
-// Redacts credentials from every record's message + stack before ANY transport writes it.
+// Redacts credentials from EVERY record's string-valued fields before ANY transport
+// writes it. message + stack are the common carriers, but format.json() serializes every
+// enumerable own property, so any metadata a caller attaches (`logger.warn('x', { proxy })`,
+// or a custom Error with an enumerable own field) must be scrubbed too — otherwise those
+// keys reach ssim.log/error.log + the Live Logs ring unredacted. (H-BOOT-015.)
 const redactFormat = winston.format((info) => {
   if (typeof info.message === 'string') info.message = redactSecrets(info.message);
   const withStack = info as { stack?: unknown };
   if (typeof withStack.stack === 'string') withStack.stack = redactSecrets(withStack.stack);
+  // Object.keys returns only string keys, so winston's Symbol(level/message/splat) internals
+  // are untouched; level/timestamp are credential-free so redacting them is a no-op.
+  for (const k of Object.keys(info)) {
+    if (typeof (info as Record<string, unknown>)[k] === 'string')
+      (info as Record<string, unknown>)[k] = redactSecrets((info as Record<string, unknown>)[k] as string);
+  }
   return info;
 })();
 
@@ -48,7 +58,9 @@ const consoleFormat = winston.format.combine(
 );
 
 // ─── File = structured JSON (timestamps + error stacks) ───────────────────────
-const fileFormat = winston.format.combine(
+// Exported so the redaction guard (test/loggerRedaction.test.ts) can drive the exact
+// format the File transports use.
+export const fileFormat = winston.format.combine(
   winston.format.timestamp(),
   winston.format.errors({ stack: true }),
   redactFormat,                 // after errors() so a populated info.stack is scrubbed too

@@ -155,8 +155,15 @@ export class BuyService {
     // account resident; a mass-buy passes releaseSession:false because its batch releases all at once.
     const release = opts?.releaseSession !== false;
     const game: GameId = p.appId === 440 ? 'tf2' : 'cs2';
-    const qty = Math.max(1, Math.floor(p.quantity));
+    const qty = Math.floor(Number(p.quantity));            // replaces the Math.max(1, …) up-coercion
     const perItem = Math.round(p.pricePerItemMinor);
+    // H-TRD-039: fail CLOSED on non-finite/non-positive caller input BEFORE any guard/journal state is
+    // touched (this throw predates wasLiveBefore/inFlight.add below). Without it a NaN perItem makes
+    // priceTotalMinor NaN and BOTH pre-commit ceilings compare false (NaN comparisons) → the caps fail
+    // OPEN; the old Math.max(1, …) also up-coerced a quantity-0 request into a real 1-item buy. "invalid"
+    // in both messages keys the /api/market/buy classifier to 400 (bad request), not a retryable 502.
+    if (!Number.isInteger(perItem) || perItem < 1) throw new Error(`invalid pricePerItemMinor ${p.pricePerItemMinor} – must resolve to an integer ≥ 1 (wallet minor units)`);
+    if (!Number.isInteger(qty) || qty < 1) throw new Error(`invalid quantity ${p.quantity} – must resolve to an integer ≥ 1`);
 
     const guardKey = `${p.username.toLowerCase()}|${p.appId}|${p.marketHashName}`;
     if (this.inFlight.has(guardKey)) {
@@ -179,7 +186,11 @@ export class BuyService {
       const priorBuy = this.journal.consultRefusal(guardKey);
       if (priorBuy) {
         refused = true;
-        throw new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry in a few seconds to proceed.`);
+        // S15: a machine-readable marker so the money endpoint answers 409 (a honest
+        // duplicate-precondition), not a retryable 502 an HTTP client would blindly re-fire.
+        const e = new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry in a few seconds to proceed.`) as Error & { moneyOpRefused?: true };
+        e.moneyOpRefused = true;
+        throw e;
       }
       this.journal.begin(guardKey, 'buy');
       // SESSION PRE-FLIGHT: guarantee a live web session with a valid sessionid cookie BEFORE
@@ -196,9 +207,11 @@ export class BuyService {
       // (it would over-report the fill). The AFTER read already guards this; the BEFORE
       // read must too. Remember it so the post-order verification reports "unverified"
       // instead of a wrong fill count — the order still proceeds (money unaffected).
-      const baselinePartial = !!before.partial;
+      // H-TRD-041: a stale-fallback baseline (B31 suspect-read substitution) is a failed fresh read,
+      // so it mis-anchors ownedBefore the same way a page-capped one does → also unverified.
+      const baselinePartial = !!before.partial || !!before.staleReadFallback;
       if (baselinePartial) {
-        logger.warn(`[${p.username}] pre-buy baseline inventory was PARTIAL (page-capped) – fill count will be reported as unverified`);
+        logger.warn(`[${p.username}] pre-buy baseline inventory was PARTIAL (page-capped) or stale-fallback – fill count will be reported as unverified`);
       }
 
       // Currency MUST be known — never guess. A wrong currency/scale spends real
@@ -242,7 +255,7 @@ export class BuyService {
         if (isAmbiguousCommitFailure(err)) commitMayHaveLanded = true;
         throw err;
       });
-      if (order.placed) this.journal.record(guardKey, 'placed'); // survives a post-commit crash (record never throws)
+      if (order.placed) this.journal.record(guardKey, 'buy', 'placed'); // survives a post-commit crash (record never throws)
 
       // ── From here the order IS placed on Steam. NEVER throw out of buy() now —
       //    a thrown post-order error would become a 5xx and invite a duplicate retry.
@@ -254,12 +267,13 @@ export class BuyService {
       let verifyFailed = baselinePartial;
       try {
         const after = await this.inventory.forceRefresh(p.username, game);
-        if (after.partial) {
-          // The verification read was TRUNCATED (page cap) → ownedAfter would reflect an
-          // incomplete inventory, so the fill diff is unreliable. Don't report a possibly
-          // wrong fill; mark unverified instead. (C11 / INV-D3.)
+        if (after.partial || after.staleReadFallback) {
+          // The verification read was TRUNCATED (page cap) or a B31 stale-fallback substitution
+          // (H-TRD-041: a suspect after-read hands back the pre-buy snapshot) → ownedAfter would
+          // reflect an incomplete / stale inventory, so the fill diff is unreliable. Don't report a
+          // possibly wrong fill; mark unverified instead. (C11 / INV-D3.)
           verifyFailed = true;
-          logger.warn(`[${p.username}] post-buy verification read was PARTIAL (page-capped) – fill count unreliable; order WAS placed, check manually`);
+          logger.warn(`[${p.username}] post-buy verification read was ${after.partial ? 'PARTIAL (page-capped)' : 'a stale-fallback substitution'} – fill count unreliable; order WAS placed, check manually`);
         } else {
           ownedAfter = ownedCount(after, p.marketHashName);
           walletAfter = after.wallet?.balance;
@@ -312,11 +326,17 @@ export class BuyService {
       };
     } finally {
       this.inFlight.delete(guardKey);
+      // Release the session this direct buy created (mass-buy opts out — its batch releases once). This
+      // runs BEFORE journal.resolve so the refuse-once memory survives a crash inside the release await
+      // (H-TRD-042): the outcome has not reached the operator until Express writes the response AFTER this
+      // finally, so consuming the entry any earlier would let a post-restart re-fire double-spend a buy the
+      // operator never saw complete. releaseCreatedSessions is best-effort (never throws), so resolve is
+      // always reached when the process lives; if release ever hangs the entry lingers and the next
+      // identical buy is refused once — safe friction consistent with the S15 contract.
+      if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
       // S3/S15: consume the entry on a clean resolution (success OR a definite/pre-commit failure), but
       // KEEP it when the commit failed transport-ambiguously (S3) or when THIS call was a refusal (S15).
       if (!commitMayHaveLanded && !refused) this.journal.resolve(guardKey);
-      // Release the session this direct buy created (mass-buy opts out — its batch releases once).
-      if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
     }
   }
 

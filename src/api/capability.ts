@@ -55,11 +55,14 @@ const OPEN_POST_EXEMPT = /^\/api\/app\/(?:open-logs|client-error)$/i;
  * initial load and the logs window work without the token.
  */
 export function isProtectedRequest(method: string, path: string): boolean {
-  if (!path.startsWith('/api/')) return false;
+  // Express non-strict routing serves `…/proxy/` on the `…/proxy` route, so classify on the
+  // collapsed path or the trailing-slash form bypasses the token.
+  const p = path.length > 1 ? path.replace(/\/+$/, '').replace(/\/{2,}/g, '/') : path;
+  if (!p.startsWith('/api/')) return false;
   const m = method.toUpperCase();
-  if (m === 'POST' && OPEN_POST_EXEMPT.test(path)) return false; // diagnostics stay token-free (S20)
+  if (m === 'POST' && OPEN_POST_EXEMPT.test(p)) return false; // diagnostics stay token-free (S20)
   if (m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE') return true;
-  if (m === 'GET' && SECRET_GET.test(path)) return true;
+  if (m === 'GET' && SECRET_GET.test(p)) return true;
   return false;
 }
 

@@ -1,6 +1,8 @@
 import { scaleConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
 import { AppSettings } from '../core/AppSettings';
+import { canConfirm } from '../core/accountCapability';
+import { identitySecretPresence } from '../core/LoginFlow';
 import { CsFloatDeliveredStore } from './CsFloatDeliveredStore';
 import type { AccountManager } from '../core/AccountManager';
 import type { TradeService } from '../trading/TradeService';
@@ -85,8 +87,16 @@ export class CsFloatAutoAcceptWorker {
   private async deliverFor(username: string): Promise<void> {
     const acc = this.accounts.get(username);
     if (!acc) return;
-    if (acc.tier === 'limited') {
-      logger.warn(`[csfloat-auto-accept] ${username} is Limited (no maFile) — cannot confirm a Steam delivery; skipping (attach a maFile to enable).`);
+    // INV-A1 / C5 (H-ACC-083): gate on the REAL "can confirm" capability (the maFile's
+    // identity_secret, resolved vault THEN disk like login does), not the raw tier label — a
+    // full/absent-tier account whose maFile lacks an identity_secret would otherwise send a real
+    // Steam offer that can never be 2FA-confirmed and sits stuck unconfirmed. The tier is consulted
+    // only when the maFile is unreadable (identitySecret === 'unknown').
+    if (canConfirm({
+      identitySecret: identitySecretPresence(acc),
+      tier: acc.tier,
+    }) === false) {
+      logger.warn(`[csfloat-auto-accept] ${username} cannot confirm a Steam delivery (its maFile has no identity_secret); skipping (attach a maFile with one to enable).`);
       return;
     }
     if (!this.csfloat.hasKey(username)) return;
@@ -119,19 +129,44 @@ export class CsFloatAutoAcceptWorker {
         continue;
       }
       logger.info(`[csfloat-auto-accept] ${username}: delivering CSFloat trade ${id} (asset ${d.assetId})`);
-      const sent = await this.trades.sendTrade(username, {
-        tradeUrl: d.tradeUrl,
-        partnerSteamId: d.partnerSteamId,
-        myItems: [{ assetId: d.assetId }],
-      });
+      let sent;
+      try {
+        sent = await this.trades.sendTrade(username, {
+          tradeUrl: d.tradeUrl,
+          partnerSteamId: d.partnerSteamId,
+          myItems: [{ assetId: d.assetId }],
+        });
+      } catch (err) {
+        // H-FLT-001: the poll cadence (45s) is far longer than TradeService's refuse-once min-age
+        // (8s), so the refuse-once gate is only a one-poll speed-bump for this automated caller.
+        // Classify the failure: a TRANSPORT-AMBIGUOUS commit (ECONNRESET/timeout on offer.send's
+        // response leg) means the offer MAY already exist on Steam — record it in the delivered store
+        // exactly like a success so it is NEVER auto-resent, and tell the operator to verify manually.
+        // A DEFINITE Steam rejection did not land, so do NOT record it; log and move on.
+        if ((err as { commitMayHaveLanded?: boolean }).commitMayHaveLanded === true) {
+          this.delivered.add(id);
+          logger.warn(`[csfloat-auto-accept] ${username}: trade ${id} — the Steam send was network-AMBIGUOUS (${(err as Error).message}); the offer MAY have been created. It will NOT be auto-resent. Verify this account's Steam trade offers manually and re-deliver only if genuinely absent.`);
+        } else {
+          logger.error(`[csfloat-auto-accept] ${username}: trade ${id} — Steam rejected the send (${(err as Error).message}); not marked delivered, will retry on a later poll.`);
+        }
+        continue;
+      }
       // Mark delivered regardless of confirm status: the offer EXISTS on Steam now, so a
       // re-attempt would create a SECOND real offer for the same sale. An unconfirmed one needs
       // MANUAL 2FA confirmation (surfaced loudly), never an automatic resend.
-      this.delivered.add(id);
+      const persisted = this.delivered.add(id);
       if (sent.status === 'unconfirmed') {
         logger.warn(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} SENT but NOT 2FA-confirmed – confirm it manually in Steam; it will NOT be auto-resent (avoids a duplicate offer).`);
       } else {
         logger.info(`[csfloat-auto-accept] ${username}: trade ${id} → Steam offer ${sent.offerId} (${sent.status})`);
+      }
+      if (!persisted) {
+        // H-FLT-011: the delivered-id for a real, already-sent Steam offer was NOT made durable
+        // (disk full / EACCES / AV lock, or the store already latched degraded). Do NOT launch
+        // another delivery for this account this pass — a crash before the store recovers would
+        // re-send every sale whose dedup was never saved. Stop after the first non-durable record.
+        logger.error(`[csfloat-auto-accept] ${username}: trade ${id} was delivered but its delivered-id could NOT be saved – stopping this account's pass to avoid re-delivering sales whose dedup is not durable. Fix the disk/permissions and restart.`);
+        return;
       }
     }
   }
@@ -166,7 +201,7 @@ function extractTrades(res: unknown): Dict[] {
   return Array.isArray(arr) ? (arr as Dict[]) : [];
 }
 
-function extractDelivery(t: Dict): { tradeUrl?: string; partnerSteamId?: string; assetId?: string } | null {
+export function extractDelivery(t: Dict): { tradeUrl?: string; partnerSteamId?: string; assetId?: string } | null {
   if (!t || typeof t !== 'object') return null;
   const buyer = (t.buyer ?? t.buyer_user ?? {}) as Dict;
   const contract = (t.contract ?? t.listing ?? {}) as Dict;
@@ -181,7 +216,24 @@ function extractDelivery(t: Dict): { tradeUrl?: string; partnerSteamId?: string;
 function pickString(...vals: unknown[]): string | undefined {
   for (const v of vals) {
     if (typeof v === 'string' && v) return v;
-    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    // Accept a numeric id ONLY when it survived JSON.parse without precision loss. A steamID64
+    // (~7.66e16) is always above Number.MAX_SAFE_INTEGER (9.0e15), so a numerically-sourced
+    // buyer_id/steam_id has ALREADY been rounded to a wrong-but-17-digit value before we see it —
+    // String(v) would stringify the corruption and slip past STEAMID64_RE, mis-delivering the asset.
+    // Discard it (→ undefined → the row is skipped, never sent) rather than trust a lossy id.
+    if (typeof v === 'number') {
+      if (Number.isSafeInteger(v)) return String(v);
+      warnUnsafeNumericId(v);
+    }
   }
   return undefined;
+}
+
+// One-shot so a drifted payload does not spam the log: an unsafe-magnitude JSON number for an id
+// means CSFloat must transport that field as a STRING; operators need to see the shape drifted once.
+let warnedUnsafeNumericId = false;
+function warnUnsafeNumericId(v: number): void {
+  if (warnedUnsafeNumericId) return;
+  warnedUnsafeNumericId = true;
+  logger.warn(`[csfloat-auto-accept] a CSFloat payload id arrived as an unsafe-magnitude JSON number (${v}) — its low digits were already lost to JSON.parse rounding; the field must be transported as a string. Discarding it and skipping the affected row.`);
 }

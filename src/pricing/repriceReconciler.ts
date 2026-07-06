@@ -8,7 +8,11 @@
 //  is a DURABLE, resumable reconciler: it re-pulls whenever the backend's fetched
 //  count ADVANCES and keeps going until the fill queue DRAINS (no deadline), with a
 //  single no-progress safety stop so a wedged backend can't spin forever. The pure
-//  step is here so it is unit-testable; public/app.js mirrors it exactly.
+//  step is here so it is unit-testable; public/app.js (watchPriceFill) is a hand-copy
+//  that mirrors it — the same drain/progress/no-progress state machine AND the same
+//  S10 re-pull coalescing (MIN_REPULL_MS below == app.js REPRICE_MIN_REPULL_MS): while
+//  a fill is busy, re-pull at most once per MIN_REPULL_MS even as `fetched` advances on
+//  every poll; the drain always re-pulls immediately. Keep the two in sync.
 // ════════════════════════════════════════════════════════════════════════════
 
 export interface RepriceState {
@@ -18,6 +22,9 @@ export interface RepriceState {
   lastProgressAt: number;
   /** Highest `processed` count seen — liveness by ANY terminal resolution, not just a fetch (S19). */
   lastProcessed?: number;
+  /** Timestamp (ms) of the last re-pull we emitted — gates the S10 re-pull coalescing.
+   *  Optional (mirrors `lastProcessed?`): a state that predates this field reads as 0. */
+  lastRepulledAt?: number;
 }
 
 export interface PricingStatus {
@@ -31,6 +38,11 @@ export interface PricingStatus {
  *  (a wedged pricing loop) — bounds the otherwise-deadline-free watch. */
 export const NO_PROGRESS_TIMEOUT_MS = 15 * 60_000;
 
+/** S10: while a fill is busy, coalesce re-pulls of the whole /api/inventory to at most one per this
+ *  interval even as `fetched` advances on every poll (each re-pull is an expensive enrich + full
+ *  re-render). The drain always re-pulls immediately. Mirror of public/app.js REPRICE_MIN_REPULL_MS. */
+export const MIN_REPULL_MS = 10_000;
+
 export interface RepriceDecision {
   /** Re-pull the inventory/totals now (new prices landed, or the fill just drained). */
   repull: boolean;
@@ -42,7 +54,7 @@ export interface RepriceDecision {
 
 /**
  * One reconciler step. Given the current state and a fresh /api/pricing/status snapshot:
- *   • if `fetched` advanced → re-pull and record progress;
+ *   • if `fetched` advanced → record progress, and re-pull if ≥ minRepullMs since the last one (S10 coalescing);
  *   • if the queue is drained (not running, nothing queued) → do a final re-pull and stop;
  *   • else if no progress for NO_PROGRESS_TIMEOUT_MS → stop (wedged backend safety).
  * Pure: same inputs → same decision; the caller owns the timing loop.
@@ -90,12 +102,13 @@ export function priceFillIndicator(status: PricingStatus | null | undefined): Pr
   return { show, left, done, eta: formatFillEta(left), long: left > 200 };
 }
 
-export function repriceDecision(state: RepriceState, status: PricingStatus | null | undefined, now: number): RepriceDecision {
+export function repriceDecision(state: RepriceState, status: PricingStatus | null | undefined, now: number, minRepullMs: number = MIN_REPULL_MS): RepriceDecision {
   const fetched = Number(status?.fetched) || 0;
   const processed = Number(status?.processed) || 0;
   const busy = !!(status && (status.running || (Number(status.queued) || 0) > 0));
   let { lastPulled, lastProgressAt } = state;
   let lastProcessed = state.lastProcessed ?? 0;
+  let lastRepulledAt = state.lastRepulledAt ?? 0;
   let repull = false;
   // PricingService.status().fetched/processed RESET to 0 at the start of each run(), so a new fill
   // generation makes them DROP below what we already saw. Detect that as a fresh generation and
@@ -103,14 +116,20 @@ export function repriceDecision(state: RepriceState, status: PricingStatus | nul
   if (fetched < lastPulled) { lastPulled = 0; }
   if (processed < lastProcessed) { lastProcessed = 0; }
   let progressed = false;
-  if (fetched > lastPulled) { lastPulled = fetched; repull = true; progressed = true; } // NEW PRICES → re-pull
+  let fetchedAdvanced = false;
+  if (fetched > lastPulled) { lastPulled = fetched; fetchedAdvanced = true; progressed = true; } // NEW PRICES available
   // S19: a name resolved via the error/429-exhaustion path advances `processed` but NOT `fetched`, so in a
   // 429/error storm `fetched` stalls while the fill IS alive. Count `processed` as progress too, or the
   // no-progress safety would terminally stop the watch (and hide the badge) mid-fill.
   if (processed > lastProcessed) { lastProcessed = processed; progressed = true; }
   if (progressed) lastProgressAt = now;
+  // S10: while busy, re-pull on a NEW-prices advance but at most once per minRepullMs — a whole-/api/inventory
+  // re-pull is expensive, and `fetched` can advance on every poll. (Mirrors app.js shouldRepullFill.) The drain
+  // below always re-pulls immediately.
+  if (fetchedAdvanced && now - lastRepulledAt >= minRepullMs) repull = true;
   let stop = false;
   if (!busy) { repull = true; stop = true; }                                   // drained → final pull, then stop
   else if (now - lastProgressAt > NO_PROGRESS_TIMEOUT_MS) { stop = true; }       // wedged → safety stop (no extra pull)
-  return { repull, stop, state: { lastPulled, lastProgressAt, lastProcessed } };
+  if (repull) lastRepulledAt = now;
+  return { repull, stop, state: { lastPulled, lastProgressAt, lastProcessed, lastRepulledAt } };
 }
