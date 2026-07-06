@@ -3,7 +3,7 @@ import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
 import { SessionState, type ManagedSession, type WebSession } from '../types/session';
 import { AgentFactory } from '../network/AgentFactory';
-import { loadMaFile, buildLogOnOptions, generateTotpCode, msUntilNextTotp } from './LoginFlow';
+import { loadMaFile, buildLogOnOptions, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
 import { webCookiesFresh, ownsCreatedSession } from './sessionHealth';
@@ -348,6 +348,12 @@ export class SessionManager extends EventEmitter {
 
     for (let attempt = 1; attempt <= MAX_CONNECTION_ATTEMPTS; attempt++) {
       try {
+        // The credential payload's TOTP is valid for one 30s window; a retry re-sends the
+        // SAME object minutes later. Re-stamp a current-window code before every retry so
+        // attempt 2 logs in on its first logOn instead of losing the stale-code Steam Guard
+        // race against the 15s login timeout. Attempt 1 keeps the just-built code; the token
+        // path ({ refreshToken }) carries no maFile and is untouched.
+        if (attempt > 1 && pathLabel === 'credential' && maFile) restampTotp(logOnOptions, maFile);
         return await this.performLogin(account, logOnOptions, maFile);
       } catch (err) {
         lastErr = err as LoginError;

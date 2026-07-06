@@ -63,6 +63,11 @@ export interface LogOnOptions {
   [key: string]:    unknown; // satisfies steam-user's index-signature requirement
 }
 
+/**
+ * Builds the credential logOn payload. The embedded twoFactorCode is valid only for the
+ * current 30s window — any caller that re-sends this payload later (retry loops) must call
+ * {@link restampTotp} immediately before each send, or a stale-window code races the login timeout.
+ */
 export function buildLogOnOptions(account: AccountConfig, maFile: MaFile): LogOnOptions {
   // VAULT MODE: the password is in the vault (accounts.json's is blanked). A BLANK vault
   // password (`||`, not `??`) must never mask a recoverable plaintext one — fall back to the
@@ -75,4 +80,9 @@ export function buildLogOnOptions(account: AccountConfig, maFile: MaFile): LogOn
     twoFactorCode:    generateTotpCode(maFile.shared_secret),
     rememberPassword: false,
   };
+}
+
+/** Refreshes the twoFactorCode on an existing logOn payload to the current 30s window. */
+export function restampTotp(options: Record<string, unknown>, maFile: MaFile): void {
+  options.twoFactorCode = generateTotpCode(maFile.shared_secret);
 }
