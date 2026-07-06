@@ -218,7 +218,14 @@ function sha256OfUrl(urlStr) {
 async function rollback(prev, cookie) {
   if (!prev || !prev.latest) { console.error('  ✗ no previous manifest captured — cannot auto-rollback; restore /version manually.'); return; }
   try {
-    const r = await request('POST', `${API}/admin/api/release/rollback`, { cookie, body: { to: prev.latest, manifest: prev } });
+    // If the previously-live manifest was a kind:'single-exe' migration cut, the server's rollback route
+    // (admin.js S1a) 409s unless we confirm the re-arm. Restoring the manifest that was live at the START
+    // of this run is by definition the operator's prior intent, so supply the confirmation — but only for
+    // that kind, and log it so the re-arm is never silent (H-SHL-008).
+    const isSingleExe = prev.kind === 'single-exe';
+    if (isSingleExe) console.error('  ↩ prior manifest was a single-exe migration cut — confirming its restore');
+    const body = { to: prev.latest, manifest: prev, ...(isSingleExe ? { confirmSingleExe: true } : {}) };
+    const r = await request('POST', `${API}/admin/api/release/rollback`, { cookie, body });
     if (r.status === 200 || r.status === 201) { console.error(`  ↩ rolled /version back to the previously-live v${prev.latest}`); return; }
     console.error(`  ✗ rollback route returned HTTP ${r.status}. Manually re-point /version to v${prev.latest} (sha ${String(prev.sha256).slice(0, 12)}…).`);
   } catch (e) { console.error(`  ✗ rollback error: ${e.message}. Manually restore /version to v${prev.latest}.`); }
