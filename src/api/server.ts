@@ -1754,7 +1754,7 @@ export function createApp(deps: ApiDeps): Express {
     const game = appid === 440 ? 'tf2' : 'cs2';
     const currency = inventory.getCached(username, game)?.wallet?.currency ?? 3;
     const info = currencyInfo(currency);
-    const lowestMinor = await market.lowestAsk(name, appid, currency, info.decimals);
+    const lowestMinor = await market.lowestAsk(name, appid, currency);
     res.json({ lowestMinor, currency, currencyIso: info.iso, decimals: info.decimals });
   }));
 

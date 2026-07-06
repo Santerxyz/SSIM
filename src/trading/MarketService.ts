@@ -165,8 +165,8 @@ export class MarketService {
 
   /** Lowest market ask (minor units of `currency`) for the buy modal's live-price
    *  button. Delegates to the pricing engine; null when no price is found. */
-  lowestAsk(name: string, appid: number, currency: number, decimals: number): Promise<number | null> {
-    return this.pricing.getLowestAsk(name, appid, currency, decimals);
+  lowestAsk(name: string, appid: number, currency: number): Promise<number | null> {
+    return this.pricing.getLowestAsk(name, appid, currency);
   }
 
   // ── Active Orders: fetch + cancel (sell listings & buy orders) ──────────────

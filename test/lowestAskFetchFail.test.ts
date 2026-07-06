@@ -24,7 +24,7 @@ test('H-PRC-006: getLowestAsk THROWS FETCH_FAILED on 429 (throttle), not a silen
   const mp = new MarketPricing();
   const restore = installAxiosMock(async () => ({ status: 429, data: {} }));
   try {
-    await assert.rejects(() => mp.getLowestAsk(name, 730, 3, 2), /FETCH_FAILED_429/);
+    await assert.rejects(() => mp.getLowestAsk(name, 730, 3), /FETCH_FAILED_429/);
   } finally { restore(); }
 });
 
@@ -33,12 +33,12 @@ test('H-PRC-006: getLowestAsk THROWS on 5xx and on success:false', async () => {
 
   let restore = installAxiosMock(async () => ({ status: 500, data: {} }));
   try {
-    await assert.rejects(() => mp.getLowestAsk(name, 730, 3, 2), /FETCH_FAILED_500/, '5xx must throw');
+    await assert.rejects(() => mp.getLowestAsk(name, 730, 3), /FETCH_FAILED_500/, '5xx must throw');
   } finally { restore(); }
 
   restore = installAxiosMock(async () => ({ status: 200, data: { success: false } }));
   try {
-    await assert.rejects(() => mp.getLowestAsk(name, 730, 3, 2), /FETCH_FAILED_200/, 'success:false must throw');
+    await assert.rejects(() => mp.getLowestAsk(name, 730, 3), /FETCH_FAILED_200/, 'success:false must throw');
   } finally { restore(); }
 });
 
@@ -46,7 +46,7 @@ test('H-PRC-006: getLowestAsk resolves null ONLY for an authoritative 200+succes
   const mp = new MarketPricing();
   const restore = installAxiosMock(async () => ({ status: 200, data: { success: true } })); // no lowest/median
   try {
-    assert.equal(await mp.getLowestAsk('Some Unpriced Item', 730, 3, 2), null);
+    assert.equal(await mp.getLowestAsk('Some Unpriced Item', 730, 3), null);
   } finally { restore(); }
 });
 
@@ -54,6 +54,6 @@ test('H-PRC-006: getLowestAsk returns the parsed price on an authoritative hit',
   const mp = new MarketPricing();
   const restore = installAxiosMock(async () => ({ status: 200, data: { success: true, lowest_price: '1,50€' } }));
   try {
-    assert.equal(await mp.getLowestAsk(name, 730, 3, 2), 150);
+    assert.equal(await mp.getLowestAsk(name, 730, 3), 150);
   } finally { restore(); }
 });

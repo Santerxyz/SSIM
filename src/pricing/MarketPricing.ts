@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../utils/logger';
-import { parseSteamMoney } from './currencies';
+import { parseSteamMoney, knownCurrencyInfo } from './currencies';
 
 const APPID_CS2     = 730;
 /** Steam currency code for EUR. ALL market prices SSIM computes are EUR seller-net
@@ -176,8 +176,13 @@ export class MarketPricing {
    * currency). One direct priceoverview call; null when Steam returns no price.
    */
   async getLowestAsk(
-    name: string, appid: number, currency: number, decimals: number, opts?: PriceFetchOpts,
+    name: string, appid: number, currency: number, opts?: PriceFetchOpts,
   ): Promise<number | null> {
+    // Derive the minor-unit scale from `currency` INSIDE the module (fail closed) — never
+    // trust a caller-supplied `decimals` sourced from the DISPLAY-grade currencyInfo fallback,
+    // which guesses 2 for an unknown code and would mis-scale a real 0-decimal ask 100× (S64/B18).
+    const cInfo = knownCurrencyInfo(currency);
+    if (!cInfo) return null;
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?country=${COUNTRY}&currency=${currency}&appid=${appid}&market_hash_name=${encodeURIComponent(name)}`;
     const r = await axios.get(url, {
@@ -193,7 +198,7 @@ export class MarketPricing {
     // ONLY an authoritative 200 + success:true with no parseable lowest/median. (S2 parity, matches
     // SteamPriceSource.fetchPriceCents.)
     if (r.status !== 200 || !r.data || r.data.success !== true) throw new Error(`FETCH_FAILED_${r.status}`);
-    return parseSteamMoney(r.data.lowest_price, decimals) ?? parseSteamMoney(r.data.median_price, decimals);
+    return parseSteamMoney(r.data.lowest_price, cInfo.decimals) ?? parseSteamMoney(r.data.median_price, cInfo.decimals);
   }
 }
 
