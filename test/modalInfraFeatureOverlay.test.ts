@@ -39,3 +39,25 @@ test('H-FE-009: no manual onModalOpen(ov) remains (would double-fire / mismatch 
   assert.doesNotMatch(APP_JS, /onModalOpen\(ov\)/,
     'feature overlays must open via the observer, not a manual onModalOpen that has no matching close');
 });
+
+// ─── H-FE-010: closing a feature overlay must stop its self-rescheduling status poller ───
+// tuPollExec / casketPollMove re-arm tuState.execTimer / ckState.moveTimer while the job is running.
+// The feature overlays' only close was a bare classList.add('hidden') — no clearTimeout — so a close
+// mid-job left the poller firing status fetches + writing the hidden [data-foot] until the backend
+// finally reported running:false (minutes for a large casket move). Since H-FE-009 routes close
+// through onModalClose, that is the single choke point: it must run a per-overlay teardown that
+// clears the timer. Pinned at source level (the FE tests use source extraction, not jsdom).
+
+test('H-FE-010: onModalClose runs a per-overlay teardown hook', () => {
+  assert.match(APP_JS, /const MODAL_TEARDOWNS = new Map\(\)/,
+    'a per-overlay teardown registry must exist');
+  assert.match(extractFunction(APP_JS, 'onModalClose'), /MODAL_TEARDOWNS\.get\(overlay\.id\)\?\.\(\)/,
+    'onModalClose must invoke the closing overlay’s teardown (the single close choke point)');
+});
+
+test('H-FE-010: both feature overlays register a teardown that clears their poll timer', () => {
+  assert.match(APP_JS, /MODAL_TEARDOWNS\.set\('tradeup-overlay',[^\n]*clearTimeout\(tuState\.execTimer\)/,
+    'the Trade-Up overlay must clear tuState.execTimer on close');
+  assert.match(APP_JS, /MODAL_TEARDOWNS\.set\('casket-overlay',[^\n]*clearTimeout\(ckState\.moveTimer\)/,
+    'the Storage-Unit overlay must clear ckState.moveTimer on close');
+});

@@ -6130,6 +6130,11 @@ const OVERLAY_CLOSERS = new Map([
   ['confirm-overlay', () => closeConfirm(false)],   // FB-01: Esc / registry-close = safe cancel (no-op)
 ]);
 const FB04 = { stack: [], triggers: new WeakMap(), lastTrigger: null };
+// H-FE-010: teardown hooks run when a modal reaches onModalClose (any close path — X, backdrop,
+// Esc). The lazily-built Trade-Up/Casket overlays self-reschedule status pollers; without a close
+// hook those timers keep firing status fetches + DOM writes into a hidden overlay after close.
+// Keyed by overlay id; runs exactly on hide.
+const MODAL_TEARDOWNS = new Map();
 function modalOverlays() { return Array.from(document.querySelectorAll('[id$="-overlay"]')); }
 function topOpenOverlay() {
   const open = modalOverlays().filter((o) => !o.classList.contains('hidden'));
@@ -6165,6 +6170,7 @@ function isRestorable(node) {
     && typeof node.focus === 'function';
 }
 function onModalClose(overlay) {
+  MODAL_TEARDOWNS.get(overlay.id)?.();   // H-FE-010: stop any per-modal poller before draining state
   const i = FB04.stack.indexOf(overlay);
   if (i >= 0) FB04.stack.splice(i, 1);
   const trigger = FB04.triggers.get(overlay);
@@ -6577,6 +6583,9 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
 
 // ── Trade-Ups ────────────────────────────────────────────────────────────────
 const tuState = { username: null, candidates: [], selected: new Set(), execTimer: null };
+// H-FE-010: closing the Trade-Up overlay stops its execute-status poller (otherwise it keeps
+// firing /api/tradeup/execute-status + writing the hidden foot until the job reports running:false).
+MODAL_TEARDOWNS.set('tradeup-overlay', () => { clearTimeout(tuState.execTimer); tuState.execTimer = null; });
 
 async function openTradeUpModal(username) {
   const ov = ensureFeatureOverlay('tradeup-overlay', 'Trade-Ups', 'fa-arrow-trend-up', 'max-w-5xl');
@@ -6712,6 +6721,9 @@ function tuPollExec() {
 
 // ── Storage Units (caskets) ──────────────────────────────────────────────────
 const ckState = { username: null, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', error: null, moveTimer: null };
+// H-FE-010: closing the Storage-Unit overlay stops its move-status poller (a long casket move would
+// otherwise poll /api/casket/move-status + write the hidden foot for minutes after close).
+MODAL_TEARDOWNS.set('casket-overlay', () => { clearTimeout(ckState.moveTimer); ckState.moveTimer = null; });
 
 async function openCasketModal(username) {
   const ov = ensureFeatureOverlay('casket-overlay', 'Storage Units', 'fa-box-archive', 'max-w-5xl');
