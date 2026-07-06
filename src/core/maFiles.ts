@@ -64,6 +64,25 @@ export function loadMaFileFromDisk(maFilePath: string): MaFile {
   // Normalize a non-string identity_secret to the documented "no identity_secret → confirmations
   // unavailable" state (LoginFlow warns on empty); a non-string would detonate deep in steam-totp.
   if (mf.identity_secret !== undefined && typeof mf.identity_secret !== 'string') mf.identity_secret = '' as never;
+  return normalizeMaFile(mf, raw);
+}
+
+/**
+ * Sanitizes a parsed maFile before anything persists it into the vault. SDA writes
+ * `Session.SteamID` as a raw JSON NUMBER > 2^53, so JSON.parse silently ROUNDS it to a
+ * different id — persisting that under a type that claims `string` is a wrong-partner
+ * landmine (the exact bug BanService fights at read time). We recover the precision-safe
+ * SteamID64 from the RAW text (never the parsed number) into the string `steamid`, and drop
+ * the whole `Session` block: its number is lossy and its web cookies are long-dead and read
+ * by nothing in src/. The on-disk source file is never rewritten, so SDA compat is untouched.
+ */
+function normalizeMaFile(mf: MaFile, raw: string): MaFile {
+  if (typeof mf.steamid !== 'string' || !/^7656\d{13}$/.test(mf.steamid)) {
+    const m = raw.match(/"(?:SteamID|steamid)"\s*:\s*"?(7656\d{13})"?/);
+    if (m) mf.steamid = m[1];
+    else if (typeof mf.steamid !== 'string') delete mf.steamid; // never persist a rounded number as a string id
+  }
+  delete mf.Session; // lossy number + dead cookies; the source file on disk is left intact
   return mf;
 }
 
@@ -147,7 +166,8 @@ export function listDropZoneMaFiles(): { entries: DropZoneEntry[]; unreadable: D
   for (const file of fs.readdirSync(MA_FILES_DIR)) {
     if (!file.toLowerCase().endsWith('.mafile')) continue;
     try {
-      const maFile = JSON.parse(readTextFileTolerant(path.join(MA_FILES_DIR, file))) as MaFile;
+      const raw = readTextFileTolerant(path.join(MA_FILES_DIR, file));
+      const maFile = normalizeMaFile(JSON.parse(raw) as MaFile, raw);
       const accountName = typeof maFile.account_name === 'string' ? maFile.account_name : '';
       // Require a USABLE maFile (account_name + shared_secret) — mirror loadMaFileFromDisk so a
       // maFile that fails the strict disk loader is never imported via this looser path.
