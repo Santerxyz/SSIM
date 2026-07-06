@@ -59,7 +59,11 @@ export function loadMaFileFromDisk(maFilePath: string): MaFile {
   const raw = readTextFileTolerant(filePath);
   let mf: MaFile;
   try { mf = JSON.parse(raw) as MaFile; } catch { throw new Error(`maFile is not valid JSON: ${filePath}`); }
-  if (!mf.shared_secret) throw new Error(`maFile missing shared_secret: ${filePath}`);
+  if (!mf || typeof mf !== 'object' || Array.isArray(mf)) throw new Error(`maFile is not a JSON object: ${filePath}`);
+  if (typeof mf.shared_secret !== 'string' || !mf.shared_secret) throw new Error(`maFile missing shared_secret: ${filePath}`);
+  // Normalize a non-string identity_secret to the documented "no identity_secret → confirmations
+  // unavailable" state (LoginFlow warns on empty); a non-string would detonate deep in steam-totp.
+  if (mf.identity_secret !== undefined && typeof mf.identity_secret !== 'string') mf.identity_secret = '' as never;
   return mf;
 }
 
@@ -144,11 +148,11 @@ export function listDropZoneMaFiles(): { entries: DropZoneEntry[]; unreadable: D
     if (!file.toLowerCase().endsWith('.mafile')) continue;
     try {
       const maFile = JSON.parse(readTextFileTolerant(path.join(MA_FILES_DIR, file))) as MaFile;
-      const accountName = (maFile.account_name as string) || '';
+      const accountName = typeof maFile.account_name === 'string' ? maFile.account_name : '';
       // Require a USABLE maFile (account_name + shared_secret) — mirror loadMaFileFromDisk so a
       // maFile that fails the strict disk loader is never imported via this looser path.
       if (!accountName) { unreadable.push({ file, reason: 'no account_name' }); continue; }
-      if (!maFile.shared_secret) { unreadable.push({ file, reason: 'no shared_secret' }); continue; }
+      if (!(typeof maFile.shared_secret === 'string' && maFile.shared_secret)) { unreadable.push({ file, reason: 'no shared_secret' }); continue; }
       entries.push({ file, accountName, maFile });
     } catch (err) { unreadable.push({ file, reason: 'unreadable: ' + (err as Error).message }); }
   }
