@@ -107,17 +107,19 @@ export class TokenStore {
     return emptyFile();
   }
 
-  private save(): void {
+  private save(): boolean {
     if (this.degraded) {
       // Writing now would copy the corrupt file to .bak (clobbering the last-good backup) and overwrite
       // it — destroying the very data an operator needs to recover. Skip it. (B2.)
       logger.warn(`refresh token store is DEGRADED – NOT persisting (would clobber the corrupt ${path.basename(this.filePath)} + its .bak). Fix the file and restart.`);
-      return;
+      return false;
     }
     try {
       writeJsonAtomic(this.filePath, this.file, { spaces: 2, mode: 0o600, backup: true });
+      return true;
     } catch (err) {
       logger.warn(`Could not persist refresh tokens: ${(err as Error).message}`);
+      return false;
     }
   }
 
@@ -135,7 +137,8 @@ export class TokenStore {
     return this.get(username) !== undefined;
   }
 
-  set(username: string, token: string): void {
+  set(username: string, token: string): boolean {
+    let persisted: boolean;
     if (AccountVault.isEnabled()) {
       // S24: the vault's setToken → synchronous save() → writeJsonAtomic can THROW (disk full / EACCES /
       // AV lock). This runs INSIDE steam-user's `refreshToken` emit, so an escaping throw becomes a global
@@ -144,14 +147,17 @@ export class TokenStore {
       // warn-and-continue contract: the token is live for THIS session, just not persisted this attempt.
       try {
         AccountVault.setToken(username, token);
+        persisted = true;
       } catch (err) {
         logger.warn(`[${username}] could not persist refresh token to the vault (token live this session only): ${(err as Error).message}`);
+        persisted = false;
       }
     } else {
       this.file.tokens[this.key(username)] = token; // in-memory for THIS run
-      this.save();                                  // no-op while degraded (see save())
+      persisted = this.save();                      // false while degraded / on write failure (see save())
     }
     logger.info(`[${username}] refresh token persisted${this.degraded && !AccountVault.isEnabled() ? ' (in-memory only – store degraded)' : ''}`);
+    return persisted;
   }
 
   delete(username: string): void {

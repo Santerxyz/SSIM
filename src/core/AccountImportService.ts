@@ -232,10 +232,15 @@ export class AccountImportService {
     const steamId = (() => { try { return rec.session.steamID?.getSteamID64(); } catch { return undefined; } })();
 
     // 1) Persist the refresh token through the SessionManager's TokenStore (vault or file).
-    this.sessions.rememberRefreshToken(username, token);
+    const persisted = this.sessions.rememberRefreshToken(username, token);
 
     // 2) Org record. Token-only ⇒ no password, no maFile ⇒ LIMITED. accounts.json stays secret-free.
     const existing = this.accounts.get(username);
+    // INV-A2: a NEW token-only account whose ONLY credential never reached disk (vault/disk problem, the
+    // S24/B2 swallow) would become a permanently login-less record after restart. Abort BEFORE creating it
+    // so no org record exists without a login path; the wireEvents .catch surfaces this as state 'error' and
+    // a retry after fixing storage re-mints cleanly. An existing account keeps whatever login path it had.
+    if (!existing && !persisted) throw new Error('refresh token could not be persisted (vault/disk problem) — import aborted; fix storage and retry');
     if (!existing) {
       this.accounts.add({
         username, password: '', maFilePath: '',

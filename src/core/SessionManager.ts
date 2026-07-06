@@ -282,8 +282,9 @@ export class SessionManager extends EventEmitter {
    * so a QR/credentials-imported account logs in TOKEN-FIRST with no further prompts —
    * landing in the portable vault in vault mode, or refresh_tokens.json otherwise.
    */
-  rememberRefreshToken(username: string, token: string): void {
-    if (typeof token === 'string' && token) this.tokenStore.set(username, token);
+  rememberRefreshToken(username: string, token: string): boolean {
+    if (typeof token === 'string' && token) return this.tokenStore.set(username, token);
+    return false;
   }
 
   private async doLoginAccount(account: AccountConfig, key: string): Promise<ManagedSession> {
