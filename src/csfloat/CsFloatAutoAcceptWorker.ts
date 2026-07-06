@@ -1,6 +1,8 @@
 import { scaleConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
 import { AppSettings } from '../core/AppSettings';
+import { AccountVault } from '../core/AccountVault';
+import { canConfirm } from '../core/accountCapability';
 import { CsFloatDeliveredStore } from './CsFloatDeliveredStore';
 import type { AccountManager } from '../core/AccountManager';
 import type { TradeService } from '../trading/TradeService';
@@ -85,8 +87,17 @@ export class CsFloatAutoAcceptWorker {
   private async deliverFor(username: string): Promise<void> {
     const acc = this.accounts.get(username);
     if (!acc) return;
-    if (acc.tier === 'limited') {
-      logger.warn(`[csfloat-auto-accept] ${username} is Limited (no maFile) — cannot confirm a Steam delivery; skipping (attach a maFile to enable).`);
+    // INV-A1 / C5 (H-ACC-083): gate on the REAL "can confirm" capability (the maFile's
+    // identity_secret), not the raw tier label — a full/absent-tier account whose maFile
+    // lacks an identity_secret would otherwise send a real Steam offer that can never be
+    // 2FA-confirmed and sits stuck unconfirmed. In plaintext mode this reads the tier only
+    // (identical to the old gate); in vault mode it reads the vault maFile's identity_secret.
+    if (canConfirm({
+      vaultEnabled: AccountVault.isEnabled(),
+      vaultMaFileHasIdentitySecret: !!AccountVault.getAccount(acc.username)?.maFile?.identity_secret,
+      tier: acc.tier,
+    }) === false) {
+      logger.warn(`[csfloat-auto-accept] ${username} cannot confirm a Steam delivery (its maFile has no identity_secret); skipping (attach a maFile with one to enable).`);
       return;
     }
     if (!this.csfloat.hasKey(username)) return;

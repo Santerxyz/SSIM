@@ -1460,7 +1460,7 @@ function renderAccountRow(acc, depth) {
           <div class="flex items-center gap-1.5">
             <p class="text-sm font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-300'}">
               ${escapeHtml(acc.displayName || acc.username)}</p>
-            ${acc.tier === 'limited' ? `<span class="shrink-0 text-3xs font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Limited — imported without a maFile. Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need a maFile. Attach one to upgrade to Full.">LTD</span>` : ''}
+            ${acc.canConfirm === false ? `<span class="shrink-0 text-3xs font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Cannot confirm trades — its maFile has no identity_secret (or none is attached). Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need one. Attach a maFile to fix.">LTD</span>` : ''}
             <span class="acct-balance ml-auto shrink-0 text-2xs font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
           </div>
           <p class="text-2xs text-slate-500 truncate">${escapeHtml(acc.username)}</p></div>
@@ -1475,7 +1475,7 @@ function renderAccountRow(acc, depth) {
         <button data-hide="${escapeAttr(acc.username)}" data-hidden="${acc.hidden ? '1' : '0'}"
           title="${acc.hidden ? 'Show' : 'Hide'}" aria-label="${acc.hidden ? 'Show' : 'Hide'} ${escapeAttr(acc.username)}"
           class="hide-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} text-2xs"></i></button>
-        ${acc.tier === 'limited' ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
+        ${acc.canConfirm === false ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
           class="attach-btn w-6 h-6 rounded-md bg-slate-900/95 text-emerald-400 hover:text-white hover:bg-emerald-700 transition flex items-center justify-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>` : ''}
       </div>
     </div>`;
@@ -4290,10 +4290,10 @@ async function csfLoadTrades() {
     const [auto, tradesRes] = await Promise.all([ csfApi('/auto-accept').catch(() => ({ enabled: false })), csfApi('/trades?limit=50') ]);
     const trades = csfArr(tradesRes);
     const acc = state.allAccounts.find((a) => a.username === CSF.username);
-    const limited = !!(acc && acc.tier === 'limited');
+    const limited = !!(acc && acc.canConfirm === false);
     el.csfloatBody.innerHTML = `
       <div class="surface flex items-center justify-between px-4 py-3 mb-4">
-        <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? 'Unavailable on Limited accounts (no maFile to confirm the Steam delivery).' : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
+        <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? "Unavailable — this account's maFile has no identity_secret to confirm the Steam delivery. Attach a maFile with one to enable." : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
         <button data-csf="autoaccept" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
       </div>
       ${trades.length ? `<div class="space-y-2">${trades.map(csfTradeRow).join('')}</div>` : csfEmpty('fa-right-left', 'No trades yet.')}`;
