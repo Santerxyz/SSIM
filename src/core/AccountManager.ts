@@ -191,11 +191,12 @@ export class AccountManager {
   defaultEnvironmentId(): string { return this.db.environments[0]?.id ?? ''; }
 
   /** Adds a minimal org record for a brand-new vault-imported bot (NO secrets here). */
-  addImportedAccount(p: { username: string; maFilePath: string; environmentId: string; folderId?: string | null }): void {
+  addImportedAccount(p: { username: string; maFilePath: string; environmentId: string; folderId?: string | null; tier?: AccountTier }): void {
     if (this.rawGet(p.username)) return;
     this.db.accounts.push({
       id: uuidv4(), username: p.username, password: '', maFilePath: p.maFilePath,
       environmentId: p.environmentId, folderId: p.folderId ?? null,
+      ...(p.tier ? { tier: p.tier } : {}),
       enabled: true, addedAt: new Date().toISOString(),
     });
     this.save();

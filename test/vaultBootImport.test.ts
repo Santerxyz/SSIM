@@ -24,15 +24,18 @@ function cleanVaultDir(): void {
 }
 
 // Builds a SOURCE external vault.enc (its own isolated file + password) whose decrypted payload
-// carries the given raw accounts map, and returns its on-disk content for the import path to read.
-function buildExternalVault(accounts: Record<string, unknown>, password: string): string {
+// carries the given raw accounts map (and optional tokens map for token-only bots), and returns
+// its on-disk content for the import path to read.
+function buildExternalVault(accounts: Record<string, unknown>, password: string, tokens?: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ssim-extvault-${process.pid}-`));
   const file = path.join(dir, 'vault.enc');
   const src = new AccountVaultImpl(file, `${file}.bak`);
   src.unlockOrCreate(password);
   // Inject the malformed entries straight into the payload — upsertAccount would reject them, but a
   // corrupt/hand-edited source file has no such gate, which is exactly the shape under test.
-  (src as unknown as { payload: { accounts: Record<string, unknown> } }).payload.accounts = accounts;
+  const payload = (src as unknown as { payload: { accounts: Record<string, unknown>; tokens: Record<string, string> } }).payload;
+  payload.accounts = accounts;
+  if (tokens) payload.tokens = tokens;
   src.flush(); // encrypt + persist so the raw file content decrypts on the import side
   return fs.readFileSync(file, 'utf8');
 }
@@ -61,6 +64,35 @@ test('H-ACC-033: a source vault with null / non-string-username entries skips th
     assert.equal(AccountVault.hasAccount('good'), true, 'the good account landed in the vault');
     assert.equal(accounts.existsRaw('good'), true, 'and got an org record');
     assert.equal(AccountVault.hasAccount('num'), false, 'the corrupt numeric-username row was NOT imported (never key-renamed)');
+  } finally {
+    cleanVaultDir();
+  }
+});
+
+// ─── H-ACC-034: a token-only (QR-imported) source account carries the LIMITED tier ──
+// A token-only bot exists in the source vault ONLY as a payload.tokens entry with no accounts
+// record (B35 carryover). It has no maFile → no identity_secret → cannot confirm trades/sells, so
+// its org record must be stamped tier:'limited'. Absent tier is treated as 'full' and the two
+// tier-gated guards (auto-accept enable + delivery worker) key off tier==='limited', so an omitted
+// tier lets an operator turn on auto-deliver for an account that can never confirm the offer.
+test('H-ACC-034: a token-only source account is imported as tier "limited", not Full', () => {
+  cleanVaultDir();
+  try {
+    // A source vault with NO accounts entries, only a token-only bot in payload.tokens.
+    const raw = buildExternalVault({}, 'src-pw', { tokonly: 'JWT-REFRESH-TOKEN' });
+
+    AccountVault.unlockOrCreate('local-pw');
+    const accounts = new AccountManager();
+    const env = accounts.defaultEnvironmentId();
+
+    const r = importExternalVault(accounts, raw, 'src-pw', undefined, env, null);
+    assert.ok(r, 'the correct password decrypts the source vault (non-null)');
+    assert.equal(r!.imported, 1, 'the token-only bot is carried over');
+
+    const rec = accounts.getAllRaw().find(a => a.username === 'tokonly');
+    assert.ok(rec, 'the token-only bot got an org record');
+    assert.equal(rec!.tier, 'limited', 'the token-only bot is labelled Limited, not Full (no maFile → cannot confirm)');
+    assert.equal(rec!.maFilePath, '', 'and carries no maFile path');
   } finally {
     cleanVaultDir();
   }

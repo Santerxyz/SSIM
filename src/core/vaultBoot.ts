@@ -513,7 +513,7 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
     if (AccountVault.getToken(k) || accounts.existsRaw(k)) { skipped++; continue; } // already local
     const folderNamePath = folderPaths?.get(k);
     const folderId = explicitFolder ?? ((folderNamePath && folderNamePath.length) ? accounts.ensureFolderPath(env, folderNamePath) : null);
-    accounts.addImportedAccount({ username: k, maFilePath: '', environmentId: env, folderId });
+    accounts.addImportedAccount({ username: k, maFilePath: '', environmentId: env, folderId, tier: 'limited' });
     AccountVault.setToken(k, tok);
     imported++;
   }
