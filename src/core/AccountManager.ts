@@ -44,7 +44,7 @@ export class AccountManager {
         version: DB_VERSION, environments: [defaultEnv], folders: [], accounts: [],
         updatedAt: new Date().toISOString(),
       };
-      fsExtra.writeJsonSync(DB_PATH, fresh, { spaces: 2 });
+      writeJsonAtomic(DB_PATH, fresh, { spaces: 2 });
       return fresh;
     }
     let db: AccountsDatabase;
