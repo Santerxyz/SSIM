@@ -85,9 +85,18 @@ export function knownCurrencyInfo(code: number | undefined): CurrencyInfo | null
 
 /**
  * Parses one of Steam's localized money strings ("2,14€", "$1,234.56", "¥150",
- * "1.234,56 zł") into MINOR units for the given currency decimals. The decimal
- * separator is the LAST '.'/',' followed by exactly `decimals` digits; all other
- * separators are thousands groupings. 0-decimal currencies are read as integers.
+ * "1.234,56 zł") into MINOR units for the given currency decimals. The fractional
+ * part is the group after the LAST '.'/',' when that group is NOT a 3-digit
+ * thousands group and is no longer than `decimals` — an under-padded fraction
+ * ("1,5" → 150) is right-padded rather than mis-read as an integer 10×/100× too
+ * large. All other separators are thousands groupings. A trailing group longer
+ * than `decimals` (that is not 3-digit grouping) is ambiguous → null (fail closed,
+ * S64). 0-decimal currencies are read as integers.
+ *
+ * The 3-digit-group carve-out assumes no currency has `decimals >= 3` (every entry
+ * in STEAM_CURRENCIES is 0 or 2, and parseEurCents hardcodes 2); a 3-decimal
+ * currency would need this branch revisited, since it would refuse a valid
+ * 3-digit fraction.
  */
 export function parseSteamMoney(s: unknown, decimals: number): number | null {
   if (typeof s !== 'string') return null;
@@ -97,9 +106,22 @@ export function parseSteamMoney(s: unknown, decimals: number): number | null {
     const n = parseInt(cleaned.replace(/[.,]/g, ''), 10);
     return Number.isFinite(n) ? n : null;
   }
-  const m = new RegExp(`^(.*)[.,](\\d{${decimals}})$`).exec(cleaned);
-  const intPart = (m ? m[1] : cleaned).replace(/[.,]/g, '');
-  const decPart = m ? m[2] : '0'.repeat(decimals);
-  const minor = parseInt(intPart || '0', 10) * Math.pow(10, decimals) + parseInt(decPart, 10);
+  const lastSep = Math.max(cleaned.lastIndexOf('.'), cleaned.lastIndexOf(','));
+  const tail = lastSep >= 0 ? cleaned.slice(lastSep + 1) : '';
+  let intPart: string;
+  let decPart: string;
+  if (lastSep >= 0 && tail.length !== 3 && tail.length <= decimals) {
+    // fractional separator (exact- or under-padded): "1,50" / "1,5" → dec 50/50
+    intPart = cleaned.slice(0, lastSep).replace(/[.,]/g, '');
+    decPart = tail.padEnd(decimals, '0');
+  } else if (lastSep < 0 || tail.length === 3) {
+    // no separator, or only 3-digit thousands groups → whole value is the integer
+    intPart = cleaned.replace(/[.,]/g, '');
+    decPart = '0'.repeat(decimals);
+  } else {
+    // trailing group longer than `decimals` (and not a 3-digit group) — ambiguous
+    return null;
+  }
+  const minor = parseInt(intPart || '0', 10) * Math.pow(10, decimals) + parseInt(decPart || '0', 10);
   return Number.isFinite(minor) ? minor : null;
 }
