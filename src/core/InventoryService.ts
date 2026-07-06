@@ -174,7 +174,9 @@ export class InventoryService {
     const key = `${game}:${username.toLowerCase()}`;
     const running = this.inFlight.get(key);
     if (running) return running;
-    const p = this.doRefreshOne(username, game).finally(() => this.inFlight.delete(key));
+    const p = this.doRefreshOne(username, game).finally(() => {
+      if (this.inFlight.get(key) === p) this.inFlight.delete(key);
+    });
     this.inFlight.set(key, p);
     return p;
   }
