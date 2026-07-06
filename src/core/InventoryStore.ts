@@ -7,11 +7,15 @@ import { dataDir } from '../utils/paths';
 const DEFAULT_STORE_PATH = dataDir('inventories.json');
 
 // Resident-cache safety net: bound how many account records stay in RAM so a very large
-// fleet can never grow the inventory cache without limit. LRU by last access (read OR write);
-// an evicted account simply re-fetches from Steam on next access (the cache is fully
-// refetchable, and every consumer already handles a miss). Generous default (2000 per store)
-// → INERT at typical scale (hundreds of accounts, so no eviction ever happens and behaviour
-// is unchanged). Set SSIM_INV_CACHE_MAX=0 to disable, or lower it to cap RAM harder.
+// fleet can never grow the inventory cache without limit. LRU by last access (read OR write).
+// EVICTION IS DESTRUCTIVE: the dropped record is removed from RAM AND from the persisted file
+// (records is the same object flush() writes), and there is NO refetch-on-miss — the account
+// reverts to never-refreshed ("—", its last-known wallet gone) until the operator manually
+// refreshes it. Generous default (2000 per store) → INERT at typical scale (hundreds of
+// accounts, so no eviction ever happens and behaviour is unchanged). A lowered cap takes
+// effect from the first write (the constructor never evicts, so shrinking the cap can't
+// destroy disk records before the operator sees a log). Set SSIM_INV_CACHE_MAX=0 to disable,
+// or lower it to cap RAM harder.
 const MAX_RECORDS: number = (() => {
   const raw = Number(process.env.SSIM_INV_CACHE_MAX);
   if (raw === 0) return Infinity;                                  // explicit opt-out
@@ -126,6 +130,13 @@ export class InventoryStore {
     if (!this.dirty) return;
     this.dirtyCount = 0; // reset on every flush ATTEMPT (a failing disk must not re-trigger every set)
     try {
+      // Persist recency: rebuild `records` in LRU order (oldest→newest) so the line-57 seed
+      // reconstructs true access order across restarts — otherwise `lru` order dies with the
+      // process and the first post-restart evictions target first-EVER-inserted keys (which
+      // may be the operator's most-active accounts). Captures read-recency as of this flush.
+      const ordered: Record<string, AccountInventory> = {};
+      for (const k of this.lru) if (k in this.data.records) ordered[k] = this.data.records[k];
+      this.data.records = ordered;
       // If we booted empty over a locked-but-intact file (I/O-degraded load), keep the last
       // good file as `<path>.bak` before this near-empty first write replaces it — one-shot.
       writeJsonAtomic(this.path, this.data, { spaces: 0, backup: this.preserveNextFlush });
@@ -193,9 +204,10 @@ export class InventoryStore {
 
   /**
    * Drops the least-recently-used records from RAM when over MAX_RECORDS, so a very large
-   * fleet can't grow the cache without bound. Evicted accounts re-fetch from Steam on next
-   * access (the cache is refetchable; consumers handle a miss). No-op below the cap, so at
-   * typical scale (hundreds of accounts) this never runs and behaviour is unchanged.
+   * fleet can't grow the cache without bound. Eviction is DESTRUCTIVE: it deletes the record
+   * from RAM AND (on the next flush) from the persisted file, with no refetch-on-miss — the
+   * account reverts to never-refreshed ("—", wallet gone) until a manual refresh. No-op below
+   * the cap, so at typical scale (hundreds of accounts) this never runs and behaviour is unchanged.
    */
   private evictIfNeeded(): void {
     const over = this.lru.size - MAX_RECORDS;
@@ -206,9 +218,10 @@ export class InventoryStore {
     for (const k of drop) { delete this.data.records[k]; this.lru.delete(k); }
     if (drop.length) {
       this.scheduleFlush();
-      // debug (not info): eviction only happens above the cap (rare at typical scale), and a
-      // refresh-all over a huge fleet would otherwise log once per account — pure noise.
-      logger.debug(`[inv-cache] evicted ${drop.length} least-recently-used record(s) (cap ${MAX_RECORDS}) – ${this.path}`);
+      // info (not debug): eviction permanently deletes refreshed fleet data (wallets included)
+      // from disk with no refetch-on-miss — an operator must see it. It is already aggregated
+      // once per eviction pass (not per account), so it is not per-account spam.
+      logger.info(`[inv-cache] evicted ${drop.length} least-recently-used record(s) (cap ${MAX_RECORDS}) – ${this.path}`);
     }
   }
 
