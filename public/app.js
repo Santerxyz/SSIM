@@ -6115,6 +6115,18 @@ function onModalClose(overlay) {
     // safe default: do nothing — focus stays on <body> rather than a hidden element
   }, 0);
 }
+// Wire a modal overlay's hidden↔shown class toggles to the FB-04 open/close lifecycle. Applied to
+// every static overlay at boot AND to lazily-built feature overlays (Trade-Up/Casket) at creation,
+// so their close reliably reaches onModalClose and never strands the scroll-lock (H-FE-009).
+function observeOverlay(overlay) {
+  new MutationObserver(() => {
+    const hidden = overlay.classList.contains('hidden');
+    const tracked = FB04.stack.includes(overlay);
+    if (!hidden && !tracked) onModalOpen(overlay);
+    else if (hidden && tracked) onModalClose(overlay);
+  }).observe(overlay, { attributes: true, attributeFilter: ['class'] });
+}
+
 function setupModalInfra() {
   // FB-04 hardening: track the last element focused OUTSIDE any modal → the trigger to
   // restore focus to on close. focusin (capture) is PRIMARY and covers keyboard opens
@@ -6126,14 +6138,7 @@ function setupModalInfra() {
     const t = e.target && e.target.closest && e.target.closest('button, a, [role="button"], input, select, textarea, [tabindex]');
     if (outsideModal(t)) FB04.lastTrigger = t;
   }, true);
-  modalOverlays().forEach((overlay) => {
-    new MutationObserver(() => {
-      const hidden = overlay.classList.contains('hidden');
-      const tracked = FB04.stack.includes(overlay);
-      if (!hidden && !tracked) onModalOpen(overlay);
-      else if (hidden && tracked) onModalClose(overlay);
-    }).observe(overlay, { attributes: true, attributeFilter: ['class'] });
-  });
+  modalOverlays().forEach(observeOverlay);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' && e.key !== 'Tab') return;
     const top = topOpenOverlay();
@@ -6500,6 +6505,7 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
     <div data-foot class="px-6 py-2.5 border-t border-slate-800 shrink-0 text-2xs text-slate-500"></div>
   </div>`;
   document.body.appendChild(ov);
+  observeOverlay(ov); // route hidden↔shown through the FB-04 lifecycle (H-FE-009: no stranded scroll-lock)
   const close = () => ov.classList.add('hidden');
   ov.querySelector('[data-close]').addEventListener('click', close);
   ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
@@ -6516,8 +6522,7 @@ async function openTradeUpModal(username) {
   ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div class="empty-title">Scan this account for profitable trade-up contracts.</div><div class="empty-sub">Reads the inventory and computes positive-EV contracts from its skins.</div></div>`;
   ov.querySelector('[data-foot]').textContent = '';
   renderTuToolbar();
-  ov.classList.remove('hidden');
-  onModalOpen(ov);
+  ov.classList.remove('hidden'); // observeOverlay (H-FE-009) fires onModalOpen off the class mutation
 }
 
 function renderTuToolbar() {
@@ -6651,8 +6656,7 @@ async function openCasketModal(username) {
   ov.querySelector('[data-scope]').textContent = `· ${username}`;
   ov.querySelector('[data-toolbar]').innerHTML = `<label class="text-2xs uppercase tracking-wide text-slate-500 font-semibold">Storage unit</label><select data-ck-unit class="field !w-auto !py-1.5 text-sm"><option value="">— loading… —</option></select>`;
   ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-spinner cs2-spin"></i></div><div class="empty-title">Connecting to the game coordinator…</div></div>`;
-  ov.classList.remove('hidden');
-  onModalOpen(ov);
+  ov.classList.remove('hidden'); // observeOverlay (H-FE-009) fires onModalOpen off the class mutation
   // Load units (needs the GC library; degrades clearly if unavailable — shown in the unit panel).
   try {
     const r = await api(`/api/casket/${encodeURIComponent(username)}/list`);
