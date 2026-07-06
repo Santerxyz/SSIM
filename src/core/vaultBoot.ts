@@ -87,11 +87,14 @@ let headlessPwCache: string | undefined;
 
 /** Reads a line from stdin, echoing '*' per typed character (so the operator can SEE that
  *  input is registering). Handles Backspace and Ctrl-C. TTY only; uses char codes so no
- *  control characters are embedded in the source. */
-function maskedQuestion(query: string): Promise<string> {
+ *  control characters are embedded in the source. stdin/stdout are injectable (a PassThrough)
+ *  so the escape-swallow logic is unit-testable (H-ACC-023). Exported for tests only. */
+export function maskedQuestion(
+  query: string,
+  stdin: NodeJS.ReadStream = process.stdin,
+  stdout: NodeJS.WriteStream = process.stdout,
+): Promise<string> {
   return new Promise((resolve) => {
-    const stdin = process.stdin;
-    const stdout = process.stdout;
     const NL = String.fromCharCode(10);                                 // newline
     const ERASE = String.fromCharCode(8) + ' ' + String.fromCharCode(8); // backspace, space, backspace
     stdout.write(query);
@@ -105,12 +108,26 @@ function maskedQuestion(query: string): Promise<string> {
       try { stdin.setRawMode?.(wasRaw); } catch { /* noop */ }
       stdin.pause();
     };
+    // H-ACC-023: swallow VT escape sequences so a cursor/function key press (↑ = ESC [ A,
+    // Delete = ESC [ 3 ~) does NOT get its ANSI body appended to the password and echoed as
+    // stars. The state persists across `data` chunks (a sequence may straddle a chunk boundary).
+    let esc = false;    // one ESC byte seen; the next byte decides bare-ESC vs. a CSI/SS3 lead
+    let escCsi = false; // inside a CSI ([) / SS3 (O) sequence — consume until its final byte
     const onData = (chunk: string): void => {
       for (const ch of chunk) {
         const code = ch.charCodeAt(0);
-        if (code === 13 || code === 10) { cleanup(); stdout.write(NL); resolve(input); return; } // Enter
+        if (escCsi) {                                                                             // inside ESC [ … / ESC O …
+          if ((code >= 0x40 && code <= 0x7e) || code === 13 || code === 10) { esc = escCsi = false; } // final byte ends it
+          continue;                                                                               // never append, never echo
+        }
+        if (esc) {                                                                                // the one byte after a bare ESC
+          if (ch === '[' || ch === 'O') escCsi = true; else esc = false;                          // CSI/SS3 lead, else swallow just this key
+          continue;
+        }
+        if (code === 13 || code === 10) { cleanup(); stdout.write(NL); resolve(input); return; }  // Enter
         else if (code === 3) { cleanup(); stdout.write(NL); process.exit(1); }                    // Ctrl-C
         else if (code === 127 || code === 8) { if (input.length) { input = input.slice(0, -1); stdout.write(ERASE); } } // Backspace
+        else if (code === 27) { esc = true; }                                                     // ESC: start swallowing the sequence
         else if (code >= 32) { input += ch; stdout.write('*'); }                                  // printable
       }
     };
