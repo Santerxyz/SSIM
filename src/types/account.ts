@@ -121,8 +121,10 @@ export interface Folder {
 
 export interface MaFile {
   shared_secret:    string;
-  identity_secret:  string;
-  account_name:     string;
+  /** Absent or '' ⇒ this maFile cannot confirm trades/listings (limited capability); every consumer must truthiness-guard (see accountCapability.canConfirm) */
+  identity_secret?: string;
+  /** Absent in some third-party exports; drop-zone import requires it (maFiles.ts) */
+  account_name?:    string;
   serial_number?:   string;
   revocation_code?: string;
   uri?:             string;
