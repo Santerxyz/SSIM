@@ -342,7 +342,7 @@ export class BanService {
   private async fetchChunk(apiKey: string, batch: string[], bySteamId: Map<string, AccountBanInfo>): Promise<void> {
     if (batch.length === 0) return;
     try {
-      const players = await this.fetchBans(apiKey, batch);
+      const players = await this.fetchBansWithRetry(apiKey, batch);
       const returned = new Set<string>();
       for (const p of players) {
         const sid = String(p.SteamId ?? '');
@@ -369,6 +369,28 @@ export class BanService {
         if (info && !info.error) info.error = msg;
       }
       logger.warn(`[bans] ${msg}`);
+    }
+  }
+
+  /** Calls `fetchBans` with a bounded, classified retry: at most 3 attempts (1s then 4s back-off),
+   *  retrying ONLY a transient failure (429/5xx, a login-wall/malformed 200) or an untagged network
+   *  throw (axios ECONNRESET etc. — no `transient` tag). A `keyRejected` (401/403) or any other
+   *  permanent failure (other 4xx) throws on the first attempt unchanged — a retry can't fix it and
+   *  would waste the key. Worst-case added latency ≤ ~5s per chunk. The thrown error is surfaced by
+   *  `fetchChunk` per-account with its (now accurate) message. */
+  private async fetchBansWithRetry(apiKey: string, batch: string[]): Promise<SteamBanRecord[]> {
+    const delays = [1_000, 4_000]; // between attempts 1→2 and 2→3
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await this.fetchBans(apiKey, batch);
+      } catch (err) {
+        const e = err as { transient?: boolean; keyRejected?: boolean };
+        // Retry a tagged-transient error OR an untagged network throw (no `transient`, not keyRejected).
+        const retryable = e.transient === true || (e.transient === undefined && !e.keyRejected);
+        if (!retryable || attempt >= delays.length) throw err;
+        await sleep(delays[attempt++]);
+      }
     }
   }
 
@@ -532,10 +554,18 @@ export class BanService {
     const r = await axios.get(url, { timeout: 15_000, proxy: false, validateStatus: () => true });
     if (r.status === 401 || r.status === 403) {
       if (this.apiKeyFrom !== 'env') { this.apiKey = undefined; this.apiKeyFrom = undefined; } // re-acquire next time
-      throw new Error('Steam rejected the Web API key');
+      throw Object.assign(new Error('Steam rejected the Web API key'), { transient: false, keyRejected: true });
     }
-    if (r.status !== 200 || !r.data || !Array.isArray(r.data.players)) {
-      throw new Error(`Steam HTTP ${r.status}`);
+    if (r.status === 429 || r.status >= 500) {
+      throw Object.assign(new Error(`Steam HTTP ${r.status}`), { transient: true }); // rate-limit / server error → retry
+    }
+    if (r.status !== 200) {
+      throw Object.assign(new Error(`Steam HTTP ${r.status}`), { transient: false }); // other 4xx → permanent
+    }
+    if (!r.data || !Array.isArray(r.data.players)) {
+      // 200 with a login-wall/maintenance HTML body or a malformed shape → treat as transient (retry).
+      throw Object.assign(new Error('Steam returned an unexpected body (login wall or malformed response)'),
+        { transient: true });
     }
     return r.data.players as SteamBanRecord[];
   }
@@ -608,3 +638,5 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
     p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
   });
 }
+
+function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
