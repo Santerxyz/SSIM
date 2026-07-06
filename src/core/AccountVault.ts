@@ -347,19 +347,28 @@ export class AccountVaultImpl {
 
   /** Decrypts an EXTERNAL vault.enc (from another device) with the given password, WITHOUT
    *  touching this process's own vault. Returns its accounts+tokens, or null on wrong
-   *  password / corrupt file. Used by "Import SSIM Vault" to merge another farm. */
+   *  password / corrupt file. Throws Error(VAULT_NEWER_VERSION_ERROR) when the source file
+   *  was written by a NEWER SSIM (B30/H-ACC-043) so the caller can tell the operator to update
+   *  rather than collapsing it into a password error. Used by "Import SSIM Vault" to merge a farm. */
   decryptExternalVault(rawContent: string, password: string): { accounts: Record<string, VaultAccount>; tokens: Record<string, string> } | null {
     try {
       const env = this.parseEnvelope(JSON.parse(rawContent));
       if (!env) return null;
-      if (Number.isFinite(Number(env.v)) && Number(env.v) > VAULT_VERSION) return null; // newer file → don't guess
+      // A source vault from a NEWER SSIM must NOT collapse into the wrong-password `null` (B30):
+      // surface it as VAULT_NEWER_VERSION_ERROR so the import route can tell the operator to update
+      // SSIM instead of re-typing a correct password forever. Rethrown from the catch below so the
+      // generic swallow can't turn it back into null. H-ACC-043.
+      if (Number.isFinite(Number(env.v)) && Number(env.v) > VAULT_VERSION) throw new Error(VAULT_NEWER_VERSION_ERROR);
       const key = this.deriveKey(password, env.salt, env.params);
       const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
       decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
       const plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
       const payload = normalizePayload(JSON.parse(plain));
       return { accounts: payload.accounts, tokens: payload.tokens };
-    } catch { return null; }
+    } catch (e) {
+      if ((e as Error).message === VAULT_NEWER_VERSION_ERROR) throw e; // distinct error survives the generic catch
+      return null;
+    }
   }
 
   // ── Accounts ────────────────────────────────────────────────────────────────

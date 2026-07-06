@@ -14,7 +14,7 @@ import { InventoryService } from '../core/InventoryService';
 import { ValueHistoryService, GLOBAL_SERIES } from '../core/ValueHistoryService';
 import { ProcessHealth } from '../core/ProcessHealth';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
-import { AccountVault } from '../core/AccountVault';
+import { AccountVault, VAULT_NEWER_VERSION_ERROR } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
@@ -2084,6 +2084,11 @@ export function createApp(deps: ApiDeps): Express {
       if (r === null) return res.status(401).json({ error: 'wrong password, or this is not an SSIM vault file' });
       res.json(r);
     } catch (e) {
+      // A source vault from a NEWER SSIM is a distinct, actionable outcome — not a password error
+      // (B30/H-ACC-043): tell the operator to update SSIM on THIS machine before importing again.
+      if ((e as Error).message === VAULT_NEWER_VERSION_ERROR) {
+        return res.status(409).json({ error: 'This vault file was exported by a NEWER SSIM version. Update SSIM on this machine, then import again.' });
+      }
       res.status(400).json({ error: (e as Error).message });
     }
   });
