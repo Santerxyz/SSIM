@@ -140,6 +140,17 @@ export class InventoryService {
   }
 
   /**
+   * Clone-free read for AGGREGATION only (H-INV-023) — mirrors getCached's gc-preferred
+   * fallback but via InventoryStore.peek (no structuredClone, no LRU touch). The value-history
+   * snapshot only sums two numbers per account, so cloning the whole fleet's records per snapshot
+   * is pure event-loop stall. The caller MUST treat the result as read-only (INV-B12).
+   */
+  peekCached(username: string, game: GameId = 'cs2'): Readonly<AccountInventory> | undefined {
+    if (game === 'cs2') return this.gcStore.peek(username) ?? this.store.peek(username);
+    return this.storeFor(game).peek(username);
+  }
+
+  /**
    * The whole CS2 cache as the dashboard should see it: every account's GC record
    * if present, else its web record. GC overrides web (richer), so no account
    * appears twice and GC-exclusive data (listed items) survives a web refresh-all.

@@ -137,6 +137,18 @@ export class InventoryStore {
     return rec ? cloneInventory(rec) : undefined;
   }
 
+  /**
+   * Read-only view for AGGREGATION only (H-INV-023): the live record, NO clone and NO LRU
+   * touch — used by the value-history snapshot which sums two numbers per account and would
+   * otherwise structuredClone the whole multi-MB record per account, per snapshot. Callers
+   * MUST NOT mutate the returned object (INV-B12: read-time enrichment never persists into
+   * the cache); the read-only enricher `PricingService.totalsOf` upholds that. Use get()
+   * everywhere else.
+   */
+  peek(username: string): Readonly<AccountInventory> | undefined {
+    return this.data.records[username.toLowerCase()];
+  }
+
   set(username: string, inventory: AccountInventory): void {
     const key = username.toLowerCase();
     const existing = this.data.records[key];

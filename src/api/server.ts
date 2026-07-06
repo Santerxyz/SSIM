@@ -120,10 +120,13 @@ export function createDeps(): ApiDeps {
   const tradeup   = new TradeUpService(inventory, pricing, cs2Schema, gc);
   const casket    = new CasketService(gc, inventory);
   // GC-preferred reader so the worth curve counts GC records (incl. listed items), not just web.
+  // peekCached (H-INV-023): clone-free read — the snapshot only sums two numbers per account and
+  // treats the record read-only (totalsOf never mutates it), so cloning the fleet per snapshot is
+  // pure event-loop stall.
   const history   = new ValueHistoryService(
     accounts,
-    { get: (u) => inventory.getCached(u, 'cs2') }, // CS2 (GC-preferred merged view)
-    { get: (u) => inventory.getCached(u, 'tf2') }, // TF2 (parallel worth curve)
+    { get: (u) => inventory.peekCached(u, 'cs2') }, // CS2 (GC-preferred merged view)
+    { get: (u) => inventory.peekCached(u, 'tf2') }, // TF2 (parallel worth curve)
     pricing, exchange,
   );
   exchange.start();
