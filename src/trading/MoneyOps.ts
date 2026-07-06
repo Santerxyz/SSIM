@@ -17,7 +17,12 @@
 
 const inFlight = new Set<string>();
 
-/** Key for an asset-scoped money op. */
+/** Key for an asset-scoped money op.
+ *  Deliberately NOT app/context-scoped: relies on Steam economy assetids being unique across
+ *  apps in practice. Do not widen the key unless EVERY claim site derives the extra fields
+ *  identically for the same asset — mismatched derivation silently disables the cross-service
+ *  match (keys stop colliding). Worst case of the flat key is a spurious cross-game 'busy'
+ *  refusal, which is the safe direction. */
 export function assetKey(username: string, assetId: string): string {
   return `${username.toLowerCase()}:${assetId}`;
 }
