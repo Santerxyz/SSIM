@@ -4,6 +4,7 @@ import { MarketService } from '../src/trading/MarketService';
 import { TradeUpService } from '../src/trading/TradeUpService';
 import { CasketService } from '../src/trading/CasketService';
 import { TradeService } from '../src/trading/TradeService';
+import { InventoryService } from '../src/core/InventoryService';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  S14 — the update busy-gate must also cover mass-sell / trade-up craft / casket
@@ -73,4 +74,40 @@ test('H-TRD-012: TradeService.busy() is true while a batch accept is in flight',
   releaseAccept();
   await batch;
   assert.equal(svc.busy(), false, 'once the batch drains, the gate reopens');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-INV-007 — refreshAfterTrade sets no job flag and its local-IP accounts sit
+//  in the LocalIpThrottle queue (serial 6–12s cooldown) with NOTHING in inFlight,
+//  so busy() was blind to the whole pass and a confirmed update swap could hard-
+//  exit mid post-trade refresh. The bgRefreshPasses counter (bumped before the
+//  workers, decremented in the returned promise's finally) must make busy() true
+//  for the pass's entire lifetime — including while a fetch is still queued.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('H-INV-007: busy() is true while a refreshAfterTrade pass is queued/in flight', async () => {
+  const svc = Object.create(InventoryService.prototype) as InventoryService;
+  (svc as any).inFlight = new Map();
+  (svc as any).job = { running: false };
+  (svc as any).bgRefreshPasses = 0;
+  // ownershipCtx.run just invokes the callback (the AsyncLocalStorage isolation isn't under test here).
+  (svc as any).ownershipCtx = { run: (_store: unknown, fn: () => unknown) => fn() };
+
+  // Stub the per-account refresh with a controllable promise — this stands in for an account still
+  // parked in the throttle queue / mid-fetch: busy() must stay true until we release it.
+  let releaseRefresh!: () => void;
+  const refreshed = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+  (svc as any).refreshMaybeThrottled = () => refreshed;
+
+  assert.equal(svc.busy(), false, 'idle → not busy');
+
+  const pass = svc.refreshAfterTrade(['a']);
+  // The counter is bumped synchronously (before any fetch starts), so busy() is already true here.
+  assert.equal(svc.busy(), true, 'a queued post-trade refresh must gate a swap before any fetch starts');
+  assert.equal((svc as any).bgRefreshPasses, 1);
+
+  releaseRefresh();
+  await pass;
+  assert.equal(svc.busy(), false, 'once the pass settles, the gate reopens');
+  assert.equal((svc as any).bgRefreshPasses, 0);
 });

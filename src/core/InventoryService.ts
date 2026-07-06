@@ -107,6 +107,10 @@ export class InventoryService {
   private job: RefreshJob = { running: false, total: 0, done: 0, failed: [] };
   /** Co-operative cancel flag for the live bulk refresh (set by cancelRefresh()). */
   private refreshCancel = false;
+  /** H-INV-007: post-trade refresh passes in flight. `refreshAfterTrade` sets no job flag and its
+   *  local-IP accounts sit in the LocalIpThrottle queue with NOTHING in `inFlight`, so busy() was
+   *  blind to them and the update swap gate (C5) could fire mid-pass. Counted so busy() sees them. */
+  private bgRefreshPasses = 0;
   private onCompleteCb?: (reason: string, game?: GameId) => void;
   /** Serializes + spaces out fetches for no-proxy (local IP) accounts (rate-limit guard). */
   private readonly localIpThrottle = new LocalIpThrottle(LOCALIP_MIN_DELAY_MS, LOCALIP_MAX_DELAY_MS);
@@ -671,7 +675,7 @@ export class InventoryService {
 
   /** True while any inventory refresh (single or a bulk fleet refresh) is in flight — the update
    *  scheduler (C5) checks this so a mid-session update swap never interrupts a running refresh. */
-  busy(): boolean { return this.inFlight.size > 0 || this.job.running; }
+  busy(): boolean { return this.inFlight.size > 0 || this.job.running || this.bgRefreshPasses > 0; }
 
   /**
    * Starts a background refresh of `usernames` with at most `concurrency`
@@ -844,6 +848,7 @@ export class InventoryService {
       targets.push(u);
     }
     if (targets.length === 0) return Promise.resolve();
+    this.bgRefreshPasses++; // H-INV-007: make busy() see this pass while its accounts sit in the throttle queue
 
     const queue = [...targets];
     const workers = Math.max(1, Math.min(scaleConcurrency(queue.length), queue.length));
@@ -873,6 +878,7 @@ export class InventoryService {
       .then(() => {
         logger.info(`Post-trade inventory refresh done: ${targets.join(', ')}`);
         try { this.onCompleteCb?.('post-trade', 'cs2'); } catch { /* history is best-effort */ }
-      });
+      })
+      .finally(() => { this.bgRefreshPasses = Math.max(0, this.bgRefreshPasses - 1); }); // H-INV-007: single settle point (workers never reject)
   }
 }
