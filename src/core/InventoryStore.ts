@@ -99,15 +99,24 @@ export class InventoryStore {
   }
 
   /**
-   * Debounced persistence (mirrors PriceCache): during a refresh-all over
-   * hundreds of accounts, an immediate save per account would rewrite the
-   * multi-MB JSON hundreds of times. Reads are served from memory anyway, and
-   * the cache is refetchable – a 2s write coalesce is safe.
+   * Debounced persistence: during a refresh-all over hundreds of accounts,
+   * completions land well under the old 2s window, so each set() rewrote the
+   * whole multi-MB JSON (~40× larger than prices.json) once per 2s for the
+   * entire pass. Coalesce with a 30s max-delay window plus a burst cap (500)
+   * so a single fleet pass persists roughly once — same shape S43 gave
+   * PriceCache. Reads are served from memory and the cache is refetchable, so
+   * a hard crash mid-pass loses up to 30s of refreshed accounts (refetchable);
+   * shutdown and the bulk-pass completion both flush() directly.
    */
+  private static readonly FLUSH_MAX_DELAY_MS = 30_000;
+  private static readonly FLUSH_EVERY_N      = 500;
+  private dirtyCount = 0;
+
   private scheduleFlush(): void {
     this.dirty = true;
-    if (this.flushTimer) return;
-    this.flushTimer = setTimeout(() => this.flush(), 2_000);
+    if (++this.dirtyCount >= InventoryStore.FLUSH_EVERY_N) { this.flush(); return; } // burst cap → persist now
+    if (this.flushTimer) return;                                                     // else coalesce into one write
+    this.flushTimer = setTimeout(() => this.flush(), InventoryStore.FLUSH_MAX_DELAY_MS);
     this.flushTimer.unref?.();
   }
 
@@ -115,6 +124,7 @@ export class InventoryStore {
   flush(): void {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = undefined; }
     if (!this.dirty) return;
+    this.dirtyCount = 0; // reset on every flush ATTEMPT (a failing disk must not re-trigger every set)
     try {
       // If we booted empty over a locked-but-intact file (I/O-degraded load), keep the last
       // good file as `<path>.bak` before this near-empty first write replaces it — one-shot.
