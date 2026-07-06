@@ -96,11 +96,14 @@ export async function unlockVault(): Promise<void> {
     // missing (mis-set SSIM_HOME / partial restore) — that would orphan every account. Require an
     // explicit opt-in to start anew.
     if (!existing && looksLikeOrphanedVaultInstall() && process.env.SSIM_VAULT_CREATE !== '1') {
-      logger.error('[vault] accounts.json holds registered accounts but vault.enc is MISSING – refusing to create a new empty vault (their credentials would be lost). Restore vault.enc, or set SSIM_VAULT_CREATE=1 to start a NEW empty vault.');
+      logger.error('[vault] accounts.json holds registered accounts but vault.enc is MISSING – refusing to create a new empty vault (their credentials would be lost). Restore vault.enc (a local vault.enc.bak with the same Master Password is auto-restored), or set SSIM_VAULT_CREATE=1 to start a NEW empty vault.');
       process.exit(1);
     }
     try {
-      AccountVault.unlockOrCreate(envPw);
+      // createEmptyAnyway mirrors the B36 override: SSIM_VAULT_CREATE=1 skips the vault.enc.bak
+      // recovery probe and starts a NEW empty vault; otherwise a missing vault.enc self-heals from
+      // a matching .bak instead of orphaning the farm (H-ACC-039).
+      AccountVault.unlockOrCreate(envPw, { createEmptyAnyway: process.env.SSIM_VAULT_CREATE === '1' });
       headlessPwCache = envPw;                       // remember for runtime re-gates
       const viaDetached = process.env.SSIM_DETACHED === '1';
       delete process.env.SSIM_VAULT_PASSWORD;        // drop it from the readable env block

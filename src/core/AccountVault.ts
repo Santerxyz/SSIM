@@ -190,12 +190,17 @@ export class AccountVaultImpl {
 
   /**
    * Unlock an existing vault.enc, or CREATE a new empty one with `password`.
+   * If vault.enc is MISSING but a vault.enc.bak decrypts with `password`, the vault is RESTORED
+   * from the backup instead of a fresh empty one being created (AV quarantine of vault.enc, a
+   * partial restore, an accidental deletion — the password proves ownership of the .bak). Pass
+   * `opts.createEmptyAnyway` to skip that probe and deliberately start a NEW empty vault (H-ACC-039).
    * Throws:
-   *   • Error('WRONG_PASSWORD')            — the password is wrong (both vault.enc AND its .bak fail)
+   *   • Error('WRONG_PASSWORD')            — the password is wrong (both vault.enc AND its .bak fail,
+   *                                          OR vault.enc is missing but the .bak did not decrypt)
    *   • Error(VAULT_NEWER_VERSION_ERROR)   — the vault was written by a newer SSIM (B30)
    *   • Error('vault.enc is corrupt …')    — not an SSIM vault
    */
-  unlockOrCreate(password: string): { created: boolean } {
+  unlockOrCreate(password: string, opts?: { createEmptyAnyway?: boolean }): { created: boolean } {
     if (this.exists()) {
       let key: Buffer, salt: Buffer, plain: string;
       try {
@@ -228,6 +233,27 @@ export class AccountVaultImpl {
       this.salt = salt;
       logger.info(`[vault] unlocked (${this.accountCount()} account(s))`);
       return { created: false };
+    }
+    // vault.enc is MISSING. Before treating this as a first run, probe for a recoverable
+    // vault.enc.bak: if the SAME password decrypts the backup, vault.enc was quarantined/deleted
+    // but the farm's credentials survive → RESTORE from the .bak rather than silently creating an
+    // empty vault over the operator's only remaining copy (H-ACC-039). `createEmptyAnyway` is the
+    // deliberate escape hatch (portal confirm / SSIM_VAULT_CREATE=1) for a genuine fresh start.
+    let bakExists = false;
+    try { bakExists = fsExtra.existsSync(this.vaultBak); } catch { bakExists = false; }
+    if (!opts?.createEmptyAnyway && bakExists) {
+      const rec = this.tryRecoverFromBak(password);
+      if (rec) {
+        this.payload = rec.payload; this.key = rec.key; this.salt = rec.salt;
+        // S5: rewrite vault.enc WITHOUT a backup pass (never copy anything over the proven-good .bak).
+        this.save({ backup: false });
+        logger.info('[vault] vault.enc was missing but vault.enc.bak decrypted — restored the vault from the backup');
+        logger.info(`[vault] restored from backup (${this.accountCount()} account(s))`);
+        return { created: false };
+      }
+      // A .bak exists but did NOT decrypt with this password: do NOT create a fresh vault over a
+      // possibly-recoverable farm on a typo. Report a wrong password (delete BOTH files to reset).
+      throw new Error('WRONG_PASSWORD');
     }
     // First run: create a fresh vault with a new random salt.
     const salt = crypto.randomBytes(16);

@@ -86,7 +86,7 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
         logger.error('[vault] unlock portal: vault.enc is MISSING but accounts.json holds registered accounts – refusing to silently create an empty vault (orphaned install). Restore vault.enc or confirm creating a new empty vault.');
         return res.status(409).json({
           ok: false, orphaned: true,
-          error: 'Registered accounts exist but the vault file (vault.enc) is missing — likely a partial restore, an antivirus quarantine, or an unmounted drive. Creating a new vault now would leave every account credential-less. Restore vault.enc (or fix SSIM_HOME) and reopen SSIM, or explicitly confirm creating a new empty vault.',
+          error: 'Registered accounts exist but the vault file (vault.enc) is missing — likely a partial restore, an antivirus quarantine, or an unmounted drive. Creating a new vault now would leave every account credential-less. Restore vault.enc (a local vault.enc.bak with the same Master Password is auto-restored) or fix SSIM_HOME and reopen SSIM, or explicitly confirm creating a new empty vault.',
         });
       }
       if (!exists && confirm !== undefined && confirm !== password) {
@@ -97,7 +97,7 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
       if (failed > 0) await sleep(Math.min(2_000, failed * 400));
 
       try {
-        const { created } = AccountVault.unlockOrCreate(password);
+        const { created } = AccountVault.unlockOrCreate(password, { createEmptyAnyway: body.createEmptyAnyway === true });
         logger.info(`[vault] ${created ? 'created' : 'unlocked'} via app-window unlock portal`);
         res.json({ ok: true, created });
         // Let the page receive the response, then free the port + continue boot.

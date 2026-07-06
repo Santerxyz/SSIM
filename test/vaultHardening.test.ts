@@ -302,6 +302,41 @@ test('H-ACC-037(d): healthy files + wrong password still fail as WRONG_PASSWORD 
   assert.throws(() => new AccountVaultImpl(file, bak).unlockOrCreate('nope'), /WRONG_PASSWORD/);
 });
 
+// ─── H-ACC-039: a MISSING vault.enc with a healthy .bak self-heals (never a first-run create) ──
+// AV quarantine of vault.enc / a partial restore / a deletion leaves vault.enc.bak as the only
+// credential copy. The create branch must probe the .bak with the operator's password: on success
+// RESTORE (never touching the good .bak, S5); on a wrong password with a .bak present throw rather
+// than clobber a recoverable farm; and createEmptyAnyway is the deliberate fresh-start escape hatch.
+test('H-ACC-039(a): a missing vault.enc restores from a healthy .bak (not recreated) without clobbering it', () => {
+  const { file, bak } = seedRecoverableVault();
+  const bakBytes = fs.readFileSync(bak);
+  fs.rmSync(file); // vault.enc quarantined/deleted; only the .bak survives
+
+  const v = new AccountVaultImpl(file, bak);
+  const r = v.unlockOrCreate('pw');
+  assert.equal(r.created, false, 'recovered, not a fresh empty vault');
+  assert.equal(v.getAccount('bot1')?.password, 'pw123', 'the farm credential is back from the .bak');
+  assert.ok(fs.existsSync(file), 'vault.enc was rewritten from the recovered payload');
+  assert.deepEqual(fs.readFileSync(bak), bakBytes, 'the proven-good .bak was NOT clobbered (S5)');
+});
+
+test('H-ACC-039(b): a missing vault.enc + WRONG password with a .bak present throws, creates nothing', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.rmSync(file);
+  const v = new AccountVaultImpl(file, bak);
+  assert.throws(() => v.unlockOrCreate('wrong'), /WRONG_PASSWORD/, 'a typo must not create an empty vault over a recoverable farm');
+  assert.equal(fs.existsSync(file), false, 'nothing was created');
+});
+
+test('H-ACC-039(c): createEmptyAnyway skips the .bak probe and starts a fresh empty vault', () => {
+  const { file, bak } = seedRecoverableVault();
+  fs.rmSync(file);
+  const v = new AccountVaultImpl(file, bak);
+  const r = v.unlockOrCreate('anyPw', { createEmptyAnyway: true });
+  assert.equal(r.created, true, 'the explicit override creates a new empty vault');
+  assert.equal(v.accountCount(), 0, 'the fresh vault holds no accounts');
+});
+
 test('B33: a WRONG password still fails even if the .bak is healthy', () => {
   const { file, bak } = tmpVault();
   const v1 = new AccountVaultImpl(file, bak);
