@@ -94,7 +94,7 @@
 | P-013 | Render virtualization: `content-visibility:auto` on `#items-body tr` (intrinsic 52px) and `.account-row` (56px); keeps full DOM (TBL-02) | index.html:222–228 | | |
 | P-014 | Toolbars wrap gracefully in narrow window: `#stat-bar`, `#toolbar`, `#main-header` flex-wrap | index.html:230–245 | | |
 | P-015 | KPI stat cards: hairline gradient top accent via `--stat-accent` | index.html:247–253 | | |
-| P-016 | Env tiles: lift + violet glow on hover | index.html:255–260 | | |
+| P-016 | Env tiles: lift + violet glow on hover | index.html:255–260 | | done · app.js:1349 (.env-tile) |
 | P-017 | Hybrid glass: every `div[id$="-overlay"] > div` modal card = translucent blurred glass + elevation; sticky modal sub-headers match glass (DS-04) | index.html:262–276 | | |
 | P-018 | Sidebar depth gradient + active-row left indicator bar (`.account-btn.is-active::before`) | index.html:278–284 | | |
 | P-019 | `.frosted` blur for headers above scroll | index.html:286–287 | | |
@@ -192,18 +192,18 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-074 | Header title "Environments" + subtitle "Choose a farm environment or create a new one." | index.html:498–502 | | |
-| P-075 | "Global Master" button `#btn-global-master` (globe, in dashboard header) → global-master view | index.html:504–507; app.js:1233 | | |
-| P-076 | "Account Login" button `#btn-account-login` → QR/credentials import modal (Feature 1) | index.html:508–511 | | |
-| P-077 | "Import bots" button `#btn-bulk-import` → bulk-import modal | index.html:512–515 | | |
-| P-078 | "New environment" button `#btn-new-env` → env modal (create) | index.html:516–519 | | |
-| P-079 | Env tiles grid `#env-tiles` (responsive 1/2/3 col) | index.html:522–523; app.js:1273–1285 | | |
-| P-080 | Empty state `#env-empty`: "No environments yet" / "Create your first farm environment." (shown when 0 envs) | index.html:524–530; app.js:1275 | | |
-| P-081 | Env tile: layer-group icon, Proxy/Local-IP pill, name, proxy line (mono), account **count** (`fmtCount`), last-updated ago; click tile → enter env | app.js:1342–1381, 1257–1271 | | |
-| P-082 | Env tile "Test proxy" button `[data-proxy-test]` → `checkProxy()` | app.js:1367–1369, 1283–1284, 1287–1315 | | |
-| P-083 | Proxy test states: spinner "Testing…/running…"; green `✓ IP · CC (Country) · N ms`; red `✗ error` (via `/check-proxy`) | app.js:1288–1315 | | |
-| P-084 | Env tile hover actions: **Edit** pen → `openEnvModal('edit',id)`; **Delete** trash → `deleteEnvironment(id,name)` | app.js:1372–1379, 1279–1282 | | |
-| P-085 | Last-updated formatting: `just now` / `N min ago` / `N h ago` / `N d ago` / `never loaded` (`formatAgo`) | app.js:1265–1271, 1364 | | |
+| P-074 | Header title "Environments" + subtitle "Choose a farm environment or create a new one." | index.html:498–502 | | done · index.html:703–704 |
+| P-075 | "Global Master" button `#btn-global-master` (globe, in dashboard header) → global-master view | index.html:504–507; app.js:1233 | | done · index.html:707–709 |
+| P-076 | "Account Login" button `#btn-account-login` → QR/credentials import modal (Feature 1) | index.html:508–511 | | done · index.html:710–712 |
+| P-077 | "Import bots" button `#btn-bulk-import` → bulk-import modal | index.html:512–515 | | done · index.html:713–715 |
+| P-078 | "New environment" button `#btn-new-env` → env modal (create) | index.html:516–519 | | done · index.html:716–718 |
+| P-079 | Env tiles grid `#env-tiles` (responsive 1/2/3 col) | index.html:522–523; app.js:1273–1285 | | done · index.html:722; app.js:1273–1285 |
+| P-080 | Empty state `#env-empty`: "No environments yet" / "Create your first farm environment." (shown when 0 envs) | index.html:524–530; app.js:1275 | | done · index.html:723–727; app.js:1275 |
+| P-081 | Env tile: layer-group icon, Proxy/Local-IP pill, name, proxy line (mono), account **count** (`fmtCount`), last-updated ago; click tile → enter env | app.js:1342–1381, 1257–1271 | | done · app.js:1345–1382 (.env-tile re-skin) |
+| P-082 | Env tile "Test proxy" button `[data-proxy-test]` → `checkProxy()` | app.js:1367–1369, 1283–1284, 1287–1315 | | done · app.js:1374, 1283–1284 |
+| P-083 | Proxy test states: spinner "Testing…/running…"; green `✓ IP · CC (Country) · N ms`; red `✗ error` (via `/check-proxy`) | app.js:1288–1315 | | done · app.js:1288–1315 (logic unchanged) |
+| P-084 | Env tile hover actions: **Edit** pen → `openEnvModal('edit',id)`; **Delete** trash → `deleteEnvironment(id,name)` | app.js:1372–1379, 1279–1282 | | done · app.js:1352–1356 (.env-tile__actions), 1279–1282 |
+| P-085 | Last-updated formatting: `just now` / `N min ago` / `N h ago` / `N d ago` / `never loaded` (`formatAgo`) | app.js:1265–1271, 1364 | | done · app.js:1265–1271, 1371 |
 
 ---
 
@@ -542,7 +542,7 @@
 |---|---|---|---|---|
 | P-307 | Select account: sets account mode, resets gcCat/search/sort/selection, clears search box | app.js:3439–3447 | | |
 | P-308 | Table skeleton rows: 9 shimmer rows mirroring table geometry (FB-03) | app.js:3450–3466 | | |
-| P-309 | Dashboard env-tile skeletons: 6 shimmer tiles on initial load | app.js:3467–3481 | | |
+| P-309 | Dashboard env-tile skeletons: 6 shimmer tiles on initial load | app.js:3467–3481 | | done · app.js:3468–3487 (.env-tile skeleton) |
 | P-310 | Inv loading skeleton toggle: hides bare spinner, empties header, shows skeleton; on off with skel still present re-renders | app.js:3482–3497 | | |
 | P-311 | Refresh single account (CS2): `/api/inventory/<u>?refresh=1`; complete fetch; toast `Inventory refreshed: N items · L locked · X listed` | app.js:3499–3520 | 💰 | |
 | P-312 | Refresh single account (TF2): `/api/inventory-tf2/<u>?refresh=1`; toast `TF2 inventory refreshed: N items, K keys` | app.js:3505–3510 | 💰 | |

@@ -1342,40 +1342,38 @@ function closeLogs() { el.logsOverlay.classList.add('hidden'); }
 function envTile(env) {
   const count = state.allAccounts.filter((a) => a.environmentId === env.id).length;
   const last = envLastUpdated(env.id);
+  const proxyPill = env.hasProxy
+    ? `<span class="pill pill--proxy"><i class="fa-solid fa-shield-halved"></i>Proxy</span>`
+    : `<span class="pill pill--local"><i class="fa-solid fa-network-wired"></i>Local IP</span>`;
   return `
-    <div data-env="${escapeAttr(env.id)}"
-      class="env-tile group relative cursor-pointer rounded-2xl bg-slate-900 border border-slate-800 hover:border-brand/50 p-5">
-      <div class="flex items-start justify-between">
-        <div class="w-11 h-11 rounded-xl bg-brand/15 flex items-center justify-center">
-          <i class="fa-solid fa-layer-group text-brand text-lg"></i>
-        </div>
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full ${env.hasProxy
-          ? 'bg-emerald-900/40 text-emerald-400 border border-emerald-700/40'
-          : 'bg-slate-800 text-slate-400 border border-slate-700'}">
-          <i class="fa-solid ${env.hasProxy ? 'fa-shield-halved' : 'fa-network-wired'} mr-1"></i>${env.hasProxy ? 'Proxy' : 'Local IP'}</span>
+    <div data-env="${escapeAttr(env.id)}" role="button" tabindex="0"
+      class="env-tile group cursor-pointer">
+      <div class="env-tile__glow"></div>
+      <div class="env-tile__actions">
+        <button data-env-edit="${escapeAttr(env.id)}" title="Edit environment" class="btn btn-icon-sm btn-secondary">
+          <i class="fa-solid fa-pen t11"></i></button>
+        <button data-env-del="${escapeAttr(env.id)}" data-name="${escapeAttr(env.name)}" title="Delete environment" class="btn btn-icon-sm btn-secondary">
+          <i class="fa-solid fa-trash-can t11" style="color:rgb(var(--danger-rgb))"></i></button>
       </div>
-      <h3 class="text-lg font-bold text-white mt-4 truncate">${escapeHtml(env.name)}</h3>
-      <p class="text-2xs text-slate-500 font-mono truncate mt-0.5">${env.hasProxy ? escapeHtml(env.proxy) : 'local IP'}</p>
-      <div class="flex items-baseline gap-5 mt-4">
-        <div class="flex items-baseline gap-1.5">
-          <span class="text-2xl font-bold text-white font-mono leading-none">${fmtCount(count)}</span>
-          <span class="text-slate-500 text-xs">Accounts</span>
+      <div class="flex items-center gap-3 mb-3">
+        <span class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style="background:rgb(var(--brand-rgb)/.15);color:rgb(var(--brand-l-rgb))">
+          <i class="fa-solid fa-layer-group"></i></span>
+        <div class="min-w-0 flex-1">
+          <p class="t16 font-bold text-white truncate">${escapeHtml(env.name)}</p>
+          <p class="t10 font-mono text-slate-500 truncate">${env.hasProxy
+            ? `<i class="fa-solid fa-globe mr-1" style="color:rgb(var(--listed-rgb))"></i>${escapeHtml(env.proxy)}`
+            : 'local IP'}</p>
         </div>
-        <div class="text-slate-500 text-xs flex items-center gap-1.5"><i class="fa-regular fa-clock"></i>${last ? formatAgo(last) : 'never loaded'}</div>
+        ${proxyPill}
       </div>
-      <div class="mt-4 pt-3 border-t border-slate-800 flex items-center gap-2">
-        <button data-proxy-test="${escapeAttr(env.id)}" title="Test this environment's proxy connection"
-          class="px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-brand hover:text-white text-slate-300 text-xs font-semibold transition flex items-center gap-1.5 shrink-0">
+      <div class="grid grid-cols-2 gap-2">
+        <div class="env-stat"><p class="k">Accounts</p><p class="v font-mono text-white">${fmtCount(count)}</p></div>
+        <div class="env-stat"><p class="k">Updated</p><p class="v font-mono text-slate-300">${last ? escapeHtml(formatAgo(last)) : 'never'}</p></div>
+      </div>
+      <div class="flex items-center gap-2 mt-3">
+        <button data-proxy-test="${escapeAttr(env.id)}" title="Test this environment's proxy connection" class="btn btn-ghost btn-sm shrink-0">
           <i class="fa-solid fa-tower-broadcast"></i><span>Test proxy</span></button>
         <span id="proxytest-${escapeAttr(env.id)}" class="text-2xs text-slate-500 truncate min-w-0"></span>
-      </div>
-      <div class="absolute right-3 top-3 opacity-0 group-hover:opacity-100 flex items-center gap-1.5">
-        <button data-env-edit="${escapeAttr(env.id)}" title="Edit environment"
-          class="w-7 h-7 rounded-md bg-slate-800 text-slate-500 hover:text-brand hover:bg-slate-700 transition flex items-center justify-center">
-          <i class="fa-solid fa-pen text-xs"></i></button>
-        <button data-env-del="${escapeAttr(env.id)}" data-name="${escapeAttr(env.name)}" title="Delete environment"
-          class="w-7 h-7 rounded-md bg-slate-800 text-slate-500 hover:text-rose-400 hover:bg-slate-700 transition flex items-center justify-center">
-          <i class="fa-solid fa-trash text-xs"></i></button>
       </div>
     </div>`;
 }
@@ -3470,11 +3468,18 @@ function renderDashboardSkeleton() {
   el.envEmpty?.classList.add('hidden');
   let html = '';
   for (let i = 0; i < 6; i++) {
-    html += `<div class="rounded-2xl bg-slate-900 border border-slate-800 p-5">
-      <div class="flex items-start justify-between"><span class="skel" style="width:44px;height:44px;border-radius:.75rem"></span><span class="skel" style="width:64px;height:22px;border-radius:9999px"></span></div>
-      <span class="skel block mt-4" style="width:60%;height:18px"></span>
-      <span class="skel block mt-2" style="width:80%;height:11px"></span>
-      <div class="mt-4 flex gap-4"><span class="skel" style="width:40px;height:24px"></span><span class="skel" style="width:70px;height:14px"></span></div>
+    html += `<div class="env-tile">
+      <div class="env-tile__glow"></div>
+      <div class="flex items-center gap-3 mb-3">
+        <span class="skel shrink-0" style="width:36px;height:36px;border-radius:.75rem"></span>
+        <div class="min-w-0 flex-1"><span class="skel block" style="width:60%;height:16px"></span><span class="skel block mt-1.5" style="width:80%;height:10px"></span></div>
+        <span class="skel shrink-0" style="width:64px;height:20px;border-radius:9999px"></span>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <span class="skel block" style="height:46px;border-radius:10px"></span>
+        <span class="skel block" style="height:46px;border-radius:10px"></span>
+      </div>
+      <div class="mt-3"><span class="skel block" style="width:96px;height:28px;border-radius:.5rem"></span></div>
     </div>`;
   }
   el.envTiles.innerHTML = html;

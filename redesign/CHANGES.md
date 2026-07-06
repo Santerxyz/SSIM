@@ -81,3 +81,34 @@ Deliberate DECISIONS (not IA changes) made during the port, for reviewer awarene
 balanced; booted live against a stub backend through the real `app.js` (rich brand-gradient
 primaries, sidebar depth gradient, S68 launcher at `left:18px bottom:18px z-index:30` all confirmed;
 zero console errors).
+
+---
+
+## V2 — Dashboard environment tiles re-skin (`new_public/app.js` `envTile` + `renderDashboardSkeleton`)  ·  2026-07-06
+
+**Net IA/flow change: NONE.** The `envTile(env)` template markup was re-authored to the
+masterpiece `.env-tile` frame (glow strip `.env-tile__glow`, hover/focus-within-revealed
+`.env-tile__actions`, icon+name+proxy-line header, `.pill pill--proxy/--local`, sunken
+`.env-stat` cells, `.btn btn-ghost btn-sm` Test-proxy + `#proxytest-{id}` output span). Every
+handler hook is byte-identical: `data-env`, `data-env-edit`, `data-env-del`, `data-name`,
+`data-proxy-test`, and the `proxytest-${env.id}` span that `checkProxy()` writes to. No
+fetch/state/handler touched; `renderDashboard`'s delegation, `checkProxy`, `formatAgo`,
+`envLastUpdated`, `fmtCount` all unchanged.
+
+Deliberate DECISION (design-source deviation, not an IA change):
+
+1. **`.env-stat` cells show only the REAL per-env data (Accounts + Updated), not the
+   prototype's Item worth / Wallet / Trade-locked / Accounts 2×2.** The masterpiece
+   `renderEnvTiles` (`design_source.html:1533-1537`) reads `e.worth/e.wallet/e.locked` from its
+   MOCK `ENVS` array. The frozen backend / legacy `env` object carries no per-environment
+   worth/wallet/locked aggregate (only name, proxy/hasProxy, derived account count, and
+   `envLastUpdated`). Inventing those numbers would require new fetches/aggregation — forbidden
+   (backend FROZEN, "keep function exactly"). So the 2×2 grid renders the two truthful signals
+   the legacy already has (Accounts via `fmtCount`, last-updated via `formatAgo`/`envLastUpdated`)
+   in the same `.env-stat` sunken-cell styling. Invariant 1 (no fabricated money) upheld: no
+   money value is shown that the data does not actually contain.
+
+2. **Skeleton (`renderDashboardSkeleton`, P-309) re-shaped to the new tile frame** — 6 `.env-tile`
+   shimmer tiles (glow strip + header row + 2×2 stat placeholders + button placeholder) so the
+   loading state matches the re-skinned tile. Count (6), gating, and `el.envTiles.innerHTML`
+   write unchanged.
