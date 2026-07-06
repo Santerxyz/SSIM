@@ -38,9 +38,10 @@ export interface HistoryPoint {
   items: number;
   /** Total wallet balance in USD cents (converted like the dashboard does). */
   wallet: number;
-  /** S66: true when at least one loaded account held a wallet balance in a currency we can't convert to USD
-   *  (FX covers only USD↔EUR), so `wallet` UNDERCOUNTS the real total for this point. Lets the UI flag the
-   *  wallet series as incomplete instead of silently plotting a too-low value as if it were exact. */
+  /** True when this point UNDERCOUNTS: either a loaded account held a wallet balance in a currency we
+   *  can't convert to USD (FX covers only USD↔EUR — S66), or one or more items had prices that were
+   *  missing/transiently unfetchable at record time (H-INV-022). Lets the UI flag the series as
+   *  incomplete instead of silently plotting a too-low value as if it were exact. */
   partial?: boolean;
 }
 
@@ -63,7 +64,9 @@ export class ValueHistoryService {
   private flushTimer?: NodeJS.Timeout;
   // S67: a snapshot requested WHILE a price fill is draining is deferred (the item totals would be
   // undercounted). `pending` remembers the request; `fillWatch` polls until the fill drains, then records it.
-  private pending?: { reason: string; game?: GameId };
+  // `retry` marks a pending that already fired ITS OWN ensureFilled for cache-missing names (H-INV-022): on
+  // the drain pass it records flagged rather than deferring again — exactly one bounded retry, no starvation.
+  private pending?: { reason: string; game?: GameId; retry?: boolean };
   private fillWatch?: NodeJS.Timeout;
 
   constructor(
@@ -200,7 +203,7 @@ export class ValueHistoryService {
     const st = this.pricing.status();
     if (st.running || st.queued > 0) {
       this.pending = (this.pending && this.pending.game !== game)
-        ? { reason: 'fill-drain', game: undefined }
+        ? { reason: 'fill-drain', game: undefined, retry: this.pending.retry } // merge games → OR the retry flag
         : { reason, game };
       this.armFillWatch();
       logger.debug(`[history] snapshot deferred until the price fill drains (${reason}${game ? `, ${game}` : ''})`);
@@ -209,17 +212,37 @@ export class ValueHistoryService {
     this.doSnapshot(reason, game);
   }
 
-  private doSnapshot(reason: string, game?: GameId): void {
+  /**
+   * S67 hole-closer (H-INV-022): the snapshot is COMPLETE-or-honestly-FLAGGED. `computeGame` derives every
+   * row without appending and reports the names it couldn't price. If `!isRetry` and any name is cache-missing,
+   * we queue exactly those names (ensureFilled), remember a retry-pending, arm the watch and record NOTHING —
+   * so a snapshot that settled while prices were stale no longer captures a permanent undercount. On the drain
+   * pass (`isRetry`) any names still missing/soft-nulled no longer defer: the row records with `partial: true`
+   * (matching the S66 "honest, no fabricated data" pattern). Exactly one retry — no loop, no starvation.
+   */
+  private doSnapshot(reason: string, game?: GameId, isRetry = false): void {
     const now = Date.now();
     // Snapshot ONLY the game(s) that actually refreshed. Snapshotting BOTH on every call
     // let a TF2 refresh rewrite a recent CS2 point (and vice-versa) via burst-coalescing in
     // append() — last-writer-wins on the curve. `game` undefined → snapshot both (manual/
     // post-trade where the caller doesn't scope it). (C21 / INV-E6.)
     const which = snapshotGames(game);
-    if (which.cs2) this.snapshotGame(now, this.store, '');        // CS2 → '<id>' / 'global'
-    if (which.tf2) this.snapshotGame(now, this.tf2Store, 'tf2:'); // TF2 → 'tf2:<id>' / 'tf2:global'
+    const rows: Array<{ seriesId: string; items: number; wallet: number; partial: boolean }> = [];
+    const missing: Array<{ name: string; appid: number }> = [];
+    if (which.cs2) { const g = this.computeGame(now, this.store, '');        rows.push(...g.rows); missing.push(...g.missing); }
+    if (which.tf2) { const g = this.computeGame(now, this.tf2Store, 'tf2:'); rows.push(...g.rows); missing.push(...g.missing); }
+
+    if (!isRetry && missing.length > 0) {
+      // Prices are stale/missing → don't record an undercounted point. Queue the fill, defer ONCE.
+      this.pricing.ensureFilled(missing);
+      this.pending = { reason, game, retry: true };
+      this.armFillWatch();
+      logger.debug(`[history] snapshot deferred — ${missing.length} price(s) missing, filling (${reason}${game ? `, ${game}` : ''})`);
+      return;
+    }
+    for (const r of rows) this.append(r.seriesId, now, r.items, r.wallet, r.partial);
     this.scheduleFlush();
-    logger.debug(`[history] snapshot taken (${reason}${game ? `, ${game}` : ''})`);
+    logger.debug(`[history] snapshot taken (${reason}${game ? `, ${game}` : ''}${isRetry ? ', retry' : ''})`);
   }
 
   /** S67: while a fill is draining, poll on an interval; take the deferred snapshot once it drains. */
@@ -234,11 +257,22 @@ export class ValueHistoryService {
     if (st.running || st.queued > 0) return; // still filling → wait
     if (this.fillWatch) { clearInterval(this.fillWatch); this.fillWatch = undefined; }
     const pend = this.pending; this.pending = undefined;
-    if (pend) this.doSnapshot(pend.reason, pend.game);
+    // Pass the pending's retry flag: a pending we ourselves deferred for missing prices (retry) records
+    // flagged on this pass rather than deferring again — exactly one bounded retry. (H-INV-022.)
+    if (pend) this.doSnapshot(pend.reason, pend.game, pend.retry === true);
   }
 
-  /** Snapshots ONE game's cache into '<prefix><envId>' + '<prefix>global' series. */
-  private snapshotGame(now: number, store: { get(u: string): AccountInventory | undefined }, prefix: string): void {
+  /**
+   * Pure computation of ONE game's rows ('<prefix><envId>' + '<prefix>global') from the cache — NO append.
+   * Returns the rows to record plus the unique-per-account cache-missing names so the caller can defer+fill.
+   * A row is `partial` when the S66 wallet condition holds OR the env had ANY missing/soft-nulled price
+   * (the items total silently undercounts those). Keeps the `loaded === 0 → no point` rule (empty-coercion guard).
+   */
+  private computeGame(_now: number, store: { get(u: string): AccountInventory | undefined }, prefix: string):
+    { rows: Array<{ seriesId: string; items: number; wallet: number; partial: boolean }>; missing: Array<{ name: string; appid: number }> } {
+    // `_now` is unused here — rows carry no timestamp; doSnapshot's append() stamps them. Kept for signature parity.
+    const rows: Array<{ seriesId: string; items: number; wallet: number; partial: boolean }> = [];
+    const missing: Array<{ name: string; appid: number }> = [];
     let globalItems = 0, globalWallet = 0, globalLoaded = 0, globalPartial = false;
     for (const env of this.accounts.getEnvironments()) {
       let items = 0, wallet = 0, loaded = 0, partial = false;
@@ -246,8 +280,12 @@ export class ValueHistoryService {
         const inv = store.get(acc.username);
         if (!inv) continue;
         loaded++;
-        this.pricing.enrich(inv); // cache-only: prices + totalValueUsd refreshed in place
-        items  += inv.totalValueUsd ?? 0;
+        const t = this.pricing.totalsOf(inv); // READ-ONLY: never mutates the cached record (H-INV-022 / INV-B12)
+        items += t.totalCents;
+        // H-INV-022: an item whose price was missing (queued this pass) or a fresh transient soft error-miss
+        // means the items total undercounts for this point — flag it, and collect missing names for the fill.
+        if (t.missing.length > 0 || t.softNull > 0) partial = true;
+        missing.push(...t.missing);
         const w = inv.wallet;
         const cents = this.walletUsdCents(w);
         // S66: a wallet we couldn't convert (non-USD/EUR) but that HAS a real balance means `wallet` is
@@ -256,10 +294,11 @@ export class ValueHistoryService {
         wallet += cents ?? 0;
       }
       if (loaded === 0) continue; // nothing cached → no meaningful point
-      this.append(prefix + env.id, now, items, wallet, partial);
+      rows.push({ seriesId: prefix + env.id, items, wallet, partial });
       globalItems += items; globalWallet += wallet; globalLoaded += loaded; globalPartial = globalPartial || partial;
     }
-    if (globalLoaded > 0) this.append(prefix + GLOBAL_SERIES, now, globalItems, globalWallet, globalPartial);
+    if (globalLoaded > 0) rows.push({ seriesId: prefix + GLOBAL_SERIES, items: globalItems, wallet: globalWallet, partial: globalPartial });
+    return { rows, missing };
   }
 
   /** Steam wallet → USD cents (USD=1 as-is, EUR=3 via live rate, else skip). */

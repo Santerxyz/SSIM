@@ -15,7 +15,8 @@ function make(walletCurrency: number, balance = 100): ValueHistoryService {
   const accounts = { getEnvironments: () => [{ id: 'e1' }], getByEnvironment: () => [{ username: 'bot1' }] };
   const store = { get: () => inv };
   const tf2Store = { get: () => undefined };
-  const pricing = { enrich: () => { /* cache-only no-op */ }, status: notFilling };
+  // totalsOf mirrors the record's preset total; all prices present (no missing/soft) so nothing defers here.
+  const pricing = { totalsOf: () => ({ totalCents: 5000, missing: [], softNull: 0 }), status: notFilling };
   const exchange = { getUsdToEur: () => 0.9 };
   return new ValueHistoryService(accounts as never, store as never, tf2Store as never, pricing as never, exchange as never);
 }
