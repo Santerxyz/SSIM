@@ -80,6 +80,14 @@ export class InventoryStore {
         // (this cache is fully refetchable from Steam, so discarding it is safe).
         const parsed = fsExtra.readJsonSync(this.path) as Partial<InventoryFile> | null;
         if (parsed && typeof parsed.records === 'object' && parsed.records && !Array.isArray(parsed.records)) {
+          // The JSON round-trip degraded the Date-typed fields (`fetchedAt`, per-item
+          // `tradeLockExpiry`) to ISO strings; revive them so the declared types hold post-
+          // restart (defuses InventoryManager.stack's `tradeLockExpiry.toISOString()`). An
+          // unparseable stamp becomes null, never an Invalid Date (whose toISOString throws).
+          for (const rec of Object.values(parsed.records)) {
+            rec.fetchedAt = reviveDate(rec.fetchedAt) ?? rec.fetchedAt;
+            for (const it of rec.items ?? []) it.tradeLockExpiry = reviveDate(it.tradeLockExpiry);
+          }
           return { version: 1, records: parsed.records };
         }
         logger.warn(`${this.path} has an unexpected shape – starting fresh`);
@@ -234,9 +242,20 @@ export class InventoryStore {
 }
 
 /**
+ * Revive a JSON-round-tripped Date field. An ISO string (or a live Date) becomes a Date;
+ * null/undefined stays null; an unparseable value returns null (NEVER an Invalid Date object,
+ * whose `.toISOString()` throws) so load() can re-type disk records without a crash class.
+ */
+function reviveDate(v: unknown): Date | null {
+  if (v == null) return null;
+  const d = new Date(v as string | Date);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+/**
  * Deep copy of an inventory record. `structuredClone` (Node ≥17) preserves the Date
- * fields (`fetchedAt`, per-item `tradeLockExpiry`) that a JSON round-trip would
- * silently degrade to strings.
+ * fields (`fetchedAt`, per-item `tradeLockExpiry`) that load() revived from disk, keeping
+ * them as Date objects (a raw JSON round-trip would degrade them to strings).
  */
 function cloneInventory(inv: AccountInventory): AccountInventory {
   return structuredClone(inv);
