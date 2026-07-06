@@ -2083,43 +2083,43 @@ function renderAccountView() {
   const acc = state.allAccounts.find((a) => a.username === username);
   const inv = invFor(username);
 
+  // Full vs Limited (LTD) tier pill — Login imports as "Limited" only (invariant 9); Attach-maFile
+  // is the sole Limited→Full path. Kept as a read-only status pill next to the network pill.
+  const tierPill = acc?.tier === 'limited'
+    ? '<span class="pill pill--ltd" title="Limited — attach a maFile to upgrade to Full">Limited</span>'
+    : '<span class="pill pill--success">Full</span>';
   el.mainHeader.innerHTML = `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        ${escapeHtml(acc?.displayName || username)}
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">${escapeHtml(acc?.displayName || username)}</h2>
         ${acc?.network?.type === 'proxy'
-          ? '<span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 border border-emerald-700/40"><i class="fa-solid fa-shield-halved mr-1"></i>Proxy</span>'
-          : '<span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700"><i class="fa-solid fa-network-wired mr-1"></i>Local IP</span>'}
-      </h2>
-      <p class="text-sm text-slate-500 mt-1 font-mono">${escapeHtml(username)}</p>
+          ? '<span class="pill pill--proxy"><i class="fa-solid fa-shield-halved"></i>Proxy</span>'
+          : '<span class="pill pill--local"><i class="fa-solid fa-network-wired"></i>Local IP</span>'}
+        ${tierPill}
+      </div>
+      <p class="text-sm text-slate-500 mt-1 font-mono truncate">${escapeHtml(username)}</p>
     </div>
-    <div class="text-right">
-      ${renderTradeLink(username)}
-      <button id="btn-account-bans" title="Check this account for Steam bans"
-        class="mb-2 mr-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5">
-        <i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-account-logs" title="View this account's recent activity log"
-        class="mb-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5">
-        <i class="fa-solid fa-clock-rotate-left"></i><span>Logs</span></button>
-      <div class="flex justify-end gap-2">
-        <button id="btn-tradeups" title="Find profitable trade-up contracts from this account's skins"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-arrow-trend-up"></i><span>Trade-Ups</span></button>
-        <button id="btn-caskets" title="Manage this account's storage units (caskets)"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-box-archive"></i><span>Storage</span></button>
-        <button id="btn-trade-offers" title="Manage this account's sent &amp; received trade offers"
-          class="px-3 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition inline-flex items-center gap-2">
+    <div class="flex flex-col items-end gap-2">
+      <div class="flex items-center gap-2 flex-wrap justify-end">
+        ${renderTradeLink(username)}
+        <button id="btn-account-bans" title="Check this account for Steam bans" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+        <button id="btn-account-logs" title="View this account's recent activity log" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-clock-rotate-left"></i><span>Logs</span></button>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap justify-end">
+        <button id="btn-tradeups" title="Find profitable trade-up contracts from this account's skins" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-arrow-trend-up text-amber-300"></i><span>Trade-Ups</span></button>
+        <button id="btn-caskets" title="Manage this account's storage units (caskets)" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-box-archive text-sky-300"></i><span>Storage</span></button>
+        <button id="btn-trade-offers" title="Manage this account's sent &amp; received trade offers" class="btn btn-primary btn-sm">
           <i class="fa-solid fa-right-left"></i><span>Trade Offers</span></button>
-        <button id="btn-csfloat" title="Manage this account on CSFloat (listings, market, trades)"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-brand-light text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-water"></i><span>CSFloat</span></button>
-        <button id="btn-sda" title="Steam Guard code + pending mobile confirmations for this account"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-mobile-screen-button"></i><span>SDA</span></button>
-        <button id="btn-clean-browser" title="Open a browser with this account logged in, routed through its linked proxy"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-violet-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-window-restore"></i><span>Browser</span>
+        <button id="btn-csfloat" title="Manage this account on CSFloat (listings, market, trades)" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-water text-brand-light"></i><span>CSFloat</span></button>
+        <button id="btn-sda" title="Steam Guard code + pending mobile confirmations for this account" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-mobile-screen-button text-emerald-300"></i><span>SDA</span></button>
+        <button id="btn-clean-browser" title="Open a browser with this account logged in, routed through its linked proxy" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-window-restore text-violet-300"></i><span>Browser</span>
           <i class="fa-solid fa-circle-info text-2xs text-slate-400 hover:text-slate-200" title="Opens a browser with this account already logged in, through its linked proxy — an isolated, ephemeral session (closing the window discards it)."></i></button>
       </div></div>`;
   bindTradeLink(username);
@@ -2863,15 +2863,13 @@ function showPlaceholder(msg) {
 function renderTradeLink(username) {
   const url = state.tradeUrls[username];
   if (!url) {
-    return `<button data-tl-fetch="${escapeAttr(username)}"
-      class="mb-2 mr-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5">
+    return `<button data-tl-fetch="${escapeAttr(username)}" class="btn btn-secondary btn-sm">
       <i class="fa-solid fa-link"></i><span>Get trade link</span></button>`;
   }
   return `
-    <div class="mb-2 mr-2 inline-flex items-center gap-2 align-middle">
+    <div class="inline-flex items-center gap-2 align-middle">
       <code class="text-2xs text-slate-400 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 max-w-[280px] truncate" title="${escapeAttr(url)}">${escapeHtml(url)}</code>
-      <button data-tl-copy="${escapeAttr(username)}" title="Copy trade link"
-        class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-copy"></i><span>Copy</span></button>
+      <button data-tl-copy="${escapeAttr(username)}" title="Copy trade link" class="btn btn-secondary btn-sm"><i class="fa-solid fa-copy"></i><span>Copy</span></button>
     </div>`;
 }
 function bindTradeLink(username) {
@@ -2929,24 +2927,25 @@ function renderAccountTabs(items, active, opts = {}) {
     const counts = { all: 0, tradable: 0, tradelocked: 0, listed: 0 };
     for (const i of items || []) { const q = i.quantity || 1; counts.all += q; counts[i.category || 'tradable'] += q; }
     pills.push(
-      { key: 'all',         label: 'All',              count: counts.all },
-      { key: 'tradable',    label: 'Owned Items',      count: counts.tradable },
-      { key: 'tradelocked', label: 'Trade-Locked',     count: counts.tradelocked },
-      { key: 'listed',      label: 'Listed on Market', count: counts.listed },
+      { key: 'all',         label: 'All',              count: counts.all,         icon: 'fa-layer-group', variant: '' },
+      { key: 'tradable',    label: 'Owned Items',      count: counts.tradable,     icon: 'fa-box',         variant: 'chip--success' },
+      { key: 'tradelocked', label: 'Trade-Locked',     count: counts.tradelocked,  icon: 'fa-lock',        variant: 'chip--warn' },
+      { key: 'listed',      label: 'Listed on Market', count: counts.listed,       icon: 'fa-tag',         variant: 'chip--listed' },
     );
   } else {
-    pills.push({ key: 'all', label: 'Items', count: null });
+    pills.push({ key: 'all', label: 'Items', count: null, icon: '', variant: '' });
   }
   const ordersOn = active === 'orders';
   el.gcCatTabs.classList.remove('hidden');
   el.gcCatTabs.innerHTML =
     pills.map((t) => {
       const on = t.key === active;
-      const cnt = t.count != null ? `<span class="font-mono ${on ? 'text-white/70' : 'text-slate-500'}">${t.count}</span>` : '';
-      return `<button data-cat="${t.key}" class="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${on ? 'bg-brand text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}">${t.label}${cnt}</button>`;
+      const cnt = t.count != null ? `<span class="font-mono opacity-70">${t.count}</span>` : '';
+      const ic = t.icon ? `<i class="fa-solid ${t.icon}"></i>` : '';
+      return `<button data-cat="${t.key}" class="chip ${t.variant}" aria-pressed="${on}">${ic}${t.label}${cnt}</button>`;
     }).join('')
     + '<span class="mx-1 w-px self-stretch bg-slate-700/70" aria-hidden="true"></span>'
-    + `<button data-cat="orders" title="Active market orders (sell listings + buy orders)" class="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${ordersOn ? 'bg-teal-600 text-white' : 'bg-slate-800 text-teal-300 hover:bg-slate-700'}"><i class="fa-solid fa-receipt"></i>Active Orders</button>`;
+    + `<button data-cat="orders" title="Active market orders (sell listings + buy orders)" class="chip chip--buy" aria-pressed="${ordersOn}"><i class="fa-solid fa-receipt"></i>Active Orders</button>`;
   el.gcCatTabs.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.gcCat = b.dataset.cat; renderMain(); }));
 }
 
@@ -3002,9 +3001,13 @@ function renderItemRow(item, ctx) {
   const { master, selectable, showLockBadge } = ctx;
   const keyOf = (it) => (master ? it.marketHashName : it.assetId);
   const color = itemColor(item);
+  // Leading .rar accent bar (CS2 rarity item-data color, exempt from the brand palette) + the
+  // real icon-with-lock + rarity-colored name. The bar stretches the row via align-self:stretch.
+  // (The backend name already carries any "StatTrak™" prefix, so it is not re-added here.)
   const nameCell = `
-      <td class="py-2.5 ${selectable ? 'pl-2' : 'pl-3'} pr-2">
-        <div class="flex items-center gap-3">
+      <td>
+        <div class="flex items-center gap-2.5">
+          <span class="rar" style="background:${color}" aria-hidden="true"></span>
           ${iconWithLock(item, 'item-icon w-12 h-9 object-contain', showLockBadge)}
           <span class="font-semibold" style="color:${color}">${escapeHtml(item.name)}</span></div></td>`;
 
@@ -3017,28 +3020,28 @@ function renderItemRow(item, ctx) {
     sel = state.selection[key];
     checked = sel != null;
     const canSelect = master ? (maxSel > 0) : (item.tradable && !item.tradeLockExpiry);
-    checkCell = `<td class="py-2.5 pl-3 pr-1 align-middle">
+    checkCell = `<td class="w-8">
         ${canSelect
           ? `<input type="checkbox" class="sel-check accent-violet-500 w-4 h-4 cursor-pointer align-middle" data-sel="${escapeAttr(key)}" ${checked ? 'checked' : ''} />`
           : `<span title="not tradable / trade-locked" class="text-slate-700"><i class="fa-solid fa-lock text-3xs"></i></span>`}</td>`;
   }
   const qtyCell = (selectable && checked && maxSel > 1)
-    ? `<td class="py-2.5 px-2"><input type="number" class="sel-qty w-16 px-2 py-1 rounded bg-slate-950 border border-brand/50 text-xs text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-brand" data-sel="${escapeAttr(keyOf(item))}" data-max="${maxSel}" value="${sel}" min="1" max="${maxSel}" /></td>`
-    : `<td class="py-2.5 px-2">${qtyBadge(item.quantity)}</td>`;
+    ? `<td><input type="number" class="sel-qty w-16 px-2 py-1 rounded bg-slate-950 border border-brand/50 text-xs text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-brand" data-sel="${escapeAttr(keyOf(item))}" data-max="${maxSel}" value="${sel}" min="1" max="${maxSel}" /></td>`
+    : `<td>${qtyBadge(item.quantity)}</td>`;
 
   if (master) {
-    return `<tr class="border-b border-slate-800/60 hover:bg-slate-900/50 transition ${checked ? 'bg-brand/5' : ''}">
+    return `<tr class="${checked ? 'is-selected' : ''}">
         ${checkCell}${nameCell}${qtyCell}
-        <td class="py-2.5 px-2"><span class="text-xs font-mono text-slate-400">${item.accounts.size}</span></td>
-        <td class="py-2.5 px-2">${rarityBadge(item, color)}</td>
-        <td class="py-2.5 px-2 pr-4 text-right">${valueCell(item)}</td></tr>`;
+        <td><span class="text-xs font-mono text-slate-400">${item.accounts.size}</span></td>
+        <td>${rarityBadge(item, color)}</td>
+        <td class="pr-4 text-right">${valueCell(item)}</td></tr>`;
   }
-  return `<tr class="border-b border-slate-800/60 hover:bg-slate-900/50 transition ${checked ? 'bg-brand/5' : ''}">
+  return `<tr class="${checked ? 'is-selected' : ''}">
       ${checkCell}${nameCell}${qtyCell}
-      <td class="py-2.5 px-2 text-slate-400">${item.exterior ? escapeHtml(item.exterior) : '<span class="text-slate-600">—</span>'}</td>
-      <td class="py-2.5 px-2">${rarityBadge(item, color)}</td>
-      <td class="py-2.5 px-2 text-right">${valueCell(item)}</td>
-      <td class="py-2.5 px-2 pr-4 text-right">${statusCell(item)}</td></tr>`;
+      <td class="text-slate-400">${item.exterior ? escapeHtml(item.exterior) : '<span class="text-slate-600">—</span>'}</td>
+      <td>${rarityBadge(item, color)}</td>
+      <td class="text-right">${valueCell(item)}</td>
+      <td class="pr-4 text-right">${statusCell(item)}</td></tr>`;
 }
 
 // ── TBL-03: faceted filter chips (status / rarity / value) ──────────────────────────
@@ -3266,10 +3269,10 @@ function statusCell(item) {
 function thSort(label, key, extra = '') {
   const active = state.sort && state.sort.key === key;
   const arrow = active ? (state.sort.dir === 'asc' ? '▲' : '▼') : '';
-  return `<th data-sort="${key}" class="py-3 px-2 font-semibold cursor-pointer select-none hover:text-slate-200 transition ${extra}">${label}<span class="ml-1 text-brand">${arrow}</span></th>`;
+  return `<th data-sort="${key}" class="cursor-pointer select-none hover:text-slate-200 transition ${extra}">${label}<span class="ml-1 text-brand">${arrow}</span></th>`;
 }
-function thPlain(label, extra = '') { return `<th class="py-3 px-2 font-semibold ${extra}">${label}</th>`; }
-function thCheck() { return `<th class="py-3 pl-3 pr-1 w-8"><input type="checkbox" id="select-all" title="Select all tradable" class="accent-violet-500 w-4 h-4 cursor-pointer align-middle" /></th>`; }
+function thPlain(label, extra = '') { return `<th class="${extra}">${label}</th>`; }
+function thCheck() { return `<th class="w-8"><input type="checkbox" id="select-all" title="Select all tradable" class="accent-violet-500 w-4 h-4 cursor-pointer align-middle" /></th>`; }
 function onHeaderSort(key) {
   if (state.sort && state.sort.key === key) state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
   else state.sort = { key, dir: key === 'name' ? 'asc' : 'desc' };

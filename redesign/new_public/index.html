@@ -861,14 +861,14 @@
           <div id="gc-cat-tabs" class="hidden mb-3 flex items-center gap-2 flex-wrap fade-in"></div>
 
           <!-- Item table: #items-head (thead row) + #items-body (windowed rows) + #search-empty
-               are the mount points the render/windowing pipeline drives. Skeleton + its legacy
-               #items-* inline styling kept verbatim — the table itself is re-skinned in Phase 3
-               (V4), so no masterpiece .items-table/.items-wrap class is applied here yet. -->
-          <div id="items-wrap" class="hidden fade-in">
-            <table class="w-full text-sm">
+               are the mount points the render/windowing pipeline drives (V4). Re-skinned to the
+               masterpiece .items-wrap frame + .items-table (sticky glass thead, hairline rows,
+               row-virtualization hint). The OUTER `#screen-inventory section.overflow-y-auto` stays
+               the scroll container — mountWindowedRows keys off it, so NO inner scroller is added. -->
+          <div id="items-wrap" class="hidden fade-in items-wrap">
+            <table class="items-table">
               <thead>
-                <tr id="items-head"
-                    class="text-left text-2xs uppercase tracking-wider text-slate-400 border-b border-slate-800"></tr>
+                <tr id="items-head"></tr>
               </thead>
               <tbody id="items-body"></tbody>
             </table>

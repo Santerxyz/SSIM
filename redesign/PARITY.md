@@ -374,24 +374,24 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-186 | `renderAccountView()`: header = displayName + Proxy/Local-IP pill + username (mono); placeholder if none | app.js:2079–2094, 2081 | | |
-| P-187 | Trade-link render/bind (`renderTradeLink`/`bindTradeLink`) | app.js:2096, 2124 | | |
-| P-188 | "Check Bans" button → `checkAccountBans(username)` | app.js:2097–2099, 2125–2126 | | |
-| P-189 | "Logs" button → `openAccountLogs(username)` | app.js:2100–2102, 2127–2128 | | |
-| P-190 | "Trade-Ups" button (amber) → `openTradeUpModal(username)` | app.js:2104–2106, 2131–2132 | 💰 | |
-| P-191 | "Storage" (caskets) button (sky) → `openCasketModal(username)` | app.js:2107–2109, 2133–2134 | | |
-| P-192 | "Trade Offers" button → `openTradeOffers()` | app.js:2110–2112, 2129–2130 | 💰 | |
-| P-193 | "CSFloat" button → `openCsFloat(username)` | app.js:2113–2115, 2135–2136 | 💰 | |
-| P-194 | "SDA" button (emerald) → `openSda(username)` (Steam Guard + confirmations) | app.js:2116–2118, 2137–2138 | | |
-| P-195 | "Browser" button (violet) → `openCleanBrowser(btn,username)` (logged-in via linked proxy, ephemeral) | app.js:2119–2122, 2139–2140 | | |
-| P-196 | Refresh button shown+reset (enabled, rotate icon) | app.js:2142–2144 | | |
-| P-197 | Warning "not refreshed yet – trade-locked/listed may be missing" only when CS2 & `inv.source!=='gc'` | app.js:2148–2152, 1766–1774 | | |
-| P-198 | Stat labels: TF2 → "TF2 Items"/"TF2 Keys"; CS2 → "Items"/"Trade-Locked" | app.js:2152 | | |
-| P-199 | GC-sourced CS2 → category pills; else plain "Items" pill; Active-Orders tab always available (`renderAccountTabs`) | app.js:2154–2159 | | |
-| P-200 | Stats: totalItems, locked/keys, value=`inv.totalValueUsd`, wallet=walletToUsd (0 when refreshed+empty); '—' when no cache | app.js:2161–2173 | 💰 | |
-| P-201 | Active-Orders tab → `renderOrdersView(username,appId)` | app.js:2175–2182 | | |
-| P-202 | Renders selectable table (both games; app-agnostic send) | app.js:2185–2190 | | |
-| P-203 | Empty: "No TF2 inventory cached yet"/"No inventory in cache yet" + 'Click "Refresh" to load it live.' | app.js:2191–2196 | | |
+| P-186 | `renderAccountView()`: header = displayName + Proxy/Local-IP pill + username (mono); placeholder if none | app.js:2079–2094, 2081 | | done · app.js:2080–2100 (.pill header + Full/LTD tier pill re-skin) |
+| P-187 | Trade-link render/bind (`renderTradeLink`/`bindTradeLink`) | app.js:2096, 2124 | | done · app.js:2101, 2124; renderTradeLink 2863–2874 (.btn btn-secondary) |
+| P-188 | "Check Bans" button → `checkAccountBans(username)` | app.js:2097–2099, 2125–2126 | | done · app.js:2102–2103, 2125–2126 (.btn btn-secondary btn-sm) |
+| P-189 | "Logs" button → `openAccountLogs(username)` | app.js:2100–2102, 2127–2128 | | done · app.js:2104–2105, 2127–2128 |
+| P-190 | "Trade-Ups" button (amber) → `openTradeUpModal(username)` | app.js:2104–2106, 2131–2132 | 💰 | done · app.js:2108–2109, 2131–2132 (.btn btn-secondary, amber icon) |
+| P-191 | "Storage" (caskets) button (sky) → `openCasketModal(username)` | app.js:2107–2109, 2133–2134 | | done · app.js:2110–2111, 2133–2134 (sky icon) |
+| P-192 | "Trade Offers" button → `openTradeOffers()` | app.js:2110–2112, 2129–2130 | 💰 | done · app.js:2112–2113, 2129–2130 (.btn btn-primary) |
+| P-193 | "CSFloat" button → `openCsFloat(username)` | app.js:2113–2115, 2135–2136 | 💰 | done · app.js:2114–2115, 2135–2136 |
+| P-194 | "SDA" button (emerald) → `openSda(username)` (Steam Guard + confirmations) | app.js:2116–2118, 2137–2138 | | done · app.js:2116–2117, 2137–2138 |
+| P-195 | "Browser" button (violet) → `openCleanBrowser(btn,username)` (logged-in via linked proxy, ephemeral) | app.js:2119–2122, 2139–2140 | | done · app.js:2118–2120, 2139–2140 |
+| P-196 | Refresh button shown+reset (enabled, rotate icon) | app.js:2142–2144 | | done · app.js:2142–2145 (unchanged; #btn-load chrome is V6) |
+| P-197 | Warning "not refreshed yet – trade-locked/listed may be missing" only when CS2 & `inv.source!=='gc'` | app.js:2148–2152, 1766–1774 | | done · app.js:2148–2153 (logic unchanged) |
+| P-198 | Stat labels: TF2 → "TF2 Items"/"TF2 Keys"; CS2 → "Items"/"Trade-Locked" | app.js:2152 | | done · app.js:2153 (logic unchanged) |
+| P-199 | GC-sourced CS2 → category pills; else plain "Items" pill; Active-Orders tab always available (`renderAccountTabs`) | app.js:2154–2159 | | done · app.js:2155–2160; renderAccountTabs 2922–2950 (.chip pills) |
+| P-200 | Stats: totalItems, locked/keys, value=`inv.totalValueUsd`, wallet=walletToUsd (0 when refreshed+empty); '—' when no cache | app.js:2161–2173 | 💰 | done · app.js:2162–2174 (tri-state logic unchanged, invariant 1) |
+| P-201 | Active-Orders tab → `renderOrdersView(username,appId)` | app.js:2175–2182 | | done · app.js:2176–2183 (logic unchanged) |
+| P-202 | Renders selectable table (both games; app-agnostic send) | app.js:2185–2190 | | done · app.js:2186–2191 (logic unchanged) |
+| P-203 | Empty: "No TF2 inventory cached yet"/"No inventory in cache yet" + 'Click "Refresh" to load it live.' | app.js:2191–2196 | | done · app.js:2192–2197 (.empty shell, texts unchanged) |
 
 ---
 
@@ -498,41 +498,41 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-272 | Account category tab bar (GC): pills All / Owned Items / Trade-Locked / Listed on Market with per-bucket counts; flat inv collapses to single "Items" pill | app.js:2923–2938 | | |
-| P-273 | "Active Orders" tab (always appended): teal `fa-receipt`, separated by divider; click sets `state.gcCat` and re-renders | app.js:2939–2949 | | |
-| P-274 | Windowed rendering for flat 10k list: only visible rows (+10 buffer) between spacer `<tr>`s, recomputed on scroll; row height auto-measured; selection stays data-driven | app.js:2952–2995 | | |
-| P-275 | Per-row renderer (name/qty/rarity/value/status): item name colored by rarity; icon-with-lock; master row shows Accounts count instead of Exterior/Status | app.js:2997–3041 | | |
-| P-276 | Facet state per view: persists per `invMode:env:user/folder/master`; `{status[], rarity[], maxCents}` | app.js:3043–3051 | | |
-| P-277 | Apply facets: status/rarity include-filters + `maxCents` (price < threshold) | app.js:3052–3062 | | |
-| P-278 | Toggle / clear facet values: re-renders on each change | app.js:3063–3069 | | |
-| P-279 | Facet chip bar: "Filter" label; status chips (Tradable success / Trade-Locked warn / Listed listed) only in flat views; rarity chips sorted by weight; `≤ <sym>` value input; "Clear (N)" when active (TBL-03) | app.js:3070–3107 | | |
-| P-280 | Facet value input currency-aware: EUR converts via `usdToEur`; symbol `€`/`$` | app.js:3086–3104 | 💰 | |
-| P-281 | Render items table (master vs account columns): master Item/Qty/Accounts/Rarity/Value; account Item/Qty/Exterior/Rarity/Value/Status | app.js:3109, 3137–3139 | | |
-| P-282 | "Select under value" control visibility: only when rows selectable (account + folder-master) | app.js:3116–3117 | | |
-| P-283 | Trade-lock badge policy: shown in flat lists (TF2/not-fully-refreshed CS2) and categorized Trade-Locked tab; never in master/aggregate | app.js:3120–3125 | | |
-| P-284 | Search filter (name + marketHashName): corrupt name fields coerced to avoid throw (S30) | app.js:3142–3145 | | |
-| P-285 | Sort (active/default): with `state.sort` → `compareItems` asc/desc; default → locked-first (account only) then qty desc | app.js:3147–3155 | | |
-| P-286 | Search-empty message: "No items for this search." toggled on filtered length | app.js:3157; index.html:678 | | |
-| P-287 | Categorized GC bucket rendering: 3 strictly-separated groups w/ section headers in "All" ("Owned · freely tradable" success / "Trade-Locked" warn / "Listed on Steam Market" listed), each `N item(s)` count; single-category → "No items in this category." | app.js:3163–3189 | | |
-| P-288 | Qty badge: `×N` (bold pill) for N>1, else muted `×1` | app.js:3206–3210 | | |
-| P-289 | Value cell: `undefined`→`…` (Price loading…); `null`→`—` (no market price); else `fmtCents(stackValueCents)` + `(fmtCents(price)/ea.)` when qty>1 | app.js:3211–3216 | 💰 | |
-| P-290 | Rarity badge (colored) | app.js:3217–3219 | | |
-| P-291 | Lock countdown text: "3 days, 14 h" / "5 h, 12 min" / "8 min" / "unlocked now" | app.js:3220–3230 | | |
-| P-292 | Compact lock badge: "7D" / "14H" / "32M" (null if free) | app.js:3231–3240 | | |
-| P-293 | Icon-with-lock overlay: amber corner badge title "Trade-Locked: unlocks in <countdown>" | app.js:3241–3254 | | |
-| P-294 | Status cell: locked → amber lock + countdown (title "Unlocks on <abs localeString>"); tradable → emerald "Tradable"; else rose "Locked" | app.js:3255–3263 | | |
-| P-295 | Sortable column header: click toggles asc/desc; active arrow ▲/▼ in brand color | app.js:3265–3276 | | |
-| P-296 | Select-all header checkbox: title "Select all tradable" | app.js:3271 | | |
-| P-297 | Selection mode-awareness: account = assetId keys; folder/selection = marketHashName keys | app.js:3278–3297 | | |
-| P-298 | Per-key max selectable qty: master (agg) uses `sendable` portion only; `aggItemByName` O(1) lookup for fan-out | app.js:3286–3297 | | |
-| P-299 | Per-row qty input (selected, maxSel>1): number input min 1 max maxSel; syncs all matching `.sel-qty` | app.js:3024–3025, 3298–3305 | | |
-| P-300 | Targeted single-row re-render on toggle: preserves scroll + siblings | app.js:3307–3328 | | |
-| P-301 | Select-all (data-driven, windowed-safe): selects all selectable rows incl. off-screen; repaints window | app.js:3329–3347 | | |
-| P-302 | Delegated change/click dispatchers: `.sel-check`, `.sel-qty`, header sort, `#select-all` | app.js:3348–3361 | | |
-| P-303 | Account send → concrete assetIds (single-owner send) | app.js:3363–3372 | 💰 | |
-| P-304 | Folder send → {username,assetId} refs across owners (mass send fan-out) | app.js:3373–3388 | 💰 | |
-| P-305 | Selection bar: shows/hides; hides Sell button in TF2 view (market SELL is CS2-only); count text `N Item(s) · M Bot(s)/Stack(s)` | app.js:3391–3405; index.html:639–653 | 💰 | |
-| P-306 | "Select under value" bulk-select: threshold in display currency → USD cents; skips locked/untradable/unpriced; toast `Selected N item(s) under <sym><val>` or `No items under …` | app.js:3407–3433; index.html:626–638 | 💰 | |
+| P-272 | Account category tab bar (GC): pills All / Owned Items / Trade-Locked / Listed on Market with per-bucket counts; flat inv collapses to single "Items" pill | app.js:2923–2938 | | done · app.js:2922–2946 (.chip aria-pressed toggles) |
+| P-273 | "Active Orders" tab (always appended): teal `fa-receipt`, separated by divider; click sets `state.gcCat` and re-renders | app.js:2939–2949 | | done · app.js:2947–2950 (.chip chip--buy, divider) |
+| P-274 | Windowed rendering for flat 10k list: only visible rows (+10 buffer) between spacer `<tr>`s, recomputed on scroll; row height auto-measured; selection stays data-driven | app.js:2952–2995 | | done · app.js:2952–2996 (windowing math UNCHANGED, invariant 7) |
+| P-275 | Per-row renderer (name/qty/rarity/value/status): item name colored by rarity; icon-with-lock; master row shows Accounts count instead of Exterior/Status | app.js:2997–3041 | | done · app.js:2998–3042 (.rar bar + .item-icon + is-selected rows) |
+| P-276 | Facet state per view: persists per `invMode:env:user/folder/master`; `{status[], rarity[], maxCents}` | app.js:3043–3051 | | done · app.js:3046–3055 (logic unchanged) |
+| P-277 | Apply facets: status/rarity include-filters + `maxCents` (price < threshold) | app.js:3052–3062 | | done · app.js:3056–3065 (logic unchanged) |
+| P-278 | Toggle / clear facet values: re-renders on each change | app.js:3063–3069 | | done · app.js:3066–3073 (logic unchanged) |
+| P-279 | Facet chip bar: "Filter" label; status chips (Tradable success / Trade-Locked warn / Listed listed) only in flat views; rarity chips sorted by weight; `≤ <sym>` value input; "Clear (N)" when active (TBL-03) | app.js:3070–3107 | | done · app.js:3075–3111 (already .chip; unchanged) |
+| P-280 | Facet value input currency-aware: EUR converts via `usdToEur`; symbol `€`/`$` | app.js:3086–3104 | 💰 | done · app.js:3090–3108 (logic unchanged) |
+| P-281 | Render items table (master vs account columns): master Item/Qty/Accounts/Rarity/Value; account Item/Qty/Exterior/Rarity/Value/Status | app.js:3109, 3137–3139 | | done · app.js:3113, 3141–3143 (thSort/thPlain/thCheck re-skin) |
+| P-282 | "Select under value" control visibility: only when rows selectable (account + folder-master) | app.js:3116–3117 | | done · app.js:3120–3121 (logic unchanged) |
+| P-283 | Trade-lock badge policy: shown in flat lists (TF2/not-fully-refreshed CS2) and categorized Trade-Locked tab; never in master/aggregate | app.js:3120–3125 | | done · app.js:3124–3129 (logic unchanged) |
+| P-284 | Search filter (name + marketHashName): corrupt name fields coerced to avoid throw (S30) | app.js:3142–3145 | | done · app.js:3146–3149 (logic unchanged) |
+| P-285 | Sort (active/default): with `state.sort` → `compareItems` asc/desc; default → locked-first (account only) then qty desc | app.js:3147–3155 | | done · app.js:3151–3159 (logic unchanged) |
+| P-286 | Search-empty message: "No items for this search." toggled on filtered length | app.js:3157; index.html:678 | | done · app.js:3161; index.html:875 |
+| P-287 | Categorized GC bucket rendering: 3 strictly-separated groups w/ section headers in "All" ("Owned · freely tradable" success / "Trade-Locked" warn / "Listed on Steam Market" listed), each `N item(s)` count; single-category → "No items in this category." | app.js:3163–3189 | | done · app.js:3167–3193 (section headers kept, .rar-driven rows) |
+| P-288 | Qty badge: `×N` (bold pill) for N>1, else muted `×1` | app.js:3206–3210 | | done · app.js:3210–3214 (unchanged) |
+| P-289 | Value cell: `undefined`→`…` (Price loading…); `null`→`—` (no market price); else `fmtCents(stackValueCents)` + `(fmtCents(price)/ea.)` when qty>1 | app.js:3211–3216 | 💰 | done · app.js:3215–3220 (pricing-honesty distinct states, invariant 5) |
+| P-290 | Rarity badge (colored) | app.js:3217–3219 | | done · app.js:3221–3223 (rarity-hex data color, unchanged) |
+| P-291 | Lock countdown text: "3 days, 14 h" / "5 h, 12 min" / "8 min" / "unlocked now" | app.js:3220–3230 | | done · app.js:3225–3235 (unchanged) |
+| P-292 | Compact lock badge: "7D" / "14H" / "32M" (null if free) | app.js:3231–3240 | | done · app.js:3236–3245 (unchanged) |
+| P-293 | Icon-with-lock overlay: amber corner badge title "Trade-Locked: unlocks in <countdown>" | app.js:3241–3254 | | done · app.js:3248–3259 (unchanged) |
+| P-294 | Status cell: locked → amber lock + countdown (title "Unlocks on <abs localeString>"); tradable → emerald "Tradable"; else rose "Locked" | app.js:3255–3263 | | done · app.js:3259–3267 (unchanged) |
+| P-295 | Sortable column header: click toggles asc/desc; active arrow ▲/▼ in brand color | app.js:3265–3276 | | done · app.js:3269–3280 (.items-table th, arrow kept) |
+| P-296 | Select-all header checkbox: title "Select all tradable" | app.js:3271 | | done · app.js:3275 (thCheck re-skin) |
+| P-297 | Selection mode-awareness: account = assetId keys; folder/selection = marketHashName keys | app.js:3278–3297 | | done · app.js:3282–3301 (logic unchanged) |
+| P-298 | Per-key max selectable qty: master (agg) uses `sendable` portion only; `aggItemByName` O(1) lookup for fan-out | app.js:3286–3297 | | done · app.js:3290–3301 (logic unchanged) |
+| P-299 | Per-row qty input (selected, maxSel>1): number input min 1 max maxSel; syncs all matching `.sel-qty` | app.js:3024–3025, 3298–3305 | | done · app.js:3025–3026, 3302–3309 (.sel-qty hook kept) |
+| P-300 | Targeted single-row re-render on toggle: preserves scroll + siblings | app.js:3307–3328 | | done · app.js:3311–3332 (logic unchanged) |
+| P-301 | Select-all (data-driven, windowed-safe): selects all selectable rows incl. off-screen; repaints window | app.js:3329–3347 | | done · app.js:3333–3351 (logic unchanged) |
+| P-302 | Delegated change/click dispatchers: `.sel-check`, `.sel-qty`, header sort, `#select-all` | app.js:3348–3361 | | done · app.js:3352–3365 (delegation unchanged, invariant 7) |
+| P-303 | Account send → concrete assetIds (single-owner send) | app.js:3363–3372 | 💰 | done · app.js:3367–3376 (logic unchanged) |
+| P-304 | Folder send → {username,assetId} refs across owners (mass send fan-out) | app.js:3373–3388 | 💰 | done · app.js:3377–3392 (logic unchanged) |
+| P-305 | Selection bar: shows/hides; hides Sell button in TF2 view (market SELL is CS2-only); count text `N Item(s) · M Bot(s)/Stack(s)` | app.js:3391–3405; index.html:639–653 | 💰 | done · app.js:3395–3409; index.html:829–846 (logic unchanged; opens modal only) |
+| P-306 | "Select under value" bulk-select: threshold in display currency → USD cents; skips locked/untradable/unpriced; toast `Selected N item(s) under <sym><val>` or `No items under …` | app.js:3407–3433; index.html:626–638 | 💰 | done · app.js:3411–3437; index.html:812–827 (logic unchanged; selection only) |
 
 ---
 
