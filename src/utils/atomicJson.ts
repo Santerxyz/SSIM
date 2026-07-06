@@ -50,9 +50,25 @@ export function writeJsonAtomic(
 ): void {
   fsExtra.ensureDirSync(path.dirname(file));
 
-  // Optional one-generation backup of the previous good state (.bak).
+  // Optional one-generation backup of the previous good state (.bak). Written
+  // through a fsync'd temp + rename so a crash mid-copy can't tear the existing
+  // .bak, and copied with the SAME mode as the main write so a secret file's
+  // backup inherits its owner-only perms rather than defaulting world-readable.
   if (opts?.backup && fs.existsSync(file)) {
-    try { fs.copyFileSync(file, `${file}.bak`); } catch { /* best-effort */ }
+    const bak = `${file}.bak`;
+    const bakTmp = `${bak}.${uniqueTmpSuffix()}.tmp`;
+    try {
+      fs.copyFileSync(file, bakTmp);
+      if (opts?.mode !== undefined) { try { fs.chmodSync(bakTmp, opts.mode); } catch { /* best-effort */ } }
+      try {
+        const fd = fs.openSync(bakTmp, 'r+');
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      } catch { /* durability flush is best-effort */ }
+      fs.renameSync(bakTmp, bak);
+    } catch {
+      try { if (fs.existsSync(bakTmp)) fs.unlinkSync(bakTmp); } catch { /* best-effort */ }
+      /* backup stays best-effort — never abort the main write */
+    }
   }
 
   const tmp = `${file}.${uniqueTmpSuffix()}.tmp`;
