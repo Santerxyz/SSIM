@@ -48,7 +48,7 @@ function stubDeps(store: { account: Account; logouts: string[] }) {
   };
   const csfloat = {
     getAutoAccept: () => false,
-    setAutoAccept: () => undefined,
+    setAutoAccept: () => true, // boolean contract (H-BOOT-013): true = saved OK; a falsy return now 500s
     invalidateClient: () => undefined,
   };
   return { accounts, sessions, csfloat };
