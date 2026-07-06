@@ -171,7 +171,13 @@ export class BanService {
         communityBanned: false, economyBan: 'none', daysSinceLastBan: 0, categories: [],
       };
       infos.push(info);
-      if (steamId) bySteamId.set(steamId, info);
+      // Two accounts can never legitimately share one SteamID64: a duplicate here means a config
+      // anomaly (two entries pointing at one maFile, a stale cached steamId, a re-import under an
+      // alias). First-in wins deterministically; the loser is flagged, not silently overwritten and
+      // reported clean. Null-steamId accounts still go to `unresolved` exactly as before.
+      const prev = steamId ? bySteamId.get(steamId) : undefined;
+      if (steamId && !prev) bySteamId.set(steamId, info);
+      else if (prev) info.error = `Duplicate SteamID64 — same Steam account as "${prev.username}"; fix the duplicate registration`;
       else unresolved.push({ account: acc, info });
     }
 
@@ -455,7 +461,12 @@ export class BanService {
           // ~20s budget so a stuck login can't hang the resolve pass either.
           await withTimeout(this.trades.getTrader(account.username), KEY_MINT_TIMEOUT_MS, `${account.username} login`); // logs in if needed (+ persists a refresh token)
           const sid = this.sessions.getSession(account.username)?.steamId;
-          if (sid && STEAMID64.test(sid)) { info.steamId = sid; bySteamId.set(sid, info); }
+          if (sid && STEAMID64.test(sid)) {
+            const prev = bySteamId.get(sid);
+            // Same guard as registration: first-in wins, a duplicate is flagged not overwritten.
+            if (prev && prev !== info) info.error = `Duplicate SteamID64 — same Steam account as "${prev.username}"; fix the duplicate registration`;
+            else { info.steamId = sid; bySteamId.set(sid, info); }
+          }
           else info.error = 'Logged in but no SteamID was returned';
         } catch (err) {
           info.error = `Login failed: ${(err as Error).message}`;
