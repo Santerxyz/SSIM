@@ -3253,13 +3253,19 @@ function iconWithLock(item, imgClass, showLock = true) {
     </div>`;
 }
 function statusCell(item) {
+  // C9 / INV-D4: a listed item still awaiting mobile (2FA) confirmation must not read as a
+  // confirmed live sale. Only an explicit `false` shows the chip; undefined (legacy cached
+  // records) is treated as confirmed. (H-INV-045)
+  const unconfirmed = (item.category === 'listed' && item.listingConfirmed === false)
+    ? ` <span class="text-2xs px-1.5 py-0.5 rounded-full bg-amber-900/40 text-amber-300 border border-amber-700/40" title="Listing created but awaiting mobile (2FA) confirmation — confirm it in the Steam app or it will never go live">unconfirmed</span>`
+    : '';
   if (item.tradeLockExpiry) {
     const d = new Date(item.tradeLockExpiry);
     const abs = isNaN(d) ? '' : d.toLocaleString();
-    return `<span title="Unlocks on ${escapeAttr(abs)}" class="inline-flex items-center gap-1.5 text-amber-400 text-xs font-medium"><i class="fa-solid fa-lock"></i> ${escapeHtml(lockCountdown(d))}</span>`;
+    return `<span title="Unlocks on ${escapeAttr(abs)}" class="inline-flex items-center gap-1.5 text-amber-400 text-xs font-medium"><i class="fa-solid fa-lock"></i> ${escapeHtml(lockCountdown(d))}</span>${unconfirmed}`;
   }
-  if (item.tradable) return `<span class="inline-flex items-center gap-1.5 text-emerald-400 text-xs font-medium"><i class="fa-solid fa-circle-check"></i> Tradable</span>`;
-  return `<span class="inline-flex items-center gap-1.5 text-rose-500 text-xs font-medium"><i class="fa-solid fa-ban"></i> Locked</span>`;
+  if (item.tradable) return `<span class="inline-flex items-center gap-1.5 text-emerald-400 text-xs font-medium"><i class="fa-solid fa-circle-check"></i> Tradable</span>${unconfirmed}`;
+  return `<span class="inline-flex items-center gap-1.5 text-rose-500 text-xs font-medium"><i class="fa-solid fa-ban"></i> Locked</span>${unconfirmed}`;
 }
 
 function thSort(label, key, extra = '') {
