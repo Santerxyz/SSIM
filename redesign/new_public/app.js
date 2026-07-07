@@ -5803,11 +5803,11 @@ function hideBuySearch() { el.buyNameResults.classList.add('hidden'); el.buyName
 function renderBuySearch(list) {
   if (!list || !list.length) { hideBuySearch(); return; }
   el.buyNameResults.innerHTML = list.map((it, i) => `
-    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-teal-600/20 transition">
+    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand/15 transition">
       ${it.iconUrl ? `<img src="${escapeAttr(safeIconUrl(it.iconUrl))}" class="w-7 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : ''}
       <span class="min-w-0 flex-1">
-        <span class="block text-sm text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
-        ${it.priceText ? `<span class="block text-2xs text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}
+        <span class="block t13 text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
+        ${it.priceText ? `<span class="block t10 text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}
       </span>
     </button>`).join('');
   el.buyNameResults.querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => {

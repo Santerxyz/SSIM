@@ -282,3 +282,46 @@ Deliberate DECISION (design-source deviation, not IA): **the prototype simplifie
 to a single count pill; the port keeps `offerSideThumbs`' real item icons** (count pill + up to 5
 thumbnails + `+N`) — strictly more informative and already truthful. **2FA-honesty preserved:** an
 accepted-but-unconfirmed offer still surfaces "awaiting mobile confirmation" (invariant 3).
+
+---
+
+## V10 💰 — Market-Buy modal (`index.html` `#buy-overlay` + `app.js` `renderBuySearch`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin of the highest-stakes 💰 view — every wallet/price
+handler, funds path, and the sacred buy re-POST are byte-identical.** The static `#buy-overlay`
+shell was ported to the masterpiece DS to match `design_source.html:1130-1148`: header `.t16` title +
+`.modal-x` close, every label → `.field-label`, every input/select → `.field` (qty keeps
+`flex-1 min-w-0`, price keeps `w-28`), the Max and Market-price buttons → `.btn btn-secondary
+btn-sm`, Cancel → `.btn btn-secondary`, the **Buy submit → `.btn btn-buy`**, and the wallet line /
+× qty total / amber buy-order note → the `.t11` type scale (info box `rounded-lg`→`rounded-xl`). In
+`app.js`, `renderBuySearch`'s live-search dropdown rows moved to the `.t13`/`.t10` type scale and the
+hover accent shifted teal→brand (`hover:bg-brand/15`).
+
+**The sacred buy re-POST (`submitBuy` — the createBuyOrder finalize) is byte-identical, and so are
+all wallet/price handlers:** `updateBuyWallet`, `refreshBuyWallet`, `recomputeBuyTotal`,
+`fillMaxBuyQty`, `fetchBuyPrice`, `searchBuyItems`, `buyCurrencyCode`, `closeBuyModal`. The diff
+touches only markup — no `api(`/`fetch(`/`addEventListener`/`state.` line changed. `renderBuySearch`'s
+click-to-fill `addEventListener` block was left untouched (only its innerHTML template restyled;
+`data-i` preserved so the click handler still resolves the picked item).
+
+Deliberate DECISIONS (not IA changes), for reviewer awareness:
+
+1. **`renderBuyWallet` and `openBuyModal` were left byte-identical.** Both are on the re-skin list,
+   but neither emits DS-classable markup: `renderBuyWallet` only writes `textContent` to `#buy-cur` /
+   `#buy-wallet`, and `openBuyModal` only emits bare `<option>`s into the datalist. So the wallet
+   line's re-skin is applied to its **host** `#buy-wallet` `<p>` in `index.html` (`text-2xs`→`.t11`),
+   leaving the balance-honesty logic completely untouched.
+
+2. **`#buy-close` / `#buy-cancel` kept their `id`s (NOT switched to the prototype's `data-close`).**
+   The handlers bind by id (`el.buyClose`/`el.buyCancel` → `closeBuyModal`, `app.js:242-243`,
+   `6471-6472`); adopting `data-close` would break both. They wear `.modal-x` / `.btn btn-secondary`
+   but keep their ids — same call as V9's `#offers-close`.
+
+3. **`#buy-result` box markup left as-is.** `submitBuy` hard-codes the result box's full `className`
+   (`px-3 py-2.5 rounded-lg border text-xs …`) when it reveals the box; re-styling the static
+   placeholder would only diverge from what the untouched handler re-applies, so it was kept in sync.
+
+**Balance tri-state honesty (invariant 1/3) preserved verbatim:** `renderBuyWallet` still shows the
+three visually distinct states — never-refreshed `Balance unknown – "Refresh" the account first
+(buying disabled)`, refreshed-empty `Balance: 0,00 …`, and a funded value — with no gating on
+truthiness. EUR money formatting (de-DE `1.234,56`) inside the money formatters is untouched.

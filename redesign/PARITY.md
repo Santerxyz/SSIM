@@ -841,17 +841,17 @@
 | P-463 | Button loading helper `setButtonLoading(btn,loading,text,icon)`: spinner/icon swap | app.js:5630–5634 | | |
 | P-464 | Wallet resolver `walletOf(u)`: GLOBAL wallet (not per-game), prefers remembered newest, falls back to either game cache | app.js:5642–5652 | 💰 | |
 | P-465 | Buy currency code `buyCurrencyCode`: NEVER defaults to EUR (wrong scale would misprice); uses live buyWallet or `walletOf` | app.js:5655–5660 | 💰 | |
-| P-466 | Open buy modal `openBuyModal`: datalist of all accounts, preselects active bot, game from `state.game`, qty 1, empty price/name, fetches wallet | app.js:5661–5680 | | |
-| P-467 | Render buy wallet `renderBuyWallet(w)`: currency label `(ISO)`/"(currency unknown)"; `Balance: …` or "Balance unknown – Refresh the account first (buying disabled)" | app.js:5682–5687 | 💰 | |
-| P-468 | Update buy wallet `updateBuyWallet`: instant local value, then GET `/api/accounts/:u/wallet` for freshest; caches | app.js:5690–5702 | 💰 | |
-| P-469 | Refresh buy wallet (exact) `refreshBuyWallet`: live wallet fetch used by funds check + Max; throws on error | app.js:5710–5716 | 💰 | |
-| P-470 | Recompute buy total `recomputeBuyTotal`: `fmtMoneyMinor(minor*qty, code)` or `—` | app.js:5717–5724 | 💰 | |
-| P-471 | Max (spend entire balance) `fillMaxBuyQty`: fetches exact wallet, computes affordable qty at price, caps at per-order max (100); toasts capped/max info | app.js:5730–5762 | 💰 | |
-| P-472 | Fetch buy market price `fetchBuyPrice`: GET `/api/market/buy-price?username&marketHashName&appId`; fills price (comma decimal); toast "Lowest offer: …" | app.js:5764–5781 | 💰 | |
-| P-473 | Buy item live search `searchBuyItems` (debounced 350ms): GET `/api/market/search?q&appId`; dropdown ≤20; `renderBuySearch` icon+name+"from price"; click fills marketHashName | app.js:5782–5811 | | |
-| P-474 | Submit market buy `submitBuy`: validates account/name/qty(1-100)/currency/price; **pre-buy live funds check** (`refreshBuyWallet`, aborts if insufficient); POST `/api/market/buy {username,marketHashName,appId,pricePerItemMinor,quantity}`; result box ok/info; toast; refreshes buyer for that game | app.js:5812–5872 | 💰 | |
-| P-475 | Buy-fail money-safety: on error "Buy failed: … — verify inventory/orders before retrying" + refresh buyer (a failed POST may still have reached Steam) | app.js:5864–5868 | 💰 | |
-| P-476 | Buy result box: shows `r.message`, `Order X · confirmed/unconfirmed · Total …` | app.js:5856–5859 | 💰 | |
+| P-466 | Open buy modal `openBuyModal`: datalist of all accounts, preselects active bot, game from `state.game`, qty 1, empty price/name, fetches wallet | app.js:5661–5680 | | ✅ done · openBuyModal logic unchanged (only datalist `<option>`s emitted — no DS classes); modal shell re-skinned; hooks preserved |
+| P-467 | Render buy wallet `renderBuyWallet(w)`: currency label `(ISO)`/"(currency unknown)"; `Balance: …` or "Balance unknown – Refresh the account first (buying disabled)" | app.js:5682–5687 | 💰 | ✅ done · renderBuyWallet byte-identical (textContent only); wallet line re-skinned on host `#buy-wallet` → .t11; balance tri-state (unknown / 0,00 / value) kept visually distinct |
+| P-468 | Update buy wallet `updateBuyWallet`: instant local value, then GET `/api/accounts/:u/wallet` for freshest; caches | app.js:5690–5702 | 💰 | ✅ done · updateBuyWallet logic unchanged |
+| P-469 | Refresh buy wallet (exact) `refreshBuyWallet`: live wallet fetch used by funds check + Max; throws on error | app.js:5710–5716 | 💰 | ✅ done · refreshBuyWallet logic unchanged |
+| P-470 | Recompute buy total `recomputeBuyTotal`: `fmtMoneyMinor(minor*qty, code)` or `—` | app.js:5717–5724 | 💰 | ✅ done · recomputeBuyTotal logic unchanged |
+| P-471 | Max (spend entire balance) `fillMaxBuyQty`: fetches exact wallet, computes affordable qty at price, caps at per-order max (100); toasts capped/max info | app.js:5730–5762 | 💰 | ✅ done · fillMaxBuyQty logic unchanged; Max button re-skinned `#buy-max` → .btn btn-secondary btn-sm |
+| P-472 | Fetch buy market price `fetchBuyPrice`: GET `/api/market/buy-price?username&marketHashName&appId`; fills price (comma decimal); toast "Lowest offer: …" | app.js:5764–5781 | 💰 | ✅ done · fetchBuyPrice logic unchanged; Market-price button re-skinned `#buy-price-fetch` → .btn btn-secondary btn-sm |
+| P-473 | Buy item live search `searchBuyItems` (debounced 350ms): GET `/api/market/search?q&appId`; dropdown ≤20; `renderBuySearch` icon+name+"from price"; click fills marketHashName | app.js:5782–5811 | | ✅ done · renderBuySearch rows re-skinned → .t13/.t10 + hover:bg-brand/15 (data-i + click-fill wiring preserved); searchBuyItems logic unchanged |
+| P-474 | Submit market buy `submitBuy`: validates account/name/qty(1-100)/currency/price; **pre-buy live funds check** (`refreshBuyWallet`, aborts if insufficient); POST `/api/market/buy {username,marketHashName,appId,pricePerItemMinor,quantity}`; result box ok/info; toast; refreshes buyer for that game | app.js:5812–5872 | 💰 | ✅ done · submitBuy (SACRED buy re-POST / createBuyOrder finalize) BYTE-IDENTICAL; submit re-skinned `#buy-submit` → .btn btn-buy; #buy-form/#buy-cancel/#buy-close hooks preserved |
+| P-475 | Buy-fail money-safety: on error "Buy failed: … — verify inventory/orders before retrying" + refresh buyer (a failed POST may still have reached Steam) | app.js:5864–5868 | 💰 | ✅ done · submitBuy buy-fail money-safety byte-identical |
+| P-476 | Buy result box: shows `r.message`, `Order X · confirmed/unconfirmed · Total …` | app.js:5856–5859 | 💰 | ✅ done · buy-result box markup unchanged (submitBuy sets its class on show; index.html placeholder kept in sync) |
 
 ---
 
