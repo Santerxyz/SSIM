@@ -150,6 +150,12 @@ export class SessionManager extends EventEmitter {
   // concurrent callers share ONE login instead of destroying each other's
   // mid-handshake session. Cleared in finally when the login settles.
   private readonly loginsInFlight = new Map<string, Promise<ManagedSession>>();
+  // H-ACC-005: keys of accounts currently RE-logging-in — their prior resident session has been
+  // destroyed (freeing its slot) but a fresh one is not yet inserted. occupiedCount() counts these
+  // as occupied so a concurrent newcomer can't steal the slot, and the insertion re-check exempts
+  // them so the re-login re-occupies its OWN slot ("replaces, never grows"). Added in doLoginAccount
+  // before the destroy, cleared in its finally.
+  private readonly reloginReservations = new Set<string>();
   // S48: set by logoutAll() so an in-flight login can't insert a fresh session into a manager that has
   // already been torn down (a late success would park an unmanaged live CM session + agent). Checked in
   // loginAccount / performLogin; reset by loginAll() when a deliberate new cycle starts.
@@ -235,6 +241,18 @@ export class SessionManager extends EventEmitter {
     else this.loginSlots++;        // no waiter → return it to the free pool
   }
 
+  /**
+   * Resident population for the ceiling checks (H-ACC-005): live sessions PLUS in-flight re-login
+   * reservations whose old session was already destroyed. A reserved key that has re-inserted is
+   * counted once via `sessions` (the filter excludes it), so neither newcomers nor re-logins can
+   * overshoot the MAX_LIVE_SESSIONS budget.
+   */
+  private occupiedCount(): number {
+    let pending = 0;
+    for (const k of this.reloginReservations) if (!this.sessions.has(k)) pending++;
+    return this.sessions.size + pending;
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /**
@@ -268,10 +286,12 @@ export class SessionManager extends EventEmitter {
     // ── Hard resident-session ceiling ────────────────────────────────────────
     // Refuse a NEW account's login (fast, before consuming a slot) once the live-session
     // population is at the cap, so no caller can ever drive resident sockets past a safe budget.
-    // A re-login of an account that already holds a session is exempt (it replaces, never grows).
+    // A re-login of an account that already holds a session is exempt (it replaces, never grows); an
+    // in-flight re-login whose old session was already destroyed still counts against the budget via
+    // occupiedCount() (its reservation), so a newcomer can't steal the slot it will re-occupy (H-ACC-005).
     // Classified 'connection' so it bubbles as a transient, retryable per-account failure (the bulk
     // orchestrators already record it and carry on) and NEVER deletes a refresh token.
-    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.sessions.size >= MAX_LIVE_SESSIONS) {
+    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.occupiedCount() >= MAX_LIVE_SESSIONS) {
       return Promise.reject(Object.assign(
         new Error(`live-session ceiling ${MAX_LIVE_SESSIONS} reached – ${account.username} skipped (a bulk op may not be releasing sessions); retry shortly`),
         { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true },
@@ -318,6 +338,20 @@ export class SessionManager extends EventEmitter {
   }
 
   private async doLoginAccount(account: AccountConfig, key: string): Promise<ManagedSession> {
+    // H-ACC-005: a re-login of an already-resident account reserves its slot BEFORE doLoginAccountInner
+    // destroys the old session, so the freed slot is held for THIS account — occupiedCount() counts the
+    // reservation (a concurrent newcomer can't take it) and the insertion re-check exempts the reserved
+    // key (the re-login re-occupies its OWN slot, "replaces, never grows"). Released once the login settles.
+    const reserved = this.sessions.has(key);
+    if (reserved) this.reloginReservations.add(key);
+    try {
+      return await this.doLoginAccountInner(account, key);
+    } finally {
+      if (reserved) this.reloginReservations.delete(key);
+    }
+  }
+
+  private async doLoginAccountInner(account: AccountConfig, key: string): Promise<ManagedSession> {
     await this.destroySession(key);
 
     // Load the maFile up front (best-effort). It carries identity_secret, which
@@ -488,10 +522,12 @@ export class SessionManager extends EventEmitter {
     // BEFORE acquireLoginSlot and the entry is inserted here, up to a full backoff later — so a
     // burst admitted while the map was momentarily small could overshoot the budget. This
     // re-check is SYNCHRONOUS with the set() below (no await between), so it is race-free: once
-    // the map is at the cap, a NEW account's insertion is refused (transient/retryable). A
-    // re-login of an already-resident account is exempt (it replaces, never grows). We must
+    // the population is at the cap, a NEW account's insertion is refused (transient/retryable). A
+    // re-login is exempt via its reservation (reloginReservations): it re-occupies the exact slot its
+    // own destroy freed (growth 0), while newcomers still see that reservation as occupied through
+    // occupiedCount() so the budget stays exact (H-ACC-005). We must
     // tear the freshly-built client down so it doesn't leak a CM/proxy socket.
-    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.sessions.size >= MAX_LIVE_SESSIONS) {
+    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && !this.reloginReservations.has(key) && this.occupiedCount() >= MAX_LIVE_SESSIONS) {
       try { client.on('error', () => { /* discarded */ }); client.logOff(); } catch { /* noop */ }
       neutralizeSteamClient(client);
       AgentFactory.destroyIfDisposable(httpsAgent);
