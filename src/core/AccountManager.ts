@@ -546,13 +546,15 @@ export class AccountManager {
     return true;
   }
 
+  /** Renames are not supported — every secret store keys on username. */
   update(
     username: string,
-    changes:  Partial<Omit<AccountConfig, 'id' | 'addedAt' | 'network'>>,
+    changes:  Partial<Omit<AccountConfig, 'id' | 'addedAt' | 'network' | 'username'>>,
   ): AccountConfig {
     const account = this.rawGetOrThrow(username);
     const safe = { ...changes };
-    delete (safe as { network?: unknown }).network; // never persist the computed field
+    delete (safe as { network?: unknown }).network;   // never persist the computed field
+    delete (safe as { username?: unknown }).username; // renames desync the vault key from the org record
     Object.assign(account, safe);
     this.save();
     return this.withNetwork(account);
