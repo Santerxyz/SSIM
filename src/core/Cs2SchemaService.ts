@@ -120,7 +120,8 @@ export class Cs2SchemaService {
       if (r.status !== 200 || !Array.isArray(r.data)) throw new Error(`CS2 schema fetch failed (HTTP ${r.status})`);
       this.index(r.data as unknown[]);
       if (this.byBaseName.size < MIN_SCHEMA_SKINS) throw new Error(`CS2 schema unusable (${this.byBaseName.size} skins parsed)`);
-      try { writeJsonAtomic(SCHEMA_FILE, r.data, { spaces: 0 }); } catch { /* cache is best-effort */ }
+      try { writeJsonAtomic(SCHEMA_FILE, r.data, { spaces: 0 }); }
+      catch (e) { logger.warn(`[schema] could not cache cs2-skins.json: ${(e as Error).message} — schema will be re-fetched next run`); }
       this.loaded = true;
       logger.info(`[schema] loaded ${this.byBaseName.size} skins across ${this.byCollectionRarity.size} collections`);
     } catch (e) {
