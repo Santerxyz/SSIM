@@ -219,14 +219,22 @@ export function startProxyRelay(
       const connect = /^CONNECT\s+(\S+)\s+HTTP\/1\.[01]/i.exec(firstLine);
 
       const upstream = net.connect(auth.port, auth.host);
+      let spliced = false;                                // true once raw streams are joined — after this an upstream 'error' is a dropped tunnel, not a handshake failure
       // Bound the CONNECT/replay handshake: a connected-but-unresponsive proxy would otherwise
       // pin both sockets (and an activeConns slot) until Chromium's own timeout gives up.
       const hsTimer = setTimeout(() => { try { client.end('HTTP/1.1 504 Gateway Timeout\r\n\r\n'); } catch { /* ignore */ } upstream.destroy(); }, opts?.handshakeTimeoutMs ?? 20_000);
       hsTimer.unref?.();
       upstream.on('error', (e) => {
         clearTimeout(hsTimer);
-        logger.warn(`[${label}] proxy relay: cannot reach upstream proxy ${auth.host}:${auth.port} — ${(e as Error).message}`);
-        try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ }
+        if (spliced) {
+          // Mid-tunnel reset (routine on flaky proxies): the upstream WAS reached, the tunnel died.
+          // Never write a plaintext 502 into what is now a raw TLS byte stream — just tear down the client.
+          logger.debug(`[${label}] proxy relay: tunnel to ${auth.host}:${auth.port} dropped — ${(e as Error).message}`);
+          client.destroy();
+        } else {
+          logger.warn(`[${label}] proxy relay: cannot reach upstream proxy ${auth.host}:${auth.port} — ${(e as Error).message}`);
+          try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ }
+        }
       });
       client.on('error', () => upstream.destroy());
       client.on('close', () => upstream.destroy());
@@ -254,6 +262,7 @@ export function startProxyRelay(
             if (leftover.length) client.write(leftover);   // tunneled bytes that rode in with the 200
             if (rest.length) upstream.write(rest);          // early client bytes (rare for CONNECT)
             clearTimeout(hsTimer);
+            spliced = true;
             upstream.pipe(client); client.pipe(upstream);
           };
           upstream.on('data', onUp);
@@ -267,6 +276,7 @@ export function startProxyRelay(
           upstream.write(lines.join('\r\n') + '\r\n\r\n');
           if (rest.length) upstream.write(rest);
           clearTimeout(hsTimer);
+          spliced = true;
           upstream.pipe(client); client.pipe(upstream);
         }
       });
