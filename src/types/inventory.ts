@@ -108,7 +108,8 @@ export interface AccountInventory {
   /** Sum of price × quantity over priced items (USD cents). Enriched at read-time. */
   totalValueUsd?: number;
   /** Steam wallet balance in the account's native currency, captured at refresh.
-   *  UNIT: MAJOR units for 2-decimal currencies (steam-user ÷100 — see src/types/session.ts wallet; 0-decimal unit unverified, B18); convert to minor units ONLY via knownCurrencyInfo (S64). */
+   *  UNIT: MAJOR units for 2-decimal currencies (steam-user ÷100 — see src/types/session.ts wallet; 0-decimal unit unverified, B18); convert to minor units ONLY via knownCurrencyInfo (S64).
+   *  TRI-STATE (Directive 2, regressed 3×): field ABSENT = never refreshed → UI "—"; PRESENT with balance 0 = refreshed-and-empty (hasWallet=false coerced to 0 at attach) → UI "0,00"; funded → value. Never gate display or transport on truthiness of the balance. */
   wallet?:     { currency: number; balance: number };
   /**
    * Read-time only — this result is a carried-forward cache record substituted for a suspect
