@@ -199,7 +199,7 @@ declare module 'steam-tradeoffer-manager' {
     on(event: 'receivedOfferChanged', listener: (offer: TradeOffer, oldState: number) => void): this;
     on(event: string, listener: (...args: unknown[]) => void): this;
 
-    static ETradeOfferState: Record<string, number>;
+    static ETradeOfferState: Record<string, number | string>;
     static EOfferFilter:     Record<string, number>;
     static ETradeStatus:     Record<string, number>;
   }

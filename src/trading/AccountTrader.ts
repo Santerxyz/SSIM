@@ -12,8 +12,8 @@ import {
 import { shapeConfirmations, type ConfirmationView } from './confirmations';
 
 // Trade-offer state + filter enums (static members of the manager class).
-const ETradeOfferState = (TradeOfferManager as any).ETradeOfferState as Record<string, number | string>;
-const EOfferFilter     = (TradeOfferManager as any).EOfferFilter as Record<string, number>;
+const ETradeOfferState = TradeOfferManager.ETradeOfferState;
+const EOfferFilter     = TradeOfferManager.EOfferFilter;
 
 // CS2 lives on appid 730, inventory context 2.
 const CS2_APPID     = 730;
