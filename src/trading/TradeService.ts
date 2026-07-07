@@ -189,7 +189,8 @@ export class TradeService {
   ) {
     // Whenever an account (re)gains web cookies, (re)wire its trader.
     this.sessions.on('webSession', (username: string) => {
-      void this.attach(username);
+      void this.attach(username).catch((err) =>
+        logger.error(`[${username}] failed to set trade cookies: ${(err as Error).message}`));
     });
     // A destroyed session (logout, re-login, account removal) must take its
     // trader down with it: the trader's TradeOfferManager polls every 5s and
@@ -225,11 +226,12 @@ export class TradeService {
       logger.info(`[${username}] AccountTrader attached`);
     }
 
-    try {
-      await trader.setCookies(session.webSession.cookies);
-    } catch (err) {
-      logger.error(`[${username}] failed to set trade cookies: ${(err as Error).message}`);
-    }
+    // Do NOT swallow a setCookies failure here: the trader stays !ready, and the
+    // awaited getTrader/ensureWebSession callers must see the TRUE cause (e.g. a
+    // proxy error during the cookie set) instead of a later misleading "trader not
+    // ready" / raw auth error. The 'webSession' event path (constructor) keeps the
+    // log-and-continue via its own .catch (H-TRD-009).
+    await trader.setCookies(session.webSession.cookies);
   }
 
   /** Shuts down and removes an account's trader (no-op when none exists). */
