@@ -117,6 +117,10 @@ export class TokenStore {
    *  #37: keep only string→non-empty-string entries; a per-entry glitch is not whole-file corruption. */
   private static readTokens(parsed: Partial<TokenFile> | null): Record<string, string> | null {
     if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null) return null;
+    // H-ACC-056: refuse a FORWARD-format file (version > 1) rather than consume its entries as raw v1
+    // tokens and rewrite it as v1 (B30 vault parity — AccountVault.parseAndVersionCheck does the same).
+    // Returning null routes it to the .bak-or-degrade path → write-refusal protects the newer store.
+    if (parsed.version !== undefined && Number(parsed.version) > 1) return null;
     const tokens: Record<string, string> = {};
     for (const [k, v] of Object.entries(parsed.tokens)) if (typeof v === 'string' && v) tokens[k] = v;
     return tokens;

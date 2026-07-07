@@ -106,6 +106,17 @@ test('H-ACC-059: missing main with a corrupt .bak → DEGRADED', () => {
   assert.equal(new TokenStore(p).isDegraded(), true, 'no valid backup to recover → degrade, do not fresh-start');
 });
 
+// ─── H-ACC-056: a FORWARD-format token file (version > 1) is refused, not consumed/rewritten as v1 ─────
+test('H-ACC-056: a newer-version file (no .bak) → DEGRADED, entries not consumed, file left untouched', () => {
+  const contents = JSON.stringify({ version: 2, tokens: { a: 'x' } });
+  const p = mk(contents);
+  const s = new TokenStore(p);
+  assert.equal(s.isDegraded(), true, 'a forward-format file must degrade, not be read as v1');
+  assert.equal(s.get('a'), undefined, 'its entries are NOT consumed as raw v1 tokens');
+  s.set('a', 'y'); // must NOT persist while degraded
+  assert.equal(fs.readFileSync(p, 'utf8'), contents, 'the newer file is left byte-for-byte untouched (no v1 rewrite)');
+});
+
 test('S24: a throwing vault setToken does NOT escape TokenStore.set (no uncaughtException burst)', () => {
   const s = new TokenStore(mk(undefined)); // fresh install → not degraded
   const origEnabled = AccountVault.isEnabled;
