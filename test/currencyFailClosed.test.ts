@@ -24,6 +24,10 @@ test('S64: the DISPLAY helper still returns a lenient 2-decimal fallback (unchan
   assert.equal(currencyInfo(9999).iso, 'EUR');
 });
 
+test('H-PRC-014: the display fallback is an internally consistent EUR record (code 3, not the unknown code)', () => {
+  assert.equal(currencyInfo(9999).code, 3, 'code matches the EUR iso, not the unrecognised input 9999');
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 //  H-PRC-013 — parseSteamMoney mis-scaled any money string whose fractional part
 //  was shorter than `decimals`: a trailing-zero-trimmed "1,5" parsed as 1500 minor
