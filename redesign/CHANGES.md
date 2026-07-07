@@ -325,3 +325,41 @@ Deliberate DECISIONS (not IA changes), for reviewer awareness:
 three visually distinct states — never-refreshed `Balance unknown – "Refresh" the account first
 (buying disabled)`, refreshed-empty `Balance: 0,00 …`, and a funded value — with no gating on
 truthiness. EUR money formatting (de-DE `1.234,56`) inside the money formatters is untouched.
+
+---
+
+## V11 💰 — Folder Mass-Buy modal (`index.html` `#fbuy-overlay` + `app.js` `renderFbuySearch` / `renderFolderBuyResults`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin of a multi-account 💰 view — every handler, the
+`ssimConfirm` spend gate, and the FORCED 2-PHASE PRE-BUY BALANCE REFRESH are byte-identical.** The
+static `#fbuy-overlay` shell was ported to the masterpiece DS to match `design_source.html:1152–1169`:
+header `.t16` title + `.modal-x` close (`#fbuy-close` id kept — handler binds by id), the summary line
+→ `.t12`, every label → `.field-label`, Game/Price/Search inputs & selects → `.field` (price keeps
+`flex-1 min-w-0`), the Market-price button → `.btn btn-secondary btn-sm`, the amber safety note →
+`.t11` (`rounded-lg`→`rounded-xl`), **Start-mass-buy submit → `.btn btn-buy`**, Close → `.btn
+btn-secondary`. The in-flight progress panel was brought onto the DS too: the bar accent moved
+teal→brand (`#fbuy-bar` → `bg-brand`), the phase/count line → `.t10`, and the End-task button →
+`.btn btn-danger btn-sm` (its inner `<i fa-stop/><span>End task</span>` kept byte-identical to what
+`resetEndBtn` re-emits). In `app.js`, `renderFbuySearch`'s live-search dropdown rows moved to the
+`.t13`/`.t10` type scale with the hover accent shifted teal→brand (`hover:bg-brand/15`), mirroring V10's
+`renderBuySearch`; its `data-i` click-fill `addEventListener` block was left untouched.
+
+**The FORCED 2-PHASE PRE-BUY BALANCE REFRESH (`submitFolderBuy`) is byte-identical** — the critical
+money-safety mechanic (every account's balance is refreshed live server-side before any bot is maxed
+out) was not touched on any line, and neither were its `ssimConfirm` spend gate nor the POST to
+`/api/market/folder-buy`. All other handlers stayed byte-identical too: `pollFolderBuy`,
+`searchFbuyItems`, `fetchFbuyPrice`, `openFolderBuy`, `closeFolderBuy`, `hideFbuySearch`. The diff
+touches only markup — no `api(`/`fetch(`/`ssimConfirm`/`addEventListener`/`setTimeout`/`state.` line
+changed.
+
+Deliberate DECISION (design-source deviation, not IA), for reviewer awareness:
+
+1. **The progress panel + per-account results list have no counterpart in the mock** (the
+   `design_source.html` `#fbuy-overlay` block is a static snapshot with no in-flight run), so both were
+   re-skinned by analogy to the rest of the DS rather than copied. In `renderFolderBuyResults`, each
+   row's status is now carried by a `.pill pill--success/listed/neutral/danger` on the qty (replacing
+   the legacy status-colored `<span>`), while the **leading status icon is kept with its tint** — so
+   `refresh-failed` still surfaces its distinct `fa-triangle-exclamation` (rose) and reads visibly
+   apart from a plain `failed` or an empty run (pricing/balance honesty — a failed refresh must never
+   look like "nothing bought"). The real per-account message (Steam's actual reason) and its `title`
+   tooltip are preserved verbatim.

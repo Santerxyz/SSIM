@@ -5913,10 +5913,12 @@ function hideFbuySearch() { el.fbuyNameResults.classList.add('hidden'); el.fbuyN
 function renderFbuySearch(list) {
   if (!list || !list.length) { hideFbuySearch(); return; }
   el.fbuyNameResults.innerHTML = list.map((it, i) => `
-    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-teal-600/20 transition">
+    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand/15 transition">
       ${it.iconUrl ? `<img src="${escapeAttr(safeIconUrl(it.iconUrl))}" class="w-7 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : ''}
-      <span class="min-w-0 flex-1"><span class="block text-sm text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
-      ${it.priceText ? `<span class="block text-2xs text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}</span>
+      <span class="min-w-0 flex-1">
+        <span class="block t13 text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
+        ${it.priceText ? `<span class="block t10 text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}
+      </span>
     </button>`).join('');
   el.fbuyNameResults.querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => {
     el.fbuyName.value = list[Number(b.dataset.i)].marketHashName; hideFbuySearch(); el.fbuyName.focus();
@@ -6030,14 +6032,15 @@ function pollFolderBuy() {
 function renderFolderBuyResults(job) {
   const rows = (job.results || []).slice().sort((a, b) => (b.filled - a.filled) || (b.plannedQty - a.plannedQty));
   const styleOf = (s) => ({ bought: 'text-emerald-300', placed: 'text-teal-300', skipped: 'text-slate-400', failed: 'text-rose-300', 'refresh-failed': 'text-rose-300' }[s] || 'text-slate-300');
+  const pillOf  = (s) => ({ bought: 'pill--success', placed: 'pill--listed', skipped: 'pill--neutral', failed: 'pill--danger', 'refresh-failed': 'pill--danger' }[s] || 'pill--neutral');
   const iconOf  = (s) => ({ bought: 'fa-circle-check', placed: 'fa-circle-check', skipped: 'fa-circle-minus', failed: 'fa-circle-xmark', 'refresh-failed': 'fa-triangle-exclamation' }[s] || 'fa-circle-info');
   el.fbuyResults.innerHTML = rows.map((r) => {
     const qty = r.filled > 0 ? `${r.filled}×` : (r.plannedQty ? `0/${r.plannedQty}` : '—');
     return `<div class="flex items-center gap-2 px-3 py-2">
       <i class="fa-solid ${iconOf(r.status)} ${styleOf(r.status)} shrink-0"></i>
-      <span class="font-semibold text-slate-200 truncate" style="max-width:9rem" title="${escapeAttr(r.username)}">${escapeHtml(r.username)}</span>
-      <span class="${styleOf(r.status)} font-mono text-2xs shrink-0">${escapeHtml(qty)}</span>
-      <span class="text-slate-500 text-2xs truncate flex-1" title="${escapeAttr(r.message)}">${escapeHtml(r.message)}</span>
+      <span class="t13 font-semibold text-slate-200 truncate" style="max-width:9rem" title="${escapeAttr(r.username)}">${escapeHtml(r.username)}</span>
+      <span class="pill ${pillOf(r.status)} font-mono shrink-0">${escapeHtml(qty)}</span>
+      <span class="t10 text-slate-500 truncate flex-1" title="${escapeAttr(r.message)}">${escapeHtml(r.message)}</span>
     </div>`;
   }).join('') || '<div class="px-3 py-6 text-center text-slate-600">No accounts processed.</div>';
   el.fbuyResults.classList.remove('hidden');

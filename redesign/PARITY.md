@@ -862,13 +862,13 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-477 | Open folder buy `openFolderBuy(folderName,usernames)`: summary `<folder> · N account(s). Each bot's balance refreshed live, then maxed out` | app.js:5878–5891 | 💰 | |
-| P-478 | Fbuy item search `searchFbuyItems`/`renderFbuySearch` (debounced 350ms): same Steam search dropdown | app.js:5894–5916 | | |
-| P-479 | Fetch fbuy price `fetchFbuyPrice`: representative account's `/buy-price`; fills price; toast lowest offer | app.js:5919–5935 | 💰 | |
-| P-480 | Submit folder buy `submitFolderBuy`: validates name/price; `ssimConfirm` tone spend "Mass Buy — real money … maxed out at X … Real money. Irreversible." → POST `/api/market/folder-buy {usernames,marketHashName,appId,pricePerItemMajor}`; progress + poll | app.js:5936–5965 | 💰 | |
-| P-481 | Fbuy poll (1.2s / 0.9s done) `pollFolderBuy`: GET `/api/market/folder-buy-status`; phase refreshing (`refreshed/total`) vs placing (`processed/total`); bar %; bounded error-retry; stall guard | app.js:5966–6010 | 💰 | |
-| P-482 | Fbuy results render `renderFolderBuyResults`: sorted rows; status color/icon {bought,placed,skipped,failed,refresh-failed}; qty `N×`/`0/planned`/`—`; message | app.js:6011–6025 | 💰 | |
-| P-483 | Fbuy done toast: `Mass buy done/ended: X order(s), Y item(s) filled, Z skipped, W failed`; refresh active view from cache | app.js:6003–6008 | 💰 | |
+| P-477 | Open folder buy `openFolderBuy(folderName,usernames)`: summary `<folder> · N account(s). Each bot's balance refreshed live, then maxed out` | app.js:5878–5891 | 💰 | ✅ done · openFolderBuy logic unchanged; summary host `#fbuy-summary` re-skinned → .t12; hooks preserved |
+| P-478 | Fbuy item search `searchFbuyItems`/`renderFbuySearch` (debounced 350ms): same Steam search dropdown | app.js:5894–5916 | | ✅ done · renderFbuySearch rows re-skinned → .t13/.t10 + hover:bg-brand/15 (data-i + click-fill addEventListener wiring preserved); searchFbuyItems logic unchanged |
+| P-479 | Fetch fbuy price `fetchFbuyPrice`: representative account's `/buy-price`; fills price; toast lowest offer | app.js:5919–5935 | 💰 | ✅ done · fetchFbuyPrice logic unchanged; Market-price button `#fbuy-price-fetch` re-skinned → .btn btn-secondary btn-sm |
+| P-480 | Submit folder buy `submitFolderBuy`: validates name/price; `ssimConfirm` tone spend "Mass Buy — real money … maxed out at X … Real money. Irreversible." → POST `/api/market/folder-buy {usernames,marketHashName,appId,pricePerItemMajor}`; progress + poll | app.js:5936–5965 | 💰 | ✅ done · **submitFolderBuy 2-phase pre-buy refresh UNCHANGED** (byte-identical; ssimConfirm spend gate + POST intact); submit re-skinned `#fbuy-submit` → .btn btn-buy |
+| P-481 | Fbuy poll (1.2s / 0.9s done) `pollFolderBuy`: GET `/api/market/folder-buy-status`; phase refreshing (`refreshed/total`) vs placing (`processed/total`); bar %; bounded error-retry; stall guard | app.js:5966–6010 | 💰 | ✅ done · pollFolderBuy logic unchanged; progress panel re-skinned (`#fbuy-bar` → bg-brand, `#fbuy-phase`/`#fbuy-count` → t10, `#fbuy-end` → .btn btn-danger btn-sm) |
+| P-482 | Fbuy results render `renderFolderBuyResults`: sorted rows; status color/icon {bought,placed,skipped,failed,refresh-failed}; qty `N×`/`0/planned`/`—`; message | app.js:6011–6025 | 💰 | ✅ done · renderFolderBuyResults rows re-skinned → t13/t10 + status `.pill pill--success/listed/neutral/danger`; refresh-failed triangle icon kept distinct; message title/honesty preserved |
+| P-483 | Fbuy done toast: `Mass buy done/ended: X order(s), Y item(s) filled, Z skipped, W failed`; refresh active view from cache | app.js:6003–6008 | 💰 | ✅ done · logic unchanged (pollFolderBuy done-toast + refreshActiveViewFromCache byte-identical) |
 
 ---
 
