@@ -475,7 +475,7 @@ function parseSteamDate(raw: string): Date | null {
  *   <img ...><img ...><br>Sticker: Crown (Foil), Titan (Holo)
  * We extract names from the "Sticker:" line and any image URLs present.
  */
-function parseStickers(desc: RawDescription): Sticker[] | undefined {
+export function parseStickers(desc: RawDescription): Sticker[] | undefined {
   const html = desc.descriptions?.find(d => /sticker/i.test(d.value))?.value;
   if (!html) return undefined;
 
@@ -486,6 +486,18 @@ function parseStickers(desc: RawDescription): Sticker[] | undefined {
   if (names.length === 0) return undefined;
 
   const imgUrls = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].map(m => m[1]);
+
+  // A real CS2 sticker name can contain commas (e.g. "Don't Worry, I'm Pro"), so the
+  // comma split over-produces fragments. The <img> count in the same fragment is the
+  // authoritative sticker count: greedily re-join the right-most fragments until the
+  // counts agree (a right-greedy merge picks one plausible grouping — it guarantees the
+  // correct count, not a perfect split when several names each carry commas).
+  if (imgUrls.length > 0 && names.length > imgUrls.length) {
+    while (names.length > imgUrls.length) {
+      const tail = names.pop()!;
+      names[names.length - 1] = `${names[names.length - 1]}, ${tail}`;
+    }
+  }
 
   return names.map((name, idx) => ({
     slot:      idx,
