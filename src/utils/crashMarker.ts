@@ -54,7 +54,9 @@ export function consumeCrashMarker(file: string = crashMarkerFile()): CrashMarke
   } catch {
     return dropCorrupt();
   }
-  if (!Number.isFinite(raw?.at)) return dropCorrupt();
+  // `at <= 0` is the shell writer's clock-lookup failure sentinel (lib.rs `.unwrap_or(0)`),
+  // not a real death time — drop it rather than stamp the banner/log with a false 1970 date.
+  if (!Number.isFinite(raw?.at) || raw.at <= 0) return dropCorrupt();
   try { fs.unlinkSync(f); } catch { /* best-effort */ }
   return raw;
 }
