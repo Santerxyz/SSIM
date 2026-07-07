@@ -89,7 +89,6 @@ export interface PriorCrash {
   at: number;         // epoch ms of the death
   code?: number | null;
   signal?: number | null;
-  logTail?: string;
 }
 let priorCrash: PriorCrash | undefined;
 export function setPriorCrash(c: PriorCrash | undefined): void { priorCrash = c; }

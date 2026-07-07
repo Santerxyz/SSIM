@@ -426,7 +426,7 @@ async function bootstrap(): Promise<void> {
   const priorCrash = consumeCrashMarker();
   if (priorCrash) {
     setLastExitClass(`backend-crash(code=${priorCrash.code ?? '?'}${priorCrash.signal ? `,sig=${priorCrash.signal}` : ''})`);
-    setPriorCrash({ at: priorCrash.at, code: priorCrash.code, signal: priorCrash.signal, logTail: priorCrash.logTail });
+    setPriorCrash({ at: priorCrash.at, code: priorCrash.code, signal: priorCrash.signal });
     logger.warn(`SSIM crashed on the previous run at ${new Date(priorCrash.at).toISOString()} (code=${priorCrash.code ?? '?'}) – surfacing a banner; see logs/shell.log`);
   }
   // H-LIC-016: wait out a transient factor failure before we ever transact — a degraded, un-pinnable id
