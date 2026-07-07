@@ -84,6 +84,22 @@ test('wearMidpoint returns skinMin when the band is below the range', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  H-TRD-077 — the top band's midpoint clamp uses a plain Math.min(b.hi, 1, …)
+//  cap rather than a `b.hi === 1.01` sentinel coupling wearMidpoint to a magic
+//  literal in WEAR_BANDS. Defaults must stay value-identical to the old code.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('wearMidpoint caps the top band at 1 with default range', () => {
+  // Battle-Scarred band [0.45, 1.01) clamps to 1 → midpoint (0.45 + 1) / 2.
+  assert.equal(wearMidpoint('Battle-Scarred'), 0.725);
+});
+
+test('wearMidpoint on a below-1 band is unchanged with default range', () => {
+  // Factory New band [0.00, 0.07) → midpoint (0 + 0.07) / 2.
+  assert.equal(wearMidpoint('Factory New'), 0.035);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  H-TRD-080 — an input from a collection the schema can't produce outputs for is
 //  a malformed set, not a defensive skip: silently dropping it makes Σprobability
 //  < 1 and understates EV in a way indistinguishable from a pricing gap. The empty

@@ -54,7 +54,7 @@ export function achievableWears(minFloat: number, maxFloat: number): Wear[] {
 export function wearMidpoint(wear: Wear, skinMin = 0, skinMax = 1): number {
   const b = WEAR_BANDS.find((x) => x.wear === wear) ?? WEAR_BANDS[2];
   const lo = Math.max(b.lo, skinMin);
-  const hi = Math.min(b.hi === 1.01 ? 1 : b.hi, skinMax);
+  const hi = Math.min(b.hi, 1, skinMax);
   if (hi >= lo) return (lo + hi) / 2;
   return b.lo > skinMax ? skinMax : skinMin;
 }
