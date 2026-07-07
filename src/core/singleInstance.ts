@@ -60,8 +60,15 @@ export function lockHolderDisposition(alive: boolean, holderImage: string, ourIm
  *  blocks the thread without a busy-wait; a real AV/handle lock lasts seconds, so the old sleep-less retry
  *  loop (all 5 attempts in microseconds) was useless — this gives each retry a real window. */
 const LOCK_RETRY_SLEEP_MS = 300;
-function sleepSync(ms: number): void {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB blocked → skip the wait */ }
+export function sleepSync(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+  catch {
+    // SAB-absent fallback only: unreachable in the shipped runtime (Node 24 ships SharedArrayBuffer
+    // enabled). A bounded monotonic spin preserves the S59 retry window so it can never be silently
+    // voided to a zero-delay burst if the SAB assumption is ever violated.
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* spin */ }
+  }
 }
 
 const ourImageName = (): string => (process.execPath.split(/[\\/]/).pop() ?? '').toLowerCase();

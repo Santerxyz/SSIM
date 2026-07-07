@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import { lockHolderDisposition } from '../src/core/singleInstance';
+import { lockHolderDisposition, sleepSync } from '../src/core/singleInstance';
 
 // ─── P4 / INV-G5: single-instance reclaim decision must never steal a live lock ─
 test('lockHolderDisposition: a live SSIM holder is REFUSED (never stolen)', () => {
@@ -26,6 +26,23 @@ test('S59: an UNDETERMINABLE live holder RETRIES (not an immediate residual lock
 
 test('S59: a live SSIM whose image we CAN read is still REFUSED (false-reclaim prevention intact)', () => {
   assert.equal(lockHolderDisposition(true, 'ssim-backend.exe', 'ssim-backend.exe'), 'refuse');
+});
+
+// ─── S59: sleepSync must keep a real retry window even if SharedArrayBuffer construction throws ──
+test('sleepSync preserves a real delay when SharedArrayBuffer construction throws', () => {
+  const OrigSAB = globalThis.SharedArrayBuffer;
+  // Monkeypatch SAB to a constructor that throws → forces sleepSync onto the fallback spin path.
+  (globalThis as { SharedArrayBuffer: unknown }).SharedArrayBuffer = function () {
+    throw new Error('SAB blocked');
+  };
+  try {
+    const start = Date.now();
+    sleepSync(200);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed >= 150, `fallback spin should hold ~200ms, waited ${elapsed}ms`);
+  } finally {
+    (globalThis as { SharedArrayBuffer: unknown }).SharedArrayBuffer = OrigSAB;
+  }
 });
 
 // ─── Atomic exclusive create: two racers can't both win (the TOCTOU the old guard had) ──
