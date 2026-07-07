@@ -8,7 +8,6 @@ import type { TradeService } from './TradeService';
 import type { AccountConfig } from '../types/account';
 import { loadMaFile } from '../core/LoginFlow';
 import { resolveMaFilePath } from '../core/maFiles';
-import { TokenStore } from '../core/TokenStore';
 import { logger, redactSecrets } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -159,8 +158,6 @@ export class BanService {
   /** Per-environment Web API key cache (process-lifetime). A key is evicted only when Steam
    *  rejects it (401/403), after which the next run re-acquires one for that env. */
   private readonly envKeys = new Map<string, string[]>();
-  /** Read-only token reader (vault-aware) → SteamID from the refresh-token JWT, no login. */
-  private readonly tokens = new TokenStore();
 
   constructor(
     private readonly accounts: AccountManager,
@@ -541,7 +538,7 @@ export class BanService {
 
   /** Decodes the account's stored refresh-token JWT and returns its `sub` (SteamID64), or null. */
   private steamIdFromToken(username: string): string | null {
-    const token = this.tokens.get(username);
+    const token = this.sessions.getStoredRefreshToken(username);
     if (!token) return null;
     try {
       const seg = token.split('.')[1];

@@ -228,6 +228,10 @@ export class SessionManager extends EventEmitter {
    *  on the status endpoint so the operator restores it before a mass refresh re-auths the fleet. (B2.) */
   isTokenStoreDegraded(): boolean { return this.tokenStore.isDegraded(); }
 
+  /** The stored Auth-v2 refresh token for an account (vault-aware), or undefined. Read-only accessor so
+   *  BanService decodes a SteamID from the JWT off the single production store — no second instance (H-ACC-058). */
+  getStoredRefreshToken(username: string): string | undefined { return this.tokenStore.get(username); }
+
   /** Acquire one login slot, awaiting (FIFO) if all are in use. */
   private acquireLoginSlot(): Promise<void> {
     if (this.loginSlots > 0) { this.loginSlots--; return Promise.resolve(); }

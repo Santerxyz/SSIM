@@ -54,7 +54,7 @@ export class TokenStore {
   private degraded = false;
 
   // Path is injectable so the degraded/missing/valid cases are unit-testable (the module TOKENS_PATH is
-  // the production default). Two live instances exist (SessionManager, BanService); each loads independently.
+  // the production default). SessionManager owns the single production instance; the path stays injectable for tests.
   constructor(private readonly filePath: string = TOKENS_PATH) {
     this.file = this.load();
   }
