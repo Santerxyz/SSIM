@@ -12,6 +12,10 @@ import { logger, redactSecrets } from '../utils/logger';
 //  session map or mass-job. So on a burst we QUARANTINE money ops: reads and
 //  existing sessions stay up, but new money POSTs are refused with an actionable
 //  503 until the operator restarts. A one-off throw never trips it.
+//
+//  The same counter is fed by `unhandledRejection` as well as `uncaughtException`
+//  (index.ts) — a rejected-promise burst on the async money path signals the same
+//  suspect in-memory state as a sync throw.
 // ════════════════════════════════════════════════════════════════════════════
 
 const BURST_WINDOW_MS = 60_000; // rolling window
