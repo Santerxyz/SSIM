@@ -7,6 +7,7 @@ import { publicDir } from '../utils/paths';
 import { openUiWindow } from '../appWindow';
 import { printLockScreen } from './lockscreen';
 import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
+import { writeCrash } from '../utils/crashlog';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  ActivationServer – the friendly front door when SSIM is not yet licensed.
@@ -141,6 +142,15 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
       );
       logger.info(`license activation portal listening on ${bindHost}:${bound}`);
       openUiWindow(`http://localhost:${bound}`);
+      // Runtime errors AFTER a successful bind (accept-time EMFILE/ENFILE, handle faults) — this
+      // portal owns the documented serverPort follow-up contract (listenAndAnnounce drops its own
+      // temp 'error' listener once listening). Without this, such an event would be re-thrown and
+      // misfiled by the module uncaughtException handler as a crash + money-breaker tick during the
+      // unlicensed window. Mirrors startFullApp (index.ts). (H-LIC-011.)
+      server.on('error', (err: NodeJS.ErrnoException) => {
+        writeCrash('ACTIVATION PORTAL RUNTIME ERROR', err);
+        logger.error(`activation portal runtime error: ${err.message}`);
+      });
     }).catch((err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         printLockScreen(
