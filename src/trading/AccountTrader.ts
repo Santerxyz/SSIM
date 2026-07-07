@@ -307,6 +307,7 @@ export class AccountTrader {
     const acc = emptyParsed();
     const PAGE = 100;
     const MAX_PAGES = 30; // up to 3000 listings – plenty for a storage bot
+    let truncationWarned = false;
 
     for (let page = 0; page < MAX_PAGES; page++) {
       const start = page * PAGE;
@@ -335,6 +336,10 @@ export class AccountTrader {
 
       // Stop when we've covered all listings (total_count) or hit an empty/partial page.
       const total = Number(d.total_count);
+      if (!truncationWarned && Number.isFinite(total) && total > MAX_PAGES * PAGE) {
+        logger.warn(`[${this.username}] market/mylistings has ${total} listings – truncated at ${MAX_PAGES * PAGE}; listed-set is INCOMPLETE`);
+        truncationWarned = true;
+      }
       const fetchedListings = Array.isArray(d.listings) ? d.listings.length : 0;
       if (fetchedListings === 0) break;                                 // empty page → done
       if (Number.isFinite(total) && start + PAGE >= total) break;       // covered all
@@ -365,6 +370,7 @@ export class AccountTrader {
     let partial = false; // a page ≥ 1 or the buy-order fallback failed → snapshot is incomplete
     const PAGE = 100;
     const MAX_PAGES = 30; // up to 3000 listings
+    let truncationWarned = false;
 
     const get = (url: string): Promise<{ status: number; data: any }> =>
       axios.get(url, {
@@ -409,6 +415,10 @@ export class AccountTrader {
       collectBuyOrders(data, seenBuy); // the first render page usually carries buy_orders too
 
       const total = Number(data.total_count);
+      if (!truncationWarned && Number.isFinite(total) && total > MAX_PAGES * PAGE) {
+        logger.warn(`[${this.username}] market/mylistings has ${total} listings – truncated at ${MAX_PAGES * PAGE}; listed-set is INCOMPLETE`);
+        truncationWarned = true;
+      }
       const fetched = Array.isArray(data.listings) ? data.listings.length : 0;
       if (fetched < PAGE) break;                              // last (partial) page
       if (Number.isFinite(total) && start + PAGE >= total) break;
