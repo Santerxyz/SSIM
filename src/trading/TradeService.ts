@@ -2,6 +2,7 @@ import { type SessionManager, refreshWebSession } from '../core/SessionManager';
 import type { AccountManager } from '../core/AccountManager';
 import type { InventoryService } from '../core/InventoryService';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
+import { webCookiesFresh } from '../core/sessionHealth';
 import { isAmbiguousCommitFailure } from './commitAmbiguity';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
@@ -112,14 +113,16 @@ const WEB_SESSION_MAX_AGE_MS = 25 * 60 * 1000;
 const RELEASE_READ_SESSIONS = process.env.SSIM_RELEASE_READ_SESSIONS !== '0';
 
 /** True when the session has a live, non-empty `sessionid` cookie that isn't stale. */
-function hasLiveSessionId(session: ManagedSession): boolean {
+export function hasLiveSessionId(session: ManagedSession): boolean {
   const ws = session.webSession;
   if (!ws?.sessionId) return false;
   const sid = (ws.cookies ?? []).find(c => c.trim().toLowerCase().startsWith('sessionid='));
   const value = sid ? sid.split('=').slice(1).join('=').trim() : '';
   if (!value) return false;
-  const ageMs = Date.now() - new Date(ws.obtainedAt).getTime();
-  return !Number.isFinite(ageMs) || ageMs < WEB_SESSION_MAX_AGE_MS;
+  // Fail-closed freshness via the canonical policy helper (C16/INV-A5): an absent/corrupt
+  // obtainedAt is UNKNOWN age → stale, so ensureWebSession re-establishes the cookies rather
+  // than firing the money op on them. Keeps the deliberately tighter 25-min pre-flight window.
+  return webCookiesFresh(ws.obtainedAt, Date.now(), WEB_SESSION_MAX_AGE_MS);
 }
 
 /** One sender bot's slice of a mass-send: all its selected assets in one offer. */
