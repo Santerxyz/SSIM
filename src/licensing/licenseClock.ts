@@ -30,12 +30,20 @@ const HEAL_SKEW_MS = 5 * 60 * 1000;
  * than the stored ratchet, so it recedes the mark. `maxFutureSkewMs` bounds the raise direction
  * at the caller (see `markOnline`): a server time farther ahead than that is not anchored to.
  */
+// The `serverConfirmed: true` overload narrows to a concrete `ClockMeta` for the sole production
+// caller (`markOnline`, which always passes `true`), so `writeMeta(nextClockMeta(…, true, …))`
+// still typechecks. The general signature returns `ClockMeta | undefined`: the offline branch only
+// ever leaves the meta unchanged, handing back `prev` verbatim — `undefined` when there is no record
+// yet, which `offlineGraceDecision`/`readMeta` already treat as "no meta". No fabricated {0,0}
+// default is invented for a branch no production path takes.
+export function nextClockMeta(prev: ClockMeta | undefined, nowMs: number, serverConfirmed: true, maxFutureSkewMs?: number): ClockMeta;
+export function nextClockMeta(prev: ClockMeta | undefined, nowMs: number, serverConfirmed: boolean, maxFutureSkewMs?: number): ClockMeta | undefined;
 export function nextClockMeta(
   prev: ClockMeta | undefined,
   nowMs: number,
   serverConfirmed: boolean,
   maxFutureSkewMs?: number,
-): ClockMeta {
+): ClockMeta | undefined {
   void maxFutureSkewMs; // threaded for the caller-side future clamp; unused in the pure branch
   if (serverConfirmed) {
     const prevMax = prev?.maxSeenMs;
@@ -46,7 +54,7 @@ export function nextClockMeta(
       : Math.max(nowMs, prevMax ?? 0);
     return { lastOnlineMs: nowMs, maxSeenMs };
   }
-  return prev ?? { lastOnlineMs: 0, maxSeenMs: 0 };
+  return prev;
 }
 
 export type GraceDecision = 'no-meta' | 'rollback-refused' | 'within-grace' | 'grace-elapsed';
