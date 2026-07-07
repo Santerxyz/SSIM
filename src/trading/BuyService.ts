@@ -82,6 +82,8 @@ export interface MassBuyAccountResult {
   filled:             number;   // items actually received (inventory diff)
   placed:             boolean;
   spentMinor?:        number;
+  /** true = post-buy verification failed: `filled`/`spentMinor` are UNKNOWN, not zero — see BuyResult.verifyFailed */
+  verifyFailed?:      boolean;
   status: 'bought' | 'placed' | 'skipped' | 'failed' | 'refresh-failed';
   message:            string;
 }
@@ -526,10 +528,11 @@ export class BuyService {
       }, { releaseSession: false }); // the mass-buy batch releases all created sessions at the end
       if (r.placed) this.massJob.placed++;
       this.massJob.filled += r.filled;
-      const spentMinor = (r.walletBefore != null && r.walletAfter != null)
+      const spentMinor = (!r.verifyFailed && r.walletBefore != null && r.walletAfter != null)
         ? Math.max(0, Math.round((r.walletBefore - r.walletAfter) * Math.pow(10, info.decimals)))
         : undefined;
       push({ ...base, plannedQty: qty, filled: r.filled, placed: r.placed, spentMinor,
+        verifyFailed: r.verifyFailed,
         status: r.filled > 0 ? 'bought' : 'placed', message: r.message });
     } catch (err) {
       this.massJob.failed++;
