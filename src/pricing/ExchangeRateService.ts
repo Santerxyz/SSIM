@@ -58,7 +58,7 @@ export class ExchangeRateService {
 
   /** Rate provenance for the UI (#70): is this the hardcoded fallback, and how stale? */
   getInfo(): { rate: number; fallback: boolean; ageMs: number | null } {
-    return { rate: this.usdToEur, fallback: !this.loadedReal && this.updatedAt === 0, ageMs: this.updatedAt ? Date.now() - this.updatedAt : null };
+    return { rate: this.usdToEur, fallback: !this.loadedReal && this.updatedAt === 0, ageMs: this.updatedAt ? Math.max(0, Date.now() - this.updatedAt) : null };
   }
 
   start(): void {

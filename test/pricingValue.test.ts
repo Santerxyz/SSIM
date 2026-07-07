@@ -33,6 +33,18 @@ test('ExchangeRateService: real rate with no timestamp → fallback:false, ageMs
   }
 });
 
+// H-PRC-016 — a future/skewed persisted timestamp must clamp ageMs at 0, never report a negative age.
+test('ExchangeRateService: future timestamp → ageMs clamped to 0 (no negative age)', () => {
+  const file = path.join(os.tmpdir(), `ssim-fx-future-${process.pid}-${Date.now()}.json`);
+  try {
+    fs.writeFileSync(file, JSON.stringify({ usdToEur: 0.9, updatedAt: Date.now() + 3_600_000 }));
+    const fx = new ExchangeRateService(file);
+    assert.equal(fx.getInfo().ageMs, 0, 'a future timestamp reads as age 0, not negative');
+  } finally {
+    try { fs.rmSync(file, { force: true }); } catch { /* best-effort */ }
+  }
+});
+
 test('ExchangeRateService: missing file → honest 0.92 fallback (flagged)', () => {
   const fx = new ExchangeRateService(path.join(os.tmpdir(), `ssim-fx-missing-${process.pid}-${Date.now()}.json`));
   assert.equal(fx.getUsdToEur(), 0.92);
