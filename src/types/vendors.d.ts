@@ -40,7 +40,7 @@ declare module 'steam-totp' {
     tag:            string,
   ): string;
 
-  /** Current Steam server time (unix seconds), adjusted by an optional offset. */
+  /** Current LOCAL unix time (seconds) plus timeOffset. Pass the offset from getTimeOffset to obtain Steam-server-aligned time for getConfirmationKey. */
   export function time(timeOffset?: number): number;
 }
 
