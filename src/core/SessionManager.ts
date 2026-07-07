@@ -729,7 +729,7 @@ export class SessionManager extends EventEmitter {
 
       loginTimeoutHandle = setTimeout(() => {
         fail(new Error(`Login timeout after ${LOGIN_TIMEOUT_MS / 1000}s (${account.username})`));
-        client.logOff();
+        try { client.logOff(); } catch { /* half-built connection – attemptLogin's destroySession completes teardown */ }
       }, LOGIN_TIMEOUT_MS);
 
       const mode = logOnOptions.refreshToken ? 'refreshToken' : 'credentials';
