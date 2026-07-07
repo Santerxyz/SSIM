@@ -701,20 +701,13 @@ export class TradeService {
       // of 1 this means offers go out strictly one-at-a-time, each ≥1–2s after the last — the safest
       // possible cadence against Steam Error 15. (If the ceiling is ever raised, the throttle still
       // guarantees the inter-offer gap regardless of worker count.)
-      let nextSlotAt = 0;
-      const throttle = async (): Promise<void> => {
-        const gap = minGap + Math.floor(Math.random() * (maxGap - minGap + 1));
-        const now = Date.now();
-        const wait = Math.max(0, nextSlotAt - now);
-        nextSlotAt = Math.max(now, nextSlotAt) + gap;
-        if (wait > 0) await sleep(wait);
-      };
+      const throttle = createDispatchThrottle(minGap, maxGap);
 
       const worker = async (): Promise<void> => {
         while (queue.length > 0) {
           if (this.massCancel) break; // "End Task": stop pulling new bots; in-flight offer (if any) finishes
           const group = queue.shift()!;
-          await throttle(); // pace the dispatch BEFORE sending (anti-spam, per-recipient Error 15 guard)
+          await throttle.pace(); // pace the dispatch BEFORE sending (anti-spam, per-recipient Error 15 guard)
           if (this.massCancel) break; // re-check after the pacing wait so we don't fire a freshly-paced offer
           try {
             const res = await this.sendTrade(group.username, {
