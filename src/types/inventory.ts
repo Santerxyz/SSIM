@@ -102,7 +102,8 @@ export interface AccountInventory {
   source?:     'web' | 'gc';
   /** Sum of price × quantity over priced items (USD cents). Enriched at read-time. */
   totalValueUsd?: number;
-  /** Steam wallet balance in the account's native currency, captured at refresh. */
+  /** Steam wallet balance in the account's native currency, captured at refresh.
+   *  UNIT: MAJOR units for 2-decimal currencies (steam-user ÷100 — see src/types/session.ts wallet; 0-decimal unit unverified, B18); convert to minor units ONLY via knownCurrencyInfo (S64). */
   wallet?:     { currency: number; balance: number };
   /**
    * Read-time only — this result is a carried-forward cache record substituted for a suspect
