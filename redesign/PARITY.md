@@ -817,15 +817,15 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-452 | Open bulk import `openBulkImport`: env dropdown (preselect active), populate folders, load maFile list, default to maFiles method | app.js:5471–5482 | | |
-| P-453 | Method selector `selectImportMethod`: shows chosen panel, highlights btn (border-brand/bg-brand/10) | app.js:5486–5496 | | |
-| P-454 | Import SSIM Vault `onBulkVaultImport`: sorts selected files into vault.enc(req)+accounts.json(opt); requires password; POST `/api/import/vault {vault,accountsJson,password,environmentId,folderId}`; status `Imported X new, Y skipped [· folders recreated]`; toast; clears pw | app.js:5498–5528 | | |
-| P-455 | Populate bulk folders `populateBulkFolders`: tree → "— Root —" + indented | app.js:5529–5537 | | |
-| P-456 | Load maFile list `loadBulkList`: GET `/api/mafiles/unlinked`; per file checkbox (disabled if no password), name, path, Password/no-password badge; empty → "No new maFiles in mafiles/" | app.js:5538–5558 | | |
-| P-457 | Select-all maFiles `onBulkSelectAll`: checks only password-bearing files | app.js:5565–5569 | | |
-| P-458 | Bulk submit button state `updateBulkSubmit`: label `Import (N)`, disabled when 0 | app.js:5560–5564 | | |
-| P-459 | Submit maFile import `submitBulk`: POST `/api/mafiles/import {files,environmentId,folderId}`; vault vs legacy response; toast counts; surfaces skip reasons (first 5) (H-ACC-078) | app.js:5570–5593 | | |
-| P-460 | CSV import `onBulkCsv`: reads file, POST `/api/import/csv {csv,…}`; status `Imported X new, Y skipped`; surfaces rejected rows (first 5, `line N: reason`); resets file input | app.js:5595–5621 | | |
+| P-452 | Open bulk import `openBulkImport`: env dropdown (preselect active), populate folders, load maFile list, default to maFiles method | app.js:5471–5482 | | ✅ done · logic unchanged (emits only option maps — no DS markup; shell re-skinned; #bulk-env/#bulk-folder + default-to-maFiles intact) |
+| P-453 | Method selector `selectImportMethod`: shows chosen panel, highlights btn (border-brand/bg-brand/10) | app.js:5486–5496 | | ✅ done · logic unchanged (toggles border-brand/bg-brand-10/text-white on .import-method — no markup; buttons re-skinned rounded-xl/t12, base classes kept so active-toggle intact) |
+| P-454 | Import SSIM Vault `onBulkVaultImport`: sorts selected files into vault.enc(req)+accounts.json(opt); requires password; POST `/api/import/vault {vault,accountsJson,password,environmentId,folderId}`; status `Imported X new, Y skipped [· folders recreated]`; toast; clears pw | app.js:5498–5528 | | ✅ done · logic unchanged (onBulkVaultImport byte-identical, POST /api/import/vault); vault panel re-skinned (.field pw + btn bg-brand btn-sm); #bulk-vault-status kept text-2xs to match handler show() re-write |
+| P-455 | Populate bulk folders `populateBulkFolders`: tree → "— Root —" + indented | app.js:5529–5537 | | ✅ done · logic unchanged (emits only option maps) |
+| P-456 | Load maFile list `loadBulkList`: GET `/api/mafiles/unlinked`; per file checkbox (disabled if no password), name, path, Password/no-password badge; empty → "No new maFiles in mafiles/" | app.js:5538–5558 | | ✅ done · file rows re-skinned → rounded-xl + .t13/.t10, Password/no-password → .pill pill--success/danger, empty → .t13; .bulk-check + data-file/data-haspw + addEventListener wiring byte-identical |
+| P-457 | Select-all maFiles `onBulkSelectAll`: checks only password-bearing files | app.js:5565–5569 | | ✅ done · logic unchanged |
+| P-458 | Bulk submit button state `updateBulkSubmit`: label `Import (N)`, disabled when 0 | app.js:5560–5564 | | ✅ done · logic unchanged (#bulk-submit-label + .btn:disabled state on #bulk-submit) |
+| P-459 | Submit maFile import `submitBulk`: POST `/api/mafiles/import {files,environmentId,folderId}`; vault vs legacy response; toast counts; surfaces skip reasons (first 5) (H-ACC-078) | app.js:5570–5593 | | ✅ done · logic unchanged (submitBulk byte-identical; POST /api/mafiles/import + H-ACC-078 skip-reason surfacing intact) |
+| P-460 | CSV import `onBulkCsv`: reads file, POST `/api/import/csv {csv,…}`; status `Imported X new, Y skipped`; surfaces rejected rows (first 5, `line N: reason`); resets file input | app.js:5595–5621 | | ✅ done · logic unchanged (onBulkCsv byte-identical; POST /api/import/csv + rejected-row surfacing intact); CSV panel re-skinned (Choose CSV → .btn btn-secondary btn-sm); #bulk-csv-status kept text-2xs mt-2 to match handler |
 
 ---
 

@@ -1436,50 +1436,50 @@
   <div id="bulk-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-file-import text-brand mr-2"></i>Import bots</h3>
-        <button id="bulk-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-file-import text-brand mr-2"></i>Import bots</h3>
+        <button id="bulk-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <div class="px-6 py-5 space-y-4">
         <!-- Step 1 + 2: destination -->
         <div class="flex gap-3">
           <div class="flex-1">
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5"><span class="text-brand">1.</span> Target environment</label>
-            <select id="bulk-env" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+            <label class="field-label"><span class="text-brand">1.</span> Target environment</label>
+            <select id="bulk-env" class="field"></select>
           </div>
           <div class="flex-1">
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5"><span class="text-brand">2.</span> Target folder</label>
-            <select id="bulk-folder" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+            <label class="field-label"><span class="text-brand">2.</span> Target folder</label>
+            <select id="bulk-folder" class="field"></select>
           </div>
         </div>
 
-        <!-- Step 3: method chooser -->
+        <!-- Step 3: method chooser (the ONLY three import methods — invariant 9) -->
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5"><span class="text-brand">3.</span> Import method</label>
+          <label class="field-label"><span class="text-brand">3.</span> Import method</label>
           <div class="grid grid-cols-3 gap-2">
-            <button type="button" data-method="vault" class="import-method px-2 py-2.5 rounded-lg border border-slate-700 bg-slate-950 text-slate-300 text-xs font-semibold transition hover:border-brand/60"><i class="fa-solid fa-lock block text-base mb-1 text-brand"></i>SSIM Vault</button>
-            <button type="button" data-method="csv" class="import-method px-2 py-2.5 rounded-lg border border-slate-700 bg-slate-950 text-slate-300 text-xs font-semibold transition hover:border-brand/60"><i class="fa-solid fa-file-csv block text-base mb-1 text-emerald-400"></i>CSV</button>
-            <button type="button" data-method="mafiles" class="import-method px-2 py-2.5 rounded-lg border border-slate-700 bg-slate-950 text-slate-300 text-xs font-semibold transition hover:border-brand/60"><i class="fa-solid fa-key block text-base mb-1 text-sky-400"></i>maFiles</button>
+            <button type="button" data-method="vault" class="import-method px-2 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-slate-300 t12 font-semibold transition hover:border-brand/60"><i class="fa-solid fa-lock block text-base mb-1 text-brand"></i>SSIM Vault</button>
+            <button type="button" data-method="csv" class="import-method px-2 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-slate-300 t12 font-semibold transition hover:border-brand/60"><i class="fa-solid fa-file-csv block text-base mb-1 text-emerald-400"></i>CSV</button>
+            <button type="button" data-method="mafiles" class="import-method px-2 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-slate-300 t12 font-semibold transition hover:border-brand/60"><i class="fa-solid fa-key block text-base mb-1 text-sky-400"></i>maFiles</button>
           </div>
         </div>
 
         <!-- Panel: Import SSIM Vault (merge another device's vault.enc + accounts.json) -->
-        <div id="method-vault" class="import-panel hidden rounded-lg bg-slate-950 border border-slate-800 p-3 space-y-2">
-          <p class="text-2xs text-slate-500">Select BOTH <code class="text-slate-400">vault.enc</code> (secrets) and <code class="text-slate-400">accounts.json</code> (folders/org) from the source <code class="text-slate-400">Vault/</code> folder — only NEW bots are added, and their folder structure is recreated. Needs that vault's master password.</p>
-          <input id="bulk-vault-file" type="file" accept=".enc,.json,application/json" multiple class="block w-full text-xs text-slate-300 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:bg-slate-800 file:text-slate-200" />
-          <p class="text-3xs text-slate-600"><code class="text-slate-500">accounts.json</code> is optional — without it, imported bots land at the environment root.</p>
-          <input id="bulk-vault-pw" type="password" placeholder="Source vault master password" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/40" />
-          <button type="button" id="bulk-vault-import" class="w-full px-3 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold transition flex items-center justify-center gap-1.5"><i class="fa-solid fa-lock"></i> Import vault</button>
+        <div id="method-vault" class="import-panel hidden rounded-xl bg-slate-950 border border-slate-800 p-3 space-y-2">
+          <p class="t11 text-slate-500">Select BOTH <code class="text-slate-400">vault.enc</code> (secrets) and <code class="text-slate-400">accounts.json</code> (folders/org) from the source <code class="text-slate-400">Vault/</code> folder — only NEW bots are added, and their folder structure is recreated. Needs that vault's master password.</p>
+          <input id="bulk-vault-file" type="file" accept=".enc,.json,application/json" multiple class="block w-full t12 text-slate-300 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:bg-slate-800 file:text-slate-200" />
+          <p class="t10 text-slate-600"><code class="text-slate-500">accounts.json</code> is optional — without it, imported bots land at the environment root.</p>
+          <input id="bulk-vault-pw" type="password" placeholder="Source vault master password" class="field" />
+          <button type="button" id="bulk-vault-import" class="btn w-full bg-brand text-white btn-sm"><i class="fa-solid fa-lock"></i> Import vault</button>
           <p id="bulk-vault-status" class="text-2xs hidden"></p>
         </div>
 
         <!-- Panel: CSV (username,password,shared_secret,identity_secret) -->
-        <div id="method-csv" class="import-panel hidden rounded-lg bg-slate-950 border border-slate-800 p-3">
+        <div id="method-csv" class="import-panel hidden rounded-xl bg-slate-950 border border-slate-800 p-3">
           <div class="flex items-center justify-between gap-2">
             <div class="min-w-0">
-              <p class="text-xs font-semibold text-slate-300">Import from CSV</p>
-              <p class="text-2xs text-slate-500 truncate font-mono">username,password,shared_secret,identity_secret</p>
+              <p class="t12 font-semibold text-slate-300">Import from CSV</p>
+              <p class="t10 text-slate-500 truncate font-mono">username,password,shared_secret,identity_secret</p>
             </div>
-            <label class="shrink-0 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-brand hover:text-white text-slate-300 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5">
+            <label class="btn btn-secondary btn-sm shrink-0 cursor-pointer">
               <i class="fa-solid fa-file-csv"></i><span>Choose CSV…</span>
               <input id="bulk-csv" type="file" accept=".csv,text/csv,text/plain" class="hidden" />
             </label>
@@ -1490,19 +1490,19 @@
         <!-- Panel: maFiles & accounts.txt (classic drop-zone) -->
         <div id="method-mafiles" class="import-panel hidden space-y-3">
           <div class="flex items-center justify-between">
-            <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+            <label class="flex items-center gap-1.5 t12 text-slate-400 cursor-pointer">
               <input type="checkbox" id="bulk-select-all" class="accent-violet-500 w-4 h-4" /> All Accounts
             </label>
-            <span class="text-2xs font-semibold uppercase tracking-wider text-slate-400">Found maFiles</span>
+            <span class="t10 font-semibold uppercase tracking-wider text-slate-400">Found maFiles</span>
           </div>
-          <div id="bulk-list" class="max-h-56 overflow-y-auto space-y-1.5 pr-1"></div>
-          <button type="button" id="bulk-submit" class="w-full px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <div id="bulk-list" class="surface p-2 max-h-56 overflow-y-auto space-y-1.5"></div>
+          <button type="button" id="bulk-submit" class="btn btn-primary w-full">
             <i class="fa-solid fa-file-import"></i><span id="bulk-submit-label">Import</span>
           </button>
         </div>
 
         <div class="flex pt-1">
-          <button type="button" id="bulk-cancel" class="w-full px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Close</button>
+          <button type="button" id="bulk-cancel" class="btn btn-secondary w-full">Close</button>
         </div>
       </div>
     </div>

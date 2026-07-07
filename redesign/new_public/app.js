@@ -5552,19 +5552,19 @@ async function loadBulkList() {
   let list = [];
   try { list = await api('/api/mafiles/unlinked'); } catch (err) { toast(err.message, 'error'); }
   if (!list.length) {
-    el.bulkList.innerHTML = `<p class="text-center text-slate-600 py-8 text-sm">No new maFiles in <code class="text-slate-500">mafiles/</code></p>`;
+    el.bulkList.innerHTML = `<p class="text-center text-slate-600 py-8 t13">No new maFiles in <code class="text-slate-500">mafiles/</code></p>`;
     el.bulkSubmit.disabled = true;
     return;
   }
   el.bulkList.innerHTML = list.map((f) => `
-    <label class="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 ${f.hasPassword ? 'cursor-pointer hover:border-slate-700' : 'opacity-60'}">
+    <label class="flex items-center gap-3 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 ${f.hasPassword ? 'cursor-pointer hover:border-slate-700' : 'opacity-60'}">
       <input type="checkbox" class="bulk-check accent-violet-500 w-4 h-4" data-file="${escapeAttr(f.file)}" data-haspw="${f.hasPassword ? '1' : '0'}" ${f.hasPassword ? '' : 'disabled'} />
       <div class="flex-1 min-w-0">
-        <p class="text-sm font-semibold text-slate-200 truncate">${escapeHtml(f.accountName)}</p>
-        <p class="text-2xs text-slate-500 truncate font-mono">${escapeHtml(f.file)}</p></div>
+        <p class="t13 font-semibold text-slate-200 truncate">${escapeHtml(f.accountName)}</p>
+        <p class="t10 text-slate-500 truncate font-mono">${escapeHtml(f.file)}</p></div>
       ${f.hasPassword
-        ? '<span class="text-2xs px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 border border-emerald-700/40 shrink-0"><i class="fa-solid fa-check mr-1"></i>Password</span>'
-        : '<span class="text-2xs px-2 py-0.5 rounded-full bg-rose-900/30 text-rose-400 border border-rose-700/40 shrink-0"><i class="fa-solid fa-xmark mr-1"></i>no password</span>'}
+        ? '<span class="pill pill--success shrink-0"><i class="fa-solid fa-check mr-1"></i>Password</span>'
+        : '<span class="pill pill--danger shrink-0"><i class="fa-solid fa-xmark mr-1"></i>no password</span>'}
     </label>`).join('');
   el.bulkList.querySelectorAll('.bulk-check').forEach((cb) => cb.addEventListener('change', updateBulkSubmit));
   updateBulkSubmit();

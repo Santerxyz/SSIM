@@ -756,3 +756,62 @@ Deliberate DECISIONS (reviewer awareness):
 4. **The SDA confirmation checkbox keeps `accent-emerald-500`** (not the mock's `accent-violet-500`)
    — the whole SDA modal is emerald-themed (Steam Guard), and `.sda-conf-check` is the load-bearing
    selection hook; the accent is cosmetic and stayed on-theme.
+
+---
+
+## V18 — Bulk-Import modal (maFiles / CSV / Vault) (`index.html` `#bulk-overlay` + `app.js` `loadBulkList`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin — moves accounts/secrets, so every `api(` call and
+handler is byte-identical.** The static `#bulk-overlay` shell was ported to the masterpiece DS to
+match `design_source.html:1172–1198`: header `text-lg`→`.t16`; the close button → `.modal-x`
+(**its `id="bulk-close"` KEPT** — the handler binds by id at `el.bulkClose`, NOT the prototype's
+`data-close`; same call as V10–V17); every step/method `<label>` → `.field-label` (the `1.`/`2.`/`3.`
+brand-numbered spans kept); the destination `<select>`s (`#bulk-env`/`#bulk-folder`) → `.field`; the
+three method buttons → `rounded-xl` + `t12`; the vault panel `rounded-lg`→`rounded-xl` with its notes
+→ `.t11`/`.t10`, the `#bulk-vault-file` file input → `t12`, the `#bulk-vault-pw` password → `.field`,
+and the **Import-vault button → `.btn bg-brand text-white btn-sm`** (matching the design-source flat
+brand); the CSV panel `rounded-lg`→`rounded-xl` with the header → `t12`/`t10` and the **Choose-CSV
+`<label>` → `.btn btn-secondary btn-sm`** (wrapping the hidden `#bulk-csv` input); the maFiles panel's
+select-all row → `t12`/`t10`, the **file-list wrapper `#bulk-list` → `.surface`**, the maFile-import
+submit (`#bulk-submit`) → `.btn btn-primary w-full`, and both Close buttons (`#bulk-cancel`) →
+`.btn btn-secondary w-full`. In `app.js`, `loadBulkList`'s file rows moved onto the DS — the row
+`rounded-lg`→`rounded-xl`, name `text-sm`→`.t13`, path `text-2xs`→`.t10`, the empty-state line
+`text-sm`→`.t13`, and the **Password / no-password badges → `.pill pill--success` / `.pill pill--danger`**
+(kept visually distinct — a bot without a stored password stays unmistakable, honesty).
+
+**Capability ceiling (invariant 9) upheld: still EXACTLY the three legacy import methods** — maFiles,
+CSV, SSIM Vault (`data-method`/`.import-method`/`.import-panel` each = 3). No native sign-in, no new
+method, nothing renamed or hinted (verified by grep).
+
+**Every handler stayed byte-identical** (none were in the edit set): `onBulkVaultImport` (POST
+`/api/import/vault` + file-sorting + password gate + spinner/restore), `populateBulkFolders`,
+`submitBulk` (POST `/api/mafiles/import` + the H-ACC-078 skip-reason surfacing), `onBulkCsv` (POST
+`/api/import/csv` + rejected-row surfacing + file-input reset), `selectedBulkFiles`, `updateBulkSubmit`,
+`onBulkSelectAll`, `closeBulk`. `selectImportMethod` and `openBulkImport` were left byte-identical too —
+`openBulkImport` emits only `<option>` maps (no DS-classable markup, so its re-skin lands on the static
+shell), and `selectImportMethod` emits no markup at all (it only toggles `border-brand`/`bg-brand/10`/
+`text-white` on the `.import-method` buttons). No `api(`/`fetch(`/`addEventListener`/`state.`-mutation
+line changed; inside `loadBulkList` only the two innerHTML template strings were restyled — its
+`.bulk-check` `addEventListener('change', updateBulkSubmit)` wiring line and `updateBulkSubmit()` call
+are untouched.
+
+Deliberate DECISIONS (reviewer awareness):
+
+1. **The method buttons keep their inactive base classes (`border-slate-700 bg-slate-950
+   text-slate-300`), only `rounded-lg`→`rounded-xl` + `text-xs`→`t12`.** `selectImportMethod`
+   drives the active state by `classList.toggle('border-brand'|'bg-brand/10'|'text-white', active)`
+   on top of that base (it does NOT overwrite `className`), so the base had to stay intact for the
+   highlight to keep working — a keep-the-JS-contract call (mirrors V6's game-toggle reasoning). Not
+   converted to `.chip`/`.seg`, which would have fought that toggle.
+2. **`#bulk-vault-status` and `#bulk-csv-status` were left `text-2xs` (NOT bumped to `t10`).** Both
+   status lines are owned by their frozen handlers: `onBulkVaultImport`'s `show()` rewrites
+   `status.className = \`text-2xs ${tone}\`` and `onBulkCsv`'s `show()` rewrites
+   `\`text-2xs mt-2 ${tone}\`` on every message. Bumping the static placeholder to `t10` would only
+   diverge from what the untouched handler re-applies on first use, so the placeholder is kept in sync
+   with the handler (same call as V10 decision 3 / V16 `csfMsg`). `text-2xs` is a retained legacy size
+   (V1), so it renders correctly; the tone-color honesty (amber warn / rose error / emerald ok) is
+   unchanged.
+3. **`#bulk-select-all` and the row `.bulk-check` checkboxes keep `accent-violet-500`.** Violet is the
+   brand accent (#9333ea), so this is already on-theme; `.bulk-check` + `#bulk-select-all` are the
+   load-bearing selection hooks (`selectedBulkFiles`/`onBulkSelectAll` read them), so the accent was
+   left as the cosmetic on-brand default (mirrors V17 decision 4).
