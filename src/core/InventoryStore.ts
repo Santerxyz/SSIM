@@ -186,6 +186,12 @@ export class InventoryStore {
     return this.data.records[username.toLowerCase()];
   }
 
+  /**
+   * Ownership transfer: the store keeps `inventory` BY REFERENCE (it clones on the way OUT
+   * via get()/all(), not on the way in). Do NOT mutate the object after set() — a later edit
+   * corrupts the cache in place; re-read via get() for an independent copy (see get()'s clone
+   * note). This is the S36 aliasing class — enrich a re-fetched record, never the stored one.
+   */
   set(username: string, inventory: AccountInventory): void {
     const key = username.toLowerCase();
     const existing = this.data.records[key];
