@@ -334,7 +334,6 @@ export class InventoryManager {
       items,
       totalItems: realCount, // reflects the real number of items, not stack count
       fetchedAt:  new Date(),
-      fromCache:  false,
       partial:    !!raw.truncated, // honest flag: a page-capped read is incomplete (C12)
       reportedTotal: raw.total_inventory_count, // Steam's own total (undefined when omitted) → authoritative-empty signal (H-INV-005)
     };

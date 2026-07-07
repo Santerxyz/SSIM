@@ -379,7 +379,6 @@ export class InventoryService {
       items:      InventoryManager.stack(ownedLockedRaw),
       totalItems: gcOwnedLockedCount,
       fetchedAt:  new Date(),
-      fromCache:  false,
       partial,
     };
     for (const it of inv.items) {
@@ -517,7 +516,6 @@ export class InventoryService {
       username,
       game:       'cs2',
       source:     'gc',
-      fromCache:  false,
       fetchedAt:  new Date(),
       items:      [...ownedLocked, ...listedBucket],
       totalItems: ownedLocked.reduce((n, i) => n + i.quantity, 0)
@@ -578,7 +576,6 @@ export class InventoryService {
       const inv: AccountInventory = {
         ...rec,
         source:     'gc',
-        fromCache:  false,
         fetchedAt:  new Date(),
         items:      [...remainingOwned, ...mergedListed],
         totalItems: remainingOwned.reduce((n, i) => n + i.quantity, 0)

@@ -87,7 +87,6 @@ export interface AccountInventory {
   items:       CS2Item[];
   totalItems:  number;
   fetchedAt:   Date;
-  fromCache:   boolean;
   /**
    * True when this record is known to be INCOMPLETE — the Steam inventory read was
    * truncated at the page cap (very large inventory). The dashboard must not treat a
