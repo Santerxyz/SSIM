@@ -223,7 +223,9 @@ export function bucketOf(item: BucketInput, nowMs: number = Date.now()): ItemBuc
   return 'tradable';
 }
 
-// ── Sellable / sendable guard — the ONLY gate on the sell & send paths ────────
+// ── Sellable / sendable predicate ─────────────────────────────────────────────
+// isSellable is the shared predicate on the sell & send paths; assertSellable is
+// the throwing convenience (currently used in tests only).
 
 /** True iff the item may be listed on the market or sent in a trade right now. */
 export function isSellable(item: BucketInput, nowMs: number = Date.now()): boolean {
