@@ -5430,9 +5430,16 @@ function pollSell() {
       parts.push(`${job.failed.length} failed`);
       // Live phase + current bot so the operator sees motion, not a frozen bar.
       const phaseLabel = { preflight: 'Connecting', listing: 'Listing', confirming: 'Confirming 2FA', done: 'Done' }[job.phase] || '…';
+      // H-TRD-020: with concurrency >1, name the bots actually in flight instead of the single
+      // last-touched `currentBot` flapping past. Up to 3 names, then "+N more"; fall back to the
+      // single-bot rendering when activeBots is absent or holds ≤1 name.
+      const activeBots = Array.isArray(job.activeBots) ? job.activeBots : [];
+      const botLabel = activeBots.length > 1
+        ? activeBots.slice(0, 3).map(escapeHtml).join(', ') + (activeBots.length > 3 ? ` +${activeBots.length - 3} more` : '')
+        : (job.currentBot ? escapeHtml(job.currentBot) : '');
       const head = job.cancelling
         ? '<span class="text-amber-400 font-semibold">Cancelling…</span> finishing the listing in flight'
-        : (job.currentBot ? `<span class="text-brand-light font-semibold">${escapeHtml(job.currentBot)}</span> · ${phaseLabel}` : phaseLabel);
+        : (botLabel ? `<span class="text-brand-light font-semibold">${botLabel}</span> · ${phaseLabel}` : phaseLabel);
       el.sellDetail.innerHTML = `<span class="block text-slate-300 mb-0.5">${head}</span><span class="text-slate-500">${parts.join(' · ')}</span>`;
       if (job.running) {
         if (!job.cancelling && pollerStalled('sell', job.done)) {

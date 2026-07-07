@@ -103,6 +103,9 @@ export interface MassSellJob {
   blocked:     Array<{ username: string; assetId: string; error: string }>;
   /** Live progress for the UI so the operator isn't staring at a blank bar. */
   currentBot?: string;
+  /** Every bot currently inside processBot (H-TRD-020) — lets the UI list the workers
+   *  actually in flight instead of the single last-touched `currentBot` flapping past. */
+  activeBots?: string[];
   phase?:      'preflight' | 'listing' | 'confirming' | 'done';
   startedAt?:  string;
   finishedAt?: string;
@@ -129,6 +132,9 @@ export class MarketService {
   private confirmBackoff = CONFIRM_BACKOFF_MS;
   /** Co-operative cancel flag for the live mass-sell (set by cancelSell()). */
   private cancelRequested = false;
+  /** H-TRD-020: bots currently executing processBot, mirrored into job.activeBots for the UI.
+   *  Lazily created on first use (see trackBotActive). */
+  private activeBotSet?: Set<string>;
 
   constructor(
     private readonly trades: TradeService,
@@ -381,6 +387,8 @@ export class MarketService {
     this.job.cancelled = this.cancelRequested;
     this.job.phase = 'done';
     this.job.currentBot = undefined;
+    this.activeBotSet?.clear();
+    this.job.activeBots = [];
     this.job.finishedAt = new Date().toISOString();
     logger.info(
       `[mass-sell] ═══ ${this.cancelRequested ? 'CANCELLED' : 'COMPLETE'}: ${this.job.listed} listed / ${this.job.confirmed} confirmed / ` +
@@ -428,6 +436,14 @@ export class MarketService {
     return recoveredIds.size;
   }
 
+  /** H-TRD-020: add/remove a bot from the in-flight set and mirror it into job.activeBots, so the
+   *  status UI can name every worker currently listing instead of one flapping last-touched bot. */
+  private trackBotActive(user: string, active: boolean): void {
+    const set = (this.activeBotSet ??= new Set<string>());
+    if (active) set.add(user); else set.delete(user);
+    this.job.activeBots = [...set];
+  }
+
   private async processBot(
     group: MassSellGroup,
     resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<{ net: number | null; transport: boolean }>,
@@ -437,6 +453,7 @@ export class MarketService {
     const N = group.items.length;
     this.job.currentBot = user;
     this.job.phase = 'preflight';
+    this.trackBotActive(user, true);
 
     // ── Rule 1: pre-flight ────────────────────────────────────────────────────
     let trader;
@@ -448,6 +465,7 @@ export class MarketService {
     } catch (err) {
       logger.warn(`[mass-sell] ${user}: login/connection failed (${(err as Error).message}) – ${N} item(s) deferred`);
       this.deferAll(group, group.items, `Login/connection failed: ${(err as Error).message}`);
+      this.trackBotActive(user, false);
       return;
     }
 
@@ -462,6 +480,7 @@ export class MarketService {
         this.job.blocked.push({ username: user, assetId: item.assetId, error: `wallet currency ${wc} is not EUR – EUR-only pricing; not listed (would underprice ~99%)` });
         this.job.done++;
       }
+      this.trackBotActive(user, false);
       return;
     }
 
@@ -471,6 +490,7 @@ export class MarketService {
     } catch (err) {
       logger.warn(`[mass-sell] ${user}: pre-flight connectivity check failed (${(err as Error).message}) – ${N} item(s) deferred`);
       this.deferAll(group, group.items, `No Steam connection (pre-flight): ${(err as Error).message}`);
+      this.trackBotActive(user, false);
       return;
     }
     logger.info(`[mass-sell] ${user}: pre-flight OK (${listedSet.size} existing listing(s)) – listing ${N} item(s)…`);
@@ -648,6 +668,7 @@ export class MarketService {
     // and best-effort. The next reconciled refresh verifies it against the live listings set.
     const nowListed = group.items.filter(it => listedSet.has(it.assetId)).map(it => it.assetId);
     if (nowListed.length) this.inventory?.markListed(user, nowListed);
+    this.trackBotActive(user, false);
   }
 
   /**
