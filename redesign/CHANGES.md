@@ -500,3 +500,70 @@ Deliberate DECISION (design-source deviation, not an IA change), for reviewer aw
    NOT the emerald "clean/No bans" treatment — so a failed lookup never masquerades as a passing check
    (honesty). The per-account `a.error` tag is likewise a `pill--listed`, visually separated from the
    green "No bans" pill.
+
+---
+
+## V15 💰 — Trade-Ups + Storage-Units (Casket) feature modals (`app.js` `ensureFeatureOverlay` / `renderTuList` / `renderCasketPanels`; both lazily built)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin — every trade-up + casket handler is
+byte-identical.** These two views have NO static `index.html` shell: both overlays are built at
+runtime by the shared `ensureFeatureOverlay(id,title,icon,widthClass)` frame builder and their bodies
+are written by render functions. There is also **no `design_source.html` mock for either** (the
+prototype never designed them), so — as the task directs — they were **designed BY ANALOGY** to the
+already-re-skinned `#buy` / `#sell` / `#offers` / `#ban` overlays: same header (`.t16` title + `.modal-x`
+close + muted mono scope), same `.surface` / `.panel-head` / `.panel-title` / `.field` / `.btn` /
+`.pill` / `.empty` vocabulary, same type scale.
+
+**Shell — `ensureFeatureOverlay`:** the card class `modal-card` → `bg-slate-900 border border-slate-700
+rounded-2xl shadow-2xl` (byte-for-byte the ban-overlay card in `index.html:1605`); the title
+`text-lg`→`t16`; the `[data-scope]` suffix `text-sm`→`t14`; the foot `text-2xs`→`t10`. **Every load-bearing
+hook kept:** the overlay `id` param, the `[id$="-overlay"]` matching, `[data-scope]` / `[data-toolbar]` /
+`[data-body]` / `[data-foot]` / `[data-close]`, the `.modal-x` close button, the `widthClass` param
+behaviour, `observeOverlay(ov)` (H-FE-009 scroll-lock lifecycle), and both close bindings — all
+untouched (only the template string changed).
+
+**Trade-Ups — `renderTuList`:** the candidate cards were already `.surface`; the remaining legacy
+utilities moved onto the DS — the rarity→output header `text-sm`→`t13` (arrow icon `text-2xs`→`t10`), the
+Inputs summary `text-2xs`→`t10`, the per-outcome token (`inline-flex … rounded-md bg-slate-950/60 border
+… text-2xs`) → `.pill pill--neutral`, the profit figure `text-lg`→`t16`, and the cost/EV lines
+`text-3xs`→`t10`. The metadata `.pill pill--neutral/warn/danger` badges (collection, avg float, ~est
+prices, no asset ids) were already DS and kept. **Pricing honesty preserved:** the profit
+`text-success`/`text-danger` split and the `priceCents == null` → dim `text-slate-600` "—" (vs priced
+`text-slate-300`) are unchanged. The `selCls` selection-class constant and the `[data-tu-id]` change
+binding (which `.split(' ')` add/removes those classes) are JS — **untouched**. `renderTuToolbar`
+(`.btn btn-primary/secondary/ghost/danger btn-sm`) and the `openTradeUpModal` / `tuScan` empty+spinner
+states (`.empty`) were already DS → no change.
+
+**Storage Units — `renderCasketPanels`:** the two `.surface` panels / `.panel-head` / `.panel-title` /
+`.btn` / `.field` scaffolding was already DS; the leftover raw type utilities moved to the scale — item
+rows `text-xs`→`t12`, the "not storable" label `text-3xs`→`t10`, the capacity-bar counter
+`text-3xs`→`t10`, both panel-head counts `text-2xs`→`t10`, and the filter input `text-xs`→`t12`. The
+`openCasketModal` toolbar template (its `[data-toolbar]` innerHTML) got the same treatment (label
+`text-2xs`→`t10`, `<select>` `text-sm`→`t13`) — a **template-string-only** edit; its `/api/casket/:u/list`
+fetch and `ckState` writes were not touched. `renderCasketUnitSelect` emits only `<option>` strings (no
+DS classes) → unchanged. Empty/error states already used `.empty` (+ `.empty-icon text-warn` and the
+GC-layer sub-text) — kept as-is for honesty.
+
+**Both money paths + every poller stayed byte-identical** (verified by diffing against
+`redesign/legacy_public/app.js`): the trade-up **EXECUTE** handler `tuStart` (`ssimConfirm` danger
+IRREVERSIBLE gate + POST `/api/tradeup/execute` — **ssimConfirm + api UNCHANGED**), `casketMove`
+(`ssimConfirm` brand Deposit/Withdraw gate + POST `/api/casket/move` — **ssimConfirm + api
+UNCHANGED**), plus `tuPollExec`, `casketPollMove`, `loadCasketContents`, `casketInvRows`,
+`casketStorable`, `renderCasketUnitSelect`, and both `MODAL_TEARDOWNS.set(...)` teardown registrations.
+No `api(`/`fetch(`/`ssimConfirm`/`addEventListener`/`setTimeout`/`state.`-mutation line changed.
+
+Deliberate DECISIONS (reviewer awareness):
+
+1. **The two status pollers (`tuPollExec`, `casketPollMove`) were NOT re-skinned.** `casketPollMove` is
+   explicitly named in the never-touch list, so its foot progress markup + inline "Cancel" button stay
+   verbatim; to keep the identical twin symmetric (and because it is the trade-up execute poller), the
+   analogous `tuPollExec` was left byte-identical too. The task's "casket-move progress markup" mention
+   is superseded by the explicit byte-identical freeze on `casketPollMove` — leaving them untouched is
+   the safe reading on a 💰 view, and preserves the bounded-retry "status LOST — verify in-game" honesty
+   (S17) exactly.
+2. **No `.rar` rarity accent bars were added.** The task lists `.rar` in the available vocabulary, but
+   neither the trade-up outcomes (name/wear/prob/price) nor the casket contents (custom_name/def_index)
+   carry a rarity field the legacy rendered; adding one would invent data, not re-skin form. Omitted.
+3. **The outcome token uses `.pill pill--neutral`, not `.chip`.** `.chip` carries `cursor:pointer`
+   (it is the clickable filter primitive) — these outcome tokens are non-interactive display, so the
+   non-pointer `.pill` is the correct analogue (per the task's "outcomes → `.pill`").

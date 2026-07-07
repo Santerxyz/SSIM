@@ -6595,14 +6595,14 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
   ov = document.createElement('div');
   ov.id = id;
   ov.className = 'hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4';
-  ov.innerHTML = `<div class="w-full ${widthClass || 'max-w-4xl'} max-h-[88vh] modal-card flex flex-col overflow-hidden fade-in">
+  ov.innerHTML = `<div class="w-full ${widthClass || 'max-w-4xl'} max-h-[88vh] bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col overflow-hidden fade-in">
     <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
-      <h3 class="text-lg font-bold text-white"><i class="fa-solid ${icon} text-brand mr-2"></i>${title}<span data-scope class="text-slate-500 font-mono text-sm font-normal ml-2"></span></h3>
+      <h3 class="t16 font-bold text-white"><i class="fa-solid ${icon} text-brand mr-2"></i>${title}<span data-scope class="text-slate-500 font-mono t14 font-normal ml-2"></span></h3>
       <button data-close aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
     </div>
     <div data-toolbar class="px-6 py-3 border-b border-slate-800 shrink-0 flex items-center gap-3 flex-wrap"></div>
     <div data-body class="overflow-y-auto grow"></div>
-    <div data-foot class="px-6 py-2.5 border-t border-slate-800 shrink-0 text-2xs text-slate-500"></div>
+    <div data-foot class="px-6 py-2.5 border-t border-slate-800 shrink-0 t10 text-slate-500"></div>
   </div>`;
   document.body.appendChild(ov);
   observeOverlay(ov); // route hidden↔shown through the FB-04 lifecycle (H-FE-009: no stranded scroll-lock)
@@ -6676,26 +6676,26 @@ function renderTuList() {
     for (const i of c.inputs) inputsByName[i.baseName] = (inputsByName[i.baseName] || 0) + 1;
     const inputsTxt = Object.entries(inputsByName).map(([n, q]) => `${q}× ${escapeHtml(n)}`).join(', ');
     const outsTxt = c.outcomes.map(o =>
-      `<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-950/60 border border-slate-800 text-2xs"><span class="text-slate-200">${escapeHtml(o.name)}</span><span class="text-slate-500">${escapeHtml(o.wear)}</span><span class="text-listed font-semibold">${(o.probability * 100).toFixed(1)}%</span><span class="font-mono ${o.priceCents == null ? 'text-slate-600' : 'text-slate-300'}">${o.priceCents == null ? '—' : fmtCents(o.priceCents)}</span></span>`).join('');
+      `<span class="pill pill--neutral"><span class="text-slate-200">${escapeHtml(o.name)}</span><span class="text-slate-500">${escapeHtml(o.wear)}</span><span class="text-listed font-semibold">${(o.probability * 100).toFixed(1)}%</span><span class="font-mono ${o.priceCents == null ? 'text-slate-600' : 'text-slate-300'}">${o.priceCents == null ? '—' : fmtCents(o.priceCents)}</span></span>`).join('');
     const profit = c.profitCents > 0;
     const executable = c.inputs.every(i => i.assetId);
     return `<label class="surface p-3.5 flex gap-3 items-start cursor-pointer transition ${sel ? selCls : 'hover:border-brand/40'}">
       <input type="checkbox" data-tu-id="${escapeAttr(c.id)}" ${sel ? 'checked' : ''} class="mt-1 accent-brand w-4 h-4 shrink-0">
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-sm font-bold text-white">${escapeHtml(c.rarityLabel)} <i class="fa-solid fa-arrow-right-long text-brand-light text-2xs mx-0.5"></i> ${escapeHtml(c.outputRarityLabel)}</span>
+          <span class="t13 font-bold text-white">${escapeHtml(c.rarityLabel)} <i class="fa-solid fa-arrow-right-long text-brand-light t10 mx-0.5"></i> ${escapeHtml(c.outputRarityLabel)}</span>
           <span class="pill pill--neutral">${escapeHtml(c.collectionLabel)}</span>
           <span class="pill pill--neutral">avg float ${c.avgFloat.toFixed(3)}</span>
           ${c.fullyPriced ? '' : '<span class="pill pill--warn" title="Some prices still loading">~est prices</span>'}
           ${executable ? '' : '<span class="pill pill--danger" title="Missing asset ids — cannot execute">no asset ids</span>'}
         </div>
-        <div class="text-2xs text-slate-500 mt-1.5 truncate" title="${escapeAttr(inputsTxt)}">Inputs: ${inputsTxt}</div>
+        <div class="t10 text-slate-500 mt-1.5 truncate" title="${escapeAttr(inputsTxt)}">Inputs: ${inputsTxt}</div>
         <div class="flex flex-wrap gap-1.5 mt-2">${outsTxt}</div>
       </div>
       <div class="text-right shrink-0 pl-3 border-l border-slate-800 self-stretch flex flex-col justify-center">
-        <div class="text-lg font-bold ${profit ? 'text-success' : 'text-danger'} leading-none">${profit ? '+' : '−'}${fmtCents(Math.abs(c.profitCents))}</div>
-        <div class="text-3xs text-slate-500 font-mono mt-1.5">cost ${fmtCents(c.costCents)}</div>
-        <div class="text-3xs text-slate-500 font-mono">EV ${fmtCents(c.evCents)}</div>
+        <div class="t16 font-bold ${profit ? 'text-success' : 'text-danger'} leading-none">${profit ? '+' : '−'}${fmtCents(Math.abs(c.profitCents))}</div>
+        <div class="t10 text-slate-500 font-mono mt-1.5">cost ${fmtCents(c.costCents)}</div>
+        <div class="t10 text-slate-500 font-mono">EV ${fmtCents(c.evCents)}</div>
       </div></label>`;
   }).join('') + `</div>`;
   body.querySelectorAll('[data-tu-id]').forEach((cb) => cb.addEventListener('change', () => {
@@ -6772,7 +6772,7 @@ async function openCasketModal(username) {
   const ov = ensureFeatureOverlay('casket-overlay', 'Storage Units', 'fa-box-archive', 'max-w-5xl');
   Object.assign(ckState, { username, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', error: null });
   ov.querySelector('[data-scope]').textContent = `· ${username}`;
-  ov.querySelector('[data-toolbar]').innerHTML = `<label class="text-2xs uppercase tracking-wide text-slate-500 font-semibold">Storage unit</label><select data-ck-unit class="field !w-auto !py-1.5 text-sm"><option value="">— loading… —</option></select>`;
+  ov.querySelector('[data-toolbar]').innerHTML = `<label class="t10 uppercase tracking-wide text-slate-500 font-semibold">Storage unit</label><select data-ck-unit class="field !w-auto !py-1.5 t13"><option value="">— loading… —</option></select>`;
   ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-spinner cs2-spin"></i></div><div class="empty-title">Connecting to the game coordinator…</div></div>`;
   ov.classList.remove('hidden'); // observeOverlay (H-FE-009) fires onModalOpen off the class mutation
   // Load units (needs the GC library; degrades clearly if unavailable — shown in the unit panel).
@@ -6835,43 +6835,43 @@ function renderCasketPanels() {
   const unit = ckState.caskets.find(c => c.id === ckState.casketId);
   const invInner = invRows.length ? invRows.map(i => {
     if (!casketStorable(i)) {
-      return `<div class="flex items-center gap-2.5 px-3 py-2 text-xs opacity-40 cursor-not-allowed" title="This item type can't be stored in a storage unit">
+      return `<div class="flex items-center gap-2.5 px-3 py-2 t12 opacity-40 cursor-not-allowed" title="This item type can't be stored in a storage unit">
         <i class="fa-solid fa-ban w-3.5 text-slate-600 shrink-0"></i>
         <span class="truncate flex-1 text-slate-300">${escapeHtml(i.name || i.marketHashName)}</span>
-        <span class="text-3xs uppercase tracking-wide text-slate-600 shrink-0">not storable</span>
+        <span class="t10 uppercase tracking-wide text-slate-600 shrink-0">not storable</span>
         <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></div>`;
     }
     const sel = ckState.invSel.has(i.marketHashName);
-    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer text-xs">
+    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer t12">
       <input type="checkbox" data-ck-inv="${escapeAttr(i.marketHashName)}" ${sel ? 'checked' : ''} class="accent-brand w-3.5 h-3.5 shrink-0">
       <span class="truncate flex-1 text-slate-200">${escapeHtml(i.name || i.marketHashName)}</span>
       <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></label>`;
   }).join('') : `<div class="empty !py-10"><div class="empty-icon"><i class="fa-solid fa-box-open"></i></div><div class="empty-title">No depositable items in cache.</div><div class="empty-sub">Refresh the account to populate it.</div></div>`;
   const unitInner = ckState.contents.length ? ckState.contents.map(it => {
     const id = String(it.id); const sel = ckState.unitSel.has(id);
-    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer text-xs">
+    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer t12">
       <input type="checkbox" data-ck-unit-item="${escapeAttr(id)}" ${sel ? 'checked' : ''} class="accent-brand w-3.5 h-3.5 shrink-0">
       <span class="truncate flex-1 text-slate-200">${escapeHtml(it.custom_name || ('Item ' + id))}</span>
       <span class="text-slate-600 font-mono">${it.def_index != null ? 'def ' + it.def_index : ''}</span></label>`;
   }).join('') : `<div class="empty !py-10"><div class="empty-icon ${ckState.error ? 'text-warn' : ''}"><i class="fa-solid fa-${ckState.error ? 'triangle-exclamation' : 'box-archive'}"></i></div><div class="empty-title">${ckState.error ? escapeHtml(ckState.error) : (ckState.casketId ? 'Empty storage unit.' : 'No storage unit selected.')}</div>${ckState.error ? '<div class="empty-sub">Storage units need the GC layer (install globaloffensive + set SSIM_GC_VERIFIED=1).</div>' : ''}</div>`;
 
   const pct = unit ? Math.min(100, Math.round((unit.count / 1000) * 100)) : 0;
-  const capBar = unit ? `<div class="px-3 pt-2.5"><div class="h-1.5 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full bg-brand" style="width:${pct}%"></div></div><div class="text-3xs text-slate-500 mt-1 font-mono">${unit.count} / 1000</div></div>` : '';
+  const capBar = unit ? `<div class="px-3 pt-2.5"><div class="h-1.5 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full bg-brand" style="width:${pct}%"></div></div><div class="t10 text-slate-500 mt-1 font-mono">${unit.count} / 1000</div></div>` : '';
 
   ov.querySelector('[data-body]').innerHTML =
     `<div class="px-5 py-3 flex items-center gap-2 border-b border-slate-800">
-       <input data-ck-search value="${escapeAttr(ckState.search)}" placeholder="Filter inventory…" class="field !py-1.5 !w-56 text-xs">
+       <input data-ck-search value="${escapeAttr(ckState.search)}" placeholder="Filter inventory…" class="field !py-1.5 !w-56 t12">
        <span class="ml-auto"></span>
        <button data-ck-deposit class="btn btn-primary btn-sm">Deposit <i class="fa-solid fa-arrow-right"></i></button>
        <button data-ck-withdraw class="btn btn-secondary btn-sm"><i class="fa-solid fa-arrow-left"></i> Withdraw</button>
      </div>
      <div class="grid grid-cols-2 gap-3 p-3" style="height:46vh">
        <div class="surface flex flex-col min-h-0">
-         <div class="panel-head"><span class="panel-title">Inventory</span><span class="text-2xs text-slate-500">${invCount} item(s)</span><button data-ck-sel="inv" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
+         <div class="panel-head"><span class="panel-title">Inventory</span><span class="t10 text-slate-500">${invCount} item(s)</span><button data-ck-sel="inv" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
          <div class="overflow-y-auto grow divide-y divide-slate-800/60">${invInner}</div>
        </div>
        <div class="surface flex flex-col min-h-0">
-         <div class="panel-head"><span class="panel-title truncate">${unit ? escapeHtml(unit.name) : 'Storage unit'}</span><span class="text-2xs text-slate-500 shrink-0">${ckState.unitSel.size} selected</span><button data-ck-sel="unit" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
+         <div class="panel-head"><span class="panel-title truncate">${unit ? escapeHtml(unit.name) : 'Storage unit'}</span><span class="t10 text-slate-500 shrink-0">${ckState.unitSel.size} selected</span><button data-ck-sel="unit" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
          ${capBar}
          <div class="overflow-y-auto grow divide-y divide-slate-800/60 ${capBar ? 'mt-1' : ''}">${unitInner}</div>
        </div>
