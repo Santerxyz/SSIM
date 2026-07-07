@@ -4,6 +4,8 @@ import {
   parseMyListings, mergeParsed, emptyParsed, listingsForApp, listedAssetIdsForApp,
   bucketOf, isSellable, assertSellable,
 } from '../src/core/MarketModel';
+import { InventoryManager } from '../src/core/InventoryManager';
+import type { CS2Item } from '../src/types/inventory';
 
 // A market/mylistings/render page with TWO sell listings:
 //   - asset "111" HAS a description in the assets map (normal case)
@@ -76,6 +78,48 @@ test('the historical strict vs lenient rules DIVERGED on the metadata-less listi
   // …and the unified parser matches the inclusive side, eliminating the gap.
   const unified = listingsForApp(parseMyListings(PAGE), 730).map(l => l.assetId);
   assert.deepEqual(unified.sort(), lenientKept.sort());
+});
+
+// ── H-TRD-114: honest name fallbacks + classid-disambiguated 'Unknown' sentinel ─
+
+test('parseMyListings: an empty-string name falls back to the sentinel, never a blank row', () => {
+  const p = parseMyListings({
+    total_count: 1,
+    listings: [{ listingid: 'E1', asset: { appid: 730, contextid: '2', id: '900', amount: '1' }, price: 100, fee: 0 }],
+    assets: { '730': { '2': { '900': { market_hash_name: '', name: '' } } } },
+  });
+  const l = p.listings.find(x => x.assetId === '900')!;
+  assert.notEqual(l.name, '', 'an empty-string name must never survive as a blank-named row');
+  assert.equal(l.name, 'Unknown');
+  assert.equal(l.marketHashName, 'Unknown');
+});
+
+test('parseMyListings: two unnamed listings with DISTINCT classids do not collapse into one Unknown stack', () => {
+  const p = parseMyListings({
+    total_count: 2,
+    listings: [
+      { listingid: 'U1', asset: { appid: 730, contextid: '2', id: '901', amount: '1' }, price: 100, fee: 0 },
+      { listingid: 'U2', asset: { appid: 730, contextid: '2', id: '902', amount: '1' }, price: 100, fee: 0 },
+    ],
+    assets: { '730': { '2': {
+      '901': { classid: '77' },   // no name → sentinel, disambiguated by classid
+      '902': { classid: '88' },
+    } } },
+  });
+  const a = p.listings.find(x => x.assetId === '901')!;
+  const b = p.listings.find(x => x.assetId === '902')!;
+  assert.equal(a.marketHashName, 'Unknown (77)');
+  assert.equal(b.marketHashName, 'Unknown (88)');
+  // The stack keys on marketHashName, so distinct sentinels keep the two assets apart.
+  const toItem = (l: typeof a): CS2Item => ({
+    assetId: l.assetId, classId: l.classId, instanceId: l.instanceId,
+    marketHashName: l.marketHashName, name: l.name, type: '', rarity: 'Unknown',
+    rarityColor: '#6b7280', exterior: null, tradable: false, marketable: true,
+    tradeLockExpiry: null, quantity: 1, assetIds: [l.assetId], iconUrl: l.iconUrl,
+    category: 'listed', listingConfirmed: l.confirmed,
+  });
+  const stacks = InventoryManager.stack([toItem(a), toItem(b)]);
+  assert.equal(stacks.length, 2, 'two different unidentified listings stay as two rows');
 });
 
 // ── INV-B4 / C4: bucket reads BOTH tradeLockExpiry AND tradable ──────────────
