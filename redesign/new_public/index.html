@@ -756,13 +756,10 @@
               </div>
             </div>
             <div class="flex-1"></div>
-            <!-- Game switch: CS2 (appid 730) ↔ TF2 (appid 440, key counting).
-                 The two buttons' classes are OWNED by app.js updateGameToggle() (it overwrites
-                 .className with bg-brand/bg-slate-800 utility strings) — kept verbatim. -->
-            <div id="game-toggle" data-no-i18n class="flex rounded-xl overflow-hidden border border-slate-700 shrink-0">
-              <button id="btn-game-cs2" class="px-3 py-2.5 text-sm font-bold transition bg-brand text-white">CS2</button>
-              <button id="btn-game-tf2" class="px-3 py-2.5 text-sm font-bold transition bg-slate-800 text-slate-400 hover:bg-slate-700">TF2</button>
-            </div>
+            <!-- Game switch: CS2 (appid 730) ↔ TF2 (appid 440, key counting). Masterpiece .seg
+                 control; app.js updateGameToggle() now toggles .is-on on the active button
+                 (ids #btn-game-cs2/#btn-game-tf2 + their setGame handlers unchanged). -->
+            <div id="game-toggle" data-no-i18n class="seg shrink-0"><button id="btn-game-cs2" class="is-on">CS2</button><div class="split"></div><button id="btn-game-tf2">TF2</button></div>
             <button id="btn-buy-market" title="Buy on the Steam market (Buy Order)" class="btn btn-buy">
               <i class="fa-solid fa-cart-shopping"></i><span>Buy</span>
             </button>

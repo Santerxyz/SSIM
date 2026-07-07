@@ -557,10 +557,10 @@ async function loadTf2Inventories() {
 }
 
 function updateGameToggle() {
-  const on  = 'px-3 py-2.5 text-sm font-bold transition bg-brand text-white';
-  const off = 'px-3 py-2.5 text-sm font-bold transition bg-slate-800 text-slate-400 hover:bg-slate-700';
-  if (el.btnGameCs2) el.btnGameCs2.className = state.game === 'cs2' ? on : off;
-  if (el.btnGameTf2) el.btnGameTf2.className = state.game === 'tf2' ? on : off;
+  // .seg control (index.html): the active button carries .is-on (brand fill via the DS);
+  // toggle it rather than overwriting className so the seg structure + ids stay intact.
+  if (el.btnGameCs2) el.btnGameCs2.classList.toggle('is-on', state.game === 'cs2');
+  if (el.btnGameTf2) el.btnGameTf2.classList.toggle('is-on', state.game === 'tf2');
 }
 
 async function reloadAll() {
@@ -1693,10 +1693,11 @@ function renderBreadcrumb() {
     // env-master → just Environments › {env}
   }
   bc.classList.remove('hidden');
+  // Masterpiece spine: chevron separators + brand-light active (last) segment (design_source:1615).
   bc.innerHTML = seg.map((s, i) => {
     const last = i === seg.length - 1;
-    const sep = i > 0 ? '<span class="text-slate-600 mx-1.5" aria-hidden="true">›</span>' : '';
-    const cls = last ? 'text-slate-300 font-medium' : 'text-slate-400';
+    const sep = i > 0 ? '<i class="fa-solid fa-chevron-right t10 text-slate-700 mx-2" aria-hidden="true"></i>' : '';
+    const cls = last ? 'text-brand-light font-medium' : 'text-slate-400';
     return s.go && !last
       ? `${sep}<button data-bc="${s.go}"${s.id ? ` data-bc-id="${escapeAttr(s.id)}"` : ''} class="${cls} hover:text-brand-light transition">${escapeHtml(s.label)}</button>`
       : `${sep}<span class="${cls}"${last ? ' aria-current="page"' : ''}>${escapeHtml(s.label)}</span>`;

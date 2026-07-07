@@ -175,3 +175,31 @@ Deliberate DECISION (design-source deviation, not an IA change):
    `design_source.html:1658`) — an inline title icon also fights the new `.truncate` single-line
    `<h2>`. This is a pure form change (no hook, no data): the folder/selection/env/global scope is
    already unambiguous from the `.pill pill--brand` badge + breadcrumb, so no information is lost.
+
+---
+
+## V6 — Inventory header / refresh controls (`index.html` game toggle + `app.js` toggle/breadcrumb)  ·  2026-07-07
+
+**Net IA/flow change: NONE.** The two inventory-header controls that V1 deliberately left
+legacy-styled were brought onto the masterpiece design:
+
+1. **Game toggle → `.seg` control.** `#game-toggle` became the masterpiece `.seg` (segmented
+   control) with a `.split` divider, and `updateGameToggle()` (`app.js:559`) was re-wired from
+   overwriting each button's entire `.className` (the reason V1 kept it verbatim) to
+   `classList.toggle('is-on', …)`. The button ids (`#btn-game-cs2` / `#btn-game-tf2`), the
+   `setGame` click handlers, and the CS2/TF2/lazy-load logic are unchanged — only the active-state
+   mechanism moved from utility strings to the DS `.is-on` class.
+
+2. **Breadcrumb spine → masterpiece style.** `renderBreadcrumb()` now emits chevron separators
+   (`fa-chevron-right`, replacing the `›` glyph) and paints the active (last) segment
+   `text-brand-light` (`design_source.html:1615`). The `data-bc` / `data-bc-id` delegation hooks and
+   the dash/env/folder nav actions are byte-identical.
+
+Deliberate DECISION (kept, not changed — for reviewer awareness):
+
+- **The price-source / currency split control was NOT forced into `.seg`.** `.seg` sets
+  `overflow:hidden` (for its rounded segment corners), which would clip the `#src-menu` / `#cur-menu`
+  dropdown popovers. The control already uses the same DS tokens as `.seg` (`--r-btn` radius,
+  `--border-1`, `slate-800`), so it reads as part of the same control family while keeping
+  `#src-logo` (whose `.src` app.js swaps) and both popovers (`data-src` / `data-cur`) intact — the
+  JS contract V1 protected stays protected.

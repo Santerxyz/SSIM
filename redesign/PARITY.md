@@ -211,30 +211,30 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-086 | Breadcrumb `#breadcrumb`: truthful across all view modes, clickable segments (Environments › Env › Folder/Multi-Select › Account, `›` separator) (NAV-01) | index.html:537; app.js:1668–1709 | | |
-| P-087 | Breadcrumb nav actions: `dash`→showDashboard, `env`→selectEnvMaster, `folder`→openFolderMaster | app.js:1703–1708 | | |
-| P-088 | Main header `#main-header` (per-view content) | index.html:538 | | |
-| P-089 | Stat card **Items** `#stat-items` (brand accent, label overridable) | index.html:542–545 | | |
-| P-090 | Stat card **Trade-Locked** `#stat-locked` (amber/warn accent, label overridable) | index.html:546–551 | | |
-| P-091 | Stat card **Item value** `#stat-value` (brand-light, compact w/ exact on hover) | index.html:552–555; app.js:1122–1128 | | |
-| P-092 | Stat card **Balance** `#stat-wallet` (emerald, compact w/ exact on hover) | index.html:556–559; app.js:1125–1128 | | |
-| P-093 | Game toggle CS2 ↔ TF2 (`#btn-game-cs2`/`#btn-game-tf2`) → `setGame`; active = brand fill; TF2 lazy-loads on first toggle | index.html:562–566; app.js:528–535, 559–564 | | |
-| P-094 | "Buy" button `#btn-buy-market` (teal cart) → market-buy modal | index.html:567–570 | 💰 | |
-| P-095 | Price-source split control: `#src-btn` (Steam⟷CSFloat) w/ dropdown `#src-menu` (Steam Market / CSFloat); logo swaps | index.html:571–581; app.js:784–808 | | |
-| P-096 | Currency split control: `#cur-btn` (USD⟷EUR) w/ dropdown `#cur-menu` (USD ($) / EUR (€)) | index.html:583–591; app.js:761–782 | | |
-| P-097 | Currency button tooltip surfaces FX provenance: fallback-rate / stale (>36h) warning (C20/INV-E5) | app.js:767–782 | | |
-| P-098 | "Refresh" button `#btn-load` (assembles complete inventory: owned+locked+listed) | index.html:593–599; app.js:2142–2144 | | |
-| P-099 | Global-master env-filter container `#global-filter` (shown only in global mode) | index.html:605; app.js:1717 | | |
-| P-100 | Value-history chart wrap `#history-wrap` (chart-line header + legend + `#history-chart`) | index.html:607–616 | | |
-| P-101 | Item search box `#search-input` ("Search items…") | index.html:620–625 | | |
-| P-102 | Value-filter `#value-filter`: "Select under" + currency-prefixed number input `#value-filter-input` + "Select" button → bulk-select items under threshold (account+folder views) | index.html:626–638 | 💰 | |
-| P-103 | Selection bar `#selection-bar`: `#selection-count`, "Clear selection", "Sell on market" `#btn-sell-selected`, "Send selected items" `#btn-send-selected` | index.html:639–653 | 💰 | |
-| P-104 | Empty state `#empty-state`: "No inventory loaded yet" / 'Select an account and click "Refresh".' (boxes-stacked icon) | index.html:656–662 | | |
-| P-105 | Faceted filter chips bar `#facet-bar` (re-shown by renderTable) (TBL-03) | index.html:664–665; app.js:1725 | | |
-| P-106 | GC 3-category filter pills `#gc-cat-tabs` (only for GC-fetched inventories) | index.html:667–668; app.js:1724 | | |
-| P-107 | Items table `#items-wrap` (thead `#items-head`, tbody `#items-body`) + `#search-empty` "No items for this search." | index.html:670–679 | | |
-| P-108 | Active-Orders view container `#orders-wrap` | index.html:681–682 | | |
-| P-109 | Live-pull indicator `#inv-loading`: spinner "Loading inventory live from Steam…" / "Owner view · reading trade locks" | index.html:684–689 | | |
+| P-086 | Breadcrumb `#breadcrumb`: truthful across all view modes, clickable segments (Environments › Env › Folder/Multi-Select › Account) (NAV-01) | index.html:537; app.js:1668–1709 | | ✅ done · app.js:1695–1704 (masterpiece spine: chevron separators + brand-light active; data-bc hooks unchanged) |
+| P-087 | Breadcrumb nav actions: `dash`→showDashboard, `env`→selectEnvMaster, `folder`→openFolderMaster | app.js:1703–1708 | | ✅ done · app.js:1705–1710 (logic unchanged) |
+| P-088 | Main header `#main-header` (per-view content) | index.html:538 | | ✅ done · index.html:734 (shell) + V4/V5 per-view headers |
+| P-089 | Stat card **Items** `#stat-items` (brand accent, label overridable) | index.html:542–545 | | ✅ done · index.html:739–741 (.stat-card shell) |
+| P-090 | Stat card **Trade-Locked** `#stat-locked` (amber/warn accent, label overridable) | index.html:546–551 | | ✅ done · index.html:742–744 (.stat-card shell) |
+| P-091 | Stat card **Item value** `#stat-value` (brand-light, compact w/ exact on hover) | index.html:552–555; app.js:1122–1128 | | ✅ done · index.html:745–747 (.stat-card) + app.js:1125–1152 (setMoneyStats unchanged) |
+| P-092 | Stat card **Balance** `#stat-wallet` (emerald, compact w/ exact on hover) | index.html:556–559; app.js:1125–1128 | | ✅ done · index.html:748–750 (.stat-card) + app.js setMoneyStats (tri-state unchanged) |
+| P-093 | Game toggle CS2 ↔ TF2 (`#btn-game-cs2`/`#btn-game-tf2`) → `setGame`; active = brand fill; TF2 lazy-loads on first toggle | index.html:562–566; app.js:528–535, 559–564 | | ✅ done · index.html:762 (.seg control) + app.js:559–564 (updateGameToggle toggles .is-on; ids+setGame unchanged) |
+| P-094 | "Buy" button `#btn-buy-market` (cart) → market-buy modal | index.html:567–570 | 💰 | ✅ done · index.html:766 (.btn btn-buy; handler unchanged) |
+| P-095 | Price-source split control: `#src-btn` (Steam⟷CSFloat) w/ dropdown `#src-menu` (Steam Market / CSFloat); logo swaps | index.html:571–581; app.js:784–808 | | ✅ done · index.html:770–782 (DS-tokened custom split kept for dropdown contract; #src-logo/#src-menu/data-src unchanged) |
+| P-096 | Currency split control: `#cur-btn` (USD⟷EUR) w/ dropdown `#cur-menu` (USD ($) / EUR (€)) | index.html:583–591; app.js:761–782 | | ✅ done · index.html:784–791 (DS-tokened; #cur-menu/data-cur unchanged) |
+| P-097 | Currency button tooltip surfaces FX provenance: fallback-rate / stale (>36h) warning (C20/INV-E5) | app.js:767–782 | | ✅ done · app.js (logic unchanged) |
+| P-098 | "Refresh" button `#btn-load` (assembles complete inventory: owned+locked+listed) | index.html:593–599; app.js:2142–2144 | | ✅ done · index.html:796 (.btn bg-brand; handler unchanged) |
+| P-099 | Global-master env-filter container `#global-filter` (shown only in global mode) | index.html:605; app.js:1717 | | ✅ done · index.html:805 (shell) + V5 renderGlobalFilter |
+| P-100 | Value-history chart wrap `#history-wrap` (chart-line header + legend + `#history-chart`) | index.html:607–616 | | ✅ done · index.html:809–817 (.card-rich shell; chart re-skin = V7) |
+| P-101 | Item search box `#search-input` ("Search items…") | index.html:620–625 | | ✅ done · index.html:823 (.field shell) |
+| P-102 | Value-filter `#value-filter`: "Select under" + currency-prefixed number input `#value-filter-input` + "Select" button → bulk-select items under threshold (account+folder views) | index.html:626–638 | 💰 | ✅ done · index.html:826–835 (.field + .btn btn-secondary btn-sm shell) |
+| P-103 | Selection bar `#selection-bar`: `#selection-count`, "Clear selection", "Sell on market" `#btn-sell-selected`, "Send selected items" `#btn-send-selected` | index.html:639–653 | 💰 | ✅ done · index.html:837–845 (.btn btn-sell/bg-brand btn-sm shell; handlers unchanged) |
+| P-104 | Empty state `#empty-state`: "No inventory loaded yet" / 'Select an account and click "Refresh".' (boxes-stacked icon) | index.html:656–662 | | ✅ done · index.html (.empty shell) |
+| P-105 | Faceted filter chips bar `#facet-bar` (re-shown by renderTable) (TBL-03) | index.html:664–665; app.js:1725 | | ✅ done · index.html (shell) + V4 renderFacetBar |
+| P-106 | GC 3-category filter pills `#gc-cat-tabs` (only for GC-fetched inventories) | index.html:667–668; app.js:1724 | | ✅ done · V4 renderAccountTabs (.chip aria-pressed) |
+| P-107 | Items table `#items-wrap` (thead `#items-head`, tbody `#items-body`) + `#search-empty` "No items for this search." | index.html:670–679 | | ✅ done · index.html (.items-wrap/.items-table) + V4 |
+| P-108 | Active-Orders view container `#orders-wrap` | index.html:681–682 | | ✅ done · index.html (shell; orders re-skin = V8) |
+| P-109 | Live-pull indicator `#inv-loading`: spinner "Loading inventory live from Steam…" / "Owner view · reading trade locks" | index.html:684–689 | | ✅ done · index.html (shell) |
 
 ---
 
