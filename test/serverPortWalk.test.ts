@@ -74,6 +74,21 @@ test('listenAndAnnounce: tries=1 attempts ONLY the desired port (no walk) and re
   } finally { await close(server); await close(occupied!); }
 });
 
+test('listenAndAnnounce: a walk stepping past the TCP ceiling rejects EADDRINUSE, not a RangeError (H-BOOT-020)', async () => {
+  _resetForTest();
+  // Make the very top port (65535) busy so the walk from 65535 must step to 65536 — out of
+  // the valid TCP range. Whether we bind it or another process already holds it, it is busy.
+  const top = await tryOccupy(65535);
+  const server = http.createServer((_q, r) => r.end());
+  try {
+    await assert.rejects(
+      listenAndAnnounce(server, HOST, 65535, 20),
+      (err: NodeJS.ErrnoException) => err.code === 'EADDRINUSE',
+      'stepping past 65535 must surface as walk-exhausted EADDRINUSE, never a raw RangeError from server.listen(65536)',
+    );
+  } finally { await close(server); if (top) await close(top); }
+});
+
 test('listenAndAnnounce: a block of `tries` occupied ports exhausts the walk (no tries+1 overrun)', async () => {
   _resetForTest();
   const tries = 4;

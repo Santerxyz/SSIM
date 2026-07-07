@@ -78,6 +78,11 @@ export function listenAndAnnounce(server: Server, host: string, desiredPort: num
       // -1 so exactly `tries` ports are attempted (walkStart … walkStart+tries-1), matching MAX_PORT_WALK (H-BOOT-019)
       if (err.code === 'EADDRINUSE' && canWalk && port < walkStart + tries - 1) {
         port += 1;
+        if (port > 65535) { // TCP ceiling — treat as walk-exhausted so the caller shows the EADDRINUSE lockscreen, not a raw RangeError from server.listen(65536) (H-BOOT-020)
+          cleanup();
+          reject(Object.assign(new Error('port walk exhausted (reached TCP ceiling)'), { code: 'EADDRINUSE' }));
+          return;
+        }
         setImmediate(() => { try { server.listen(port, host); } catch (e) { cleanup(); reject(e as Error); } });
         return;
       }
