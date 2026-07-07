@@ -39,9 +39,6 @@ export interface PriceFetchOpts {
   /** Route the request through this agent (bot proxy) – avoids Steam's per-IP
    *  rate limit on the shared local IP, the #1 cause of "no price". */
   httpsAgent?: unknown;
-  /** The bot's web-session cookies – required for the listings/render fallback,
-   *  which Steam serves as an HTML login wall to anonymous requests. */
-  cookies?: string[];
   /** Wall-clock budget (ms) for the WHOLE getSellInfo cascade. When set, the loop
    *  stops before a try it can't finish inside the budget, caps each try's axios
    *  timeout to the remaining time, and skips a backoff that would cross the

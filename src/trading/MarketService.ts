@@ -207,13 +207,13 @@ export class MarketService {
     await trader.cancelBuyOrder(buyOrderId);
   }
 
-  /** Resolves a bot's price-fetch context (proxy agent + session cookies) so
-   *  price checks egress via its IP and the render fallback is authenticated. */
-  private async priceCtxFor(username?: string): Promise<{ httpsAgent?: unknown; cookies?: string[] }> {
+  /** Resolves a bot's price-fetch context (proxy agent) so price checks egress
+   *  via its IP. */
+  private async priceCtxFor(username?: string): Promise<{ httpsAgent?: unknown }> {
     if (!username) return {};
     try {
       const trader = await this.trades.getTrader(username);
-      return { httpsAgent: trader.httpsAgent, cookies: trader.cookies };
+      return { httpsAgent: trader.httpsAgent };
     } catch (err) {
       logger.warn(`[market-price] could not resolve price context for ${username}: ${(err as Error).message}`);
       return {};
@@ -339,12 +339,12 @@ export class MarketService {
     const wasLiveBefore = this.trades.snapshotLive(groups.map((g) => g.username));
 
     // Fixed custom price → no lookups; otherwise getSellInfo's internal 3-method
-    // cascade (via the bot proxy + cookies) resolves the price. Cached per name.
+    // cascade (via the bot proxy) resolves the price. Cached per name.
     // S2 (in-run): a null net is cached (and short-circuits every same-name item) ONLY
     // when Steam actually answered (`info.authoritative`). A transport-failure null
     // (all cascade tries threw) is NOT cached and surfaces as `transport:true` so the
     // caller defers the item instead of failing it and poisoning the rest of the run.
-    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }): Promise<{ net: number | null; transport: boolean }> => {
+    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown }): Promise<{ net: number | null; transport: boolean }> => {
       if (customNet != null) return { net: customNet, transport: false };
       if (netCache.has(name)) return { net: netCache.get(name)!, transport: false };
       const info = await this.pricing.getSellInfo(name, ctx);
@@ -451,7 +451,7 @@ export class MarketService {
 
   private async processBot(
     group: MassSellGroup,
-    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<{ net: number | null; transport: boolean }>,
+    resolveNet: (name: string, ctx: { httpsAgent?: unknown }) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
   ): Promise<void> {
     const user = group.username;
@@ -566,7 +566,7 @@ export class MarketService {
         continue;
       }
 
-      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookies: trader.cookies });
+      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent });
       if (net == null && transport) {
         // S2 (in-run): the price lookup failed at the transport layer (429 storm, proxy
         // reset, 5xx) — Steam never answered, so this is NOT "no price". Defer the item
