@@ -291,8 +291,8 @@ export class BanService {
   /**
    * F3c orchestration: group the resolved (has-SteamID) accounts by environment, acquire up to
    * the needed number of keys from accounts WITHIN each environment, then plan + execute the
-   * 20-per-key chunks with strict per-env isolation. Accounts an env can't cover (more accounts
-   * than 20 × the keys it could provide) are surfaced with a clear, actionable error.
+   * `BANS_PER_KEY`-sized chunks with strict per-env isolation. Accounts an env can't cover (more accounts
+   * than `BANS_PER_KEY` × the keys it could provide) are surfaced with a clear, actionable error.
    */
   private async checkPerEnvironment(accs: AccountConfig[], bySteamId: Map<string, AccountBanInfo>, progress?: BanJobProgress): Promise<void> {
     // envId → all usernames in it (potential key sources); and the resolved (steamId,env) targets.
