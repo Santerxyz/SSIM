@@ -26,9 +26,7 @@ declare module 'steam-totp' {
     timeOffset?: number,
   ): string;
 
-  /**
-   * Returns the number of seconds until the current TOTP code expires.
-   */
+  /** Fetches the Steam-server-vs-local clock offset in seconds (QueryTime round trip). */
   export function getTimeOffset(
     callback: (err: Error | null, offset: number, latency: number) => void,
   ): void;
