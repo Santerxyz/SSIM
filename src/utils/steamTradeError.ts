@@ -102,8 +102,3 @@ export function parseSteamTradeError(err: unknown): ParsedSteamTradeError {
   // 4) No code/cause — pass Steam's exact text through (or a generic fallback).
   return { message: raw || 'Unknown trade error', eresult, cause, code, inventoryFull: false };
 }
-
-/** Convenience: the clean reason string only. */
-export function describeSteamTradeError(err: unknown): string {
-  return parseSteamTradeError(err).message;
-}
