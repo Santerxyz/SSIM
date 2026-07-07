@@ -4760,12 +4760,12 @@ async function batchDeleteAccounts(usernames) {
 
 // Category display order + styling. Literal class strings (Tailwind-JIT safe, like toasts).
 const BAN_CATS = [
-  { key: 'clean',     label: 'Clean',                 icon: 'fa-circle-check',        text: 'text-emerald-400', badge: 'bg-emerald-500/15 text-emerald-300', movable: false },
-  { key: 'vac',       label: 'VAC Banned',            icon: 'fa-ban',                 text: 'text-rose-400',    badge: 'bg-rose-500/15 text-rose-300',       movable: true  },
-  { key: 'game',      label: 'Game Banned',           icon: 'fa-gamepad',             text: 'text-orange-400',  badge: 'bg-orange-500/15 text-orange-300',   movable: true  },
-  { key: 'community', label: 'Community Banned',      icon: 'fa-comment-slash',       text: 'text-amber-400',   badge: 'bg-amber-500/15 text-amber-300',     movable: true  },
-  { key: 'economy',   label: 'Economy / Trade Banned', icon: 'fa-handshake-slash',    text: 'text-fuchsia-400', badge: 'bg-fuchsia-500/15 text-fuchsia-300', movable: true  },
-  { key: 'error',     label: 'Lookup Failed',         icon: 'fa-triangle-exclamation', text: 'text-slate-400',  badge: 'bg-slate-600/30 text-slate-300',     movable: false },
+  { key: 'clean',     label: 'Clean',                  icon: 'fa-circle-check',         text: 'text-emerald-400', pill: 'success', acc: 'border-slate-800 bg-slate-950/40',        movable: false },
+  { key: 'vac',       label: 'VAC Banned',             icon: 'fa-ban',                  text: 'text-rose-400',    pill: 'danger',  acc: 'border-rose-800/40 bg-rose-900/10',       movable: true  },
+  { key: 'game',      label: 'Game Banned',            icon: 'fa-gamepad',              text: 'text-orange-400',  pill: 'warn',    acc: 'border-orange-800/40 bg-orange-900/10',   movable: true  },
+  { key: 'community', label: 'Community Banned',       icon: 'fa-comment-slash',        text: 'text-amber-400',   pill: 'neutral', acc: 'border-amber-800/40 bg-amber-900/10',     movable: true  },
+  { key: 'economy',   label: 'Economy / Trade Banned', icon: 'fa-handshake-slash',      text: 'text-fuchsia-400', pill: 'danger',  acc: 'border-fuchsia-800/40 bg-fuchsia-900/10', movable: true  },
+  { key: 'error',     label: 'Lookup Failed',          icon: 'fa-triangle-exclamation', text: 'text-slate-400',   pill: 'listed',  acc: 'border-sky-800/40 bg-sky-900/10',         movable: false },
 ];
 
 /** Opens the Ban Checker for a set of accounts and renders the result modal.
@@ -4868,10 +4868,10 @@ function renderBanResult(res) {
   // Summary header: one chip per category with its count (errors only shown when present).
   el.banSummary.innerHTML = `
     <div class="flex flex-wrap items-center gap-2">
-      <span class="text-2xs uppercase tracking-wide text-slate-500 font-semibold mr-1">${t.total || 0} checked</span>
+      <span class="t10 uppercase tracking-wide text-slate-500 font-semibold mr-1">${t.total || 0} checked</span>
       ${BAN_CATS.filter((c) => c.key !== 'error' || (t.error || 0) > 0).map((c) => `
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${c.badge} text-xs font-semibold">
-          <i class="fa-solid ${c.icon} ${c.text}"></i>${escapeHtml(c.label)}
+        <span class="pill pill--${c.pill}">
+          <i class="fa-solid ${c.icon}"></i>${escapeHtml(c.label)}
           <span class="font-mono">${(groups[c.key] || []).length}</span>
         </span>`).join('')}
     </div>`;
@@ -4881,54 +4881,48 @@ function renderBanResult(res) {
     .filter((c) => (groups[c.key] || []).length > 0)
     .map((c) => banAccordion(c, groups[c.key]))
     .join('');
-  el.banBody.innerHTML = sections || `<p class="text-sm text-slate-500 px-2 py-4 text-center">No accounts to display.</p>`;
+  el.banBody.innerHTML = sections || `<p class="t13 text-slate-500 px-2 py-4 text-center">No accounts to display.</p>`;
 }
 
 function banAccordion(cat, accounts) {
   const moveBtn = cat.movable
     ? `<button data-ban-move="${escapeAttr(cat.key)}" title="Move every account in this category into a folder"
-         class="ml-auto shrink-0 px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-folder-tree"></i>Move this Category</button>`
+         class="btn btn-sm btn-secondary ml-auto shrink-0"><i class="fa-solid fa-folder-tree"></i>Move this Category</button>`
     : '';
   const rows = accounts.map((a) => banAccountRow(a, cat.key)).join('');
   return `
-    <div class="rounded-lg border border-slate-800 overflow-hidden">
-      <div data-ban-toggle="${escapeAttr(cat.key)}" class="flex items-center gap-2.5 px-4 py-2.5 cursor-pointer hover:bg-slate-800/50 transition">
-        <i class="fa-solid fa-chevron-right ban-caret text-3xs text-slate-500 transition-transform"></i>
+    <div class="rounded-xl border ${cat.acc} overflow-hidden">
+      <div data-ban-toggle="${escapeAttr(cat.key)}" class="flex items-center gap-2.5 px-4 py-3 cursor-pointer select-none">
+        <i class="fa-solid fa-chevron-right ban-caret t10 text-slate-500 transition-transform"></i>
         <i class="fa-solid ${cat.icon} ${cat.text}"></i>
-        <span class="font-semibold text-slate-200">${escapeHtml(cat.label)}</span>
-        <span class="text-2xs font-mono px-2 py-0.5 rounded-full ${cat.badge}">${accounts.length}</span>
+        <span class="t14 font-semibold ${cat.text}">${escapeHtml(cat.label)}</span>
+        <span class="pill pill--${cat.pill} font-mono">${accounts.length}</span>
         ${moveBtn}
       </div>
-      <div class="ban-acc-body hidden border-t border-slate-800 divide-y divide-slate-800/60">${rows}</div>
+      <div class="ban-acc-body hidden border-t border-slate-800/60 divide-y divide-slate-800/60">${rows}</div>
     </div>`;
 }
 
 /** Small coloured tags describing one account's specific bans. */
 function banTags(a) {
-  if (a.error) return `<span class="text-2xs text-slate-500">${escapeHtml(a.error)}</span>`;
+  if (a.error) return `<span class="pill pill--listed">${escapeHtml(a.error)}</span>`;
   const tags = [];
-  if (a.vacBanned)       tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300">VAC${a.vacCount > 1 ? ` ×${a.vacCount}` : ''}</span>`);
-  if (a.gameBanned)      tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300">Game${a.gameCount > 1 ? ` ×${a.gameCount}` : ''}</span>`);
-  if (a.communityBanned) tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">Community</span>`);
-  if (a.economyBan && a.economyBan !== 'none') tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-fuchsia-500/15 text-fuchsia-300">Trade: ${escapeHtml(a.economyBan)}</span>`);
-  if (!tags.length) tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">No bans</span>`);
+  if (a.vacBanned)       tags.push(`<span class="pill pill--danger">VAC${a.vacCount > 1 ? ` ×${a.vacCount}` : ''}</span>`);
+  if (a.gameBanned)      tags.push(`<span class="pill pill--warn">Game${a.gameCount > 1 ? ` ×${a.gameCount}` : ''}</span>`);
+  if (a.communityBanned) tags.push(`<span class="pill pill--neutral">Community</span>`);
+  if (a.economyBan && a.economyBan !== 'none') tags.push(`<span class="pill pill--danger">Trade: ${escapeHtml(a.economyBan)}</span>`);
+  if (!tags.length) tags.push(`<span class="pill pill--success">No bans</span>`);
   if (typeof a.daysSinceLastBan === 'number' && a.daysSinceLastBan > 0 && !a.error)
-    tags.push(`<span class="text-2xs text-slate-500">${a.daysSinceLastBan}d since last ban</span>`);
+    tags.push(`<span class="t10 text-slate-500">${a.daysSinceLastBan}d since last ban</span>`);
   return tags.join(' ');
 }
 
 function banAccountRow(a, catKey) {
   const name = a.displayName && a.displayName !== a.username ? `${a.displayName}` : a.username;
   return `
-    <div class="flex items-start gap-3 px-4 py-2.5">
-      <i class="fa-solid fa-user text-2xs text-slate-600 mt-1 shrink-0"></i>
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-sm font-medium text-slate-200 truncate">${escapeHtml(name)}</span>
-          ${a.steamId ? `<span class="text-2xs font-mono text-slate-500">${escapeHtml(a.steamId)}</span>` : ''}
-        </div>
-        <div class="mt-1 flex items-center gap-1.5 flex-wrap">${banTags(a)}</div>
-      </div>
+    <div class="flex items-center justify-between gap-3 px-4 py-2">
+      <span class="min-w-0 flex-1 t13 text-slate-300 truncate">${escapeHtml(name)}${a.steamId ? ` <span class="t10 font-mono text-slate-600">${escapeHtml(a.steamId)}</span>` : ''}</span>
+      <span class="flex items-center gap-1.5 flex-wrap justify-end shrink-0">${banTags(a)}</span>
     </div>`;
 }
 

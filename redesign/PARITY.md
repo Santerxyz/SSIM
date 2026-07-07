@@ -745,16 +745,16 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-416 | Open ban checker (job + poll) `openBanChecker(usernames,scopeLabel)`: dedups; scope label `· X` or `· N account(s)`; POST `/api/bans/check {usernames}` (202 detached); 409 "already running" toast; then poll | app.js:4757–4776 | | |
-| P-417 | Ban-check poll (1.5s) `pollBanCheck`: GET `/api/bans/status`; bounded error-retry (S17); stall guard; live phase label "Resolving SteamIDs…"/"Acquiring keys…"/"Checked X of N…" | app.js:4778–4817 | | |
-| P-418 | Stuck detection: pollerStalled → amber "The ban check appears stuck (no progress)…" | app.js:4803–4806 | | |
-| P-419 | Result summary chips `renderBanResult`: "N checked" + one chip per category w/ count (errors chip only when >0) | app.js:4845–4858 | | |
-| P-420 | Category accordions `banAccordion`: collapsible per non-empty category; caret rotates; count badge; movable categories get "Move this Category" btn | app.js:4868–4885 | | |
-| P-421 | Ban tags per account `banTags`: VAC (×count), Game (×count), Community, Trade:reason, "No bans"; "Nd since last ban" | app.js:4888–4899 | | |
-| P-422 | Account row: user icon, display/username, mono steamId, tags | app.js:4901–4914 | | |
-| P-423 | Accordion toggle + Move-category `onBanBodyClick`: header toggles body/caret; "Move this Category" collects category usernames → `openMoveModal` (layers z-40 above; ban modal stays open) | app.js:4916–4936 | | |
-| P-424 | Account-level trigger `checkAccountBans(username)` | app.js:4821–4825 | | |
-| P-425 | Folder-level trigger `checkFolderBans(folderId)`: every account in subtree | app.js:4827–4833 | | |
+| P-416 | Open ban checker (job + poll) `openBanChecker(usernames,scopeLabel)`: dedups; scope label `· X` or `· N account(s)`; POST `/api/bans/check {usernames}` (202 detached); 409 "already running" toast; then poll | app.js:4757–4776 | | ✅ done · logic unchanged (openBanChecker byte-identical — job POST + 409 toast + poll intact); z-30 layering preserved |
+| P-417 | Ban-check poll (1.5s) `pollBanCheck`: GET `/api/bans/status`; bounded error-retry (S17); stall guard; live phase label "Resolving SteamIDs…"/"Acquiring keys…"/"Checked X of N…" | app.js:4778–4817 | | ✅ done · logic unchanged (pollBanCheck byte-identical — status poll + bounded error-retry + phase labels intact) |
+| P-418 | Stuck detection: pollerStalled → amber "The ban check appears stuck (no progress)…" | app.js:4803–4806 | | ✅ done · logic unchanged (pollerStalled stuck-amber path in pollBanCheck untouched) |
+| P-419 | Result summary chips `renderBanResult`: "N checked" + one chip per category w/ count (errors chip only when >0) | app.js:4845–4858 | | ✅ done · summary chips re-skinned → `.pill pill--success/danger/warn/neutral/listed` (per category) + "N checked" → t10; icon + mono count kept |
+| P-420 | Category accordions `banAccordion`: collapsible per non-empty category; caret rotates; count badge; movable categories get "Move this Category" btn | app.js:4868–4885 | | ✅ done · accordion re-skinned → `rounded-xl` per-category tinted border/bg + t14 label + `.pill` count; Move btn → `.btn btn-sm btn-secondary`; `data-ban-toggle`/`.ban-caret`/`.ban-acc-body`/`data-ban-move` hooks verbatim (kept div-toggle, NOT native `<details>` — `onBanBodyClick` binds them) |
+| P-421 | Ban tags per account `banTags`: VAC (×count), Game (×count), Community, Trade:reason, "No bans"; "Nd since last ban" | app.js:4888–4899 | | ✅ done · tags re-skinned → `.pill pill--danger/warn/neutral/success`; error → `.pill pill--listed` (kept VISUALLY DISTINCT from green "No bans" = honesty); "Nd since last ban" → t10 |
+| P-422 | Account row: user icon, display/username, mono steamId, tags | app.js:4901–4914 | | ✅ done · row re-skinned → t13 name + t10 mono steamId + right-aligned `.pill` tags (`banAccountRow(a,cat.key)` signature/call unchanged) |
+| P-423 | Accordion toggle + Move-category `onBanBodyClick`: header toggles body/caret; "Move this Category" collects category usernames → `openMoveModal` (layers z-40 above; ban modal stays open) | app.js:4916–4936 | | ✅ done · logic unchanged (onBanBodyClick byte-identical — toggle body/caret + Move-category → openMoveModal z-40 above, ban modal stays open); hooks preserved |
+| P-424 | Account-level trigger `checkAccountBans(username)` | app.js:4821–4825 | | ✅ done · logic unchanged (byte-identical) |
+| P-425 | Folder-level trigger `checkFolderBans(folderId)`: every account in subtree | app.js:4827–4833 | | ✅ done · logic unchanged (byte-identical) |
 
 ---
 

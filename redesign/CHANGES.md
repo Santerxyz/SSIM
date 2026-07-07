@@ -451,3 +451,52 @@ Deliberate DECISION (design-source deviation, not an IA change), for reviewer aw
    would break both the delegation and the selected-state re-render. So the row adopts the masterpiece
    `.avatar`/type-scale look but stays a `data-recip` button — same call as V3's sidebar rows, a
    faithful re-skin with the JS contract intact.
+
+---
+
+## V14 💰 — Ban-Checker modal (accordion + "Move this Category") (`index.html` `#ban-overlay` + `app.js` `renderBanResult` / `banAccordion` / `banTags`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin — every ban-check handler, the `/api/bans/check`
+job + `/api/bans/status` poll, and the Move-category reuse of the folder Move modal are
+byte-identical.** The static `#ban-overlay` shell was ported to the masterpiece DS to match
+`design_source.html:1289–1307`: the header title → `.t16` (`text-lg`→`t16`), the scope suffix →
+`t14`, and the close button → `.modal-x` (its `id="ban-close"` KEPT — the handler binds by id, not the
+prototype's `data-close`; same call as V10–V13). **The overlay stays `z-30`** (S68 layering law — it
+must sit BELOW the folder Move modal at `z-40` so a quarantined category's Move dialog layers above it;
+that class was not touched). The `#ban-summary`/`#ban-body` hosts were already DS-shaped (they mount
+`renderBanResult` output) and kept as-is.
+
+In `app.js` the render helpers moved onto the DS: `renderBanResult`'s summary chips → `.pill pill--*`
+(one per category with its count + icon; the "N checked" caption → `t10`); `banAccordion` → a
+`rounded-xl` per-category tinted card (border/bg from a new `acc` field on `BAN_CATS`) with a `t14`
+accent-coloured summary label, a `.pill` count badge, and the **"Move this Category" button →
+`.btn btn-sm btn-secondary`** (its `data-ban-move="<key>"` hook + title kept verbatim); `banTags` →
+`.pill pill--danger/warn/neutral/success` per ban type; `banAccountRow` → a clean `t13` name + `t10`
+mono steamId row with right-aligned pills. `BAN_CATS` swapped its per-category `badge` Tailwind string
+for a DS `pill` variant + an `acc` accordion-tint string (both literal, Tailwind-JIT-safe like the
+originals); `icon`/`text`/`label`/`movable` unchanged.
+
+**Every handler stayed byte-identical:** `openBanChecker` (dedup + POST `/api/bans/check` 202 detached
++ 409 "already running" toast + poll kickoff), `pollBanCheck` (1.5 s `/api/bans/status` poll + bounded
+error-retry S17 + stall guard + live phase labels), `closeBan`, `checkAccountBans`, `checkFolderBans`,
+and **`onBanBodyClick`** (the delegated accordion-toggle + the "Move this Category" collect →
+`openMoveModal` that layers `z-40` above this modal while it stays open). No
+`api(`/`fetch(`/`ssimConfirm`/`addEventListener`/`setTimeout`/`state.`-mutation line changed.
+`groupBanAccounts` is pure data-grouping (no markup) → left byte-identical.
+
+Deliberate DECISION (design-source deviation, not an IA change), for reviewer awareness:
+
+1. **The accordion is kept as the legacy `data-ban-toggle` `<div>` toggle, NOT the prototype's native
+   `<details>`.** The mock renders each category as `<details><summary>…` and relies on the browser's
+   native disclosure. But the live app toggles via `onBanBodyClick`, a delegated listener bound to
+   `#ban-body` that reads `[data-ban-toggle]`, then flips `.ban-acc-body`'s `hidden` class and rotates
+   `.ban-caret`. Converting to native `<details>` would either strip those three handler-referenced
+   hooks (violating the preservation rule) or double-toggle against the native `open` state. So the
+   card adopts the masterpiece look (`rounded-xl`, per-category tinted border/bg, `t14` label, `.pill`
+   count) while staying a `data-ban-toggle` `<div>` with `.ban-caret` + `.ban-acc-body` intact — a
+   faithful re-skin with the JS contract untouched (mirrors V13's `[data-recip]` decision).
+2. **The `error` ("Lookup Failed") category is styled distinctly from `clean`.** Its pill is
+   `pill--listed` (sky) and its accordion tint is `border-sky-800/40 bg-sky-900/10` — deliberately
+   NOT the emerald "clean/No bans" treatment — so a failed lookup never masquerades as a passing check
+   (honesty). The per-account `a.error` tag is likewise a `pill--listed`, visually separated from the
+   green "No bans" pill.
