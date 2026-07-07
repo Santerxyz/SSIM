@@ -76,7 +76,7 @@ export interface CS2Item {
   stickers?:       Sticker[];
 }
 
-/** Supported inventory games. CS2 = appid 730 · TF2 = appid 440 (both context 2). */
+/** Supported inventory games. CS2 = appid 730 · TF2 = appid 440. Context 2 is each game's DEFAULT context (quick/forceRefresh reads); CS2 COMPLETENESS = ctx2 + ctx16 + market/mylistings — see InventoryService.doRefreshOneViaGc. */
 export type GameId = 'cs2' | 'tf2';
 
 export interface AccountInventory {
