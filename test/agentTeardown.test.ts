@@ -44,6 +44,26 @@ test('retire: a BUSY agent is never destroyed until its work drains', () => {
   assert.equal(destroyed, 1, 'agent destroyed once quiescent');
 });
 
+test('retire: re-retiring an already-parked busy agent does not double-count `retired`', () => {
+  const before = AgentFactory.teardownStats();
+  const busy = {
+    destroy: () => { /* no-op */ },
+    sockets: { h: [{}] } as Record<string, unknown[]>,
+    requests: {} as Record<string, unknown[]>,
+  };
+  // Retire the SAME busy agent twice → parked once, counted once (not twice).
+  AgentFactory.destroyIfDisposable(busy);
+  AgentFactory.destroyIfDisposable(busy);
+  // Drain and reap it so nothing stays parked for later tests.
+  busy.sockets.h = [];
+  AgentFactory.sweepRetiring();
+
+  const after = AgentFactory.teardownStats();
+  assert.equal(after.retired - before.retired, 1, 're-retire of one agent counts as one retirement');
+  // The conservation identity teardownStats() exists to prove must hold.
+  assert.equal(after.retired, after.destroyedIdle + after.destroyedForced + after.pendingRetire);
+});
+
 test('retire: a leaked-socket agent is force-destroyed only after the hard deadline', () => {
   let destroyed = 0;
   const stuck = {

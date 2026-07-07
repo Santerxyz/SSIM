@@ -129,13 +129,20 @@ export class AgentFactory {
   }
 
   private static retire(agent: DestroyableAgent): void {
-    AgentFactory.stats.retired++;
+    // `retired` counts DISTINCT agents ever parked/destroyed — increment only on a
+    // genuinely-new retirement (past the `retiring.has` dedup guard), else a re-retire
+    // of an already-parked busy agent over-counts and breaks the conservation identity
+    // `retired === destroyedIdle + destroyedForced + pendingRetire` that soaks assert.
     if (agentBusyCount(agent) === 0) {
       try { agent.destroy?.(); } catch { /* best-effort */ }
+      AgentFactory.stats.retired++;
       AgentFactory.stats.destroyedIdle++;
       return;
     }
-    if (!AgentFactory.retiring.has(agent)) AgentFactory.retiring.set(agent, Date.now());
+    if (!AgentFactory.retiring.has(agent)) {
+      AgentFactory.stats.retired++;
+      AgentFactory.retiring.set(agent, Date.now());
+    }
     AgentFactory.ensureReaper();
   }
 
