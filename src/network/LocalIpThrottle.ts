@@ -24,9 +24,14 @@ export class ThrottleSkippedError extends Error {
  * Behaviour:
  *   • Serialized   – at most ONE throttled task runs at a time (a queue), so the
  *                    shared local IP never has two in-flight Steam fetches.
- *   • Spaced out   – consecutive tasks START at least a randomized `min…max` ms
- *                    apart. The jitter avoids a perfectly regular request cadence,
- *                    and spacing the START (not adding a flat post-delay) naturally
+ *   • Spaced out   – consecutive tasks start NO CLOSER than a randomized `min…max`
+ *                    ms apart, measured from the previous task's START. Because a task
+ *                    must fully complete before the next begins, the real spacing is
+ *                    `max(gap, previousTaskDuration)`: when a fetch already takes longer
+ *                    than `gap` (the common case for a real refresh, and always during a
+ *                    35 s rate-limit retry) NO extra wait is added, so `min…max` only
+ *                    binds when set ABOVE observed fetch time. The jitter avoids a
+ *                    perfectly regular cadence; spacing the START (not a flat post-delay)
  *                    caps the request RATE, which is what Steam actually limits.
  *
  * A task that throws does NOT break the queue: the next task still runs (the chain
