@@ -190,10 +190,10 @@ export function createApp(deps: ApiDeps): Express {
       return inv;
     }
     if (t > Date.now()) {
-      const iso = new Date(t).toISOString();
+      const until = new Date(t);
       for (const it of inv.items) {
         const cur = it.tradeLockExpiry ? new Date(it.tradeLockExpiry) : null;
-        if (!cur || t > cur.getTime()) it.tradeLockExpiry = iso as unknown as Date;
+        if (!cur || t > cur.getTime()) it.tradeLockExpiry = until;
       }
     }
     return inv;
