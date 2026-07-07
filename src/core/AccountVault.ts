@@ -476,8 +476,13 @@ export class AccountVaultImpl {
   setEnvProxy(environmentId: string, proxy: string | undefined): void {
     if (!this.payload) throw new Error('vault not unlocked');
     const val = (proxy ?? '').trim();
-    if (val) this.payload.envProxies[environmentId] = val;
-    else delete this.payload.envProxies[environmentId];
+    if (val) {
+      if (this.payload.envProxies[environmentId] === val) return; // identical value → no-op, skip re-encrypt
+      this.payload.envProxies[environmentId] = val;
+    } else {
+      if (!(environmentId in this.payload.envProxies)) return; // nothing to clear → no-op, skip re-encrypt
+      delete this.payload.envProxies[environmentId];
+    }
     this.save();
   }
   /** Import an env proxy WITHOUT saving (boot migration batches one save). Returns true if stored. */
@@ -502,8 +507,13 @@ export class AccountVaultImpl {
     if (!this.payload) throw new Error('vault not unlocked');
     const k = username.toLowerCase();
     const val = (proxy ?? '').trim();
-    if (val) this.payload.accountProxies[k] = val;
-    else delete this.payload.accountProxies[k];
+    if (val) {
+      if (this.payload.accountProxies[k] === val) return; // identical value → no-op, skip re-encrypt
+      this.payload.accountProxies[k] = val;
+    } else {
+      if (!(k in this.payload.accountProxies)) return; // nothing to clear → no-op, skip re-encrypt
+      delete this.payload.accountProxies[k];
+    }
     this.save();
   }
 }

@@ -60,6 +60,25 @@ test('B42: setAccountProxy/getAccountProxy persist for an account with no full r
   assert.equal(v2.getAccountProxy('limitedbot'), undefined);
 });
 
+// ─── H-ACC-046: proxy setters short-circuit provable no-ops (no pointless full re-encrypt) ──
+test('H-ACC-046: setAccountProxy skips save on a no-op clear and an identical re-set', () => {
+  const { file, bak } = tmpVault();
+  const v = new AccountVaultImpl(file, bak);
+  v.unlockOrCreate('pw');
+
+  let saves = 0;
+  const orig = (v as unknown as { save: (o?: unknown) => void }).save.bind(v);
+  (v as unknown as { save: (o?: unknown) => void }).save = (o?: unknown) => { saves++; return orig(o); };
+
+  v.setAccountProxy('nobody', undefined); // no map entry → nothing to clear
+  assert.equal(saves, 0, 'clearing an absent proxy must not re-encrypt the vault');
+
+  saves = 0;
+  v.setAccountProxy('bot1', 'http://p'); // first set → one save
+  v.setAccountProxy('bot1', 'http://p'); // identical value → no-op, no save
+  assert.equal(saves, 1, 'a genuine set saves once; an identical re-set is a no-op');
+});
+
 test('vault: wrong master password is rejected (GCM auth), right one works', () => {
   const { file, bak } = tmpVault();
   new AccountVaultImpl(file, bak).unlockOrCreate('correct-horse');
