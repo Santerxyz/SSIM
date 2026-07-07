@@ -31,6 +31,11 @@ const CONFIRM_BACKOFF_MS = 18_000;                  // pause between confirmatio
  * non-EUR wallet (never convert-and-guess); an UNKNOWN wallet keeps the EUR common
  * path (a non-EUR wallet is reported by the login 'wallet' event, so the dangerous
  * case is knowable — proceeding-on-unknown never underprices a wallet we've seen).
+ * THIRD STATE: a never-funded account reports currency 0 (ECurrencyCode.Invalid) — a
+ * present-but-invalid wallet, distinct from `undefined` (never observed). It is ALSO
+ * blocked fail-closed here (0 !== EUR): the currency a first funding would mint is
+ * unknowable, so the sell guard names it honestly ("no Steam wallet … add funds once")
+ * rather than reporting a phantom foreign wallet.
  */
 export function sellWalletBlocked(walletCurrency: number | undefined): boolean {
   return walletCurrency != null && walletCurrency !== EUR_CURRENCY;
@@ -475,9 +480,19 @@ export class MarketService {
     // wouldn't help). An unknown wallet keeps the EUR path (see sellWalletBlocked).
     if (sellWalletBlocked(trader.walletCurrency)) {
       const wc = trader.walletCurrency;
-      logger.error(`[mass-sell] ${user}: wallet currency ${wc} is not EUR (${EUR_CURRENCY}) – prices are EUR-denominated; listing would underprice ~99%. BLOCKING this bot to protect real money.`);
+      // Currency 0 (ECurrencyCode.Invalid) = NO wallet yet on this account (a fresh,
+      // never-funded bot), not a known foreign wallet — name that third state and its
+      // remedy instead of reporting a phantom "currency 0 is not EUR / ~99% underprice".
+      const noWalletMsg = `no Steam wallet on this account – its currency is unknowable until first funds; blocked to protect pricing (add funds once to establish an EUR wallet)`;
+      const logMsg = wc === 0
+        ? noWalletMsg
+        : `wallet currency ${wc} is not EUR (${EUR_CURRENCY}) – prices are EUR-denominated; listing would underprice ~99%. BLOCKING this bot to protect real money.`;
+      const rowMsg = wc === 0
+        ? noWalletMsg
+        : `wallet currency ${wc} is not EUR – EUR-only pricing; not listed (would underprice ~99%)`;
+      logger.error(`[mass-sell] ${user}: ${logMsg}`);
       for (const item of group.items) {
-        this.job.blocked.push({ username: user, assetId: item.assetId, error: `wallet currency ${wc} is not EUR – EUR-only pricing; not listed (would underprice ~99%)` });
+        this.job.blocked.push({ username: user, assetId: item.assetId, error: rowMsg });
         this.job.done++;
       }
       this.trackBotActive(user, false);
