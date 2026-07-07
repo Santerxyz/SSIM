@@ -98,10 +98,11 @@ export interface AccountInventory {
   reportedTotal?: number;
   /**
    * Which refresh produced this record:
-   *   'web' – the Steam Community /inventory endpoint (default, fast, but blind to
-   *           items the web layer hasn't synced)
-   *   'gc'  – the CS2 Game Coordinator (complete: in-game truth incl. trade-locks)
-   * Absent in legacy records = 'web'.
+   *   'web' – quick single-context read (forceRefresh / buy-verify; ctx2 only)
+   *   'gc'  – the FULL merged refresh (ctx2 + ctx16 + market listings). LEGACY LABEL
+   *           kept for on-disk cache compatibility and the server's source==='gc'
+   *           read-time tagging — no Game Coordinator is involved; the GC stack is
+   *           retired. Absent in legacy records = 'web'.
    */
   source?:     'web' | 'gc';
   /** Sum of price × quantity over priced items (USD cents). Enriched at read-time. */
