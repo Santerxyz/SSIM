@@ -569,7 +569,6 @@ export class SessionManager extends EventEmitter {
         clearTimeout(loginTimeoutHandle);
         if (webSessionTimeoutHandle) clearTimeout(webSessionTimeoutHandle);
         session.state    = SessionState.ERROR;
-        session.lastError = err.message;
         this.emit('error', account.username, err);
         reject(err);
       };
@@ -690,7 +689,6 @@ export class SessionManager extends EventEmitter {
       client.on('error', (err: Error & { eresult?: number }) => {
         logger.error(`[${account.username}] Steam error  EResult=${err.eresult ?? '?'}  msg=${err.message}`);
         if (!settled) { fail(err); return; }
-        session.lastError = err.message;
         session.state = SessionState.ERROR;
         this.emit('disconnected', account.username, `fatal: ${err.message}`);
         // B43: a post-settle fatal (e.g. LoggedInElsewhere) previously left the session RESIDENT

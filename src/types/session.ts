@@ -38,7 +38,6 @@ export interface ManagedSession {
   webSession?:   WebSession;
   /** Steam wallet, from steam-user's 'wallet' event. UNIT: steam-user divides the CM protobuf minor-unit balance by 100 unconditionally (components/account.js), so 'balance' is a float in MAJOR units for 2-decimal currencies (12.34 = €12.34). For 0-decimal wallet currencies the effective unit is unverified (B18). Convert to minor units ONLY via knownCurrencyInfo (S64 — unknown codes fail closed on money paths). 'currency' is the numeric ECurrencyCode. */
   wallet?:       { hasWallet: boolean; currency: number; balance: number };
-  lastError?:    string;
   loggedInAt?:   Date;
   /** Last time a GENUINE operation used this session (markUsed). Drives the idle-session
    *  reaper (B40): a session untouched for the TTL is logged out to free the resident slot.
