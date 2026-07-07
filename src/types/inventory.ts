@@ -36,11 +36,16 @@ export interface CS2Item {
   /** null  →  no trade lock */
   tradeLockExpiry: Date | null;
   /**
-   * Strict dashboard bucket (computed at read-time, never trusted from disk):
+   * Strict dashboard bucket:
    *   'listed'      – currently on sale on the Steam Community Market (NOT in the
    *                   inventory itself; sourced from the market-listings endpoint)
    *   'tradelocked' – in the inventory but held (tradeLockExpiry in the future)
    *   'tradable'    – in the inventory and freely tradable right now
+   * Persisted with the record. At read time, `tagCategories` (server.ts) re-derives the
+   * tradelocked/tradable split from the FINAL lock state (after the manual-protection
+   * overlay) for `source='gc'` records; 'listed' is sticky — it is market-sourced at
+   * refresh time and trusted from the cache (including the carry-forward when a listings
+   * fetch fails).
    */
   category?: 'listed' | 'tradelocked' | 'tradable';
   /**
