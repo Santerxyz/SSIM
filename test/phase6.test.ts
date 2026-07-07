@@ -69,6 +69,10 @@ test('shapeConfirmations: real CConfirmation shape (ISO time / Date timestamp) o
   // Unparseable time → 0 (never NaN).
   const bad = shapeConfirmations([{ id: '8', type: 3, title: 'B', time: 'garbage' }]);
   assert.equal(bad[0].timeMs, 0, 'unparseable time → 0');
+  // Raw getlist JSON tolerance: `creator_id`/`headline` (underscore) map to creator/title.
+  const rawJson = shapeConfirmations([{ id: '9', type: 2, headline: 'H', creator_id: '777', creation_time: 1 }]);
+  assert.equal(rawJson[0].creator, '777', 'raw getlist creator_id → creator');
+  assert.equal(rawJson[0].title, 'H', 'raw getlist headline → title');
   // Give-side outflow (summary[0]) surfaces alongside the receive side — the safety-critical half.
   const both = shapeConfirmations([{ id: '7', type: 2, title: 'Trade D', sending: '1 item', receiving: 'Nothing' }]);
   assert.equal(both[0].sending, '1 item', 'sending carries the give-side summary');
