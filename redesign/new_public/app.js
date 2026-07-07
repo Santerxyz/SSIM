@@ -1965,20 +1965,20 @@ function renderFolderMaster() {
   state.aggItems = agg; state._aggIndex = new Map(agg.map((i) => [i.marketHashName, i]));   // TBL-02: O(1) lookup index
   const totalSendable = agg.reduce((s, i) => s + (i.sendable || 0), 0);
 
+  // Master headers follow the masterpiece pattern (V4): icon-less title + .pill pill--brand scope
+  // badge + .btn <variant> btn-sm actions. Every id/handler hook is byte-identical to legacy.
   el.mainHeader.innerHTML = `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-folder-open text-brand"></i> ${escapeHtml(node.folder.name)}
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">Folder-Master</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">${escapeHtml(node.folder.name)}</h2>
+        <span class="pill pill--brand">Folder-Master</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1">${usernames.length} account(s) · aggregated 1:1 with the single views</p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-folder-massbuy" title="Mass Buy: max out a purchase of one item across every account in this folder"
-        class="px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
-      <button id="btn-folder-bans" title="Check every account in this folder for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-refresh-folder" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-rotate"></i><span>Refresh folder</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-folder-massbuy" title="Mass Buy: max out a purchase of one item across every account in this folder" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
+      <button id="btn-folder-bans" title="Check every account in this folder for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+      <button id="btn-refresh-folder" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh folder</span></button>
     </div>`;
   const rf = $('btn-refresh-folder');
   if (rf) rf.addEventListener('click', () => refreshFolder(usernames));
@@ -2024,11 +2024,11 @@ function renderSelectionMaster() {
   const totalSendable = agg.reduce((s, i) => s + (i.sendable || 0), 0);
 
   el.mainHeader.innerHTML = `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-layer-group text-brand"></i> Multi-Select
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">${usernames.length} account(s)</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">Multi-Select</h2>
+        <span class="pill pill--brand">${usernames.length} account(s)</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
         <span>Hand-picked accounts · aggregated 1:1 with the single views</span>
         <span class="text-slate-700">·</span>
@@ -2036,16 +2036,12 @@ function renderSelectionMaster() {
         <button id="sel-clear-all" class="text-2xs text-slate-400 hover:text-white font-semibold transition">Clear</button>
       </p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-sel-massbuy" title="Mass Buy: max out a purchase of one item across every selected account"
-        class="px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
-      <button id="btn-sel-refresh" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-rotate"></i><span>Refresh selected</span></button>
-      <button id="btn-sel-move" title="Move every selected account into a folder / environment"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-folder-tree"></i><span>Move Selected</span></button>
-      <button id="btn-sel-bans" title="Check every selected account for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-sel-delete" title="Remove every selected account from SSIM (maFiles are kept)"
-        class="px-4 py-2.5 rounded-lg bg-rose-900/40 hover:bg-rose-800/60 text-rose-300 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-trash-can"></i><span>Delete Selected</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-sel-massbuy" title="Mass Buy: max out a purchase of one item across every selected account" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
+      <button id="btn-sel-refresh" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh selected</span></button>
+      <button id="btn-sel-move" title="Move every selected account into a folder / environment" class="btn btn-secondary btn-sm"><i class="fa-solid fa-folder-tree"></i><span>Move Selected</span></button>
+      <button id="btn-sel-bans" title="Check every selected account for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+      <button id="btn-sel-delete" title="Remove every selected account from SSIM (maFiles are kept)" class="btn btn-danger btn-sm"><i class="fa-solid fa-trash-can"></i><span>Delete Selected</span></button>
     </div>`;
   $('btn-sel-refresh')?.addEventListener('click', () => refreshFolder(usernames));
   $('btn-sel-massbuy')?.addEventListener('click', () => openFolderBuy(`${usernames.length} selected account(s)`, usernames));
@@ -2795,16 +2791,15 @@ function renderEnvMaster() {
   const env = state.environments.find((e) => e.id === state.activeEnv);
   const usernames = envAccounts().map((a) => a.username);
   renderAggregate(usernames, `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-chart-pie text-brand"></i> ${escapeHtml(env?.name || 'Environment')}
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">Portfolio</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">${escapeHtml(env?.name || 'Environment')}</h2>
+        <span class="pill pill--brand">Portfolio</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1">${usernames.length} account(s) in this environment</p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-env-bans" title="Check every account in this environment for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-env-bans" title="Check every account in this environment for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
     </div>`);
   const eb = $('btn-env-bans');
   if (eb) eb.addEventListener('click', () => openBanChecker(usernames, env?.name || 'Environment'));
@@ -2814,17 +2809,16 @@ function renderGlobalMaster() {
   renderGlobalFilter();
   const usernames = state.allAccounts.filter((a) => state.globalEnvs.has(a.environmentId)).map((a) => a.username);
   renderAggregate(usernames, `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-globe text-brand"></i> Global Master
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">Cross-environment</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">Global Master</h2>
+        <span class="pill pill--brand">Cross-environment</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1">${state.globalEnvs.size} of ${state.environments.length} environments aggregated</p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-global-bans" title="Check every aggregated account for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-refresh-global" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-rotate"></i><span>Refresh all</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-global-bans" title="Check every aggregated account for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+      <button id="btn-refresh-global" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh all</span></button>
     </div>`);
   const b = $('btn-refresh-global');
   if (b) b.addEventListener('click', refreshAll);
@@ -2833,14 +2827,14 @@ function renderGlobalMaster() {
 }
 
 function renderGlobalFilter() {
+  // Aggregate-environments toggles → masterpiece .chip aria-pressed control inside a .surface strip.
+  // data-genv hook preserved verbatim; renderMain still owns #global-filter show/hide.
   el.globalFilter.innerHTML = `
-    <p class="text-2xs font-semibold uppercase tracking-wider text-slate-400">Aggregate environments</p>
-    <div class="flex flex-wrap gap-2 mt-2">${state.environments.map((e) => {
+    <div class="surface p-3 flex items-center gap-2 flex-wrap">
+      <span class="t11 text-slate-500 mr-1">Aggregate:</span>${state.environments.map((e) => {
       const on = state.globalEnvs.has(e.id);
       const count = state.allAccounts.filter((a) => a.environmentId === e.id).length;
-      return `<button data-genv="${escapeAttr(e.id)}"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium border transition ${on ? 'border-brand bg-brand/10 text-brand' : 'border-slate-700 text-slate-400 hover:bg-slate-800'}">
-        <i class="fa-solid ${on ? 'fa-square-check' : 'fa-square'} mr-1.5"></i>${escapeHtml(e.name)} <span class="text-xs opacity-70">(${count})</span></button>`;
+      return `<button data-genv="${escapeAttr(e.id)}" class="chip" aria-pressed="${on}"><i class="fa-solid ${on ? 'fa-square-check' : 'fa-square'}"></i>${escapeHtml(e.name)} <span class="font-mono opacity-70">${count}</span></button>`;
     }).join('')}</div>`;
   el.globalFilter.querySelectorAll('[data-genv]').forEach((b) => b.addEventListener('click', () => {
     const id = b.dataset.genv;

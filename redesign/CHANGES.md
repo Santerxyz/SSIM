@@ -148,3 +148,30 @@ Deliberate DECISION (design-source deviation, not an IA change):
    data-less dot — a faithful re-skin, no invented signal. Balance tri-state on `.acct-balance`
    (`known` = `!!wallet || refreshed`; value / `0,00` / `—`) is preserved verbatim (invariant 1,
    P-054); `patchSidebarBalances` still updates only that chip.
+
+---
+
+## V5 — Fleet masters (folder / selection / env / global master headers + global env-filter)  ·  2026-07-07
+
+**Net IA/flow change: NONE.** The four master `#main-header` clusters (`renderFolderMaster`,
+`renderSelectionMaster`, `renderEnvMaster`, `renderGlobalMaster`) and the global-master
+environment filter (`renderGlobalFilter`) were re-authored to the masterpiece `headerCluster`
+pattern (`design_source.html:1628-1660, 1802-1806`): an icon-less `.truncate` `<h2>` title + a
+`.pill pill--brand` scope badge (Folder-Master / N account(s) / Portfolio / Cross-environment),
+and `.btn <variant> btn-sm` actions (Mass Buy → `btn-buy`, Delete Selected → `btn-danger`, the
+rest → `btn-secondary`). `renderGlobalFilter` became a `.surface` strip of `.chip aria-pressed`
+toggles. Every `id` hook (`btn-folder-massbuy/-bans/-refresh-folder`,
+`btn-sel-massbuy/-refresh/-move/-bans/-delete`, `sel-all`/`sel-clear-all`, `btn-env-bans`,
+`btn-global-bans`/`btn-refresh-global`), the `data-genv` delegation hook, and all `addEventListener`
+wiring are byte-identical to legacy; the diff is markup-only (no fetch/state/handler/API touched).
+The stat cards, breadcrumb, toolbar and master table already carry their DS skin from the V1 shell
+and V4, so the master body reuses them unchanged.
+
+Deliberate DECISION (design-source deviation, not an IA change):
+
+1. **The decorative leading FontAwesome icon on each master title (`fa-folder-open`,
+   `fa-layer-group`, `fa-chart-pie`, `fa-globe`) was dropped.** The masterpiece `headerCluster`
+   renders master titles icon-less (`<h2>${title}</h2><span class="pill pill--brand">…`,
+   `design_source.html:1658`) — an inline title icon also fights the new `.truncate` single-line
+   `<h2>`. This is a pure form change (no hook, no data): the folder/selection/env/global scope is
+   already unambiguous from the `.pill pill--brand` badge + breadcrumb, so no information is lost.

@@ -343,15 +343,15 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-169 | `openFolderMaster(folderId)` → folder mode, resets search/sort/selection | app.js:1949–1957 | | |
-| P-170 | Aggregates every asset across folder accounts (1:1 w/ single views); tracks quantity/sendable/owners; O(1) index (`aggregateWithOwners`) | app.js:1919–1947, 1959–1964 | | |
-| P-171 | Header: folder-open icon + name + "Folder-Master" pill; "N account(s) · aggregated 1:1…" | app.js:1967–1974 | | |
-| P-172 | "Mass Buy" button (teal) → `openFolderBuy(name,usernames)` | app.js:1976–1977, 1984–1985 | 💰 | |
-| P-173 | "Check Bans" button → `openBanChecker(usernames,name)` | app.js:1978–1979, 1986–1987 | | |
-| P-174 | "Refresh folder" button → `refreshFolder(usernames)` | app.js:1980, 1982–1983 | | |
-| P-175 | Stats relabeled: Items→"Sendable items", Trade-Locked→"Bots"; value = worthCentsForAccounts; wallet = Σ walletToUsd | app.js:1989–1997 | 💰 | |
-| P-176 | Empty: "No tradable items in cache" / 'Click "Refresh folder" to load the bot inventories.' | app.js:1999–2005 | | |
-| P-177 | Renders selectable master table (`renderTable({master,selectable})`) | app.js:2006–2007 | | |
+| P-169 | `openFolderMaster(folderId)` → folder mode, resets search/sort/selection | app.js:1949–1957 | | ✅ done · app.js:1950–1958 (logic unchanged) |
+| P-170 | Aggregates every asset across folder accounts (1:1 w/ single views); tracks quantity/sendable/owners; O(1) index (`aggregateWithOwners`) | app.js:1919–1947, 1959–1964 | | ✅ done · app.js:1961–1965 (logic unchanged) |
+| P-171 | Header: name + "Folder-Master" pill; "N account(s) · aggregated 1:1…" | app.js:1967–1974 | | ✅ done · app.js:1966–1982 (icon-less title + .pill pill--brand; decorative fa dropped per masterpiece) |
+| P-172 | "Mass Buy" button → `openFolderBuy(name,usernames)` | app.js:1976–1977, 1984–1985 | 💰 | ✅ done · app.js:1977 (.btn btn-buy btn-sm; id+handler untouched) |
+| P-173 | "Check Bans" button → `openBanChecker(usernames,name)` | app.js:1978–1979, 1986–1987 | | ✅ done · app.js:1978 (.btn btn-secondary btn-sm) |
+| P-174 | "Refresh folder" button → `refreshFolder(usernames)` | app.js:1980, 1982–1983 | | ✅ done · app.js:1979 (.btn btn-secondary btn-sm; id+handler untouched) |
+| P-175 | Stats relabeled: Items→"Sendable items", Trade-Locked→"Bots"; value = worthCentsForAccounts; wallet = Σ walletToUsd | app.js:1989–1997 | 💰 | ✅ done · app.js:1990–1998 (logic unchanged; DS stat cards in shell) |
+| P-176 | Empty: "No tradable items in cache" / 'Click "Refresh folder" to load the bot inventories.' | app.js:1999–2005 | | ✅ done · app.js:2000–2006 (logic unchanged; .empty in shell) |
+| P-177 | Renders selectable master table (`renderTable({master,selectable})`) | app.js:2006–2007 | | ✅ done · app.js:2007–2008 (V4 .items-table skin) |
 
 ---
 
@@ -359,14 +359,14 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-178 | `renderSelectionMaster()`: aggregates hand-picked accounts; falls back to env-master if empty | app.js:2013–2023 | | |
-| P-179 | Header: layer-group + "Multi-Select" + "N account(s)" pill; inline "Select all" / "Clear" | app.js:2025–2037, 2054–2055 | | |
-| P-180 | "Mass Buy" → openFolderBuy(`N selected account(s)`) | app.js:2039–2040, 2050 | 💰 | |
-| P-181 | "Refresh selected" → refreshFolder | app.js:2041, 2049 | | |
-| P-182 | "Move Selected" → openMoveModal(usernames array) | app.js:2042–2043, 2051 | | |
-| P-183 | "Check Bans" → openBanChecker(usernames,`N selected`) | app.js:2044–2045, 2052 | | |
-| P-184 | "Delete Selected" (rose) → batchDeleteAccounts(usernames); maFiles kept | app.js:2046–2047, 2053 | 💰 | |
-| P-185 | Stats + empty state mirror folder-master ("Refresh selected") | app.js:2057–2075 | | |
+| P-178 | `renderSelectionMaster()`: aggregates hand-picked accounts; falls back to env-master if empty | app.js:2013–2023 | | ✅ done · app.js:2019–2023 (logic unchanged) |
+| P-179 | Header: "Multi-Select" + "N account(s)" pill; inline "Select all" / "Clear" | app.js:2025–2037, 2054–2055 | | ✅ done · app.js:2026–2037 (icon-less title + .pill pill--brand; #sel-all/#sel-clear-all preserved) |
+| P-180 | "Mass Buy" → openFolderBuy(`N selected account(s)`) | app.js:2039–2040, 2050 | 💰 | ✅ done · app.js:2040 (.btn btn-buy btn-sm; id+handler untouched) |
+| P-181 | "Refresh selected" → refreshFolder | app.js:2041, 2049 | | ✅ done · app.js:2041 (.btn btn-secondary btn-sm) |
+| P-182 | "Move Selected" → openMoveModal(usernames array) | app.js:2042–2043, 2051 | | ✅ done · app.js:2042 (.btn btn-secondary btn-sm; id+handler untouched) |
+| P-183 | "Check Bans" → openBanChecker(usernames,`N selected`) | app.js:2044–2045, 2052 | | ✅ done · app.js:2043 (.btn btn-secondary btn-sm) |
+| P-184 | "Delete Selected" → batchDeleteAccounts(usernames); maFiles kept | app.js:2046–2047, 2053 | 💰 | ✅ done · app.js:2044 (.btn btn-danger btn-sm; id+handler untouched) |
+| P-185 | Stats + empty state mirror folder-master ("Refresh selected") | app.js:2057–2075 | | ✅ done · app.js:2053–2071 (logic unchanged) |
 
 ---
 
@@ -468,17 +468,17 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-256 | Aggregate over usernames: merges stacks by marketHashName, sums items/locked-stacks/valueCents/walletUsd, counts loaded accounts | app.js:2746–2765 | | |
-| P-257 | Render aggregate header + stat bar; hides single-Refresh btn | app.js:2767–2770 | | |
-| P-258 | Stat labels TF2 vs CS2: TF2 "TF2 Items"/"TF2 Keys"; else "Items"/"Trade-Locked" | app.js:2773–2776 | | |
-| P-259 | Money stats (worth + wallet): worth summed for BOTH games; `setMoneyStats(valueCents, walletUsd)` | app.js:2777–2779 | 💰 | |
-| P-260 | Aggregate empty state: "No TF2 inventories cached"/"No inventories in cache"/"No items" + 'Click "Refresh all" to load inventories.' | app.js:2781–2788 | | |
-| P-261 | Env-Master view: title `<env name>` + "Portfolio" pill, "N account(s) in this environment" | app.js:2793–2803 | | |
-| P-262 | Env-Master "Check Bans" button: opens ban checker for env accounts | app.js:2804–2809 | | |
-| P-263 | Global-Master view: title "Global Master" + "Cross-environment" pill, "X of Y environments aggregated" | app.js:2812–2822 | | |
-| P-264 | Global-Master "Check Bans" + "Refresh all" buttons | app.js:2823–2831 | | |
-| P-265 | Global-Master environment filter (facet toggles): "Aggregate environments" chips per env with per-env account count `(N)`, checked-square icon, toggles `state.globalEnvs` and re-renders | app.js:2834–2848 | | |
-| P-266 | Placeholder ("No account selected"): stat bar/toolbar/items hidden, custom msg | app.js:2851–2856 | | |
+| P-256 | Aggregate over usernames: merges stacks by marketHashName, sums items/locked-stacks/valueCents/walletUsd, counts loaded accounts | app.js:2746–2765 | | ✅ done · app.js:2742–2761 (logic unchanged) |
+| P-257 | Render aggregate header + stat bar; hides single-Refresh btn | app.js:2767–2770 | | ✅ done · app.js:2764–2766 (logic unchanged; headerHtml re-skinned by callers) |
+| P-258 | Stat labels TF2 vs CS2: TF2 "TF2 Items"/"TF2 Keys"; else "Items"/"Trade-Locked" | app.js:2773–2776 | | ✅ done · app.js:2769–2772 (logic unchanged) |
+| P-259 | Money stats (worth + wallet): worth summed for BOTH games; `setMoneyStats(valueCents, walletUsd)` | app.js:2777–2779 | 💰 | ✅ done · app.js:2773–2775 (logic unchanged) |
+| P-260 | Aggregate empty state: "No TF2 inventories cached"/"No inventories in cache"/"No items" + 'Click "Refresh all" to load inventories.' | app.js:2781–2788 | | ✅ done · app.js:2777–2784 (logic unchanged; .empty in shell) |
+| P-261 | Env-Master view: title `<env name>` + "Portfolio" pill, "N account(s) in this environment" | app.js:2793–2803 | | ✅ done · app.js:2793–2802 (icon-less title + .pill pill--brand) |
+| P-262 | Env-Master "Check Bans" button: opens ban checker for env accounts | app.js:2804–2809 | | ✅ done · app.js:2803–2808 (.btn btn-secondary btn-sm; #btn-env-bans+handler untouched) |
+| P-263 | Global-Master view: title "Global Master" + "Cross-environment" pill, "X of Y environments aggregated" | app.js:2812–2822 | | ✅ done · app.js:2812–2821 (icon-less title + .pill pill--brand) |
+| P-264 | Global-Master "Check Bans" + "Refresh all" buttons | app.js:2823–2831 | | ✅ done · app.js:2822–2830 (.btn btn-secondary btn-sm; #btn-global-bans/#btn-refresh-global+handlers untouched) |
+| P-265 | Global-Master environment filter (facet toggles): per-env chips with account count, checked-square icon, toggles `state.globalEnvs` and re-renders | app.js:2834–2848 | | ✅ done · app.js:2829–2841 (.surface strip + .chip aria-pressed; data-genv+handler untouched) |
+| P-266 | Placeholder ("No account selected"): stat bar/toolbar/items hidden, custom msg | app.js:2851–2856 | | ✅ done · app.js:2845–2850 (logic unchanged) |
 
 ---
 
