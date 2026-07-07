@@ -332,6 +332,8 @@ export class AccountVaultImpl {
    * PROVES the current payload is persisted + decryptable from disk: re-reads vault.enc and
    * decrypts it with the in-memory key. Used as a hard gate before deleting any plaintext
    * secret source (B21) — we never remove the last copy of a secret on an unverified vault.
+   * Callers must flush() first — this proves *a* payload decrypts with the current key, and
+   * equals the current payload only after a flush.
    */
   verifyDiskRoundTrip(): boolean {
     if (!this.key) return false;
@@ -341,7 +343,8 @@ export class AccountVaultImpl {
       const decipher = crypto.createDecipheriv('aes-256-gcm', this.key, Buffer.from(env.iv, 'base64'));
       decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
       const plain = Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
-      return !!JSON.parse(plain) && typeof JSON.parse(plain) === 'object';
+      const parsed: unknown = JSON.parse(plain);
+      return !!parsed && typeof parsed === 'object';
     } catch { return false; }
   }
 
