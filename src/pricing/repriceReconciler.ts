@@ -52,13 +52,6 @@ export interface RepriceDecision {
   state: RepriceState;
 }
 
-/**
- * One reconciler step. Given the current state and a fresh /api/pricing/status snapshot:
- *   • if `fetched` advanced → record progress, and re-pull if ≥ minRepullMs since the last one (S10 coalescing);
- *   • if the queue is drained (not running, nothing queued) → do a final re-pull and stop;
- *   • else if no progress for NO_PROGRESS_TIMEOUT_MS → stop (wedged backend safety).
- * Pure: same inputs → same decision; the caller owns the timing loop.
- */
 /** Visible state of the "Fetching prices… (N left / X done)" dashboard indicator. */
 export interface PriceFillIndicator {
   /** Show the indicator (a fill is running or names are still queued); hide once drained. */
@@ -102,6 +95,13 @@ export function priceFillIndicator(status: PricingStatus | null | undefined): Pr
   return { show, left, done, eta: formatFillEta(left), long: left > 200 };
 }
 
+/**
+ * One reconciler step. Given the current state and a fresh /api/pricing/status snapshot:
+ *   • if `fetched` advanced → record progress, and re-pull if ≥ minRepullMs since the last one (S10 coalescing);
+ *   • if the queue is drained (not running, nothing queued) → do a final re-pull and stop;
+ *   • else if no progress for NO_PROGRESS_TIMEOUT_MS → stop (wedged backend safety).
+ * Pure: same inputs → same decision; the caller owns the timing loop.
+ */
 export function repriceDecision(state: RepriceState, status: PricingStatus | null | undefined, now: number, minRepullMs: number = MIN_REPULL_MS): RepriceDecision {
   const fetched = Number(status?.fetched) || 0;
   const processed = Number(status?.processed) || 0;
