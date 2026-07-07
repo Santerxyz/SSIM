@@ -7,8 +7,10 @@
 //   • INV-A2 (C8): a token-only (LIMITED, no maFile) account's refresh token is its
 //     SOLE credential. Deleting it on an 'auth' verdict would strand the account, so
 //     it is preserved and the account is surfaced as needing re-import.
-//  Pure (no imports) so the policy is unit-testable in isolation.
+//  Pure (no runtime imports; type-only import is erased) so the policy is unit-testable in isolation.
 // ════════════════════════════════════════════════════════════════════════════
+
+import type { AccountTier } from '../types/account';
 
 export interface CanConfirmInput {
   /**
@@ -19,7 +21,7 @@ export interface CanConfirmInput {
    */
   identitySecret: 'present' | 'absent' | 'unknown';
   /** Legacy/plaintext fallback: the stored tier label (used ONLY when the real signal is unreadable). */
-  tier?: string;
+  tier?: AccountTier;
 }
 
 /**
