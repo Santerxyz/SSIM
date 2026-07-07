@@ -113,6 +113,11 @@ export class CsFloatService {
   setAutoAccept(u: string, on: boolean): boolean { return AppSettings.setAutoAccept(u, on); }
 
   // ── F3: a client for app-wide pricing, using ANY account that has a key ──────
+  /** Side-effect-free probe: true when at least one account has a CSFloat key, so the
+   *  pricing source can serve. Unlike pricingClient() this neither builds/caches nor
+   *  disposes an agent — usernamesWithKeys() is a pure vault/file read (CsFloatKeyStore). */
+  hasAnyKey(): boolean { return this.keys.usernamesWithKeys().length > 0; }
+
   pricingClient(): CsFloatClient | null {
     const candidates = this.keys.usernamesWithKeys().sort(); // stable: first account (lexical) with a key
     if (candidates.length === 0) { this.disposePricing(); return null; }

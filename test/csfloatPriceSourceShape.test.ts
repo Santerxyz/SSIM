@@ -55,3 +55,16 @@ test('S2/S13: no client at dequeue (key cleared mid-fill) THROWS for a CS2 name,
   // the appid gate is authoritative and runs before the client check — TF2 still resolves null
   assert.equal(await noClient.fetchPriceCents('Mann Co. Supply Crate Key', 440), null);
 });
+
+test('available() reflects hasAnyKey() as a side-effect-free probe (never builds a client)', () => {
+  // available() must consult the pure hasAnyKey() predicate, NOT the client factory
+  // pricingClient() — so probing on the hot path allocates/disposes no agent (H-PRC-022).
+  let pricingClientCalls = 0;
+  const factory = (hasKey: boolean) => new CsFloatPriceSource({
+    hasAnyKey: () => hasKey,
+    pricingClient: () => { pricingClientCalls++; return {}; },
+  } as any);
+  assert.equal(factory(true).available(), true);
+  assert.equal(factory(false).available(), false);
+  assert.equal(pricingClientCalls, 0);
+});

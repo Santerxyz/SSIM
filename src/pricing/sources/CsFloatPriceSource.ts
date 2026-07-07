@@ -16,8 +16,9 @@ export class CsFloatPriceSource implements PriceSource {
 
   constructor(private readonly csfloat: CsFloatService) {}
 
-  /** True when at least one account has a CSFloat key (so this source can fetch). */
-  available(): boolean { return !!this.csfloat.pricingClient(); }
+  /** True when at least one account has a CSFloat key (so this source can fetch).
+   *  Uses the side-effect-free hasAnyKey() probe, not the client factory pricingClient(). */
+  available(): boolean { return this.csfloat.hasAnyKey(); }
 
   async fetchPriceCents(name: string, appid: number): Promise<number | null> {
     if (appid !== APPID_CS2) return null;             // CSFloat covers CS2 only
