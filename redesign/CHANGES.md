@@ -815,3 +815,29 @@ Deliberate DECISIONS (reviewer awareness):
    brand accent (#9333ea), so this is already on-theme; `.bulk-check` + `#bulk-select-all` are the
    load-bearing selection hooks (`selectedBulkFiles`/`onBulkSelectAll` read them), so the accent was
    left as the cosmetic on-brand default (mirrors V17 decision 4).
+
+## V19 — Settings surfaces + brand logo
+
+V19 is the redesign's final Phase-3 view. There is **no dedicated "settings" modal** — the
+settings surfaces are distributed across views finished earlier, so V19 was a verification +
+brand + residual-cleanup pass (zero handler logic touched):
+
+- **Settings scope (distributed, re-verified DS):** rotating/global proxy + format hint + geo
+  proxy-test output live in the **env modal + env tiles** and the per-account **edit-account
+  proxy override** (both V17); CSFloat API keys live in the **CSFloat settings tab** key form
+  (V16); the vault **master-password** field lives in the **bulk-import** modal (V18); the
+  master-password *entry* portals are **unlock.html / license.html**. All confirmed already on
+  the design system (`.field` / `.field-label` / `.btn` / `.pill`) — nothing re-skinned.
+- **Brand logo (operator invariant 8):** wired `image-Photoroom.png` (new 236×218 asset copied
+  from repo root into `assets/`) as the app logo, replacing the dead `logo.png` across all four
+  logo marks — `index.html` (apple-touch-icon + sidebar brand `<img>`), `splash.html`,
+  `unlock.html`, `license.html`. Each ref kept its existing path prefix (`/assets/` or
+  `assets/`); the splash code-comment naming the old file was updated for accuracy. `logo.png`
+  remains in `assets/` but is no longer referenced (see OWNER_NOTES).
+- **3 residual legacy buttons re-skinned (class-only, markup):** `#sda-conf-retry` (SDA
+  confirmations error branch) and the two `data-csf-tab` dashboard quick-buttons ("Browse
+  market" / "My listings" in `csfLoadDashboard`) → `.btn btn-secondary btn-sm`. Only the
+  `class` attribute changed; every id / `data-*` / label / handler wiring is byte-identical.
+
+Gate: `node --check` clean; `index.html` div-balanced (250/250); 0 remaining `logo.png` image
+refs in the four files (only `assets/logos/` steam/csfloat source logos remain, untouched).

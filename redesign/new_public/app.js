@@ -4126,7 +4126,7 @@ async function refreshSdaConfirmations() {
   } catch (e) {
     if (!SDA.open || SDA.username !== username) return;
     const msg = escapeHtml(e.message || 'failed to load confirmations');
-    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-rose-300 text-sm"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}<div class="mt-3"><button id="sda-conf-retry" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold">Refresh</button></div></div>`;
+    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-rose-300 text-sm"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}<div class="mt-3"><button id="sda-conf-retry" class="btn btn-secondary btn-sm">Refresh</button></div></div>`;
     const r = $('sda-conf-retry'); if (r) r.addEventListener('click', refreshSdaConfirmations);
   }
 }
@@ -4231,8 +4231,8 @@ async function csfLoadDashboard() {
         ${csfStat('Account', escapeHtml(String(name)), 'fa-user', 'text-slate-300')}
       </div>
       <div class="flex gap-2">
-        <button data-csf-tab="market" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold"><i class="fa-solid fa-store mr-1.5"></i>Browse market</button>
-        <button data-csf-tab="listings" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold"><i class="fa-solid fa-tags mr-1.5"></i>My listings</button>
+        <button data-csf-tab="market" class="btn btn-secondary btn-sm"><i class="fa-solid fa-store mr-1.5"></i>Browse market</button>
+        <button data-csf-tab="listings" class="btn btn-secondary btn-sm"><i class="fa-solid fa-tags mr-1.5"></i>My listings</button>
       </div>`;
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
 }
