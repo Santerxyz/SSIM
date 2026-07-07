@@ -297,8 +297,6 @@ export class InventoryService {
   protected pause(ms: number): Promise<void> { return sleep(ms); }
 
   private async doRefreshOneViaGc(username: string): Promise<AccountInventory> {
-    const account = this.accounts.get(username);
-    if (!account) throw new Error(`Account "${username}" not found`);
     const session = await this.ensureSession(username);
 
     const steamId = String(session.steamId ?? '');
@@ -594,8 +592,6 @@ export class InventoryService {
   }
 
   private async doRefreshOne(username: string, game: GameId): Promise<AccountInventory> {
-    const account = this.accounts.get(username);
-    if (!account) throw new Error(`Account "${username}" not found`);
     const session = await this.ensureSession(username);
 
     // Fetch + parse + stack, with a retry layer for TRANSIENT failures (429 /
