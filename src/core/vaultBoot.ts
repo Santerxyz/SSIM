@@ -233,7 +233,17 @@ export async function unlockVault(): Promise<void> {
       const confirm = normalizeMasterPassword(await maskedQuestion('Confirm the Master Password: '));
       // eslint-disable-next-line no-console
       if (pw !== confirm) { console.error('  The passwords do not match — try again.\n'); continue; }
-      AccountVault.unlockOrCreate(pw);
+      try {
+        AccountVault.unlockOrCreate(pw);
+      } catch (e) {
+        // H-ACC-027: a create-time throw (writeJsonAtomic rethrows EPERM/EBUSY/disk-full when
+        // writing vault.enc into an AV-locked or read-only Vault/ dir) must be classified here,
+        // not left to escape into the bootstrap catch that paints "License check failed." —
+        // the license gate already passed. Mirrors the unlock loop's local catch below.
+        // eslint-disable-next-line no-console
+        console.error(`  Vault creation failed: ${(e as Error).message}`);
+        process.exit(1);
+      }
       // eslint-disable-next-line no-console
       console.log('  Vault created. KEEP THIS PASSWORD SAFE — there is no recovery.\n');
       return;
