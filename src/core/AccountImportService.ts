@@ -55,6 +55,7 @@ interface ImportSession {
   username?:       string;
   steamId?:        string;
   isUpdate?:       boolean;     // true when the account already existed (token refreshed)
+  environmentMismatch?: boolean; // true when re-import picked an env ≠ the account's current one (not moved)
 }
 
 /** Public, secret-free snapshot of an import session for the status endpoint. */
@@ -70,6 +71,7 @@ export interface ImportStatus {
   username?:    string;
   steamId?:     string;
   isUpdate?:    boolean;
+  environmentMismatch?: boolean;
 }
 
 export class AccountImportService {
@@ -275,6 +277,12 @@ export class AccountImportService {
       });
     }
     rec.isUpdate = !!existing;
+    // Re-import into a DIFFERENT env mints the token via the picked env's IP but leaves the account
+    // in its original env (we never move it silently). Flag the mismatch so the outcome is honest.
+    if (existing && existing.environmentId !== rec.environmentId) {
+      rec.environmentMismatch = true;
+      logger.warn(`[import ${rec.id.slice(0, 8)}] token for "${username}" minted via env ${rec.environmentId} but account operates in env ${existing.environmentId}`);
+    }
 
     // 3) Cache the permanent SteamID (validated/ignored if not a real SteamID64).
     if (steamId) this.accounts.rememberSteamId(username, steamId);
@@ -332,6 +340,7 @@ export class AccountImportService {
       sessionId: rec.id, method: rec.method, state: rec.state, expiresAt: rec.expiresAt,
       qrDataUrl: rec.qrDataUrl, guardType: rec.guardType, guardDetail: rec.guardDetail,
       error: rec.error, username: rec.username, steamId: rec.steamId, isUpdate: rec.isUpdate,
+      environmentMismatch: rec.environmentMismatch,
     };
   }
 }
