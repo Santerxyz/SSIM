@@ -993,6 +993,32 @@ export class AccountTrader {
   }
 
   /**
+   * The single source of truth for this account's pending mobile-confirmation
+   * list. Signs the getlist call with identity_secret + Steam server time and
+   * resolves { off, confs } — the offset is handed back so each caller signs its
+   * own accept/respond against the SAME server-time base. Rejects only when
+   * getConfirmations itself errors. Callers apply their own identity_secret guard
+   * before invoking; one list protocol, no sibling drift.
+   */
+  private fetchConfirmationList(): Promise<{ off: number; confs: any[] }> {
+    const identitySecret = this.session.maFile?.identity_secret ?? '';
+    const community = this.community as unknown as {
+      getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
+    };
+    return new Promise<{ off: number; confs: any[] }>((resolve, reject) => {
+      SteamTotp.getTimeOffset((offErr, offset) => {
+        const off = offErr ? 0 : offset;
+        const time = SteamTotp.time(off);
+        const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
+        community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
+          if (err) { reject(err); return; }
+          resolve({ off, confs: confs ?? [] });
+        });
+      });
+    });
+  }
+
+  /**
    * Accepts the pending mobile confirmation for a freshly-created buy order and
    * returns its `creator` (= the Steam buy_orderid). Matches the createbuyorder
    * confirmation_id against BOTH conf.id AND conf.creator (Steam maps it to the
@@ -1001,40 +1027,29 @@ export class AccountTrader {
    * getConfirmations + respond(allow) sign the getlist/ajaxop calls via
    * identity_secret. Returns undefined when no matching confirmation is found.
    */
-  private acceptBuyConfirmation(confirmationId: string): Promise<string | undefined> {
+  private async acceptBuyConfirmation(confirmationId: string): Promise<string | undefined> {
     const identitySecret = this.session.maFile?.identity_secret;
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot confirm buy order`));
     }
-    const community = this.community as unknown as {
-      getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
-    };
+    const { off, confs: list } = await this.fetchConfirmationList();
+    // DIAGNOSTIC: log exactly what Steam returned so we can SEE whether the
+    // confirmation is present and which field carries the createbuyorder id.
+    logger.info(`[${this.username}] mobileconf getlist → ${list.length} pending: ` +
+      (list.map((c) => `{id=${c?.id} creator=${c?.creator} type=${c?.type}}`).join(', ') || '(none)'));
+    // Steam maps createbuyorder's confirmation_id to the confirmation's
+    // CREATOR (the buy_orderid) — NOT always its id. Match BOTH. Still strict
+    // to THIS id (no "newest" fallback), so a sell-listing conf is never grabbed.
+    const conf = list.find((c) =>
+      String(c?.id) === String(confirmationId) || String(c?.creator) === String(confirmationId));
+    if (!conf) return undefined;
+    const creator = conf.creator != null ? String(conf.creator) : undefined;
+    logger.info(`[${this.username}] matched buy confirmation id=${conf.id} creator=${creator} – accepting…`);
     return new Promise<string | undefined>((resolve, reject) => {
-      SteamTotp.getTimeOffset((offErr, offset) => {
-        const off = offErr ? 0 : offset;
-        const time = SteamTotp.time(off);
-        const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
-        community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
-          if (err) { reject(err); return; }
-          const list = confs ?? [];
-          // DIAGNOSTIC: log exactly what Steam returned so we can SEE whether the
-          // confirmation is present and which field carries the createbuyorder id.
-          logger.info(`[${this.username}] mobileconf getlist → ${list.length} pending: ` +
-            (list.map((c) => `{id=${c?.id} creator=${c?.creator} type=${c?.type}}`).join(', ') || '(none)'));
-          // Steam maps createbuyorder's confirmation_id to the confirmation's
-          // CREATOR (the buy_orderid) — NOT always its id. Match BOTH. Still strict
-          // to THIS id (no "newest" fallback), so a sell-listing conf is never grabbed.
-          const conf = list.find((c) =>
-            String(c?.id) === String(confirmationId) || String(c?.creator) === String(confirmationId));
-          if (!conf) { resolve(undefined); return; }
-          const creator = conf.creator != null ? String(conf.creator) : undefined;
-          logger.info(`[${this.username}] matched buy confirmation id=${conf.id} creator=${creator} – accepting…`);
-          const t = SteamTotp.time(off) + 1;
-          const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
-          conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) =>
-            rErr ? reject(rErr) : resolve(creator));
-        });
-      });
+      const t = SteamTotp.time(off) + 1;
+      const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
+      conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) =>
+        rErr ? reject(rErr) : resolve(creator));
     });
   }
 
@@ -1079,51 +1094,40 @@ export class AccountTrader {
    * retry accumulates honestly); only a getConfirmations failure — where nothing was
    * counted — rejects.
    */
-  confirmMarketListings(): Promise<{ confirmed: number; error?: Error }> {
+  async confirmMarketListings(): Promise<{ confirmed: number; error?: Error }> {
     const identitySecret = this.session.maFile?.identity_secret;
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot confirm market listings`));
     }
-    const community = this.community as unknown as {
-      getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
-    };
+    const { off, confs } = await this.fetchConfirmationList();
+    const listings = confs.filter(c => c?.type === CONF_TYPE_MARKET_LISTING);
+    if (listings.length === 0) return { confirmed: 0 };
 
-    return new Promise<{ confirmed: number; error?: Error }>((resolve, reject) => {
-      SteamTotp.getTimeOffset((offErr, offset) => {
-        const off = offErr ? 0 : offset;
-        const time = SteamTotp.time(off);
-        const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
-        community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
-          if (err) { reject(err); return; }
-          const listings = (confs ?? []).filter(c => c?.type === CONF_TYPE_MARKET_LISTING);
-          if (listings.length === 0) { resolve({ confirmed: 0 }); return; }
-
-          let idx = 0, confirmed = 0;
-          let firstErr: Error | null = null;
-          let prevT = 0;
-          const next = (): void => {
-            if (idx >= listings.length) {
-              // A mid-pass respond failure still resolves with the count confirmed
-              // before it, so confirmWithRetry accumulates across attempts.
-              resolve(firstErr ? { confirmed, error: firstErr } : { confirmed });
-              return;
-            }
-            const conf = listings[idx++];
-            // Monotonic-fresh time: strictly unique AND increasing per accept, but
-            // bounded to ≤1s beyond real server time for any batch size — a fresh
-            // base plus a running index would sign the Nth accept N seconds in the
-            // future, risking rejection once outside Steam's tolerance at 200-500 listings.
-            const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;
-            const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
-            conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) => {
-              if (rErr) { if (!firstErr) firstErr = rErr; }
-              else confirmed++;
-              next();
-            });
-          };
+    return new Promise<{ confirmed: number; error?: Error }>((resolve) => {
+      let idx = 0, confirmed = 0;
+      let firstErr: Error | null = null;
+      let prevT = 0;
+      const next = (): void => {
+        if (idx >= listings.length) {
+          // A mid-pass respond failure still resolves with the count confirmed
+          // before it, so confirmWithRetry accumulates across attempts.
+          resolve(firstErr ? { confirmed, error: firstErr } : { confirmed });
+          return;
+        }
+        const conf = listings[idx++];
+        // Monotonic-fresh time: strictly unique AND increasing per accept, but
+        // bounded to ≤1s beyond real server time for any batch size — a fresh
+        // base plus a running index would sign the Nth accept N seconds in the
+        // future, risking rejection once outside Steam's tolerance at 200-500 listings.
+        const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;
+        const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
+        conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) => {
+          if (rErr) { if (!firstErr) firstErr = rErr; }
+          else confirmed++;
           next();
         });
-      });
+      };
+      next();
     });
   }
 
@@ -1133,25 +1137,13 @@ export class AccountTrader {
    * {tag:'list', key}) keyed off identity_secret + Steam server time, then shapes the
    * result (dedup/order). One source of truth, no new parser. (Phase-6 Feature B.)
    */
-  listConfirmations(): Promise<ConfirmationView[]> {
+  async listConfirmations(): Promise<ConfirmationView[]> {
     const identitySecret = this.session.maFile?.identity_secret;
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret in the maFile – cannot list confirmations`));
     }
-    const community = this.community as unknown as {
-      getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
-    };
-    return new Promise<ConfirmationView[]>((resolve, reject) => {
-      SteamTotp.getTimeOffset((offErr, offset) => {
-        const off = offErr ? 0 : offset;
-        const time = SteamTotp.time(off);
-        const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
-        community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
-          if (err) { reject(err); return; }
-          resolve(shapeConfirmations(confs));
-        });
-      });
-    });
+    const { confs } = await this.fetchConfirmationList();
+    return shapeConfirmations(confs);
   }
 
   /**
@@ -1160,43 +1152,33 @@ export class AccountTrader {
    * the SAME accept primitive confirmMarketListings uses. `all=true` actions every pending
    * confirmation. Returns counts so the caller can refresh from truth. (Feature B.)
    */
-  respondToConfirmations(ids: string[], accept: boolean, all = false): Promise<{ done: number; failed: string[] }> {
+  async respondToConfirmations(ids: string[], accept: boolean, all = false): Promise<{ done: number; failed: string[] }> {
     const identitySecret = this.session.maFile?.identity_secret;
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot respond to confirmations`));
     }
-    const community = this.community as unknown as {
-      getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
-    };
     const wanted = new Set(ids.map(String));
-    return new Promise((resolve, reject) => {
-      SteamTotp.getTimeOffset((offErr, offset) => {
-        const off = offErr ? 0 : offset;
-        const time = SteamTotp.time(off);
-        const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
-        community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {
-          if (err) { reject(err); return; }
-          const targets = (confs ?? []).filter((c: any) => all || wanted.has(String(c?.id)));
-          if (targets.length === 0) { resolve({ done: 0, failed: [] }); return; }
-          const tag = accept ? 'accept' : 'reject';
-          let idx = 0, done = 0; const failed: string[] = [];
-          let prevT = 0;
-          const next = (): void => {
-            if (idx >= targets.length) { resolve({ done, failed }); return; }
-            const conf = targets[idx++];
-            // Monotonic-fresh time: unique + increasing per response, bounded to ≤1s
-            // beyond real time (a fresh base + running index would sign the tail of an
-            // "action all" batch far in the future and risk key rejection at scale).
-            const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;   // unique time per response
-            const key = SteamTotp.getConfirmationKey(identitySecret, t, tag);
-            conf.respond(t, { tag, key }, accept, (rErr: Error | null) => {
-              if (rErr) failed.push(String(conf?.id)); else done++;
-              next();
-            });
-          };
+    const { off, confs } = await this.fetchConfirmationList();
+    const targets = confs.filter((c: any) => all || wanted.has(String(c?.id)));
+    if (targets.length === 0) return { done: 0, failed: [] };
+    const tag = accept ? 'accept' : 'reject';
+    return new Promise<{ done: number; failed: string[] }>((resolve) => {
+      let idx = 0, done = 0; const failed: string[] = [];
+      let prevT = 0;
+      const next = (): void => {
+        if (idx >= targets.length) { resolve({ done, failed }); return; }
+        const conf = targets[idx++];
+        // Monotonic-fresh time: unique + increasing per response, bounded to ≤1s
+        // beyond real time (a fresh base + running index would sign the tail of an
+        // "action all" batch far in the future and risk key rejection at scale).
+        const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;   // unique time per response
+        const key = SteamTotp.getConfirmationKey(identitySecret, t, tag);
+        conf.respond(t, { tag, key }, accept, (rErr: Error | null) => {
+          if (rErr) failed.push(String(conf?.id)); else done++;
           next();
         });
-      });
+      };
+      next();
     });
   }
 
