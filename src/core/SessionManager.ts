@@ -551,7 +551,7 @@ export class SessionManager extends EventEmitter {
     }
 
     this.sessions.set(key, session);
-    this.transition(session, SessionState.DISCONNECTED, SessionState.CONNECTING);
+    session.state = SessionState.CONNECTING;
 
     return new Promise<ManagedSession>((resolve, reject) => {
       let loginTimeoutHandle:      NodeJS.Timeout;
@@ -636,7 +636,6 @@ export class SessionManager extends EventEmitter {
 
         logger.info(`[${account.username}] Logged in  SteamID=${session.steamId}  via ${network.type}:${network.type === 'proxy' ? redactProxyCredentials(network.value) : network.value}  – awaiting web session…`);
 
-        this.transition(session, SessionState.LOGGING_IN, SessionState.LOGGED_IN);
         this.emit('loggedIn', account.username, session.steamId ?? '');
 
         // Request web cookies (fires 'webSession' shortly after)
@@ -688,9 +687,8 @@ export class SessionManager extends EventEmitter {
       client.on('error', (err: Error & { eresult?: number }) => {
         logger.error(`[${account.username}] Steam error  EResult=${err.eresult ?? '?'}  msg=${err.message}`);
         if (!settled) { fail(err); return; }
-        const prev = session.state;
         session.lastError = err.message;
-        this.transition(session, prev, SessionState.ERROR);
+        session.state = SessionState.ERROR;
         this.emit('disconnected', account.username, `fatal: ${err.message}`);
         // B43: a post-settle fatal (e.g. LoggedInElsewhere) previously left the session RESIDENT
         // in ERROR state — its TradeOfferManager kept polling every 20s on now-dead cookies
@@ -706,11 +704,9 @@ export class SessionManager extends EventEmitter {
 
       // ── disconnected ───────────────────────────────────────────────────
       client.on('disconnected', (eresult: number, msg?: string) => {
-        const prev = session.state;
         session.state = SessionState.DISCONNECTED;
         const reason = msg ?? `EResult ${eresult}`;
         logger.warn(`[${account.username}] Disconnected  reason="${reason}"`);
-        this.transition(session, prev, SessionState.DISCONNECTED);
         this.emit('disconnected', account.username, reason);
         // S11: a post-settle CM drop (proxy blip → 'disconnected', no 'error'; autoRelogin:false) used to
         // leave the session RESIDENT in DISCONNECTED — counted against MAX_LIVE_SESSIONS, holding its proxy
@@ -888,11 +884,6 @@ export class SessionManager extends EventEmitter {
     // their 5s pollers) listen for this to shut those down – no zombie pollers.
     this.emit('sessionDestroyed', existing.account.username);
     logger.info(`Session destroyed: ${existing.account.username}`);
-  }
-
-  private transition(session: ManagedSession, prev: SessionState, next: SessionState): void {
-    session.state = next;
-    this.emit('stateChange', session.account.username, prev, next);
   }
 
   // ── Web-session maintenance ──────────────────────────────────────────────────

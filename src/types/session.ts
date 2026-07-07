@@ -61,7 +61,6 @@ export interface ManagedSession {
 // ─── Typed EventEmitter surface ────────────────────────────────────────────────
 
 export interface SessionManagerEvents {
-  stateChange:      (username: string, prev: SessionState, next: SessionState) => void;
   loggedIn:         (username: string, steamId: string) => void;
   webSession:       (username: string, session: WebSession) => void;
   error:            (username: string, err: Error) => void;
