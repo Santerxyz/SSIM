@@ -196,7 +196,7 @@ export class InventoryManager {
     // the persisted inventory is PARTIAL, not authoritative — surface it LOUDLY (#12).
     // totalCount is also a Steam estimate, so a small shortfall without a cap hit is benign.
     if (hitPageCap) {
-      logger.error(`[${username}] inventory TRUNCATED at the ${MAX_INVENTORY_PAGES}-page cap (${assets.length} assets, total≈${totalCount}) – result is PARTIAL; trust the GC inventory for this account`);
+      logger.error(`[${username}] inventory TRUNCATED at the ${MAX_INVENTORY_PAGES}-page cap (${assets.length} assets, total≈${totalCount}) – result is PARTIAL (truncated flag set; the cache guard keeps the fuller record — C12)`);
     } else if (assets.length < totalCount) {
       logger.warn(`[${username}] inventory pagination incomplete: ${assets.length}/${totalCount} assets fetched`);
     }
