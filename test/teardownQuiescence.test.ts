@@ -19,7 +19,6 @@ function fakeSession(client: EventEmitter & { logOff: () => void }): Record<stri
     client,
     httpsAgent: {},
     state: SessionState.LOGGED_IN,
-    loginAttempts: 0,
   };
 }
 

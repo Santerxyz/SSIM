@@ -481,7 +481,6 @@ export class SessionManager extends EventEmitter {
       httpsAgent,
       maFile,
       state:         SessionState.CONNECTING,
-      loginAttempts: 0,
       lastActivityAt: new Date(), // a fresh login counts as activity (reaper grace)
     };
 
@@ -598,7 +597,6 @@ export class SessionManager extends EventEmitter {
         session.state     = SessionState.LOGGED_IN;
         session.steamId   = client.steamID?.getSteamID64() ?? undefined;
         session.loggedInAt = new Date();
-        session.loginAttempts++;
 
         logger.info(`[${account.username}] Logged in  SteamID=${session.steamId}  via ${network.type}:${network.type === 'proxy' ? redactProxyCredentials(network.value) : network.value}  – awaiting web session…`);
 

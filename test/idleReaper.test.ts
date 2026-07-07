@@ -11,7 +11,7 @@ function put(sm: SessionManager, username: string, ageMinutes: number, state = S
   const client = { logOff() { /* noop */ }, on() { /* noop */ }, removeAllListeners() { /* noop */ } };
   const now = Date.now();
   (sm as unknown as { sessions: Map<string, unknown> }).sessions.set(username.toLowerCase(), {
-    account: { username }, client, httpsAgent: {}, state, loginAttempts: 1,
+    account: { username }, client, httpsAgent: {}, state,
     lastActivityAt: new Date(now - ageMinutes * 60_000),
   });
 }
@@ -94,7 +94,7 @@ test('S11: LOGGING_IN is still never reaped (the DISCONNECTED/ERROR addition did
 function rawSession(username: string, ageMinutes: number, state = SessionState.LOGGED_IN) {
   const client = { logOff() { /* noop */ }, on() { /* noop */ }, removeAllListeners() { /* noop */ } };
   return {
-    account: { username }, client, httpsAgent: {}, state, loginAttempts: 1,
+    account: { username }, client, httpsAgent: {}, state,
     lastActivityAt: new Date(Date.now() - ageMinutes * 60_000),
   };
 }

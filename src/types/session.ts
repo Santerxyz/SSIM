@@ -38,9 +38,7 @@ export interface ManagedSession {
   webSession?:   WebSession;
   /** Steam wallet balance, captured from the client's 'wallet' event on login. */
   wallet?:       { hasWallet: boolean; currency: number; balance: number };
-  loginAttempts: number;
   lastError?:    string;
-  connectedAt?:  Date;
   loggedInAt?:   Date;
   /** Last time a GENUINE operation used this session (markUsed). Drives the idle-session
    *  reaper (B40): a session untouched for the TTL is logged out to free the resident slot.
