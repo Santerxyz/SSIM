@@ -890,38 +890,35 @@
   <div id="modal-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-user-plus text-brand mr-2"></i>Add account</h3>
-        <button id="modal-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-user-plus text-brand mr-2"></i>Add account</h3>
+        <button id="modal-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="add-form" class="px-6 py-5 space-y-4">
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Environment</label>
-          <select name="environmentId" id="add-env"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Environment</label>
+          <select name="environmentId" id="add-env" class="field"></select>
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Username</label>
-          <input name="username" required class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Steam Username</label>
+          <input name="username" required class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Password</label>
-          <input name="password" type="password" required class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Password</label>
+          <input name="password" type="password" required class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">maFile path</label>
-          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">maFile path</label>
+          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile" class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">
+          <label class="field-label">
             Proxy override <span class="text-slate-600 font-normal">(optional – empty = environment proxy)</span>
           </label>
-          <input name="proxy" placeholder="http://user:pass@host:3128"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <input name="proxy" placeholder="http://user:pass@host:3128" class="field" />
         </div>
         <div class="flex gap-3 pt-2">
-          <button type="button" id="modal-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="modal-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="modal-submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span>Add</span>
           </button>
         </div>
@@ -933,56 +930,55 @@
   <div id="login-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-right-to-bracket text-brand mr-2"></i>Account Login</h3>
-        <button id="login-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-right-to-bracket text-brand mr-2"></i>Account Login</h3>
+        <button id="login-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <div class="px-6 py-5 space-y-4">
         <!-- Environment is shared by both methods: it sets the proxy the token is minted on. -->
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Environment</label>
-          <select id="login-env"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Environment</label>
+          <select id="login-env" class="field"></select>
         </div>
-        <!-- Method tabs -->
+        <!-- Method tabs (JS-driven toggle via switchLoginTab — kept byte-identical) -->
         <div class="flex rounded-lg overflow-hidden border border-slate-700">
           <button type="button" data-login-tab="qr" class="login-tab flex-1 px-3 py-2 text-sm font-bold transition inline-flex items-center justify-center gap-2"><i class="fa-solid fa-qrcode"></i><span>QR code</span></button>
           <button type="button" data-login-tab="credentials" class="login-tab flex-1 px-3 py-2 text-sm font-bold transition inline-flex items-center justify-center gap-2"><i class="fa-solid fa-keyboard"></i><span>Credentials</span></button>
         </div>
         <!-- QR pane -->
         <div id="login-pane-qr" class="space-y-3">
-          <div class="rounded-xl bg-white p-3 mx-auto w-[232px] h-[232px] flex items-center justify-center relative">
+          <div class="rounded-2xl bg-white p-3 mx-auto w-[232px] h-[232px] flex items-center justify-center relative">
             <img id="login-qr-img" alt="" class="w-full h-full object-contain" />
-            <div id="login-qr-overlay" class="hidden absolute inset-0 rounded-xl bg-slate-950/90 flex flex-col items-center justify-center text-center p-4"></div>
+            <div id="login-qr-overlay" class="hidden absolute inset-0 rounded-2xl bg-slate-950/90 flex flex-col items-center justify-center text-center p-4"></div>
           </div>
           <div id="login-qr-status" class="flex items-center justify-center gap-1.5 flex-wrap"></div>
-          <p class="text-2xs text-slate-500 text-center leading-relaxed">
+          <p class="t11 text-slate-500 text-center leading-relaxed">
             Open the <b class="text-slate-300">Steam Mobile App</b> → <b class="text-slate-300">Steam&nbsp;Guard</b> → scan this code, then approve the login.
           </p>
         </div>
         <!-- Credentials pane -->
         <form id="login-cred-form" class="hidden space-y-3">
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Username</label>
-            <input name="username" autocomplete="off" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+            <label class="field-label">Steam Username</label>
+            <input name="username" autocomplete="off" class="field" />
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Password</label>
-            <input name="password" type="password" autocomplete="off" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+            <label class="field-label">Password</label>
+            <input name="password" type="password" autocomplete="off" class="field" />
           </div>
           <div id="login-guard" class="hidden">
-            <label id="login-guard-label" class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Guard code</label>
+            <label id="login-guard-label" class="field-label">Steam Guard code</label>
             <input id="login-guard-input" inputmode="numeric" autocomplete="one-time-code" placeholder="•••••"
-              class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 tracking-[0.4em] text-center focus:outline-none focus:ring-2 focus:ring-brand/50" />
+              class="field text-center tracking-[0.4em]" />
           </div>
-          <p id="login-cred-msg" class="hidden text-2xs"></p>
-          <button type="submit" id="login-cred-submit" class="w-full px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 inline-flex items-center justify-center gap-2">
+          <p id="login-cred-msg" class="hidden t10"></p>
+          <button type="submit" id="login-cred-submit" class="btn btn-primary w-full">
             <i class="fa-solid fa-right-to-bracket"></i><span id="login-cred-submit-label">Log in</span>
           </button>
         </form>
         <!-- Limited-tier note -->
-        <div class="rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2.5 flex gap-2.5">
-          <i class="fa-solid fa-circle-info text-amber-400 mt-0.5 shrink-0"></i>
-          <p class="text-2xs text-slate-400 leading-relaxed">
+        <div class="rounded-xl bg-slate-950/60 border border-slate-800 px-3 py-2.5 flex gap-2.5">
+          <i class="fa-solid fa-circle-info text-warn mt-0.5 shrink-0"></i>
+          <p class="t11 text-slate-400 leading-relaxed">
             Imports as a <b class="text-amber-300">Limited</b> account (no maFile): buy orders, market buys &amp; cancels work; sell listings &amp; trade offers are queued <b class="text-slate-300">pending confirmation</b>. Attach a maFile later to upgrade to <b class="text-emerald-300">Full</b>.
           </p>
         </div>
@@ -994,19 +990,18 @@
   <div id="attach-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-shield-halved text-emerald-400 mr-2"></i>Attach maFile</h3>
-        <button id="attach-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-shield-halved text-emerald-400 mr-2"></i>Attach maFile</h3>
+        <button id="attach-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="attach-form" class="px-6 py-5 space-y-4">
-        <p class="text-2xs text-slate-400 leading-relaxed">Upgrade <b id="attach-username" class="text-slate-200"></b> from <b class="text-amber-300">Limited</b> to <b class="text-emerald-300">Full</b>. Drop the maFile into <span class="font-mono text-slate-500">./mafiles</span> and enter its filename — its <b class="text-slate-300">identity_secret</b> enables sell-listing &amp; trade confirmations.</p>
+        <p class="t11 text-slate-400 leading-relaxed">Upgrade <b id="attach-username" class="text-slate-200"></b> from <b class="text-amber-300">Limited</b> to <b class="text-emerald-300">Full</b>. Drop the maFile into <span class="font-mono text-slate-500">./mafiles</span> and enter its filename — its <b class="text-slate-300">identity_secret</b> enables sell-listing &amp; trade confirmations.</p>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">maFile path</label>
-          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">maFile path</label>
+          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile" class="field" />
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="attach-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="attach-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition disabled:opacity-50 inline-flex items-center justify-center gap-2">
+          <button type="button" id="attach-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="attach-submit" class="btn btn-sell flex-1">
             <i class="fa-solid fa-arrow-up"></i><span>Upgrade to Full</span>
           </button>
         </div>
@@ -1033,19 +1028,19 @@
   <div id="sda-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-3xl h-[85vh] bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in flex flex-col">
       <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between shrink-0">
-        <h3 class="text-lg font-bold text-white flex items-center gap-2">
+        <h3 class="t16 font-bold text-white flex items-center gap-2">
           <i class="fa-solid fa-mobile-screen-button text-emerald-400"></i>SDA
-          <span id="sda-account" class="text-sm font-mono text-slate-500"></span>
+          <span id="sda-account" class="t13 font-mono text-slate-500"></span>
         </h3>
-        <button id="sda-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <button id="sda-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <div class="flex-1 overflow-y-auto px-6 py-5 space-y-6">
         <!-- OTP: current Steam Guard code, large, auto-rolling with a 30s countdown bar -->
-        <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-5 text-center">
-          <p class="text-2xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Steam Guard code</p>
+        <div class="rounded-2xl border border-slate-800 bg-slate-950/40 p-5 text-center">
+          <p class="t11 font-semibold uppercase tracking-wider text-slate-500 mb-2">Steam Guard code</p>
           <div class="flex items-center justify-center gap-3">
-            <span id="sda-otp" class="text-4xl font-mono font-bold tracking-[0.3em] text-emerald-300 select-all">·····</span>
-            <button id="sda-otp-copy" title="Copy the current code" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition inline-flex items-center gap-1.5"><i class="fa-regular fa-copy"></i><span id="sda-otp-copy-label">Copy</span></button>
+            <span id="sda-otp" class="t28 font-mono font-bold tracking-[0.3em] text-emerald-300 select-all" style="font-size:34px">·····</span>
+            <button id="sda-otp-copy" title="Copy the current code" class="btn btn-secondary btn-sm"><i class="fa-regular fa-copy"></i><span id="sda-otp-copy-label">Copy</span></button>
           </div>
           <div class="mt-3 h-1.5 w-full max-w-xs mx-auto rounded-full bg-slate-800 overflow-hidden">
             <div id="sda-otp-bar" class="h-full bg-emerald-500" style="width:100%"></div>
@@ -1054,12 +1049,12 @@
         <!-- Confirmations: live list (trade/market) with single / multi-select / approve-all -->
         <div>
           <div class="flex items-center gap-2 mb-3 flex-wrap">
-            <p class="text-sm font-semibold text-slate-300 mr-auto"><i class="fa-solid fa-list-check text-emerald-400 mr-1.5"></i>Pending confirmations <span id="sda-conf-count" class="text-slate-500 font-mono"></span></p>
-            <button id="sda-conf-approve-sel" disabled class="px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-bold transition disabled:opacity-40 inline-flex items-center gap-1.5"><i class="fa-solid fa-check"></i><span>Approve selected (<span id="sda-conf-sel-count">0</span>)</span></button>
-            <button id="sda-conf-approve-all" class="px-3 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-check-double"></i><span>Approve all</span></button>
-            <button id="sda-conf-refresh" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
+            <p class="t14 font-semibold text-slate-300 mr-auto"><i class="fa-solid fa-list-check text-emerald-400 mr-1.5"></i>Pending confirmations <span id="sda-conf-count" class="text-slate-500 font-mono"></span></p>
+            <button id="sda-conf-approve-sel" disabled class="btn btn-sm bg-emerald-700/80 text-white"><i class="fa-solid fa-check"></i><span>Approve selected (<span id="sda-conf-sel-count">0</span>)</span></button>
+            <button id="sda-conf-approve-all" class="btn btn-sm bg-emerald-600 text-white"><i class="fa-solid fa-check-double"></i><span>Approve all</span></button>
+            <button id="sda-conf-refresh" class="btn btn-sm btn-secondary"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
           </div>
-          <div id="sda-conf-body" class="rounded-lg border border-slate-800 bg-slate-900/45 divide-y divide-slate-800/60"></div>
+          <div id="sda-conf-body" class="rounded-xl border border-slate-800 bg-slate-900/45 divide-y divide-slate-800/60"></div>
         </div>
       </div>
     </div>
@@ -1069,26 +1064,24 @@
   <div id="env-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 id="env-modal-title" class="text-lg font-bold text-white"><i class="fa-solid fa-layer-group text-brand mr-2"></i>New environment</h3>
-        <button id="env-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 id="env-modal-title" class="t16 font-bold text-white"><i class="fa-solid fa-layer-group text-brand mr-2"></i>New environment</h3>
+        <button id="env-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="env-form" class="px-6 py-5 space-y-4">
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Name</label>
-          <input name="name" id="env-name-input" required placeholder="e.g. Germany farm"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Name</label>
+          <input name="name" id="env-name-input" required placeholder="e.g. Germany farm" class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">
+          <label class="field-label">
             Global (rotating) proxy <span class="text-slate-600 font-normal">(empty = local IP)</span>
           </label>
-          <input name="proxy" id="env-proxy-input" placeholder="host:port:user:pass · user:pass@host:port · http://…"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
-          <p class="text-3xs text-slate-600 mt-1.5 leading-relaxed">Any format works — <span class="font-mono text-slate-500">host:port:user:pass</span>, <span class="font-mono text-slate-500">host:port@user:pass</span>, <span class="font-mono text-slate-500">user:pass:host:port</span>, <span class="font-mono text-slate-500">user:pass@host:port</span>, or a full URL.</p>
+          <input name="proxy" id="env-proxy-input" placeholder="host:port:user:pass · user:pass@host:port · http://…" class="field" />
+          <p class="t10 text-slate-600 mt-1.5 leading-relaxed">Any format works — <span class="font-mono text-slate-500">host:port:user:pass</span>, <span class="font-mono text-slate-500">host:port@user:pass</span>, <span class="font-mono text-slate-500">user:pass:host:port</span>, <span class="font-mono text-slate-500">user:pass@host:port</span>, or a full URL.</p>
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="env-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center justify-center gap-2">
+          <button type="button" id="env-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span id="env-submit-label">Create</span>
           </button>
         </div>
@@ -1100,18 +1093,17 @@
   <div id="folder-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 id="folder-modal-title" class="text-lg font-bold text-white"><i class="fa-solid fa-folder-plus text-brand mr-2"></i>New folder</h3>
-        <button id="folder-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 id="folder-modal-title" class="t16 font-bold text-white"><i class="fa-solid fa-folder-plus text-brand mr-2"></i>New folder</h3>
+        <button id="folder-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="folder-form" class="px-6 py-5 space-y-4">
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Folder name</label>
-          <input id="folder-name" name="name" required autocomplete="off" placeholder="e.g. Storage accounts"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Folder name</label>
+          <input id="folder-name" name="name" required autocomplete="off" placeholder="e.g. Storage accounts" class="field" />
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="folder-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center justify-center gap-2">
+          <button type="button" id="folder-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span>Save</span>
           </button>
         </div>
@@ -1123,22 +1115,22 @@
   <div id="move-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-folder-tree text-brand mr-2"></i>Move account</h3>
-        <button id="move-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-folder-tree text-brand mr-2"></i>Move account</h3>
+        <button id="move-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="move-form" class="px-6 py-5 space-y-4">
-        <p id="move-account-label" class="text-sm text-slate-400"></p>
+        <p id="move-account-label" class="t14 text-slate-400"></p>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Environment</label>
-          <select id="move-env" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Environment</label>
+          <select id="move-env" class="field"></select>
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Target folder</label>
-          <select id="move-folder" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Target folder</label>
+          <select id="move-folder" class="field"></select>
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="move-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center justify-center gap-2">
+          <button type="button" id="move-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-arrow-right-to-bracket"></i><span>Move</span>
           </button>
         </div>
@@ -1150,52 +1142,48 @@
   <div id="edit-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-pen text-brand mr-2"></i>Edit account</h3>
-        <button id="edit-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-pen text-brand mr-2"></i>Edit account</h3>
+        <button id="edit-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="edit-form" class="px-6 py-5 space-y-4">
-        <p id="edit-account-label" class="text-sm text-slate-400 font-mono"></p>
+        <p id="edit-account-label" class="t14 text-slate-400 font-mono"></p>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Display name <span class="text-slate-600 font-normal">(optional)</span></label>
-          <input id="edit-displayname" autocomplete="off"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Display name <span class="text-slate-600 font-normal">(optional)</span></label>
+          <input id="edit-displayname" autocomplete="off" class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Network <span class="text-slate-600 font-normal">(proxy)</span></label>
-          <p id="edit-proxy-current" class="text-2xs mb-1.5 font-mono text-slate-500"></p>
-          <label class="flex items-center gap-2 mb-2 text-xs font-medium text-slate-300 cursor-pointer">
+          <label class="field-label">Network <span class="text-slate-600 font-normal">(proxy)</span></label>
+          <p id="edit-proxy-current" class="t11 mb-1.5 font-mono text-slate-500"></p>
+          <label class="flex items-center gap-2 mb-2 t12 font-medium text-slate-300 cursor-pointer">
             <input type="checkbox" id="edit-use-env-proxy" class="accent-violet-500 w-4 h-4" />
             Use environment proxy
           </label>
-          <input id="edit-proxy" placeholder="Leave empty for local proxy" autocomplete="off"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
-          <p class="text-2xs text-slate-500 mt-1.5">
+          <input id="edit-proxy" placeholder="Leave empty for local proxy" autocomplete="off" class="field" />
+          <p class="t11 text-slate-500 mt-1.5">
             <i class="fa-solid fa-circle-info mr-1 text-brand"></i><b class="text-slate-400">On</b> = use the environment proxy. <b class="text-slate-400">Off</b> = enter a custom proxy, or leave empty for local proxy (local IP).
           </p>
         </div>
         <details>
-          <summary class="text-xs font-semibold text-slate-400 cursor-pointer select-none hover:text-slate-200">Change credentials (optional)</summary>
+          <summary class="t12 font-semibold text-slate-400 cursor-pointer select-none hover:text-slate-200">Change credentials (optional)</summary>
           <div class="space-y-3 mt-3">
-            <input id="edit-password" type="password" placeholder="New password (empty = unchanged)" autocomplete="new-password"
-              class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
-            <input id="edit-mafile" placeholder="New maFile path (empty = unchanged)" autocomplete="off"
-              class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+            <input id="edit-password" type="password" placeholder="New password (empty = unchanged)" autocomplete="new-password" class="field" />
+            <input id="edit-mafile" placeholder="New maFile path (empty = unchanged)" autocomplete="off" class="field" />
           </div>
         </details>
-        <div class="px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-2xs text-slate-500">
+        <div class="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 t11 text-slate-500">
           <i class="fa-solid fa-circle-info mr-1 text-brand"></i>On proxy change the account is re-logged in (takes effect from the next "Refresh").
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="edit-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="edit-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="edit-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="edit-submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span>Save</span>
           </button>
         </div>
         <div class="pt-3 mt-1 border-t border-slate-800">
-          <button type="button" id="edit-delete" class="w-full px-4 py-2.5 rounded-lg bg-rose-900/30 hover:bg-rose-900/50 text-rose-400 hover:text-rose-300 border border-rose-800/50 text-sm font-semibold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="edit-delete" class="w-full px-4 py-2.5 rounded-xl bg-rose-900/30 hover:bg-rose-900/50 text-rose-400 hover:text-rose-300 border border-rose-800/50 t14 font-semibold transition disabled:opacity-50 flex items-center justify-center gap-2">
             <i class="fa-solid fa-trash-can"></i><span>Delete account</span>
           </button>
-          <p class="text-2xs text-slate-500 mt-2 text-center">
+          <p class="t11 text-slate-500 mt-2 text-center">
             <i class="fa-solid fa-circle-info mr-1"></i>Removes only from SSIM (logs out + clears cache). Re-addable via "Import bots".
           </p>
         </div>

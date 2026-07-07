@@ -566,13 +566,13 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-326 | Open Edit Account: prefills displayName; "Use environment proxy" ON by default; loads current proxy async | app.js:3656–3690; index.html:955–1010 | | |
-| P-327 | Proxy field enable/grey by toggle: disabled + opacity-40 while "Use env proxy" ON | app.js:3692–3698 | | |
-| P-328 | Proxy source hint line: "own proxy" (emerald) / "environment proxy" (slate) / "local proxy (local IP)" (amber) | app.js:3700–3705 | | |
-| P-329 | Close edit modal: clears editUsername | app.js:3706 | | |
-| P-330 | Delete account (from edit): confirm danger "Remove account" (body: logged out, cache cleared, maFile kept, re-add via Import bots); DELETE; falls back to env master; toast `Account "<u>" removed` | app.js:3707–3728 | 💰 | |
-| P-331 | Save edit account: sends displayName always; proxy only if intent changed (env/proxy:x/local); optional password + maFilePath; PATCH; re-pulls cached inv; toast "Account saved"; proxy change re-logs in | app.js:3729–3769; index.html:982–993 | | |
-| P-332 | Change-credentials collapsible: `<details>` password + maFile (empty = unchanged) | index.html:982–990 | | |
+| P-326 | Open Edit Account: prefills displayName; "Use environment proxy" ON by default; loads current proxy async | app.js:3656–3690; index.html:955–1010 | | ✅ done · shell header→.t16 + #edit-close→.modal-x, label→.field-label, inputs→.field; openEditAccount logic unchanged (api proxy-load + innerHTML strings byte-identical) |
+| P-327 | Proxy field enable/grey by toggle: disabled + opacity-40 while "Use env proxy" ON | app.js:3692–3698 | | ✅ done · syncProxyFieldEnabled logic unchanged (.field + opacity-40 grey toggle intact) |
+| P-328 | Proxy source hint line: "own proxy" (emerald) / "environment proxy" (slate) / "local proxy (local IP)" (amber) | app.js:3700–3705 | | ✅ done · proxySourceHint byte-identical (own/env/local emerald/slate/amber honesty kept) |
+| P-329 | Close edit modal: clears editUsername | app.js:3706 | | ✅ done · closeEditAccount logic unchanged |
+| P-330 | Delete account (from edit): confirm danger "Remove account" (body: logged out, cache cleared, maFile kept, re-add via Import bots); DELETE; falls back to env master; toast `Account "<u>" removed` | app.js:3707–3728 | 💰 | ✅ done · ssimConfirm + api DELETE UNCHANGED; delete btn kept design-source soft-rose full-width (rounded-xl/t14, #edit-delete id kept) |
+| P-331 | Save edit account: sends displayName always; proxy only if intent changed (env/proxy:x/local); optional password + maFilePath; PATCH; re-pulls cached inv; toast "Account saved"; proxy change re-logs in | app.js:3729–3769; index.html:982–993 | | ✅ done · submitEditAccount + PATCH byte-identical; Save → .btn btn-primary |
+| P-332 | Change-credentials collapsible: `<details>` password + maFile (empty = unchanged) | index.html:982–990 | | ✅ done · <details> kept; password + maFile inputs → .field (#edit-password/#edit-mafile ids kept) |
 
 ---
 
@@ -580,9 +580,9 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-333 | Open add account: resets form, populates env select (defaults to active env) | app.js:3776–3781; index.html:695–736 | | |
-| P-334 | Submit add account: POST `/api/accounts` (username/password/maFilePath/environmentId/proxy?); toast `Account "<u>" added`; reloads + selects | app.js:3783–3804 | | |
-| P-335 | Add-account fields: Environment select, Steam Username (req), Password (req), maFile path (req), Proxy override (optional, empty=env proxy) | index.html:702–727 | | |
+| P-333 | Open add account: resets form, populates env select (defaults to active env) | app.js:3776–3781; index.html:695–736 | | ✅ done · shell header→.t16 + #modal-close→.modal-x; openAddAccount logic unchanged |
+| P-334 | Submit add account: POST `/api/accounts` (username/password/maFilePath/environmentId/proxy?); toast `Account "<u>" added`; reloads + selects | app.js:3783–3804 | | ✅ done · submitAddAccount + POST /api/accounts byte-identical |
+| P-335 | Add-account fields: Environment select, Steam Username (req), Password (req), maFile path (req), Proxy override (optional, empty=env proxy) | index.html:702–727 | | ✅ done · labels→.field-label, select+inputs→.field; name=environmentId/username/password/maFilePath/proxy kept |
 
 ---
 
@@ -590,18 +590,18 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-336 | Open Login: `#login-env` populated from environments, preselects active env; resets creds pane; defaults to QR tab | app.js:3809–3815 | | |
-| P-337 | Close Login: stops poll, cancels both QR + cred sessions | app.js:3817–3826 | | |
-| P-338 | Tab switch (QR / Credentials): cancels the other method's session; QR auto-starts | app.js:3828–3845; index.html:752–756 | | |
-| P-339 | QR start: POST `/api/accounts/login/qr/start {environmentId}`; sets QR data-URL image; polls status if not terminal | app.js:3848–3862 | | |
-| P-340 | QR status stepper: 4 pills Waiting→Scanned→Approved→Done; current = brand+spinner, done = emerald | app.js:3864–3881; index.html:763 | | |
-| P-341 | QR terminal overlays: imported→done; expired→"QR code expired" + "New code"; error→msg + "Try again" | app.js:3866–3869 | | |
-| P-342 | Credentials submit (login + guard phases): POST `/api/accounts/login/credentials`, then `/guard` with code | app.js:3895–3913 | | |
-| P-343 | Guard prompt: EmailCode → "Email Steam Guard code (sent to …@<detail>)"; else "Steam Guard mobile code"; hint about mobile approval | app.js:3915–3935; index.html:778–782 | | |
-| P-344 | Cred status messages: error rose / info slate / success emerald | app.js:3937–3941 | | |
-| P-345 | Login poll (1500ms): polls `/status`; ignores transient/404 | app.js:3945–3952 | | |
-| P-346 | On imported: toast `Account "<u>" imported/updated as Limited`; reloads + selects | app.js:3954–3960 | | |
-| P-347 | Limited-tier explainer note (static): imports as Limited; buy orders/market buys/cancels work; sell listings & trade offers queued pending confirmation; attach maFile to upgrade | index.html:788–794 | | |
+| P-336 | Open Login: `#login-env` populated from environments, preselects active env; resets creds pane; defaults to QR tab | app.js:3809–3815 | | ✅ done · shell header→.t16 + #login-close→.modal-x, env→.field-label/.field; openLogin logic unchanged |
+| P-337 | Close Login: stops poll, cancels both QR + cred sessions | app.js:3817–3826 | | ✅ done · closeLogin logic unchanged (cancels both sessions) |
+| P-338 | Tab switch (QR / Credentials): cancels the other method's session; QR auto-starts | app.js:3828–3845; index.html:752–756 | | ✅ done · login tab row kept byte-identical (switchLoginTab JS-driven toggle preserved; .login-tab + data-login-tab kept) |
+| P-339 | QR start: POST `/api/accounts/login/qr/start {environmentId}`; sets QR data-URL image; polls status if not terminal | app.js:3848–3862 | | ✅ done · startQr byte-identical (qr/start POST + poll UNCHANGED) |
+| P-340 | QR status stepper: 4 pills Waiting→Scanned→Approved→Done; current = brand+spinner, done = emerald | app.js:3864–3881; index.html:763 | | ✅ done · renderQrStatus step pills → .pill pill--brand(current+spinner)/pill--success(done)/pill--neutral(pending) |
+| P-341 | QR terminal overlays: imported→done; expired→"QR code expired" + "New code"; error→msg + "Try again" | app.js:3866–3869 | | ✅ done · applyLoginStatus + showQrOverlay retry HTML byte-identical (data-login-retry kept) |
+| P-342 | Credentials submit (login + guard phases): POST `/api/accounts/login/credentials`, then `/guard` with code | app.js:3895–3913 | | ✅ done · submitLoginCredentials byte-identical (credentials + guard POSTs UNCHANGED) |
+| P-343 | Guard prompt: EmailCode → "Email Steam Guard code (sent to …@<detail>)"; else "Steam Guard mobile code"; hint about mobile approval | app.js:3915–3935; index.html:778–782 | | ✅ done · applyCredStatus byte-identical; guard label→.field-label, input→.field text-center tracking |
+| P-344 | Cred status messages: error rose / info slate / success emerald | app.js:3937–3941 | | ✅ done · showCredMsg text-2xs→t10; tone colors rose/slate/emerald kept (honesty) |
+| P-345 | Login poll (1500ms): polls `/status`; ignores transient/404 | app.js:3945–3952 | | ✅ done · startLoginPoll logic unchanged |
+| P-346 | On imported: toast `Account "<u>" imported/updated as Limited`; reloads + selects | app.js:3954–3960 | | ✅ done · onLoginImported logic unchanged (imports as Limited — invariant 9 intact) |
+| P-347 | Limited-tier explainer note (static): imports as Limited; buy orders/market buys/cancels work; sell listings & trade offers queued pending confirmation; attach maFile to upgrade | index.html:788–794 | | ✅ done · static note → .t11 rounded-xl, icon text-warn; Limited/Full copy byte-identical (invariant 9) |
 
 ---
 
@@ -609,8 +609,8 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-348 | Open Attach maFile: sets username on form | app.js:3963–3968; index.html:799–821 | | |
-| P-349 | Submit attach: POST `/api/accounts/:u/attach-mafile {maFilePath}`; toast `"<u>" upgraded to Full`; reloads sidebar; maFile path field placeholder `username.maFile  or  C:\…\file.maFile` | app.js:3970–3983; index.html:810 | | |
+| P-348 | Open Attach maFile: sets username on form | app.js:3963–3968; index.html:799–821 | | ✅ done · shell header→.t16 + #attach-close→.modal-x; openAttachMaFile logic unchanged (form.dataset.username kept) |
+| P-349 | Submit attach: POST `/api/accounts/:u/attach-mafile {maFilePath}`; toast `"<u>" upgraded to Full`; reloads sidebar; maFile path field placeholder `username.maFile  or  C:\…\file.maFile` | app.js:3970–3983; index.html:810 | | ✅ done · submitAttach + POST attach-mafile byte-identical; input→.field, submit→.btn btn-sell (Full-upgrade emerald); #attach-username + name=maFilePath kept |
 
 ---
 
@@ -667,23 +667,23 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-385 | Open SDA: sets account, starts OTP roll, loads confirmations | app.js:4034–4041; index.html:838–872 | | |
-| P-386 | Close SDA: clears OTP + bar timers | app.js:4043–4048 | | |
-| P-387 | OTP display: large 5-char code `#sda-otp` (`text-4xl mono tracking-[0.3em] emerald-300 select-all`), placeholder `·····` | index.html:853 | | |
-| P-388 | OTP auto-roll (30s): GET `/api/accounts/:u/otp` {code,msRemaining}; re-fetches ~300ms past expiry so displayed value never stale | app.js:4050–4071; index.html:849–859 | | |
-| P-389 | OTP countdown bar: 30 000ms cycle; `#sda-otp-bar` width animated every 200ms via `barTimer` | app.js:4061–4069; index.html:856 | | |
-| P-390 | OTP error handling: on fail shows `—`, bar 0%, toasts once per error streak, bounded 5s guarded retry (S17); heals on recovery; guarded to modal-open+same-account | app.js:4072–4082 | | |
-| P-391 | Copy OTP `copySdaOtp`: copies LIVE DOM code (never `·····`/`—`); label flips "Copy"→"Copied" 1200ms | app.js:4085–4096; index.html:854 | | |
-| P-392 | Pending confirmations header: title + count `#sda-conf-count`; buttons Approve selected (disabled until ≥1), Approve all, Refresh | index.html:862–867 | | |
-| P-393 | Load confirmations `refreshSdaConfirmations`: GET `/confirmations`; loading spinner; error w/ inline Refresh | app.js:4098–4113 | | |
-| P-394 | Render confirmations `renderSdaConfirmations`: per-row checkbox, type icon (trade=right-left, market=tag, else shield), title, subline `typeName · gives X · gets Y`, per-row Approve btn | app.js:4115–4135; index.html:860–869 | | |
-| P-395 | Empty confirmations: "No pending confirmations." | app.js:4118 | | |
-| P-396 | Confirmation multi-select: `selectedSdaIds`/`updateSdaSelCount` — updates `#sda-conf-sel-count`, enables/disables Approve-selected | app.js:4137–4147; index.html:863–866 | | |
-| P-397 | Approve single (per-row btn) → `respondSda([id], true)` | app.js:4133 | 💰 | |
-| P-398 | Approve selected → `respondSda(selectedIds, true)` | app.js:6401 | 💰 | |
-| P-399 | Approve all → `respondSda([], true, true)` | app.js:6400 | 💰 | |
-| P-400 | Respond result `respondSda`: POST `/confirmations/respond {ids,accept,all}`; toast "Approved/Denied N confirmation(s)[, M failed]"; ALWAYS re-fetch from canonical source | app.js:4149–4159 | 💰 | |
-| P-401 | (Confirmations are trade/market approvals — approving a market/trade confirmation is money-affecting) | app.js:4115–4159 | 💰 | |
+| P-385 | Open SDA: sets account, starts OTP roll, loads confirmations | app.js:4034–4041; index.html:838–872 | | ✅ done · shell header→.t16 + #sda-close→.modal-x, account→.t13; openSda logic unchanged |
+| P-386 | Close SDA: clears OTP + bar timers | app.js:4043–4048 | | ✅ done · closeSda logic unchanged (clears OTP + bar timers) |
+| P-387 | OTP display: large 5-char code `#sda-otp` (`text-4xl mono tracking-[0.3em] emerald-300 select-all`), placeholder `·····` | index.html:853 | | ✅ done · #sda-otp → .t28 (font-size:34px) mono emerald select-all kept |
+| P-388 | OTP auto-roll (30s): GET `/api/accounts/:u/otp` {code,msRemaining}; re-fetches ~300ms past expiry so displayed value never stale | app.js:4050–4071; index.html:849–859 | | ✅ done · startSdaOtp byte-identical (otp api + re-fetch timing UNCHANGED) |
+| P-389 | OTP countdown bar: 30 000ms cycle; `#sda-otp-bar` width animated every 200ms via `barTimer` | app.js:4061–4069; index.html:856 | | ✅ done · #sda-otp-bar width-animation logic unchanged |
+| P-390 | OTP error handling: on fail shows `—`, bar 0%, toasts once per error streak, bounded 5s guarded retry (S17); heals on recovery; guarded to modal-open+same-account | app.js:4072–4082 | | ✅ done · OTP error handling logic unchanged (S17 bounded retry + honesty kept) |
+| P-391 | Copy OTP `copySdaOtp`: copies LIVE DOM code (never `·····`/`—`); label flips "Copy"→"Copied" 1200ms | app.js:4085–4096; index.html:854 | | ✅ done · copySdaOtp logic unchanged; copy btn → .btn btn-secondary btn-sm (#sda-otp-copy/-label kept) |
+| P-392 | Pending confirmations header: title + count `#sda-conf-count`; buttons Approve selected (disabled until ≥1), Approve all, Refresh | index.html:862–867 | | ✅ done · toolbar buttons → .btn btn-sm (approve=emerald / refresh=secondary); #sda-conf-count/-approve-sel/-sel-count/-approve-all/-refresh ids kept |
+| P-393 | Load confirmations `refreshSdaConfirmations`: GET `/confirmations`; loading spinner; error w/ inline Refresh | app.js:4098–4113 | | ✅ done · refreshSdaConfirmations byte-identical (api + inline loading/error markup + addEventListener frozen) |
+| P-394 | Render confirmations `renderSdaConfirmations`: per-row checkbox, type icon (trade=right-left, market=tag, else shield), title, subline `typeName · gives X · gets Y`, per-row Approve btn | app.js:4115–4135; index.html:860–869 | | ✅ done · renderSdaConfirmations rows → t13/t11 + Approve .btn btn-sm; data-conf-id/-approve + .sda-conf-check kept; wiring addEventListener lines byte-identical |
+| P-395 | Empty confirmations: "No pending confirmations." | app.js:4118 | | ✅ done · empty "No pending confirmations." → t13 |
+| P-396 | Confirmation multi-select: `selectedSdaIds`/`updateSdaSelCount` — updates `#sda-conf-sel-count`, enables/disables Approve-selected | app.js:4137–4147; index.html:863–866 | | ✅ done · selectedSdaIds/updateSdaSelCount logic unchanged |
+| P-397 | Approve single (per-row btn) → `respondSda([id], true)` | app.js:4133 | 💰 | ✅ done · respondSda([id],true) UNCHANGED |
+| P-398 | Approve selected → `respondSda(selectedIds, true)` | app.js:6401 | 💰 | ✅ done · respondSda(selectedIds,true) UNCHANGED |
+| P-399 | Approve all → `respondSda([], true, true)` | app.js:6400 | 💰 | ✅ done · respondSda([],true,true) UNCHANGED |
+| P-400 | Respond result `respondSda`: POST `/confirmations/respond {ids,accept,all}`; toast "Approved/Denied N confirmation(s)[, M failed]"; ALWAYS re-fetch from canonical source | app.js:4149–4159 | 💰 | ✅ done · respondSda + POST confirmations/respond byte-identical (always re-fetch canonical honesty kept) |
+| P-401 | (Confirmations are trade/market approvals — approving a market/trade confirmation is money-affecting) | app.js:4115–4159 | 💰 | ✅ done · money-affecting approval semantics unchanged |
 
 ---
 
@@ -691,7 +691,7 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-402 | Open account in clean browser `openCleanBrowser(btn,username)`: btn spinner "Opening…"; POST `/api/accounts/:u/open-browser`; surfaces warnings as info toasts; success toast shows proxy or "(LOCAL IP)" | app.js:4161–4177 | | |
+| P-402 | Open account in clean browser `openCleanBrowser(btn,username)`: btn spinner "Opening…"; POST `/api/accounts/:u/open-browser`; surfaces warnings as info toasts; success toast shows proxy or "(LOCAL IP)" | app.js:4161–4177 | | ✅ done · openCleanBrowser byte-identical (no re-skinnable static markup — spinner swaps the passed btn innerHTML) |
 
 ---
 
@@ -703,11 +703,11 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-403 | Open env modal (create/edit) `openEnvModal(mode,id)`: edit → title "Edit environment", loads REAL saved proxy via GET `/environments/:id/proxy` (guards against a different modal opening meanwhile); create → "New environment", proxy placeholder | app.js:4532–4567; index.html:874–903 | | |
-| P-404 | Proxy load-error: toast `Could not load the saved proxy: …` | app.js:4564 | | |
-| P-405 | Close env modal | app.js:4568 | | |
-| P-406 | Submit env `submitEnv`: create POST `/api/environments {name,proxy}`; edit PATCH sends proxy ONLY when changed (cleared→local IP / changed / omitted logic); toast "Environment updated" / `Environment "<name>" created`; reloads + re-renders | app.js:4569–4593 | | |
-| P-407 | Delete environment `deleteEnvironment`: `ssimConfirm` danger "Delete environment X?" (only when it no longer contains any accounts) → DELETE; toast deleted; removes from `globalEnvs` | app.js:4595–4607 | | |
+| P-403 | Open env modal (create/edit) `openEnvModal(mode,id)`: edit → title "Edit environment", loads REAL saved proxy via GET `/environments/:id/proxy` (guards against a different modal opening meanwhile); create → "New environment", proxy placeholder | app.js:4532–4567; index.html:874–903 | | ✅ done · shell header→.t16 + #env-close→.modal-x, labels→.field-label, inputs→.field, hint→.t10; openEnvModal logic + api proxy-load unchanged (title innerHTML brand icons kept) |
+| P-404 | Proxy load-error: toast `Could not load the saved proxy: …` | app.js:4564 | | ✅ done · proxy load-error toast logic unchanged |
+| P-405 | Close env modal | app.js:4568 | | ✅ done · closeEnvModal logic unchanged |
+| P-406 | Submit env `submitEnv`: create POST `/api/environments {name,proxy}`; edit PATCH sends proxy ONLY when changed (cleared→local IP / changed / omitted logic); toast "Environment updated" / `Environment "<name>" created`; reloads + re-renders | app.js:4569–4593 | | ✅ done · submitEnv + POST/PATCH change-detection byte-identical; submit → .btn btn-primary (#env-submit-label kept) |
+| P-407 | Delete environment `deleteEnvironment`: `ssimConfirm` danger "Delete environment X?" (only when it no longer contains any accounts) → DELETE; toast deleted; removes from `globalEnvs` | app.js:4595–4607 | | ✅ done · ssimConfirm + api DELETE UNCHANGED |
 
 ---
 
@@ -717,10 +717,10 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-408 | Open folder modal `openFolderModal(action)`: create vs rename title/icon; prefill name on rename | app.js:4610–4619 | | |
-| P-409 | Submit folder `submitFolder`: create POST `/api/folders {name,environmentId,parentId}` (un-collapses parent) / rename PATCH `/folders/:id`; toast; refresh env | app.js:4621–4639 | | |
-| P-410 | Delete folder `deleteFolder`: `ssimConfirm` danger "Delete folder X? Subfolders and accounts move to the parent folder." → DELETE; toast | app.js:4640–4651 | | |
-| P-411 | Reorder folder up/down `reorderFolder(id,direction)`: POST `/folders/:id/reorder {direction}`; refresh env | app.js:4653–4661 | | |
+| P-408 | Open folder modal `openFolderModal(action)`: create vs rename title/icon; prefill name on rename | app.js:4610–4619 | | ✅ done · shell header→.t16 + #folder-close→.modal-x, label→.field-label, input→.field; openFolderModal logic unchanged (title innerHTML kept) |
+| P-409 | Submit folder `submitFolder`: create POST `/api/folders {name,environmentId,parentId}` (un-collapses parent) / rename PATCH `/folders/:id`; toast; refresh env | app.js:4621–4639 | | ✅ done · submitFolder + POST/PATCH byte-identical; submit → .btn btn-primary |
+| P-410 | Delete folder `deleteFolder`: `ssimConfirm` danger "Delete folder X? Subfolders and accounts move to the parent folder." → DELETE; toast | app.js:4640–4651 | | ✅ done · ssimConfirm + api DELETE UNCHANGED |
+| P-411 | Reorder folder up/down `reorderFolder(id,direction)`: POST `/folders/:id/reorder {direction}`; refresh env | app.js:4653–4661 | | ✅ done · reorderFolder logic unchanged |
 
 ---
 
@@ -730,10 +730,10 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-412 | Open move modal `openMoveModal(usernameOrList)`: single vs batch; label `Move "X":` or `Move N selected account(s):`; env dropdown; folder tree flattened & indented | app.js:4664–4678 | | |
-| P-413 | Populate move folders `populateMoveFolders`: GET `/environments/:id/tree`; "— Root —" + indented options | app.js:4680–4689 | | |
-| P-414 | Submit move (batch-safe) `submitMove`: `Promise.allSettled` per-account POST `/accounts/:u/move {folderId,environmentId}`; toast `N moved, M failed` / `Account moved` / `N accounts moved`; reload + refresh env | app.js:4690–4709 | | |
-| P-415 | Batch delete accounts `batchDeleteAccounts`: `ssimConfirm` danger "Remove N selected account(s)? …maFiles kept" → allSettled DELETE `/accounts/:u`; clears selection; falls back to env master if active account removed; toast `N removed, M failed` | app.js:4713–4733 | 💰 | |
+| P-412 | Open move modal `openMoveModal(usernameOrList)`: single vs batch; label `Move "X":` or `Move N selected account(s):`; env dropdown; folder tree flattened & indented | app.js:4664–4678 | | ✅ done · shell header→.t16 + #move-close→.modal-x, label→.t14, selects→.field; openMoveModal logic unchanged (#move-env/#move-folder kept) |
+| P-413 | Populate move folders `populateMoveFolders`: GET `/environments/:id/tree`; "— Root —" + indented options | app.js:4680–4689 | | ✅ done · populateMoveFolders logic unchanged (indented <option>s) |
+| P-414 | Submit move (batch-safe) `submitMove`: `Promise.allSettled` per-account POST `/accounts/:u/move {folderId,environmentId}`; toast `N moved, M failed` / `Account moved` / `N accounts moved`; reload + refresh env | app.js:4690–4709 | | ✅ done · submitMove + allSettled POST /move byte-identical |
+| P-415 | Batch delete accounts `batchDeleteAccounts`: `ssimConfirm` danger "Remove N selected account(s)? …maFiles kept" → allSettled DELETE `/accounts/:u`; clears selection; falls back to env master if active account removed; toast `N removed, M failed` | app.js:4713–4733 | 💰 | ✅ done · ssimConfirm + allSettled DELETE UNCHANGED |
 
 ---
 

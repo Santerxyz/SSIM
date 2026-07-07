@@ -3893,9 +3893,9 @@ function renderQrStatus(stateName) {
   const idx = order.indexOf(isTerminalLogin(stateName) && stateName !== 'imported' ? 'waiting' : stateName);
   el.loginQrStatus.innerHTML = steps.map(([key, label, icon], i) => {
     const done = i < idx, cur = i === idx;
-    const cls = cur ? 'bg-brand/20 text-brand-light border-brand/40' : done ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-slate-800/60 text-slate-500 border-slate-700';
+    const cls = cur ? 'pill--brand' : done ? 'pill--success' : 'pill--neutral';
     const ic = (cur && key !== 'imported') ? 'fa-spinner cs2-spin' : icon;
-    return `<span class="text-3xs font-semibold px-2 py-0.5 rounded-full border ${cls} inline-flex items-center gap-1"><i class="fa-solid ${ic}"></i>${label}</span>`;
+    return `<span class="pill ${cls}"><i class="fa-solid ${ic}"></i>${label}</span>`;
   }).join('');
 }
 
@@ -3954,7 +3954,7 @@ function applyCredStatus(st) {
 }
 
 function showCredMsg(msg, tone) {
-  el.loginCredMsg.className = `text-2xs ${tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-slate-400' : 'text-emerald-300'}`;
+  el.loginCredMsg.className = `t10 ${tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-slate-400' : 'text-emerald-300'}`;
   el.loginCredMsg.textContent = msg;
   el.loginCredMsg.classList.remove('hidden');
 }
@@ -4134,7 +4134,7 @@ async function refreshSdaConfirmations() {
 function renderSdaConfirmations() {
   if (el.sdaConfCount) el.sdaConfCount.textContent = SDA.confs.length ? `(${SDA.confs.length})` : '';
   if (!SDA.confs.length) {
-    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-slate-600 text-sm">No pending confirmations.</div>`;
+    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-slate-600 t13">No pending confirmations.</div>`;
     updateSdaSelCount(); return;
   }
   const typeIcon = (t) => (t === 'trade' ? 'fa-right-left' : t === 'market' ? 'fa-tag' : 'fa-shield-halved');
@@ -4143,10 +4143,10 @@ function renderSdaConfirmations() {
       <input type="checkbox" class="sda-conf-check accent-emerald-500 w-4 h-4 shrink-0" />
       ${c.iconUrl ? `<img src="${escapeAttr(safeIconUrl(c.iconUrl))}" alt="" loading="lazy" class="w-9 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : `<i class="fa-solid ${typeIcon(c.typeName)} text-slate-500 w-9 text-center shrink-0"></i>`}
       <div class="min-w-0 flex-1">
-        <div class="text-sm text-slate-200 truncate" title="${escapeAttr(c.title)}">${escapeHtml(c.title)}</div>
-        <div class="text-2xs text-slate-500 truncate">${escapeHtml(c.typeName)}${c.sending ? ' · gives ' + escapeHtml(c.sending) : ''}${c.receiving ? ' · gets ' + escapeHtml(c.receiving) : ''}</div>
+        <div class="t13 text-slate-200 font-semibold truncate" title="${escapeAttr(c.title)}">${escapeHtml(c.title)}</div>
+        <div class="t11 text-slate-500 truncate">${escapeHtml(c.typeName)}${c.sending ? ' · gives ' + escapeHtml(c.sending) : ''}${c.receiving ? ' · gets ' + escapeHtml(c.receiving) : ''}</div>
       </div>
-      <button data-conf-approve="${escapeAttr(c.id)}" class="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-check"></i><span>Approve</span></button>
+      <button data-conf-approve="${escapeAttr(c.id)}" class="btn btn-sm bg-emerald-600 text-white shrink-0"><i class="fa-solid fa-check"></i><span>Approve</span></button>
     </div>`).join('');
   el.sdaConfBody.querySelectorAll('.sda-conf-check').forEach((cb) => cb.addEventListener('change', updateSdaSelCount));
   el.sdaConfBody.querySelectorAll('[data-conf-approve]').forEach((b) => b.addEventListener('click', () => respondSda([b.dataset.confApprove], true)));

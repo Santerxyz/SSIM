@@ -646,3 +646,113 @@ Deliberate DECISIONS (deviation from a blanket re-skin), for reviewer awareness:
    `design_source` universally), the emerald `csfUsd` price spans across the rows/cards were given
    `font-mono` for column alignment — presentational only; EUR/USD formatters untouched (`csfUsd` is
    byte-identical, still `en-US` `$1,234.56`).
+
+---
+
+## V17 — Account modals (add / login / edit / attach / SDA / env / folder / move) (`index.html` 8 static shells + `app.js` render helpers)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin — NOT a 💰 view, but it carries destructive
+actions, so every `ssimConfirm` gate and every `api(` call is byte-identical.** Eight static
+modal shells in `index.html` were ported to the masterpiece DS to match their
+`design_source.html` targets (`#modal-overlay`, `#login-overlay`, `#attach-overlay`,
+`#sda-overlay`, `#env-overlay`, `#folder-overlay`, `#move-overlay`, `#edit-overlay`):
+
+- **Shared shell vocabulary** across all eight: header `text-lg`→`.t16`; the close button →
+  `.modal-x` (**its `id` KEPT** — `modal-close`/`login-close`/`attach-close`/`sda-close`/
+  `env-close`/`folder-close`/`move-close`/`edit-close`; every handler binds by id, NOT the
+  prototype's `data-close`; same call as V10–V16); every `<label>` → `.field-label`; every
+  `<input>`/`<select>` → `.field`; Cancel → `.btn btn-secondary flex-1`; the primary submit →
+  `.btn btn-primary flex-1` (add-account / environment / folder / move / edit-Save). The `z-40`
+  layering class on each overlay was NOT touched.
+- **Add-account (`#modal-overlay`):** the 5 fields (Environment select, Steam Username, Password,
+  maFile path, Proxy override) → `.field` + `.field-label`; the "(optional – empty = environment
+  proxy)" hint span kept. `name=environmentId/username/password/maFilePath/proxy` preserved.
+- **Account-Login (`#login-overlay`):** env → `.field`; the QR white-card `rounded-xl`→`rounded-2xl`
+  (keeps `#login-qr-img` + `#login-qr-overlay`); the scan instruction `text-2xs`→`.t11`; the
+  credentials form's labels → `.field-label`, inputs → `.field`, the Steam-Guard input →
+  `.field text-center tracking-[0.4em]`; `#login-cred-msg`'s static class `text-2xs`→`t10`; the
+  "Log in" submit → `.btn btn-primary w-full` (inner `<i/><span id="login-cred-submit-label">`
+  kept); the **Limited-tier explainer note** → `.t11 rounded-xl`, its icon `text-amber-400`→
+  `text-warn`, and its **Limited→Full copy byte-identical (invariant 9)**.
+- **Attach-maFile (`#attach-overlay`):** intro `text-2xs`→`.t11` (keeps `#attach-username`); input →
+  `.field`; the **Upgrade submit → `.btn btn-sell`** (emerald = the Limited→Full upgrade, matching
+  `design_source.html` and the legacy emerald button — the meaningful tier-upgrade color).
+  `name=maFilePath` preserved.
+- **SDA (`#sda-overlay`):** header account → `.t13`; the OTP card `rounded-xl`→`rounded-2xl`, its
+  label `text-2xs`→`.t11`, the big code `text-4xl`→`.t28` (`style="font-size:34px"`, `select-all` +
+  emerald kept); the Copy button → `.btn btn-secondary btn-sm` (keeps `#sda-otp-copy` +
+  `#sda-otp-copy-label`); the confirmations toolbar buttons → `.btn btn-sm` (Approve-selected =
+  `bg-emerald-700/80`, Approve-all = `bg-emerald-600`, Refresh = `btn-secondary`; `#sda-conf-count`/
+  `-approve-sel`/`-sel-count`/`-approve-all`/`-refresh` kept); the list wrapper `rounded-lg`→
+  `rounded-xl`.
+- **Environment (`#env-overlay`):** labels → `.field-label`, inputs → `.field`, the proxy-format
+  hint `text-3xs`→`.t10` (keeps `#env-name-input`/`#env-proxy-input`); submit `<span
+  id="env-submit-label">` kept. The `#env-modal-title` h3 class became `.t16` (its innerHTML — the
+  brand-icon New/Edit swap in `openEnvModal` — is untouched).
+- **Folder (`#folder-overlay`):** label → `.field-label`, input → `.field` (keeps `#folder-name`,
+  `name=name`); `#folder-modal-title` h3 → `.t16` (JS innerHTML swap untouched).
+- **Move-account (`#move-overlay`):** the "Move X…" line `text-sm`→`.t14` (keeps
+  `#move-account-label`); both selects → `.field` (keeps `#move-env`/`#move-folder`).
+- **Edit-account (`#edit-overlay`):** the mono username line `text-sm`→`.t14`; Display-name +
+  proxy + password + maFile inputs → `.field`; the proxy-current line `text-2xs`→`.t11`; the
+  "Use environment proxy" checkbox label `text-xs`→`.t12` (accent + `#edit-use-env-proxy` kept);
+  the proxy hint `text-2xs`→`.t11`; the `<details>` summary `text-xs`→`.t12` (password/maFile
+  inputs kept as `#edit-password`/`#edit-mafile`); the re-login info box `rounded-lg text-2xs`→
+  `rounded-xl .t11`; Save → `.btn btn-primary`. The **Delete-account button was kept as the
+  design-source soft-rose full-width treatment** (`rounded-lg`→`rounded-xl`, `text-sm`→`.t14`,
+  `#edit-delete` kept), NOT flattened to a solid `.btn btn-danger` — see DECISION 2.
+
+In `app.js` three render helpers moved onto the DS (template/className strings only):
+- **`renderQrStatus`** — the 4-step login stepper's per-step pills moved from the bespoke
+  `text-3xs … rounded-full border ${cls}` chip to `.pill ${cls}` with `cls` remapped to DS
+  variants: current = `pill--brand` (+ the `fa-spinner cs2-spin`), done = `pill--success`,
+  pending = `pill--neutral`. The `steps`/`order`/`idx`/`done`/`cur` progression logic is
+  unchanged.
+- **`showCredMsg`** — the status-line className `text-2xs`→`t10`; the tone colors (rose=error /
+  slate=info / emerald=ok) + the `textContent` are unchanged (2FA/OTP honesty intact).
+- **`renderSdaConfirmations`** — the confirmation rows moved to the scale (title
+  `text-sm`→`t13 font-semibold`, subline `text-2xs`→`t11`) and the per-row Approve button →
+  `.btn btn-sm bg-emerald-600 text-white`; the empty line `text-sm`→`t13`. **The two
+  `addEventListener` wiring lines below the template are byte-identical** and still read
+  `.sda-conf-check` + `[data-conf-approve]` (both preserved); `data-conf-id` kept.
+
+**Every handler stayed byte-identical** (none were in the edit set): `submitAddAccount` (POST
+`/api/accounts`), `openLogin`/`closeLogin`/`switchLoginTab`/`startQr`/`applyLoginStatus`/
+`submitLoginCredentials`/`applyCredStatus`/`startLoginPoll`/`onLoginImported` (QR + credentials
+imports → Limited tier), `openAttachMaFile`/`submitAttach` (POST `/attach-mafile` → Full),
+`openSda`/`closeSda`/`startSdaOtp`/`copySdaOtp`/`refreshSdaConfirmations`/`respondSda` (POST
+`/confirmations/respond`), `openEditAccount`/`syncProxyFieldEnabled`/`proxySourceHint`/
+`closeEditAccount`/`deleteEditAccount`/`submitEditAccount` (PATCH + DELETE), `openEnvModal`/
+`submitEnv`/`deleteEnvironment`, `openFolderModal`/`submitFolder`/`deleteFolder`/`reorderFolder`,
+`openMoveModal`/`populateMoveFolders`/`submitMove`/`batchDeleteAccounts`, and `openCleanBrowser`.
+No `api(`/`fetch(`/`ssimConfirm`/`addEventListener`/`setTimeout`/`state.`-mutation line changed —
+**ssimConfirm + api UNCHANGED** on all destructive paths (delete account/env/folder, batch-delete,
+SDA confirmation-respond). The open helpers `openAddAccount`/`openLogin`/`openEnvModal`/
+`openFolderModal`/`openMoveModal` emit only `<option>` maps + title innerHTML + `.value`/
+`.textContent` (no DS-classable markup), so their re-skin lands on the static shells.
+
+Deliberate DECISIONS (reviewer awareness):
+
+1. **The login method tabs were kept byte-identical, NOT converted to `.seg`.** The
+   `design_source.html` renders the QR/Credentials switch as a `.seg` with `login-tab is-on`
+   + `.split`, but the live `switchLoginTab` drives the active state by toggling
+   `bg-brand`/`text-white`/`bg-slate-800`/`text-slate-400` on `#login-overlay .login-tab` (it also
+   orchestrates the QR-vs-credential session cancel + poll teardown — core login-flow logic on an
+   invariant-9-sensitive path). Converting to `.seg`/`.is-on` would require re-wiring that handler
+   (its `.is-on` state isn't what the JS toggles), so the tab row (`.login-tab` + `data-login-tab`)
+   was left verbatim — a faithful keep-the-JS-contract call, mirroring V13's `[data-recip]`, V14's
+   `data-ban-toggle`, and V16's tab decisions. The tabs still render on-brand (brand-filled active).
+2. **The edit-account Delete button keeps the design-source soft-rose treatment, not a solid
+   `.btn btn-danger`.** `design_source.html`'s `#edit-overlay` deliberately styles "Delete account"
+   as a full-width `bg-rose-900/30 … text-rose-400 border border-rose-800/50` soft button (distinct
+   from the solid danger buttons), because it is a *soft* removal — logs out + clears cache but
+   **keeps the maFile, re-addable via "Import bots"**. The masterpiece design is authoritative
+   (its tokens/components are the source of truth), so the soft-rose look was matched (just
+   `rounded-lg`→`rounded-xl` + `text-sm`→`.t14`). The real destructive gate — the danger
+   `ssimConfirm` in `deleteEditAccount` — is preserved byte-identical.
+3. **`openCleanBrowser` (Clean-browser action) emits no re-skinnable static markup** — it only
+   swaps the passed button's `innerHTML` for a spinner during the POST — so it was left
+   byte-identical; there is no shell to re-skin.
+4. **The SDA confirmation checkbox keeps `accent-emerald-500`** (not the mock's `accent-violet-500`)
+   — the whole SDA modal is emerald-themed (Steam Guard), and `.sda-conf-check` is the load-bearing
+   selection hook; the accent is cosmetic and stayed on-theme.
