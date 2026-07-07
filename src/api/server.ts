@@ -16,7 +16,7 @@ import { ProcessHealth } from '../core/ProcessHealth';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
 import { AccountVault, VAULT_NEWER_VERSION_ERROR } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
-import { loadMaFileFromDisk } from '../core/maFiles';
+import { loadMaFileFromDisk, readCredentialsFile } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
 import { loadMaFile, generateTotpCode, msUntilNextTotp, identitySecretPresence } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
@@ -2261,23 +2261,6 @@ export function createApp(deps: ApiDeps): Express {
 // ════════════════════════════════════════════════════════════════════════════
 //  Bulk-import helpers
 // ════════════════════════════════════════════════════════════════════════════
-
-/** Parses mafiles/accounts.txt → Map<lowercaseUsername, password>. */
-function readCredentialsFile(): Map<string, string> {
-  const map = new Map<string, string>();
-  const file = path.join(MAFILES_DIR, 'accounts.txt');
-  if (!fs.existsSync(file)) return map;
-  for (const raw of fs.readFileSync(file, 'utf-8').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const idx = line.indexOf(':');
-    if (idx === -1) continue;
-    const user = line.slice(0, idx).trim();
-    const pass = line.slice(idx + 1); // passwords may legitimately contain ':'
-    if (user) map.set(user.toLowerCase(), pass);
-  }
-  return map;
-}
 
 interface UnlinkedMaFile { file: string; accountName: string; hasPassword: boolean; }
 
