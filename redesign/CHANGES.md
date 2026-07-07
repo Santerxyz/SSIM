@@ -404,3 +404,50 @@ Deliberate DECISION (pricing honesty — invariant 5), for reviewer awareness:
    sale — the money the operator will actually receive stays unambiguous. The amber deducted-fee `−`
    cue and the emerald Net (the payout figure) were preserved rather than flattened to neutral, since
    both carry meaning on a money view. EUR formatting (de-DE `1.234,56`) inside `fmtEurCents` untouched.
+
+---
+
+## V13 💰 — Send-Trade modal (single + folder mass-send) (`index.html` `#trade-overlay` + `#mass-progress` + `app.js` `recipientRow`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin of a 💰 view — every send/trade handler, the
+`/api/trade/send` + `/api/trade/mass-send` POSTs, and the End-task `ssimConfirm` gate are
+byte-identical.** The static `#trade-overlay` shell was ported to the masterpiece DS to match
+`design_source.html:1070–1097`: header `.t16` title + `.modal-x` close, the item-summary line →
+`rounded-xl` `.t14`, the Internal-account / External-link radio cards → `rounded-xl` `.t14` (the
+`peer-checked:border-brand/text-brand/bg-brand/10` selected state kept — brand = trade), the
+Environment/Folder selects and the external trade-URL input → `.field`, every label → `.field-label`,
+the recipient search → `.field pl-9` (magnifier kept), the recipient-list wrapper `rounded-lg`→
+`rounded-xl`, the empty/count lines → `.t11`, the amber 2FA auto-confirm note → `.t11`
+(`rounded-lg`→`rounded-xl`), Cancel → `.btn btn-secondary`, and the **Send & confirm submit →
+`.btn btn-primary`** (brand; inner `<i fa-paper-plane/><span>Send & confirm</span>` kept byte-identical
+to what `setButtonLoading` re-emits). The floating `#mass-progress` panel was brought onto the DS too:
+the title/count/detail → `.t14`/`.t12`/`.t10`, the bar stays `bg-brand` (already on-brand, matching
+every other progress bar), and the **End-task button → `.btn btn-danger btn-sm`** (its inner
+`<i fa-stop/><span>End task</span>` kept byte-identical to what `resetEndBtn` re-emits). In `app.js`,
+`recipientRow`'s clickable row moved to the DS look — `.avatar` tile + `.t13` name + `.t10` folder
+subline — while keeping the load-bearing `data-recip` hook, the selected brand-ring highlight, and the
+check icon.
+
+**Every handler stayed byte-identical:** `submitTrade` (POST `/api/trade/send` + the unconfirmed
+"SENT but NOT 2FA-confirmed — do NOT resend" money-safety warn + the `verifyBeforeRetry` guard + the
+INV-E1 9-second deferred re-refresh of affected accounts), `submitMassTrade` (POST
+`/api/trade/mass-send`), `pollMass` (1 s `/api/trade/mass-status` poll + bar/detail/stall/completion
+re-pull + `surfaceTradeFailures`), `endTask` (the MANDATORY End-task `ssimConfirm` danger gate),
+`closeTradeModal`, `openTradeModal`, `populateTradeFolders`, `buildRecipientList`, `readTradeTarget`,
+`updateTradeTargetVisibility`, `surfaceTradeFailures`. No `api(`/`fetch(`/`ssimConfirm`/
+`addEventListener`/`setTimeout`/`state.`-mutation line changed. `openTradeModal`, `populateTradeFolders`
+and `showMassProgress` emit no DS-classable markup (only `textContent` + bare `<option>`s + class/style
+toggles), so their re-skin lands on the static `#trade-overlay` / `#mass-progress` hosts.
+`#trade-close`/`#trade-cancel` kept their `id`s (handlers bind by id — NOT the prototype's
+`data-close`; same call as V10/V11/V12).
+
+Deliberate DECISION (design-source deviation, not an IA change), for reviewer awareness:
+
+1. **The recipient row is kept as a `[data-recip]` `<button>`, NOT the prototype's `<label>`+radio.**
+   The mock's `#trade-overlay` recipient rows are `<label><input type="radio" name="recip">…</label>`
+   (`design_source.html:1089–1090`), but the legacy `buildRecipientList` binds a click listener on
+   every `[data-recip]` and reads `r.dataset.recip` to set `state.tradeTarget`, then re-renders the
+   list to paint the selection. Swapping to the mock's radio structure (which has no `data-recip`)
+   would break both the delegation and the selected-state re-render. So the row adopts the masterpiece
+   `.avatar`/type-scale look but stays a `data-recip` button — same call as V3's sidebar rows, a
+   faithful re-skin with the JS contract intact.

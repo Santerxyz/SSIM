@@ -5043,11 +5043,11 @@ function recipientRow(a) {
   const folderName = a.folderId && state.tradeFolderName[a.folderId] ? state.tradeFolderName[a.folderId] : 'no folder';
   return `<button type="button" data-recip="${escapeAttr(a.username)}"
     class="w-full flex items-center gap-2.5 px-3 py-2 text-left transition ${sel ? 'bg-brand/15 ring-1 ring-inset ring-brand/50' : 'hover:bg-slate-800/60'}">
-    <span class="w-6 h-6 rounded bg-slate-800 flex items-center justify-center shrink-0">
-      <i class="fa-solid fa-user text-3xs ${sel ? 'text-brand' : 'text-slate-500'}"></i></span>
+    <span class="avatar shrink-0" style="width:2rem;height:2rem">
+      <i class="fa-solid fa-user ${sel ? 'text-brand' : 'text-slate-500'}"></i></span>
     <span class="flex-1 min-w-0">
-      <span class="block text-sm truncate ${sel ? 'text-brand font-semibold' : 'text-slate-200'}">${escapeHtml(a.displayName || a.username)}</span>
-      <span class="block text-3xs text-slate-500 truncate"><i class="fa-solid fa-folder mr-1"></i>${escapeHtml(folderName)}</span>
+      <span class="block t13 truncate ${sel ? 'text-brand font-semibold' : 'text-slate-200'}">${escapeHtml(a.displayName || a.username)}</span>
+      <span class="block t10 text-slate-500 truncate"><i class="fa-solid fa-folder mr-1"></i>${escapeHtml(folderName)}</span>
     </span>
     ${sel ? '<i class="fa-solid fa-check text-brand text-sm shrink-0"></i>' : ''}</button>`;
 }

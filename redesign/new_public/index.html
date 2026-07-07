@@ -1207,24 +1207,24 @@
   <div id="trade-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-paper-plane text-brand mr-2"></i>Send items</h3>
-        <button id="trade-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-paper-plane text-brand mr-2"></i>Send items</h3>
+        <button id="trade-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="trade-form" class="px-6 py-5 space-y-4">
-        <div class="px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-sm text-slate-400">
+        <div class="px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 t14 text-slate-400">
           <i class="fa-solid fa-box mr-1.5 text-brand"></i>
           <span id="trade-summary">—</span> from <span id="trade-from" class="text-slate-200 font-semibold"></span>
         </div>
         <div class="flex gap-2">
           <label class="flex-1">
             <input type="radio" name="target" value="internal" class="peer sr-only" checked />
-            <div class="px-3 py-2.5 rounded-lg border border-slate-700 text-center text-sm font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
+            <div class="px-3 py-2.5 rounded-xl border border-slate-700 text-center t14 font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
               <i class="fa-solid fa-users mr-1"></i>Internal account
             </div>
           </label>
           <label class="flex-1">
             <input type="radio" name="target" value="external" class="peer sr-only" />
-            <div class="px-3 py-2.5 rounded-lg border border-slate-700 text-center text-sm font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
+            <div class="px-3 py-2.5 rounded-xl border border-slate-700 text-center t14 font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
               <i class="fa-solid fa-link mr-1"></i>External link
             </div>
           </label>
@@ -1232,38 +1232,36 @@
         <div id="trade-internal-block" class="space-y-3">
           <div class="grid grid-cols-2 gap-2">
             <div>
-              <label class="block text-xs font-semibold text-slate-400 mb-1.5">1 · Environment</label>
-              <select id="trade-env" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+              <label class="field-label">1 · Environment</label>
+              <select id="trade-env" class="field"></select>
             </div>
             <div>
-              <label class="block text-xs font-semibold text-slate-400 mb-1.5">2 · Folder</label>
-              <select id="trade-folder" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+              <label class="field-label">2 · Folder</label>
+              <select id="trade-folder" class="field"></select>
             </div>
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">3 · Recipient</label>
+            <label class="field-label">3 · Recipient</label>
             <div class="relative">
               <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-              <input id="trade-search" type="text" autocomplete="off" placeholder="Search account…"
-                class="w-full pl-9 pr-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+              <input id="trade-search" type="text" autocomplete="off" placeholder="Search account…" class="field pl-9" />
             </div>
             <div id="trade-recipient-list"
-              class="mt-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 divide-y divide-slate-800/60"></div>
-            <p id="trade-recipient-empty" class="hidden text-center text-slate-600 text-xs py-5">No matching accounts.</p>
-            <p id="trade-recipient-count" class="mt-1.5 text-2xs text-slate-500"></p>
+              class="mt-2 max-h-56 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 divide-y divide-slate-800/60"></div>
+            <p id="trade-recipient-empty" class="hidden text-center text-slate-600 t11 py-5">No matching accounts.</p>
+            <p id="trade-recipient-count" class="mt-1.5 t11 text-slate-500"></p>
           </div>
         </div>
         <div id="trade-external-block" class="hidden">
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">External trade link</label>
-          <input id="trade-target-url" type="text" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=…&token=…"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">External trade link</label>
+          <input id="trade-target-url" type="text" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=…&token=…" class="field" />
         </div>
-        <div class="px-3 py-2 rounded-lg bg-amber-900/20 border border-amber-700/40 text-2xs text-amber-400/90">
+        <div class="px-3 py-2 rounded-xl bg-amber-900/20 border border-amber-700/40 t11 text-amber-400/90">
           <i class="fa-solid fa-shield-halved mr-1"></i>The trade is automatically confirmed via 2FA (identity_secret) and sent immediately.
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="trade-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="trade-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="trade-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="trade-submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-paper-plane"></i><span>Send & confirm</span>
           </button>
         </div>
@@ -1645,15 +1643,14 @@
   <!-- Mass-send progress (bottom center) -->
   <div id="mass-progress" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 w-[420px] max-w-[90vw] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 px-5 py-4 fade-in">
     <div class="flex items-center justify-between mb-2">
-      <span class="text-sm font-bold text-white flex items-center gap-2"><i class="fa-solid fa-paper-plane cs2-spin text-brand"></i>Mass trade running…</span>
-      <span id="mass-count" class="text-xs font-mono text-slate-400"></span>
+      <span class="t14 font-bold text-white flex items-center gap-2"><i class="fa-solid fa-paper-plane cs2-spin text-brand"></i>Mass trade running…</span>
+      <span id="mass-count" class="t12 font-mono text-slate-400"></span>
     </div>
     <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
       <div id="mass-bar" class="h-full bg-brand transition-all duration-300" style="width:0%"></div>
     </div>
-    <p id="mass-detail" class="text-2xs text-slate-500 mt-2"></p>
-    <button id="mass-end" type="button"
-      class="mt-3 w-full px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center justify-center gap-2 disabled:opacity-50">
+    <p id="mass-detail" class="t10 text-slate-500 mt-2"></p>
+    <button id="mass-end" type="button" class="btn btn-danger btn-sm w-full mt-3">
       <i class="fa-solid fa-stop"></i><span>End task</span>
     </button>
   </div>

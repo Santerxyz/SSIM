@@ -765,18 +765,18 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-426 | Open trade modal `openTradeModal`: folder vs single; summary "N Item(s)"; from = bots list or active user; default env; reset target; internal radio checked | app.js:4939–4968 | | |
-| P-427 | Target-mode toggle `updateTradeTargetVisibility`: shows internal-block or external-URL block | app.js:4971–4975 | | |
-| P-428 | Populate trade folders `populateTradeFolders`: GET tree; "All folders" + "— no folder —" + indented; rebuild recipients | app.js:4979–4992 | | |
-| P-429 | Build recipient list `buildRecipientList`: filter by env+folder+search; excludes self (single mode); drops stale selection; count line "Selected: X" / "N account(s) · click to select" | app.js:4995–5020 | | |
-| P-430 | Recipient row `recipientRow`: selected highlight (brand ring), folder name subline, check icon | app.js:5022–5034 | | |
-| P-431 | Read target `readTradeTarget`: internal {toUsername} (warn if none) / external {tradeUrl} (warn if empty) | app.js:5037–5046 | | |
-| P-432 | Submit trade (single) `submitTrade`: POST `/api/trade/send {from,assetIds,appId,contextId:'2',target}`; clears selection; **unconfirmed** → warn "SENT but NOT 2FA-confirmed — confirm manually, do NOT resend"; confirmed/sent → success; **9s deferred re-refresh** of affected accounts (INV-E1) | app.js:5048–5089 | 💰 | |
-| P-433 | Send-fail money-safety: on error w/ `verifyBeforeRetry` → error "Send may have placed an offer — verify outgoing offers before retrying" + refresh sender | app.js:5079–5086 | 💰 | |
-| P-434 | Submit mass-trade (folder) `submitMassTrade`: POST `/api/trade/mass-send {items,appId,contextId:'2',target}`; shows progress; polls; toast `Mass trade started: N bot(s), M items` | app.js:5092–5111 | 💰 | |
-| P-435 | Mass progress panel `showMassProgress`: bottom-center `#mass-progress`; bar, count `0/bots`, "Processing queue (max. 2 at a time)…" | app.js:5112–5118; index.html:1471–1485 | 💰 | |
-| P-436 | Mass-trade poll (1s) `pollMass`: GET `/api/trade/mass-status`; bar %, `done/total`, detail `X confirmed · Y failed` (or cancelling); stall guard; on done re-pull cache + surface failures + toast `Mass trade done/ended/stopped: X confirmed[, Y failed]`; hides after 3500ms | app.js:5166–5205 | 💰 | |
-| P-437 | Surface trade failures `surfaceTradeFailures`: groups by reason; up to 4 error toasts `reason — who (+N more)`; overflow warn | app.js:5148–5164 | | |
+| P-426 | Open trade modal `openTradeModal`: folder vs single; summary "N Item(s)"; from = bots list or active user; default env; reset target; internal radio checked | app.js:4939–4968 | | ✅ done · logic unchanged (emits only textContent + bare `<option>` — no DS markup; host `#trade-overlay` re-skinned in index.html) |
+| P-427 | Target-mode toggle `updateTradeTargetVisibility`: shows internal-block or external-URL block | app.js:4971–4975 | | ✅ done · logic unchanged |
+| P-428 | Populate trade folders `populateTradeFolders`: GET tree; "All folders" + "— no folder —" + indented; rebuild recipients | app.js:4979–4992 | | ✅ done · logic unchanged (bare `<option>` strings only) |
+| P-429 | Build recipient list `buildRecipientList`: filter by env+folder+search; excludes self (single mode); drops stale selection; count line "Selected: X" / "N account(s) · click to select" | app.js:4995–5020 | | ✅ done · logic unchanged (row re-skin lives in recipientRow; classList/innerHTML/addEventListener untouched) |
+| P-430 | Recipient row `recipientRow`: selected highlight (brand ring), folder name subline, check icon | app.js:5022–5034 | | ✅ done · re-skinned → `.avatar`/`.t13`/`.t10`; `data-recip` hook + selected brand-ring + check icon preserved |
+| P-431 | Read target `readTradeTarget`: internal {toUsername} (warn if none) / external {tradeUrl} (warn if empty) | app.js:5037–5046 | | ✅ done · logic unchanged |
+| P-432 | Submit trade (single) `submitTrade`: POST `/api/trade/send {from,assetIds,appId,contextId:'2',target}`; clears selection; **unconfirmed** → warn "SENT but NOT 2FA-confirmed — confirm manually, do NOT resend"; confirmed/sent → success; **9s deferred re-refresh** of affected accounts (INV-E1) | app.js:5048–5089 | 💰 | ✅ done · submitTrade + ssimConfirm gate UNCHANGED (send exec + `/api/trade/send` POST + unconfirmed-warn + INV-E1 9s re-refresh byte-identical) |
+| P-433 | Send-fail money-safety: on error w/ `verifyBeforeRetry` → error "Send may have placed an offer — verify outgoing offers before retrying" + refresh sender | app.js:5079–5086 | 💰 | ✅ done · logic unchanged (verifyBeforeRetry money-safety byte-identical) |
+| P-434 | Submit mass-trade (folder) `submitMassTrade`: POST `/api/trade/mass-send {items,appId,contextId:'2',target}`; shows progress; polls; toast `Mass trade started: N bot(s), M items` | app.js:5092–5111 | 💰 | ✅ done · logic unchanged (submitMassTrade + `/api/trade/mass-send` POST byte-identical) |
+| P-435 | Mass progress panel `showMassProgress`: bottom-center `#mass-progress`; bar, count `0/bots`, "Processing queue (max. 2 at a time)…" | app.js:5112–5118; index.html:1471–1485 | 💰 | ✅ done · host `#mass-progress` re-skinned (t14/t12/t10, bar `bg-brand`, `#mass-end` → `.btn btn-danger btn-sm`); showMassProgress logic unchanged (textContent/class/style only; `#mass-end` inner byte-identical to resetEndBtn re-emit) |
+| P-436 | Mass-trade poll (1s) `pollMass`: GET `/api/trade/mass-status`; bar %, `done/total`, detail `X confirmed · Y failed` (or cancelling); stall guard; on done re-pull cache + surface failures + toast `Mass trade done/ended/stopped: X confirmed[, Y failed]`; hides after 3500ms | app.js:5166–5205 | 💰 | ✅ done · pollMass byte-identical |
+| P-437 | Surface trade failures `surfaceTradeFailures`: groups by reason; up to 4 error toasts `reason — who (+N more)`; overflow warn | app.js:5148–5164 | | ✅ done · logic unchanged |
 
 ---
 
