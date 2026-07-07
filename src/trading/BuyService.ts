@@ -57,7 +57,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 // Concurrency scales with the batch (scaleConcurrency: 1 worker / 5 accounts, floor 5,
 // ceiling 25). Money safety is per-account (in-flight guard, ceiling, post-buy verify,
 // never-throw-after-placed) and unaffected by how many DISTINCT accounts buy at once.
-const MASS_BUY_ITEM_DELAY_MS       = 1_500; // pause between an account's buys within a worker
+const MASS_BUY_ACCOUNT_DELAY_MS    = 1_500; // pause between two consecutive accounts' orders within one worker
 
 /** Parameters for a folder-wide mass-buy. `pricePerItemMajor` is a MAJOR amount
  *  (e.g. 2.05) applied in EACH account's OWN wallet currency – a region-homogeneous
@@ -453,7 +453,7 @@ export class BuyService {
           this.massJob.currentAccount = u;
           await this.massBuyOne(u, p, wallets.get(u) ?? null);
           this.massJob.processed++;
-          if (queue.length && !this.massCancel) await sleep(MASS_BUY_ITEM_DELAY_MS);
+          if (queue.length && !this.massCancel) await sleep(MASS_BUY_ACCOUNT_DELAY_MS);
         }
       };
       await Promise.all(Array.from({ length: Math.min(concurrency, p.usernames.length) }, () => worker()));
