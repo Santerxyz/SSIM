@@ -233,7 +233,7 @@ export class InventoryManager {
     // drop and every asset still maps. A genuine orphan (asset with NO description at all) is
     // rare and DOES vanish from the count, so surface it loudly to keep the totals honest.
     if (orphans > 0) {
-      logger.warn(`parsed ${items.length} item(s) from ${assets.length} asset(s) – ${orphans} asset(s) had no matching description and were dropped (totals may under-count)`);
+      logger.warn(`[${steamId}] parsed ${items.length} item(s) from ${assets.length} asset(s) – ${orphans} asset(s) had no matching description and were dropped (totals may under-count)`);
     }
     return items;
   }
