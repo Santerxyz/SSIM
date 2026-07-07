@@ -14,14 +14,13 @@ import { dataDir } from '../utils/paths';
 export type PriceSource = 'steam' | 'csfloat';
 
 interface SettingsFile {
-  version:             number;
   priceSource:         PriceSource;              // active app-wide price source (F3)
   csfloatExperimental: boolean;                  // reveal Buy Orders / Trades / Inventory + auto-accept (F2)
   csfloatAutoAccept:   Record<string, boolean>;  // lowercase username → auto-accept ON (F2)
 }
 
 const SETTINGS_PATH = dataDir('app_settings.json');
-const DEFAULTS: SettingsFile = { version: 1, priceSource: 'steam', csfloatExperimental: false, csfloatAutoAccept: {} };
+const DEFAULTS: SettingsFile = { priceSource: 'steam', csfloatExperimental: false, csfloatAutoAccept: {} };
 
 class AppSettingsImpl {
   private file: SettingsFile;
@@ -52,7 +51,6 @@ class AppSettingsImpl {
         return { ...DEFAULTS, csfloatAutoAccept: {} };
       }
       return {
-        version:             1,
         priceSource:         p?.priceSource === 'csfloat' ? 'csfloat' : 'steam',
         csfloatExperimental: !!p?.csfloatExperimental,
         csfloatAutoAccept:   (p?.csfloatAutoAccept && typeof p.csfloatAutoAccept === 'object') ? p.csfloatAutoAccept as Record<string, boolean> : {},
