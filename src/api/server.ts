@@ -248,9 +248,10 @@ export function createApp(deps: ApiDeps): Express {
     };
     next();
   });
-  // SECURITY: same-origin / anti-CSRF + DNS-rebind guard (see originGuard.ts). Mounted FIRST
-  // so it covers the page load and every /api route: a malicious web page the operator visits
-  // cannot drive state-changing money calls (trade/buy/sell) against the localhost API.
+  // SECURITY: same-origin / anti-CSRF + DNS-rebind guard (see originGuard.ts). Mounted before all
+  // routes (after the body-parse and error-redaction middleware) so it covers the page load and
+  // every /api route: a malicious web page the operator visits cannot drive state-changing money
+  // calls (trade/buy/sell) against the localhost API.
   app.use(sameOriginGuard);
   // SECURITY (B26/P5): the capability-token guard authenticates the dashboard to the
   // backend so a random LOCAL process cannot drive money/vault ops even by forging Origin.
