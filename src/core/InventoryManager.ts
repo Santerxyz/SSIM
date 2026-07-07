@@ -260,7 +260,6 @@ export class InventoryManager {
       // 16 (trade-received holds). For CS2 we do NOT use the cache_expiration fallback
       // (it's a description-cache TTL, not a real hold → false positives); TF2 keeps it.
       tradeLockExpiry: parseTradeLock(desc, game === 'tf2'),
-      marketRestriction: desc.market_tradable_restriction ?? desc.market_marketable_restriction ?? 0,
       quantity:        1,
       assetIds:        [asset.assetid],
       iconUrl:         IMG_BASE + (desc.icon_url_large ?? desc.icon_url),

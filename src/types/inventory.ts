@@ -55,13 +55,6 @@ export interface CS2Item {
    * confirmed, instead of counting both as simply "listed". (C9 / INV-D4.)
    */
   listingConfirmed?: boolean;
-  /**
-   * Trade/market restriction period of this item TYPE in days (Steam's
-   * `market_tradable_restriction`, typically 7). Metadata only – it does NOT mean
-   * the item is currently held. Used by the protection auto-tracker to decide
-   * whether a newly-received asset should get a +N-day protection window.
-   */
-  marketRestriction?: number;
   /** Number of identical, identically-locked items collapsed into this stack. */
   quantity:        number;
   /** Asset IDs of every item in the stack (length === quantity). */
