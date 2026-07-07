@@ -6,7 +6,7 @@ import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
-import { webCookiesFresh, ownsCreatedSession } from './sessionHealth';
+import { webCookiesFresh, ownsCreatedSession, WEB_COOKIE_REFRESH_MS } from './sessionHealth';
 import { logger } from '../utils/logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -46,7 +46,6 @@ export function resolveCapEnv(
 const LOGIN_TIMEOUT_MS       = 15_000;  // proxy/CM connection hard cap (was 90s → fail fast)
 const WEB_SESSION_TIMEOUT_MS = 30_000;  // web cookies can lag behind loggedOn (post-login, not the dead-proxy path)
 const INTER_LOGIN_DELAY_MS   = 3_500;   // delay between sequential account logins
-const WEB_SESSION_REFRESH_S  = 20 * 60; // refresh web cookies every 20 min
 
 // ─── Global login concurrency cap (anti-storm) ────────────────────────────────
 // THE hard ceiling on how many NEW logins may be handshaking at once, across EVERY
@@ -679,7 +678,7 @@ export class SessionManager extends EventEmitter {
             void refreshWebSession(session).catch((e) =>
               logger.warn(`[${account.username}] proactive web-session refresh failed: ${(e as Error).message}`));
           }
-        }, WEB_SESSION_REFRESH_S * 1000);
+        }, WEB_COOKIE_REFRESH_MS);
         session.cookieRefreshTimer.unref?.();
       });
 
