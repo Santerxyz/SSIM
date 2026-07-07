@@ -26,6 +26,9 @@
  *   selftest-eacces  – the new exe could not be spawned (lock/permission) after retries
  *   selftest-timeout – the self-test exceeded even the escalated budget
  *   selftest-no-marker – the new exe ran but did not confirm a healthy boot (crash / no marker)
+ *   check-failed     – the version CHECK itself failed (network/server); distinct from up-to-date (S53)
+ *   deferred-busy    – verified + self-tested, but a money/item op started → swap deferred (S14)
+ *   swap-blocked     – the swap (move) failed ≥N times on this machine (AV/EDR / CFA) (S9)
  */
 export type UpdateOutcome =
   | 'ok'
