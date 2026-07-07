@@ -119,6 +119,20 @@ test('H-ACC-056: a newer-version file (no .bak) → DEGRADED, entries not consum
   assert.equal(fs.readFileSync(p, 'utf8'), contents, 'the newer file is left byte-for-byte untouched (no v1 rewrite)');
 });
 
+// ─── H-ACC-060: an ARRAY-shaped tokens map is the "wrong SHAPE" case, NOT authoritative emptiness ─────
+test('H-ACC-060: array-shaped tokens with a VALID .bak recovers from the backup (not loaded as empty)', () => {
+  const p = mk(JSON.stringify({ version: 1, tokens: [] })); // typeof [] === 'object' — must NOT pass as valid
+  fs.writeFileSync(`${p}.bak`, JSON.stringify({ version: 1, tokens: { alice: 'tok-a' } }));
+  const s = new TokenStore(p);
+  assert.equal(s.isDegraded(), false, 'a valid .bak means the store is NOT degraded');
+  assert.equal(s.get('alice'), 'tok-a', 'tokens recovered from the backup, not coerced to empty');
+});
+
+test('H-ACC-060: array-shaped tokens with NO .bak → DEGRADED (not silently loaded as an empty store)', () => {
+  const p = mk(JSON.stringify({ version: 1, tokens: [] }));
+  assert.equal(new TokenStore(p).isDegraded(), true, 'an array-shaped tokens map must degrade, not reset to empty');
+});
+
 test('S24: a throwing vault setToken does NOT escape TokenStore.set (no uncaughtException burst)', () => {
   const s = new TokenStore(mk(undefined)); // fresh install → not degraded
   const origEnabled = AccountVault.isEnabled;

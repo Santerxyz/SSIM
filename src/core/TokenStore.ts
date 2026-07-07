@@ -116,7 +116,10 @@ export class TokenStore {
   /** Parse the tokens map out of a loaded file object, or null when the shape is untrustworthy.
    *  #37: keep only string→non-empty-string entries; a per-entry glitch is not whole-file corruption. */
   private static readTokens(parsed: Partial<TokenFile> | null): Record<string, string> | null {
-    if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null) return null;
+    // H-ACC-060: `typeof [] === 'object'`, so an array-shaped tokens map (hand-edit / foreign tool /
+    // partial restore) would otherwise slip through as a VALID empty (or index-keyed) store instead of
+    // being routed to .bak recovery — this is exactly the "wrong SHAPE" case. Reject arrays explicitly.
+    if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null || Array.isArray(parsed.tokens)) return null;
     // H-ACC-056: refuse a FORWARD-format file (version > 1) rather than consume its entries as raw v1
     // tokens and rewrite it as v1 (B30 vault parity — AccountVault.parseAndVersionCheck does the same).
     // Returning null routes it to the .bak-or-degrade path → write-refusal protects the newer store.
