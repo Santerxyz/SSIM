@@ -230,6 +230,16 @@ export class AccountManager {
   /** Adds a minimal org record for a brand-new vault-imported bot (NO secrets here). */
   addImportedAccount(p: { username: string; maFilePath: string; environmentId: string; folderId?: string | null; tier?: AccountTier }): void {
     if (this.rawGet(p.username)) return;
+    // Validate env/folder before the push (parity with add()): a dangling environmentId would
+    // create a record invisible in every env-scoped tree yet still counted in fleet ops. (H-ACC-016)
+    this.getEnvironmentOrThrow(p.environmentId);
+    if (p.folderId != null) {
+      const folder = this.getFolder(p.folderId);
+      if (!folder) throw new Error(`Folder "${p.folderId}" not found`);
+      if (folder.environmentId !== p.environmentId) {
+        throw new Error('Target folder belongs to a different environment');
+      }
+    }
     this.db.accounts.push({
       id: uuidv4(), username: p.username, password: '', maFilePath: p.maFilePath,
       environmentId: p.environmentId, folderId: p.folderId ?? null,
