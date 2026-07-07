@@ -280,6 +280,12 @@ export class TradeUpService {
     const price = this.priceFn();
     const candidates: TradeUpCandidate[] = [];
     const seen = new Set<string>();
+    // H-TRD-071: a computeContract throw means a schema/grouping regression (grouping guarantees
+    // same rarity+StatTrak, so this is only reachable via a schema mismatch). Count the skips so a
+    // regression that breaks EVERY set surfaces as a distinct warning instead of the ordinary
+    // "no profitable trade-ups" empty state (failed ≠ empty).
+    let skippedSets = 0;
+    let firstSkipError = '';
 
     // Group by (rarity tier, StatTrak).
     const groups = new Map<string, TuInput[]>();
@@ -313,10 +319,22 @@ export class TradeUpService {
         seen.add(key);
         let contract: TuContract;
         try { contract = computeContract(set, outputRarity, this.schema, price); }
-        catch (e) { logger.debug(`[tradeup] skipped a set: ${(e as Error).message}`); continue; }
+        catch (e) {
+          skippedSets++;
+          if (!firstSkipError) firstSkipError = (e as Error).message;
+          logger.debug(`[tradeup] skipped a set: ${(e as Error).message}`);
+          continue;
+        }
         if (contract.profitCents <= minProfit) continue;
         candidates.push(this.decorate(contract, key));
       }
+    }
+
+    // H-TRD-071: if any set failed the exact math, say so — a full-blown regression would otherwise
+    // read as "nothing profitable". One warn carries the first captured cause for the operator.
+    if (skippedSets > 0) {
+      warnings.push(`${skippedSets} candidate set(s) could not be evaluated (schema mismatch) — results may be incomplete.`);
+      logger.warn(`[tradeup] ${username}: ${skippedSets} candidate set(s) failed computeContract (schema mismatch); first error: ${firstSkipError}`);
     }
 
     // H-TRD-072: rank fully-priced first, profit second, so the MAX_CANDIDATES slice
