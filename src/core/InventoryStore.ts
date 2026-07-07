@@ -219,6 +219,7 @@ export class InventoryStore {
 
   delete(username: string): void {
     const key = username.toLowerCase();
+    if (!(key in this.data.records)) { this.lru.delete(key); return; } // no record → nothing to persist, skip the multi-MB rewrite
     delete this.data.records[key];
     this.lru.delete(key);
     this.scheduleFlush();
