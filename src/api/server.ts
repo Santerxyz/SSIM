@@ -1278,14 +1278,6 @@ export function createApp(deps: ApiDeps): Express {
     res.json(enrichInv(inv));
   }));
 
-  app.post('/api/inventory-tf2/:username/refresh', asyncHandler(async (req, res) => {
-    const account = accounts.get(req.params.username);
-    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
-    const inv = await inventory.refreshOne(account.username, 'tf2');
-    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (TF2 refresh)
-    res.json(enrichInv(inv));
-  }));
-
   // GET returns the cached inventory INSTANTLY (even if stale). ?refresh=1 forces
   // a live refetch.
   app.get('/api/inventory/:username', asyncHandler(async (req, res) => {
@@ -1297,14 +1289,6 @@ export function createApp(deps: ApiDeps): Express {
       const cached = inventory.getCached(account.username);
       if (cached) return res.json(enrichInv(cached));
     }
-    const inv = await inventory.refreshOne(account.username);
-    history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (CS2 refresh)
-    res.json(enrichInv(inventory.getCached(account.username) ?? inv)); // refreshOne is the full CS2 fetch; getCached returns the freshly-stored complete record
-  }));
-
-  app.post('/api/inventory/:username/refresh', asyncHandler(async (req, res) => {
-    const account = accounts.get(req.params.username);
-    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
     const inv = await inventory.refreshOne(account.username);
     history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (CS2 refresh)
     res.json(enrichInv(inventory.getCached(account.username) ?? inv)); // refreshOne is the full CS2 fetch; getCached returns the freshly-stored complete record
@@ -1974,11 +1958,6 @@ export function createApp(deps: ApiDeps): Express {
   //  explicitly selected + started. See FEATURES_REPORT.md.
   // ════════════════════════════════════════════════════════════════════════
 
-  // GC + schema readiness, for the modal to show whether execution is enabled.
-  app.get('/api/tradeup/status', (_req: Request, res: Response) => {
-    res.json({ ...tradeup.gcStatus(), schemaLoaded: cs2Schema.isLoaded(), schemaSkins: cs2Schema.skinCount() });
-  });
-
   // POST /api/tradeup/candidates { username } — live-refresh + compute every positive-profit trade-up.
   app.post('/api/tradeup/candidates', asyncHandler(async (req, res) => {
     const username = typeof req.body?.username === 'string' ? req.body.username : '';
@@ -2009,8 +1988,6 @@ export function createApp(deps: ApiDeps): Express {
   //  Feature 2 – Storage Unit (Casket) Management (single account only)
   //  List/read are read-only (need only the GC library); MOVES are gated like trade-ups.
   // ════════════════════════════════════════════════════════════════════════
-
-  app.get('/api/casket/status', (_req: Request, res: Response) => res.json(casket.status()));
 
   app.get('/api/casket/:username/list', asyncHandler(async (req, res) => {
     if (!accounts.get(req.params.username)) return res.status(404).json({ error: 'account not found' });
