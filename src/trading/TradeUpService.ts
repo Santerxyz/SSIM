@@ -318,7 +318,7 @@ export class TradeUpService {
         if (seen.has(key)) continue;
         seen.add(key);
         let contract: TuContract;
-        try { contract = computeContract(set, outputRarity, this.schema, price); }
+        try { contract = computeContract(set, this.schema, price); }
         catch (e) {
           skippedSets++;
           if (!firstSkipError) firstSkipError = (e as Error).message;
