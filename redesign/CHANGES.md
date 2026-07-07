@@ -363,3 +363,44 @@ Deliberate DECISION (design-source deviation, not IA), for reviewer awareness:
    apart from a plain `failed` or an empty run (pricing/balance honesty — a failed refresh must never
    look like "nothing bought"). The real per-account message (Steam's actual reason) and its `title`
    tooltip are preserved verbatim.
+
+---
+
+## V12 💰 — Market-Sell modal (mass-sell) (`index.html` `#sell-overlay` + `#sell-progress` + `app.js` `renderSellPreview`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin of a 💰 view — every price/funds handler, the
+`ssimConfirm` spend gate, and the sell execution are byte-identical.** The static `#sell-overlay`
+shell was ported to the masterpiece DS to match `design_source.html:1100–1127`: header `.t16` title +
+`.modal-x` close, the item-summary line → `.t14` (`rounded-lg`→`rounded-xl`), "Sale price (EUR)" →
+`.field-label`, the three pricing-strategy radio cards → `rounded-xl` / `.t14` / `.t11` sub-text (the
+`peer-checked:border-emerald-500` selected state kept — emerald = sell), the custom net-price input →
+`.field w-32`, the **Calculate prices & proceeds** button → `.btn btn-secondary btn-sm w-full`, the
+`#sell-preview-result` mount → `rounded-xl` `.t12`, the amber 2FA-irreversible/Gross-vs-Net note →
+`.t11` (`rounded-lg`→`rounded-xl`), Cancel → `.btn btn-secondary`, and the **Sell & confirm submit →
+`.btn btn-sell`**. The floating `#sell-progress` panel was brought onto the DS too: the bar accent
+moved emerald→brand (`#sell-bar` → `bg-brand`, matching every other progress bar V6/V11), the
+title/count/detail → `.t14`/`.t12`/`.t10`, and the **End-task button → `.btn btn-danger btn-sm`** (its
+inner `<i fa-stop/><span>End task</span>` kept byte-identical to what `resetEndBtn` re-emits). In
+`app.js`, `renderSellPreview`'s table moved to the DS type scale (header `.t10`, table `.t13`, missing
+note `.t10`); the per-item re-query button → `.btn btn-icon-sm btn-secondary` (safe: `retryOnePrice`
+only swaps the button's `innerHTML` icon, never its `className`, so the DS class persists).
+
+**Every handler stayed byte-identical:** `submitSell` (POST `/api/market/sell` + its `ssimConfirm`
+spend gate), `previewSell` (POST `/api/market/preview`), `pollSell` (1 s `/api/market/sell-status`
+poll + bar/phase/stall/completion-refresh), `retryOnePrice`, `selectedSellItems`, `sellStrategy`,
+`customSellCents`, `toggleSellCustomRow`, `openSellModal`, `showSellProgress`, `closeSellModal`. No
+`api(`/`fetch(`/`ssimConfirm`/`addEventListener`/`setTimeout`/`state.` line changed; `openSellModal`
+and `showSellProgress` emit no DS-classable markup (only `textContent` + class toggles), so their
+re-skin lands on the static `#sell-overlay` / `#sell-progress` hosts. `#sell-close`/`#sell-cancel`
+kept their `id`s (handlers bind by id — NOT the prototype's `data-close`; same call as V10/V11).
+
+Deliberate DECISION (pricing honesty — invariant 5), for reviewer awareness:
+
+1. **The sell preview keeps failed/unpriced items VISUALLY DISTINCT from priced ones.** A priced row
+   still shows its Gross / Steam-fee(−, amber) / Net(emerald, `font-mono`) figures; an unpriced item
+   now renders a rose `.pill pill--danger` "no price" (replacing the bare `text-rose-400` cell) beside
+   its per-item re-query button, and the footer still appends the amber "N item(s) without price …"
+   note. So an item whose live price fetch failed can never be mistaken for a zero-value or a priced
+   sale — the money the operator will actually receive stays unambiguous. The amber deducted-fee `−`
+   cue and the emerald Net (the payout figure) were preserved rather than flattened to neutral, since
+   both carry meaning on a money view. EUR formatting (de-DE `1.234,56`) inside `fmtEurCents` untouched.

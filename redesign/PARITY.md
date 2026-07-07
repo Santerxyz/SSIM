@@ -797,17 +797,17 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-441 | Flatten selection → sell items `selectedSellItems`: {username,assetId,marketHashName} across agg (folder) or single account | app.js:5211–5237 | 💰 | |
-| P-442 | Sell strategy read `sellStrategy`: lowest / undercut / custom | app.js:5239–5242 | | |
-| P-443 | Custom price parse `customSellCents`: EUR field → integer cents (comma/dot tolerant, >0) | app.js:5244–5249 | 💰 | |
-| P-444 | Toggle custom-price row `toggleSellCustomRow`: shows `#sell-custom-row` when custom, focuses field | app.js:5258–5262 | | |
-| P-445 | Open sell modal `openSellModal`: summary "N Item(s)"; from bots/user; resets preview; lowest checked | app.js:5264–5280 | | |
-| P-446 | Preview sell prices `previewSell`: POST `/api/market/preview {names,strategy,username[,customCents]}`; btn "Calculating…"→"Calculate prices & proceeds"; renders table | app.js:5283–5304 | 💰 | |
-| P-447 | Retry one price `retryOnePrice(name,btn)`: re-query single item; spinner; warn if still no price | app.js:5306–5322 | 💰 | |
-| P-448 | Sell-preview table `renderSellPreview`: per item name ×count, Gross (`fmtEurCents`), Steam fee (−, amber), Net (emerald); "no price" rows w/ re-query btn; totals footer `Total (N item(s))`; missing-price note | app.js:5324–5379 | 💰 | |
-| P-449 | Submit sell `submitSell`: POST `/api/market/sell {items,strategy[,customCents]}`; toast `Market sale started: N item(s) on M bot(s)`; progress + poll | app.js:5381–5406 | 💰 | |
-| P-450 | Sell progress panel `showSellProgress`: bottom `#sell-progress`; "Creating listings & confirming via 2FA…" | app.js:5407–5413; index.html:1487–1501 | 💰 | |
-| P-451 | Sell poll (1s) `pollSell`: GET `/api/market/sell-status`; bar %, `done/total`; parts `X listed · Y confirmed [· recovered/retries/gone/deferred] · Z failed`; phase label {preflight→Connecting,pricing,listing,confirming 2FA,done}; current bot; stall guard; on done toast + refresh sellers; hides after 4500ms | app.js:5414–5468 | 💰 | |
+| P-441 | Flatten selection → sell items `selectedSellItems`: {username,assetId,marketHashName} across agg (folder) or single account | app.js:5211–5237 | 💰 | ✅ done · logic unchanged |
+| P-442 | Sell strategy read `sellStrategy`: lowest / undercut / custom | app.js:5239–5242 | | ✅ done · logic unchanged |
+| P-443 | Custom price parse `customSellCents`: EUR field → integer cents (comma/dot tolerant, >0) | app.js:5244–5249 | 💰 | ✅ done · logic unchanged |
+| P-444 | Toggle custom-price row `toggleSellCustomRow`: shows `#sell-custom-row` when custom, focuses field | app.js:5258–5262 | | ✅ done · logic unchanged (no markup emitted; custom-row re-skinned in index.html shell — field w-32) |
+| P-445 | Open sell modal `openSellModal`: summary "N Item(s)"; from bots/user; resets preview; lowest checked | app.js:5264–5280 | | ✅ done · logic unchanged (textContent/reset only, no markup) |
+| P-446 | Preview sell prices `previewSell`: POST `/api/market/preview {names,strategy,username[,customCents]}`; btn "Calculating…"→"Calculate prices & proceeds"; renders table | app.js:5283–5304 | 💰 | ✅ done · logic unchanged (async price fetch byte-identical) |
+| P-447 | Retry one price `retryOnePrice(name,btn)`: re-query single item; spinner; warn if still no price | app.js:5306–5322 | 💰 | ✅ done · logic unchanged (icon-swap only; reprice btn re-skinned to .btn btn-icon-sm in renderSellPreview) |
+| P-448 | Sell-preview table `renderSellPreview`: per item name ×count, Gross (`fmtEurCents`), Steam fee (−, amber), Net (emerald); "no price" rows w/ re-query btn; totals footer `Total (N item(s))`; missing-price note | app.js:5324–5379 | 💰 | ✅ done 💰 · re-skinned: header .t10 / table .t13, unpriced "no price" → .pill pill--danger (kept visually distinct from priced emerald mono = pricing honesty inv.5), reprice → .btn btn-icon-sm btn-secondary, missing note .t10; totals + priced rows + fmtEurCents math byte-identical |
+| P-449 | Submit sell `submitSell`: POST `/api/market/sell {items,strategy[,customCents]}`; toast `Market sale started: N item(s) on M bot(s)`; progress + poll | app.js:5381–5406 | 💰 | ✅ done 💰 · submitSell + ssimConfirm spend gate UNCHANGED (POST /api/market/sell byte-identical) |
+| P-450 | Sell progress panel `showSellProgress`: bottom `#sell-progress`; "Creating listings & confirming via 2FA…" | app.js:5407–5413; index.html:1487–1501 | 💰 | ✅ done 💰 · logic unchanged; #sell-progress static panel re-skinned (bar → bg-brand, End task → .btn btn-danger btn-sm, .t10/.t12/.t14 type scale) |
+| P-451 | Sell poll (1s) `pollSell`: GET `/api/market/sell-status`; bar %, `done/total`; parts `X listed · Y confirmed [· recovered/retries/gone/deferred] · Z failed`; phase label {preflight→Connecting,pricing,listing,confirming 2FA,done}; current bot; stall guard; on done toast + refresh sellers; hides after 4500ms | app.js:5414–5468 | 💰 | ✅ done 💰 · logic unchanged (poll/bar/phase/stall/refresh byte-identical) |
 
 ---
 

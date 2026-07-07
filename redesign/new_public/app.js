@@ -5354,10 +5354,10 @@ function renderSellPreview() {
       missing += cnt;
       return `<tr class="border-t border-slate-800/60">
         <td class="py-1.5 pl-3 pr-2"><span class="text-slate-400">${escapeHtml(n)}</span> <span class="text-slate-600 font-mono">×${cnt}</span></td>
-        <td class="py-1.5 px-2 text-right text-rose-400" colspan="2">no price</td>
+        <td class="py-1.5 px-2 text-right" colspan="2"><span class="pill pill--danger">no price</span></td>
         <td class="py-1.5 pl-2 pr-3 text-right">
           <button type="button" data-reprice="${escapeAttr(n)}" title="Re-query only this item"
-            class="px-2 py-1 rounded-md bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 text-2xs font-semibold transition">
+            class="btn btn-icon-sm btn-secondary">
             <i class="fa-solid fa-rotate-right"></i></button></td></tr>`;
     }
     const fee = Math.max(0, p.buyerCents - p.netCents);
@@ -5372,9 +5372,9 @@ function renderSellPreview() {
   }).join('');
 
   el.sellPreviewResult.innerHTML = `
-    <table class="w-full text-xs">
+    <table class="w-full t13">
       <thead>
-        <tr class="text-3xs uppercase tracking-wider text-slate-400">
+        <tr class="t10 uppercase tracking-wider text-slate-500">
           <th class="py-2 pl-3 pr-2 text-left font-semibold">Item / ea.</th>
           <th class="py-2 px-2 text-right font-semibold">Gross</th>
           <th class="py-2 px-2 text-right font-semibold">Steam fee</th>
@@ -5391,7 +5391,7 @@ function renderSellPreview() {
         </tr>
       </tfoot>
     </table>
-    ${missing ? `<div class="text-2xs text-amber-400 px-3 py-1.5 border-t border-slate-800">${missing} item(s) without price – use <i class="fa-solid fa-rotate-right"></i> to re-query individually (otherwise skipped).</div>` : ''}`;
+    ${missing ? `<div class="t10 text-amber-400 px-3 py-1.5 border-t border-slate-800">${missing} item(s) without price – use <i class="fa-solid fa-rotate-right"></i> to re-query individually (otherwise skipped).</div>` : ''}`;
   el.sellPreviewResult.querySelectorAll('[data-reprice]').forEach((b) =>
     b.addEventListener('click', () => retryOnePrice(b.dataset.reprice, b)));
   el.sellPreviewResult.classList.remove('hidden');
