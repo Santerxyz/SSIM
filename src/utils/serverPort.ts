@@ -75,7 +75,8 @@ export function listenAndAnnounce(server: Server, host: string, desiredPort: num
       resolve(actual);
     };
     const onError = (err: NodeJS.ErrnoException): void => {
-      if (err.code === 'EADDRINUSE' && canWalk && port < walkStart + tries) {
+      // -1 so exactly `tries` ports are attempted (walkStart … walkStart+tries-1), matching MAX_PORT_WALK (H-BOOT-019)
+      if (err.code === 'EADDRINUSE' && canWalk && port < walkStart + tries - 1) {
         port += 1;
         setImmediate(() => { try { server.listen(port, host); } catch (e) { cleanup(); reject(e as Error); } });
         return;
