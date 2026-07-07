@@ -1,6 +1,7 @@
 import fs from 'fs';
 import v8 from 'v8';
 import { logsDir, baseDir } from './paths';
+import { armInterval } from './intervalGuard';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  memHeartbeat.ts – periodic memory/handle trajectory recorder.
@@ -102,8 +103,7 @@ export function startMemHeartbeat(stats?: () => Record<string, number>): void {
   if (timer) return; // already running
   statsProvider = stats;
   sample(); // baseline at boot
-  timer = setInterval(sample, INTERVAL_MS);
-  timer.unref(); // never keep the process alive just for the sampler
+  timer = armInterval(timer, sample, INTERVAL_MS); // armInterval unref()'s it — never keep the process alive just for the sampler
 }
 
 export function stopMemHeartbeat(): void {

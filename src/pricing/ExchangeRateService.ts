@@ -2,6 +2,7 @@ import axios from 'axios';
 import fsExtra from 'fs-extra';
 import { dataDir } from '../utils/paths';
 import { writeJsonAtomic } from '../utils/atomicJson';
+import { armInterval } from '../utils/intervalGuard';
 import { logger } from '../utils/logger';
 
 const FALLBACK_USD_TO_EUR = 0.92;
@@ -62,8 +63,7 @@ export class ExchangeRateService {
     this.stopped = false; // a legitimate stop→start on a reused instance re-arms this instance
     void this.refresh();
     // Each 12h tick resets the short-retry budget so every cycle gets a fresh set of backoff attempts.
-    this.timer = setInterval(() => { this.retryAttempt = 0; void this.refresh(); }, REFRESH_MS);
-    this.timer.unref?.();
+    this.timer = armInterval(this.timer, () => { this.retryAttempt = 0; void this.refresh(); }, REFRESH_MS);
   }
 
   stop(): void {

@@ -1,5 +1,6 @@
 import { scaleConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
+import { armInterval } from '../utils/intervalGuard';
 import { AppSettings } from '../core/AppSettings';
 import { canConfirm } from '../core/accountCapability';
 import { identitySecretPresence } from '../core/LoginFlow';
@@ -44,8 +45,7 @@ export class CsFloatAutoAcceptWorker {
     if (this.timer) return;
     this.stopped = false;
     const tick = (): void => { void this.runOnce(); };
-    this.timer = setInterval(tick, POLL_INTERVAL_MS);
-    this.timer.unref?.();
+    this.timer = armInterval(this.timer, tick, POLL_INTERVAL_MS);
     this.bootTimer = setTimeout(tick, 5_000); // first pass shortly after boot (non-blocking)
     this.bootTimer.unref?.();
     logger.info('[csfloat-auto-accept] worker started (polls enabled Full accounts every 45s)');
