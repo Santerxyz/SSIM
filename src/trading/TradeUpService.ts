@@ -246,7 +246,7 @@ export class TradeUpService {
     const warnings: string[] = [];
 
     const inv = await this.inventory.forceRefresh(username, 'cs2'); // fresh snapshot, like the buy path
-    const inputs = this.buildEligibleInputs(inv.items ?? []);
+    const inputs = this.buildEligibleInputs(inv.items);
     if (inputs.length < 10) {
       warnings.push('Not enough trade-up-eligible skins (need at least 10 of one rarity + StatTrak status).');
       return { username, candidates: [], warnings, realFloats: false, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount() };
@@ -373,7 +373,7 @@ export class TradeUpService {
   }
 
   /** Expands inventory stacks into individual trade-up-eligible input items (≤10 per stack). */
-  private buildEligibleInputs(items: Array<{ marketHashName: string; quantity?: number; assetIds?: string[]; price?: number | null; category?: string; tradeLockExpiry?: Date | string | null; tradable?: boolean }>): TuInput[] {
+  private buildEligibleInputs(items: Array<{ marketHashName: string; quantity?: number; assetIds: string[]; price?: number | null; category?: string; tradeLockExpiry?: Date | string | null; tradable?: boolean }>): TuInput[] {
     const out: TuInput[] = [];
     for (const it of items) {
       if (it.category === 'listed') continue;                       // on the market, not in inventory
@@ -386,8 +386,7 @@ export class TradeUpService {
       if (!def || !this.schema.isEligibleInput(def)) continue;
       const float = wearMidpoint(parsed.wear, def.minFloat, def.maxFloat); // estimate (exact float unknown on web)
       const priceCents = this.pricing.priceCents(it.marketHashName, CS2_APPID);
-      const assetIds = Array.isArray(it.assetIds) && it.assetIds.length ? it.assetIds : [undefined];
-      const n = Math.min(assetIds.length, it.quantity ?? assetIds.length, MAX_PER_STACK);
+      const n = Math.min(it.assetIds.length, it.quantity ?? it.assetIds.length, MAX_PER_STACK);
       for (let i = 0; i < n; i++) {
         out.push({
           marketHashName: it.marketHashName,
@@ -397,7 +396,7 @@ export class TradeUpService {
           stattrak: parsed.stattrak,
           float,
           priceCents: priceCents ?? null,
-          assetId: assetIds[i],
+          assetId: it.assetIds[i],
         });
       }
     }
