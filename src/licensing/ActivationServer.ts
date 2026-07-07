@@ -90,13 +90,13 @@ export function runActivationPortal(hwid: string, port: number, host: string, ve
       if (!key) return res.status(400).json({ ok: false, error: 'Please enter your license key.' });
 
       logger.info('activation portal: trying key…');
-      LicenseClient.saveKey(key);                 // persist for future auto-starts
       const result = await LicenseClient.activate(key, hwid);
       if (!result.ok) {
         logger.warn(`activation failed: ${result.reason}`);
         return res.status(400).json({ ok: false, error: result.reason });
       }
 
+      LicenseClient.saveKey(key);                 // persist only a key the server ACCEPTED (not a typo/transient-fail guess)
       logger.info(`activation OK (tier=${result.payload?.tier ?? '?'}) – handing over to the app`);
       res.json({ ok: true, tier: result.payload?.tier ?? null });
 
