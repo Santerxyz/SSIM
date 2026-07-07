@@ -4397,7 +4397,7 @@ async function csfLoadTrades() {
     el.csfloatBody.innerHTML = `
       <div class="surface flex items-center justify-between px-4 py-3 mb-4">
         <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? "Unavailable — this account's maFile has no identity_secret to confirm the Steam delivery. Attach a maFile with one to enable." : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
-        <button data-csf="autoaccept" data-enabled="${auto.enabled ? '1' : '0'}" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
+        <button data-csf="autoaccept" data-enabled="${auto.enabled ? '1' : '0'}" ${limited ? 'disabled' : ''} class="btn btn-sm ${auto.enabled ? 'btn-primary' : 'btn-secondary'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
       </div>
       ${trades.length ? `<div class="space-y-2">${trades.map(csfTradeRow).join('')}</div>` : csfEmpty('fa-right-left', 'No trades yet.')}`;
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
@@ -6291,16 +6291,17 @@ function ssimConfirm(opts = {}) {
     _confirmState = { finish };
     $('confirm-title').textContent = title;
     $('confirm-body').innerHTML = body;    // callers escapeHtml all dynamic values
+    // Tone → DS .btn variant (presentation only; the money-confirm LOGIC below is untouched).
     const tones = {
-      danger: { wrap: 'bg-danger/15 text-danger', icon: 'fa-triangle-exclamation', btn: 'bg-rose-600 hover:bg-rose-500' },
-      spend:  { wrap: 'bg-buy/15 text-buy',        icon: 'fa-circle-exclamation',    btn: 'bg-teal-600 hover:bg-teal-500' },
-      brand:  { wrap: 'bg-brand/15 text-brand',    icon: 'fa-circle-info',           btn: 'bg-brand hover:bg-brand-dark' },
+      danger: { wrap: 'bg-danger/15 text-danger', icon: 'fa-triangle-exclamation', btn: 'btn-danger' },
+      spend:  { wrap: 'bg-buy/15 text-buy',        icon: 'fa-circle-exclamation',    btn: 'btn-buy' },
+      brand:  { wrap: 'bg-brand/15 text-brand',    icon: 'fa-circle-info',           btn: 'btn-primary' },
     };
     const t = tones[tone] || tones.danger;
     const iconEl = $('confirm-icon');
     iconEl.className = `w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${t.wrap}`;
     iconEl.innerHTML = `<i class="fa-solid ${opts.iconClass || t.icon}"></i>`;
-    ok.className = `flex-1 px-4 py-2.5 rounded-lg text-white text-sm font-bold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${t.btn}`;
+    ok.className = `btn ${t.btn} flex-1 disabled:opacity-50 disabled:cursor-not-allowed`;
     ok.innerHTML = `<i class="fa-solid ${confirmIcon}"></i><span>${escapeHtml(confirmLabel)}</span>`;
     if (typedWord) {                        // typed-confirm gate for the largest spends
       typedWrap.classList.remove('hidden');

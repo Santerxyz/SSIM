@@ -841,3 +841,27 @@ brand + residual-cleanup pass (zero handler logic touched):
 
 Gate: `node --check` clean; `index.html` div-balanced (250/250); 0 remaining `logo.png` image
 refs in the four files (only `assets/logos/` steam/csfloat source logos remain, untouched).
+
+---
+
+## Phase-4 polish — DS-consistency of the confirm dialog + CSFloat auto-accept  ·  2026-07-07
+
+Presentation-only cleanup of residuals surfaced by the Phase-4 completeness audit (all were
+byte-identical to legacy — not regressions, just not yet DS-ported):
+
+1. **Styled-confirm dialog** (`ssimConfirm`, the gate on every money action): the tone map now
+   yields DS `.btn` variants (`danger`→`btn-danger`, `spend`→`btn-buy`, `brand`→`btn-primary`) and
+   `#confirm-ok` renders as `btn <tone> flex-1`; the static `#confirm-cancel` became
+   `.btn btn-secondary flex-1`. **Only the className strings changed** — the confirm LOGIC
+   (`onOk`/`onCancel`/`finish`/`cleanup`/`resolve`, the H1–H3 single-decision guarantees, the
+   typed-confirm gate) is byte-identical, and the `ssimConfirm` call count is unchanged (19, == legacy).
+2. **CSFloat "Auto-accept sales" toggle** (`data-csf="autoaccept"`): class → `.btn btn-sm`
+   (`btn-primary` when ON / `btn-secondary` when OFF); `data-csf`/`data-enabled` hooks + the disabled
+   state preserved.
+
+**Deliberately NOT changed (acceptable residuals, documented in OWNER_NOTES):** the price-source /
+currency split control (`#src-btn`/`#cur-btn` + their dropdown menus) keeps its custom DS-tokened
+wrapper — `.seg` sets `overflow:hidden` which would clip the popovers (the V6 decision); its hover
+classes are byte-identical to legacy and render on-brand. A handful of decorative hover states on
+non-button elements (folder/account row hovers, toolbar separators, count pills) also remain on the
+shared Tailwind utilities — cosmetic, no functional impact.

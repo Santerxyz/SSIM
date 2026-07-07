@@ -79,31 +79,31 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-001 | License client-guard: `<html class="ssim-locked">` hides `<body>` until app.js confirms licensing; else redirects to activation (`html.ssim-locked body{display:none!important}`) | index.html:11–17, 336 | | |
-| P-002 | Tailwind Play runtime vendored locally (`/assets/vendor/tailwind.js`); the one "cdn.tailwindcss.com … production" console.warn is filtered, all other warns intact | index.html:24–33 | | |
-| P-003 | Tailwind theme: `brand`/`brand-dark`/`brand-light`, re-themed `slate` scale, semantic `success/warn/danger/buy/listed`; tightened radii; `text-2xs/3xs/4xs` (11/10/9px); Inter font | index.html:35–73 | | |
-| P-004 | Design-system palette tokens in `:root` (byte-identical to old hex); dark color-scheme forced (`--brand-rgb:147 51 234` = #9333ea) | index.html:93–111 | | |
-| P-005 | Body aurora background (2 radial violet gradients, fixed attachment); custom 6px scrollbars; violet `::selection` | index.html:115–127 | | |
-| P-006 | Sidebar resize handle hover/drag styling: grip brightens; `body.resizing-x` locks cursor+selection (drag to resize · double-click to reset) | index.html:129–132, 484–491 | | |
-| P-007 | Animations: `.fade-in` (0.25s), `.cs2-spin` (0.7s spinner), skeleton shimmer `.skel` (static under reduced-motion) | index.html:134–144 | | |
-| P-008 | Startup splash `#ssim-splash`: purple bloom + Santer diamond stroke-draw, fades out ≤1.2s; gated by sessionStorage; hidden under reduced-motion; z-[70] | index.html:146–186, 338–357 | | |
-| P-009 | Micro-interactions: buttons press down on `:active`; inputs glow; hover border on fields | index.html:188–192 | | |
-| P-010 | Visible `:focus-visible` ring (2px brand) on interactive elements; fields keep own violet ring (A11Y-02) | index.html:194–198 | | |
-| P-011 | Filled-button top-light + depth for brand/emerald/teal/rose (DS-04) | index.html:200–206 | | |
-| P-012 | Items table framed surface; non-sticky header; violet row hover (`brand/.06`); item-icon drop shadow | index.html:208–220 | | |
-| P-013 | Render virtualization: `content-visibility:auto` on `#items-body tr` (intrinsic 52px) and `.account-row` (56px); keeps full DOM (TBL-02) | index.html:222–228 | | |
-| P-014 | Toolbars wrap gracefully in narrow window: `#stat-bar`, `#toolbar`, `#main-header` flex-wrap | index.html:230–245 | | |
-| P-015 | KPI stat cards: hairline gradient top accent via `--stat-accent` | index.html:247–253 | | |
-| P-016 | Env tiles: lift + violet glow on hover | index.html:255–260 | | done · app.js:1349 (.env-tile) |
-| P-017 | Hybrid glass: every `div[id$="-overlay"] > div` modal card = translucent blurred glass + elevation; sticky modal sub-headers match glass (DS-04) | index.html:262–276 | | |
-| P-018 | Sidebar depth gradient + active-row left indicator bar (`.account-btn.is-active::before`) | index.html:278–284 | | |
-| P-019 | `.frosted` blur for headers above scroll | index.html:286–287 | | |
-| P-020 | History chart color classes (SVG can't read `var()`): grid/ylabel/axis/line-items/line-wallet/dots | index.html:289–298 | | |
-| P-021 | Status chip classes (`.chip--success/warn/danger/listed/buy/neutral`) + `aria-pressed=true` active look (DS-03) | index.html:300–312 | | |
-| P-022 | Multi-select checkbox rests at low opacity, full on hover/focus/check | index.html:314–317 | | |
-| P-023 | CSS-only hover info tooltip (`.ssim-tip` → `.ssim-tip-bubble`, 300px bubble w/ arrow) | index.html:319–332 | | |
-| P-024 | Keep-alive ping: `fetch('/api/app/ping')` on load + every 4000ms (legacy Edge heartbeat) | index.html:1509–1515 | | |
-| P-025 | "◳ Live Logs" floating launcher button (JS-created, fixed bottom-left `left:18px bottom:18px z-index:30`, violet gradient); click opens `/logs.html` popup AND POSTs `/api/app/open-logs` (S68 layering fix) | index.html:1516–1550 | | |
+| P-001 | License client-guard: `<html class="ssim-locked">` hides `<body>` until app.js confirms licensing; else redirects to activation (`html.ssim-locked body{display:none!important}`) | index.html:11–17, 336 | | ✅ done · index.html (DS shell; V1) — html.ssim-locked license client-guard preserved |
+| P-002 | Tailwind Play runtime vendored locally (`/assets/vendor/tailwind.js`); the one "cdn.tailwindcss.com … production" console.warn is filtered, all other warns intact | index.html:24–33 | | ✅ done · index.html (DS shell; V1) — vendored tailwind runtime + single warn-filter preserved |
+| P-003 | Tailwind theme: `brand`/`brand-dark`/`brand-light`, re-themed `slate` scale, semantic `success/warn/danger/buy/listed`; tightened radii; `text-2xs/3xs/4xs` (11/10/9px); Inter font | index.html:35–73 | | ✅ done · index.html (DS shell; V1) — brand/slate/semantic theme + text-Nxs scale preserved |
+| P-004 | Design-system palette tokens in `:root` (byte-identical to old hex); dark color-scheme forced (`--brand-rgb:147 51 234` = #9333ea) | index.html:93–111 | | ✅ done · index.html (DS shell; V1) — :root palette tokens (--brand-rgb 147 51 234) preserved |
+| P-005 | Body aurora background (2 radial violet gradients, fixed attachment); custom 6px scrollbars; violet `::selection` | index.html:115–127 | | ✅ done · index.html (DS shell; V1) — aurora background + scrollbar + ::selection preserved |
+| P-006 | Sidebar resize handle hover/drag styling: grip brightens; `body.resizing-x` locks cursor+selection (drag to resize · double-click to reset) | index.html:129–132, 484–491 | | ✅ done · index.html (DS shell; V1) — resize-handle grip + body.resizing-x lock preserved |
+| P-007 | Animations: `.fade-in` (0.25s), `.cs2-spin` (0.7s spinner), skeleton shimmer `.skel` (static under reduced-motion) | index.html:134–144 | | ✅ done · index.html (DS shell; V1) — fade-in / cs2-spin / skel shimmer keyframes preserved |
+| P-008 | Startup splash `#ssim-splash`: purple bloom + Santer diamond stroke-draw, fades out ≤1.2s; gated by sessionStorage; hidden under reduced-motion; z-[70] | index.html:146–186, 338–357 | | ✅ done · index.html (DS shell; V1) — #ssim-splash bloom + Santer diamond preserved |
+| P-009 | Micro-interactions: buttons press down on `:active`; inputs glow; hover border on fields | index.html:188–192 | | ✅ done · index.html (DS shell; V1) — button :active press + input glow micro-interactions preserved |
+| P-010 | Visible `:focus-visible` ring (2px brand) on interactive elements; fields keep own violet ring (A11Y-02) | index.html:194–198 | | ✅ done · index.html (DS shell; V1) — :focus-visible brand ring (A11Y-02) preserved |
+| P-011 | Filled-button top-light + depth for brand/emerald/teal/rose (DS-04) | index.html:200–206 | | ✅ done · index.html (DS shell; V1) — filled-button top-light depth (DS-04) preserved |
+| P-012 | Items table framed surface; non-sticky header; violet row hover (`brand/.06`); item-icon drop shadow | index.html:208–220 | | ✅ done · index.html (DS shell; V1) — items-table framed surface + violet row hover preserved |
+| P-013 | Render virtualization: `content-visibility:auto` on `#items-body tr` (intrinsic 52px) and `.account-row` (56px); keeps full DOM (TBL-02) | index.html:222–228 | | ✅ done · index.html (DS shell; V1) — content-visibility:auto on #items-body tr + .account-row (TBL-02) preserved |
+| P-014 | Toolbars wrap gracefully in narrow window: `#stat-bar`, `#toolbar`, `#main-header` flex-wrap | index.html:230–245 | | ✅ done · index.html (DS shell; V1) — #stat-bar / #toolbar / #main-header flex-wrap preserved |
+| P-015 | KPI stat cards: hairline gradient top accent via `--stat-accent` | index.html:247–253 | | ✅ done · index.html (DS shell; V1) — KPI stat-card --stat-accent hairline gradient preserved |
+| P-016 | Env tiles: lift + violet glow on hover | index.html:255–260 | | ✅ done · app.js:1349 (.env-tile) |
+| P-017 | Hybrid glass: every `div[id$="-overlay"] > div` modal card = translucent blurred glass + elevation; sticky modal sub-headers match glass (DS-04) | index.html:262–276 | | ✅ done · index.html (DS shell; V1) — hybrid-glass modal cards + sticky sub-headers (DS-04) preserved |
+| P-018 | Sidebar depth gradient + active-row left indicator bar (`.account-btn.is-active::before`) | index.html:278–284 | | ✅ done · index.html (DS shell; V1) — sidebar depth + .account-btn.is-active::before indicator preserved |
+| P-019 | `.frosted` blur for headers above scroll | index.html:286–287 | | ✅ done · index.html (DS shell; V1) — .frosted header blur preserved |
+| P-020 | History chart color classes (SVG can't read `var()`): grid/ylabel/axis/line-items/line-wallet/dots | index.html:289–298 | | ✅ done · index.html (DS shell; V1) — history-chart SVG color classes (grid/ylabel/axis/lines/dots) preserved |
+| P-021 | Status chip classes (`.chip--success/warn/danger/listed/buy/neutral`) + `aria-pressed=true` active look (DS-03) | index.html:300–312 | | ✅ done · index.html (DS shell; V1) — .chip--* status classes + aria-pressed active look (DS-03) preserved |
+| P-022 | Multi-select checkbox rests at low opacity, full on hover/focus/check | index.html:314–317 | | ✅ done · index.html (DS shell; V1) — multi-select checkbox low-opacity rest / full on hover-check preserved |
+| P-023 | CSS-only hover info tooltip (`.ssim-tip` → `.ssim-tip-bubble`, 300px bubble w/ arrow) | index.html:319–332 | | ✅ done · index.html (DS shell; V1) — CSS-only .ssim-tip → .ssim-tip-bubble tooltip preserved |
+| P-024 | Keep-alive ping: `fetch('/api/app/ping')` on load + every 4000ms (legacy Edge heartbeat) | index.html:1509–1515 | | ✅ done · index.html (DS shell; V1) — /api/app/ping keep-alive heartbeat preserved |
+| P-025 | "◳ Live Logs" floating launcher button (JS-created, fixed bottom-left `left:18px bottom:18px z-index:30`, violet gradient); click opens `/logs.html` popup AND POSTs `/api/app/open-logs` (S68 layering fix) | index.html:1516–1550 | | ✅ done · index.html (DS shell; V1) — "◳ Live Logs" launcher (/logs.html + /api/app/open-logs, S68) preserved |
 
 ---
 
@@ -113,22 +113,22 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-026 | Brand header: logo (`/assets/logo.png`), "SSIM" title, "Santer Steam Inventory Manager" subtitle | index.html:362–370 | | |
-| P-027 | Context-nav "All environments" back button (`#btn-back-dashboard`, hidden on dashboard) → `showDashboard()` | index.html:373–379; app.js:1192, 1213–1220 | | |
-| P-028 | Env-context panel (shown only inside an env): env name + proxy line (`Local IP (no proxy)` when none) | index.html:382–386; app.js:1197–1200 | | |
-| P-029 | "Master (environment)" button `#btn-env-master` → `selectEnvMaster()`; gets ring when active | index.html:387–390; app.js:1201–1202, 1244–1251 | | |
-| P-030 | "Account" add button `#btn-add-account` (opens add-account modal) | index.html:393–396 | | |
-| P-031 | "Create new folder" button `#btn-add-folder` (folder-plus) | index.html:398–401 | | |
-| P-032 | "Refresh all" button `#btn-refresh-all` | index.html:403–407 | | |
-| P-033 | Refresh-All progress panel `#refresh-progress`: label + count (mono), progress bar `#refresh-bar` (brand, width%), "End task" button `#refresh-end` (rose, stop icon); shows in Global-Master too | index.html:411–422 | | |
-| P-034 | Failed-accounts panel `#refresh-failed` (amber, max-h-40 scroll): lists WHICH account failed + WHY, persists until dismissed or next refresh; `#refresh-failed-close` hide button | index.html:426–437 | | |
-| P-035 | "Accounts" label + `#account-count` (mono); count = visibleAccounts via `fmtCount` | index.html:439–442; app.js:1521 | | |
-| P-036 | Account search box `#account-search` (magnifier icon, "Search accounts…") | index.html:445–450 | | |
-| P-037 | Quick inventory filter `#account-filter`: All accounts / Has items / Empty inventory | index.html:452–457; app.js:1392–1399 | | |
-| P-038 | Account sort `#account-sort`: Default order / Balance High→Low / Balance Low→High (tooltip "Sort accounts by wallet balance") | index.html:458–463; app.js:1411–1420, 1464–1466 | | |
-| P-039 | Account list `#account-list` (overflow-y scroll) | index.html:467 | | |
-| P-040 | Show/Hide-hidden toggle `#btn-toggle-hidden`: "Show N hidden" / "Hide hidden" (only when hiddenCount>0); eye / eye-slash icons | index.html:469–471; app.js:1541–1550 | | |
-| P-041 | Footer: pulsing emerald dot + `#footer-status` version (mono, filled from API — single source) | index.html:473–480 | | |
+| P-026 | Brand header: logo (`/assets/logo.png`), "SSIM" title, "Santer Steam Inventory Manager" subtitle | index.html:362–370 | | ✅ done · index.html (DS shell; V1) — brand header (logo / SSIM title / subtitle) preserved |
+| P-027 | Context-nav "All environments" back button (`#btn-back-dashboard`, hidden on dashboard) → `showDashboard()` | index.html:373–379; app.js:1192, 1213–1220 | | ✅ done · index.html (DS shell; V1) — #btn-back-dashboard context-nav preserved (showDashboard handler unchanged) |
+| P-028 | Env-context panel (shown only inside an env): env name + proxy line (`Local IP (no proxy)` when none) | index.html:382–386; app.js:1197–1200 | | ✅ done · index.html (DS shell; V1) — env-context panel (name + proxy line) preserved |
+| P-029 | "Master (environment)" button `#btn-env-master` → `selectEnvMaster()`; gets ring when active | index.html:387–390; app.js:1201–1202, 1244–1251 | | ✅ done · index.html (DS shell; V1) — #btn-env-master button preserved (selectEnvMaster handler unchanged) |
+| P-030 | "Account" add button `#btn-add-account` (opens add-account modal) | index.html:393–396 | | ✅ done · index.html (DS shell; V1) — #btn-add-account preserved |
+| P-031 | "Create new folder" button `#btn-add-folder` (folder-plus) | index.html:398–401 | | ✅ done · index.html (DS shell; V1) — #btn-add-folder preserved |
+| P-032 | "Refresh all" button `#btn-refresh-all` | index.html:403–407 | | ✅ done · index.html (DS shell; V1) — #btn-refresh-all preserved |
+| P-033 | Refresh-All progress panel `#refresh-progress`: label + count (mono), progress bar `#refresh-bar` (brand, width%), "End task" button `#refresh-end` (rose, stop icon); shows in Global-Master too | index.html:411–422 | | ✅ done · index.html (DS shell; V1) — #refresh-progress panel (#refresh-bar / #refresh-end) preserved |
+| P-034 | Failed-accounts panel `#refresh-failed` (amber, max-h-40 scroll): lists WHICH account failed + WHY, persists until dismissed or next refresh; `#refresh-failed-close` hide button | index.html:426–437 | | ✅ done · index.html (DS shell; V1) — #refresh-failed panel (+ #refresh-failed-close) preserved |
+| P-035 | "Accounts" label + `#account-count` (mono); count = visibleAccounts via `fmtCount` | index.html:439–442; app.js:1521 | | ✅ done · index.html (DS shell; V1) — Accounts label + #account-count preserved |
+| P-036 | Account search box `#account-search` (magnifier icon, "Search accounts…") | index.html:445–450 | | ✅ done · index.html (DS shell; V1) — #account-search box preserved |
+| P-037 | Quick inventory filter `#account-filter`: All accounts / Has items / Empty inventory | index.html:452–457; app.js:1392–1399 | | ✅ done · index.html (DS shell; V1) — #account-filter (All/Has items/Empty) preserved (filter handler unchanged) |
+| P-038 | Account sort `#account-sort`: Default order / Balance High→Low / Balance Low→High (tooltip "Sort accounts by wallet balance") | index.html:458–463; app.js:1411–1420, 1464–1466 | | ✅ done · index.html (DS shell; V1) — #account-sort (Default/Balance) preserved (sort handler unchanged) |
+| P-039 | Account list `#account-list` (overflow-y scroll) | index.html:467 | | ✅ done · index.html (DS shell; V1) — #account-list scroll container preserved |
+| P-040 | Show/Hide-hidden toggle `#btn-toggle-hidden`: "Show N hidden" / "Hide hidden" (only when hiddenCount>0); eye / eye-slash icons | index.html:469–471; app.js:1541–1550 | | ✅ done · index.html (DS shell; V1) — #btn-toggle-hidden (Show/Hide hidden) preserved (handler unchanged) |
+| P-041 | Footer: pulsing emerald dot + `#footer-status` version (mono, filled from API — single source) | index.html:473–480 | | ✅ done · index.html (DS shell; V1) — footer emerald dot + #footer-status version preserved |
 
 ### B.2 Sidebar tree — folder nodes (app.js render)
 
@@ -178,13 +178,13 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-067 | Two screens: `#screen-dashboard` / `#screen-inventory` toggled by `showScreen(name)`; leaving inventory unmounts window scroll listener | app.js:1181–1187 | | |
-| P-068 | 6 inventory view modes: `account` / `env-master` / `global` / `folder` / `selection`; dispatched by `renderMain()` | app.js:7–9, 1711–1732 | | |
-| P-069 | `updateSidebar()` shows/hides context nav, env-context, accounts label/tools based on in-env state | app.js:1189–1211 | | |
-| P-070 | `showDashboard()` resets to account mode, clears selections | app.js:1213–1220 | | |
-| P-071 | `enterEnvironment(envId)` → env-master mode, loads tree, resets search/sort/selection; toasts err on tree fail | app.js:1222–1231 | | |
-| P-072 | `showGlobalMaster()` → global mode; auto-selects ALL envs into `globalEnvs` on first entry | app.js:1233–1242 | | |
-| P-073 | `selectEnvMaster()` → env-master mode | app.js:1244–1251 | | |
+| P-067 | Two screens: `#screen-dashboard` / `#screen-inventory` toggled by `showScreen(name)`; leaving inventory unmounts window scroll listener | app.js:1181–1187 | | ✅ preserved · showScreen(name) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-068 | 6 inventory view modes: `account` / `env-master` / `global` / `folder` / `selection`; dispatched by `renderMain()` | app.js:7–9, 1711–1732 | | ✅ preserved · renderMain() view-mode dispatch logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-069 | `updateSidebar()` shows/hides context nav, env-context, accounts label/tools based on in-env state | app.js:1189–1211 | | ✅ preserved · updateSidebar() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-070 | `showDashboard()` resets to account mode, clears selections | app.js:1213–1220 | | ✅ preserved · showDashboard() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-071 | `enterEnvironment(envId)` → env-master mode, loads tree, resets search/sort/selection; toasts err on tree fail | app.js:1222–1231 | | ✅ preserved · enterEnvironment(envId) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-072 | `showGlobalMaster()` → global mode; auto-selects ALL envs into `globalEnvs` on first entry | app.js:1233–1242 | | ✅ preserved · showGlobalMaster() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-073 | `selectEnvMaster()` → env-master mode | app.js:1244–1251 | | ✅ preserved · selectEnvMaster() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -192,18 +192,18 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-074 | Header title "Environments" + subtitle "Choose a farm environment or create a new one." | index.html:498–502 | | done · index.html:703–704 |
-| P-075 | "Global Master" button `#btn-global-master` (globe, in dashboard header) → global-master view | index.html:504–507; app.js:1233 | | done · index.html:707–709 |
-| P-076 | "Account Login" button `#btn-account-login` → QR/credentials import modal (Feature 1) | index.html:508–511 | | done · index.html:710–712 |
-| P-077 | "Import bots" button `#btn-bulk-import` → bulk-import modal | index.html:512–515 | | done · index.html:713–715 |
-| P-078 | "New environment" button `#btn-new-env` → env modal (create) | index.html:516–519 | | done · index.html:716–718 |
-| P-079 | Env tiles grid `#env-tiles` (responsive 1/2/3 col) | index.html:522–523; app.js:1273–1285 | | done · index.html:722; app.js:1273–1285 |
-| P-080 | Empty state `#env-empty`: "No environments yet" / "Create your first farm environment." (shown when 0 envs) | index.html:524–530; app.js:1275 | | done · index.html:723–727; app.js:1275 |
-| P-081 | Env tile: layer-group icon, Proxy/Local-IP pill, name, proxy line (mono), account **count** (`fmtCount`), last-updated ago; click tile → enter env | app.js:1342–1381, 1257–1271 | | done · app.js:1345–1382 (.env-tile re-skin) |
-| P-082 | Env tile "Test proxy" button `[data-proxy-test]` → `checkProxy()` | app.js:1367–1369, 1283–1284, 1287–1315 | | done · app.js:1374, 1283–1284 |
-| P-083 | Proxy test states: spinner "Testing…/running…"; green `✓ IP · CC (Country) · N ms`; red `✗ error` (via `/check-proxy`) | app.js:1288–1315 | | done · app.js:1288–1315 (logic unchanged) |
-| P-084 | Env tile hover actions: **Edit** pen → `openEnvModal('edit',id)`; **Delete** trash → `deleteEnvironment(id,name)` | app.js:1372–1379, 1279–1282 | | done · app.js:1352–1356 (.env-tile__actions), 1279–1282 |
-| P-085 | Last-updated formatting: `just now` / `N min ago` / `N h ago` / `N d ago` / `never loaded` (`formatAgo`) | app.js:1265–1271, 1364 | | done · app.js:1265–1271, 1371 |
+| P-074 | Header title "Environments" + subtitle "Choose a farm environment or create a new one." | index.html:498–502 | | ✅ done · index.html:703–704 |
+| P-075 | "Global Master" button `#btn-global-master` (globe, in dashboard header) → global-master view | index.html:504–507; app.js:1233 | | ✅ done · index.html:707–709 |
+| P-076 | "Account Login" button `#btn-account-login` → QR/credentials import modal (Feature 1) | index.html:508–511 | | ✅ done · index.html:710–712 |
+| P-077 | "Import bots" button `#btn-bulk-import` → bulk-import modal | index.html:512–515 | | ✅ done · index.html:713–715 |
+| P-078 | "New environment" button `#btn-new-env` → env modal (create) | index.html:516–519 | | ✅ done · index.html:716–718 |
+| P-079 | Env tiles grid `#env-tiles` (responsive 1/2/3 col) | index.html:522–523; app.js:1273–1285 | | ✅ done · index.html:722; app.js:1273–1285 |
+| P-080 | Empty state `#env-empty`: "No environments yet" / "Create your first farm environment." (shown when 0 envs) | index.html:524–530; app.js:1275 | | ✅ done · index.html:723–727; app.js:1275 |
+| P-081 | Env tile: layer-group icon, Proxy/Local-IP pill, name, proxy line (mono), account **count** (`fmtCount`), last-updated ago; click tile → enter env | app.js:1342–1381, 1257–1271 | | ✅ done · app.js:1345–1382 (.env-tile re-skin) |
+| P-082 | Env tile "Test proxy" button `[data-proxy-test]` → `checkProxy()` | app.js:1367–1369, 1283–1284, 1287–1315 | | ✅ done · app.js:1374, 1283–1284 |
+| P-083 | Proxy test states: spinner "Testing…/running…"; green `✓ IP · CC (Country) · N ms`; red `✗ error` (via `/check-proxy`) | app.js:1288–1315 | | ✅ done · app.js:1288–1315 (logic unchanged) |
+| P-084 | Env tile hover actions: **Edit** pen → `openEnvModal('edit',id)`; **Delete** trash → `deleteEnvironment(id,name)` | app.js:1372–1379, 1279–1282 | | ✅ done · app.js:1352–1356 (.env-tile__actions), 1279–1282 |
+| P-085 | Last-updated formatting: `just now` / `N min ago` / `N h ago` / `N d ago` / `never loaded` (`formatAgo`) | app.js:1265–1271, 1364 | | ✅ done · app.js:1265–1271, 1371 |
 
 ---
 
@@ -242,16 +242,16 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-110 | `setGame(game)`: clears selection, updates toggle, lazy-loads TF2 on first switch, re-renders | app.js:528–535 | | |
-| P-111 | TF2 key counting: counts `Mann Co. Supply Crate Key` stacks (`countTf2Keys`) | app.js:515–522 | | |
-| P-112 | `currentAppId()` = 440 (TF2) / 730 (CS2) — drives app-agnostic send | app.js:524–526 | | |
-| P-113 | Failed cold TF2 fetch → records `tf2LoadError`, renders distinct error+Retry panel (never empty inventory) (H-FE-001) | app.js:537–557, 1714–1716, 1734–1764 | | |
-| P-114 | `loadTf2Inventories()` on success starts price-fill watch (S29) | app.js:542–556 | | |
-| P-115 | `reloadAll()`: parallel fetch environments + accounts + inventory + exchange-rate; records FX fallback/age provenance | app.js:566–583 | | |
-| P-116 | GLOBAL wallet store `rememberWallet`: newest wallet (by fetchedAt) wins across CS2/TF2 so balance never clobbered by staler game-cache | app.js:585–598 | | |
-| P-117 | `wasRefreshed(u)`: distinguishes "refreshed empty" (→0) from "never fetched" (→—) | app.js:600–609 | | |
-| P-118 | `refreshActiveViewFromCache()`: re-pulls cache after a mass op (buy/sell/trade), invalidates history, re-renders main+sidebar (no re-login) | app.js:611–634 | | |
-| P-119 | `invFor(u)`: active-game inventory lookup w/ lowercase-key normalize | app.js:506–512 | | |
+| P-110 | `setGame(game)`: clears selection, updates toggle, lazy-loads TF2 on first switch, re-renders | app.js:528–535 | | ✅ preserved · setGame(game) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-111 | TF2 key counting: counts `Mann Co. Supply Crate Key` stacks (`countTf2Keys`) | app.js:515–522 | | ✅ preserved · countTf2Keys logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-112 | `currentAppId()` = 440 (TF2) / 730 (CS2) — drives app-agnostic send | app.js:524–526 | | ✅ preserved · currentAppId() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-113 | Failed cold TF2 fetch → records `tf2LoadError`, renders distinct error+Retry panel (never empty inventory) (H-FE-001) | app.js:537–557, 1714–1716, 1734–1764 | | ✅ preserved · tf2LoadError error+Retry panel logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-114 | `loadTf2Inventories()` on success starts price-fill watch (S29) | app.js:542–556 | | ✅ preserved · loadTf2Inventories() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-115 | `reloadAll()`: parallel fetch environments + accounts + inventory + exchange-rate; records FX fallback/age provenance | app.js:566–583 | | ✅ preserved · reloadAll() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-116 | GLOBAL wallet store `rememberWallet`: newest wallet (by fetchedAt) wins across CS2/TF2 so balance never clobbered by staler game-cache | app.js:585–598 | | ✅ preserved · rememberWallet logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-117 | `wasRefreshed(u)`: distinguishes "refreshed empty" (→0) from "never fetched" (→—) | app.js:600–609 | | ✅ preserved · wasRefreshed(u) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-118 | `refreshActiveViewFromCache()`: re-pulls cache after a mass op (buy/sell/trade), invalidates history, re-renders main+sidebar (no re-login) | app.js:611–634 | | ✅ preserved · refreshActiveViewFromCache() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-119 | `invFor(u)`: active-game inventory lookup w/ lowercase-key normalize | app.js:506–512 | | ✅ preserved · invFor(u) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -259,24 +259,24 @@
 
 | # | Formatting rule (exact) | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-120 | `fmtUsd(usdMajor)`: null/NaN→`—`; EUR = `usdMajor*usdToEur`; symbol `€`/`$`; locale de-DE (EUR) / en-US (USD); 2 fraction digits → `€1.234,56` / `$1,234.56` (ST-02) | app.js:638–645 | 💰 | |
-| P-121 | `fmtCents(cents)` = cents/100 → fmtUsd; null→`—` | app.js:647 | 💰 | |
-| P-122 | `fmtEurCents(cents)`: `€` + de-DE 2-digit (no FX; market-sell already EUR) | app.js:649–652 | 💰 | |
-| P-123 | `walletToUsd(w)`: USD(1)→balance; EUR(3)→balance/usdToEur; 0 stays 0; unknown non-zero currency→null | app.js:653–662 | 💰 | |
-| P-124 | `fleetCurrency()`: most-common wallet currency across accounts (fallback EUR=3) for empty-wallet display | app.js:663–677 | | |
-| P-125 | `stackValueCents(item)` = price × quantity (0 unpriced) | app.js:678–679 | 💰 | |
-| P-126 | `worthCentsForAccounts()`: SINGLE worth source = Σ backend `inv.totalValueUsd` (C19/INV-E3) | app.js:681–689 | 💰 | |
-| P-127 | `STEAM_CURRENCIES` map (code→ISO+decimals, 46 currencies) + `curInfo` | app.js:691–705 | | |
-| P-128 | `CURRENCY_LOCALE` per-ISO locale override (USD→en-US, JPY→ja-JP, …); default de-DE (ST-02) | app.js:706–716 | | |
-| P-129 | `fmtMoneyMinor(minor,code)`: Intl.NumberFormat currency style, per-currency locale+decimals; fallback to number+ISO | app.js:717–726 | 💰 | |
-| P-130 | `fmtWallet(w)`: STRICT — balance null/undefined/'' → `—`; real 0 → `0,00`; else localized native | app.js:729–738 | 💰 | |
-| P-131 | `normalizeMajor`/`parseMajorToMinor`: parse typed "2,15"/"1.500,00"; disambiguate decimal-vs-grouping; never over-parse | app.js:739–759 | 💰 | |
-| P-132 | `fmtCount(n)`: thousands-grouped in display-currency locale (12,480 / 12.480) | app.js:1130–1136 | | |
-| P-133 | `fmtCompactCount(n)`: grouped-exact <1M, "1.2M" above | app.js:1137–1143 | | |
-| P-134 | `fmtUsdCompact`: cents precision <100k, "€1.2M" above | app.js:1144–1152 | 💰 | |
-| P-135 | `setCountStat(elem,n)`: compact text + exact grouped on hover (title) | app.js:1153–1160 | | |
-| P-136 | `setMoneyStats(valueCents,walletUsd)`: compact display + exact `title`; null→`—` | app.js:1122–1128 | 💰 | |
-| P-137 | `setCurrency(cur)`: persists `ssim.currency`, updates buttons, re-renders (localStorage) | app.js:761–766 | | |
+| P-120 | `fmtUsd(usdMajor)`: null/NaN→`—`; EUR = `usdMajor*usdToEur`; symbol `€`/`$`; locale de-DE (EUR) / en-US (USD); 2 fraction digits → `€1.234,56` / `$1,234.56` (ST-02) | app.js:638–645 | 💰 | ✅ preserved · fmtUsd(usdMajor) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-121 | `fmtCents(cents)` = cents/100 → fmtUsd; null→`—` | app.js:647 | 💰 | ✅ preserved · fmtCents(cents) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-122 | `fmtEurCents(cents)`: `€` + de-DE 2-digit (no FX; market-sell already EUR) | app.js:649–652 | 💰 | ✅ preserved · fmtEurCents(cents) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-123 | `walletToUsd(w)`: USD(1)→balance; EUR(3)→balance/usdToEur; 0 stays 0; unknown non-zero currency→null | app.js:653–662 | 💰 | ✅ preserved · walletToUsd(w) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-124 | `fleetCurrency()`: most-common wallet currency across accounts (fallback EUR=3) for empty-wallet display | app.js:663–677 | | ✅ preserved · fleetCurrency() logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-125 | `stackValueCents(item)` = price × quantity (0 unpriced) | app.js:678–679 | 💰 | ✅ preserved · stackValueCents(item) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-126 | `worthCentsForAccounts()`: SINGLE worth source = Σ backend `inv.totalValueUsd` (C19/INV-E3) | app.js:681–689 | 💰 | ✅ preserved · worthCentsForAccounts() logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-127 | `STEAM_CURRENCIES` map (code→ISO+decimals, 46 currencies) + `curInfo` | app.js:691–705 | | ✅ preserved · STEAM_CURRENCIES map + curInfo unchanged (data table byte-identical vs legacy; global handler-safety proof) |
+| P-128 | `CURRENCY_LOCALE` per-ISO locale override (USD→en-US, JPY→ja-JP, …); default de-DE (ST-02) | app.js:706–716 | | ✅ preserved · CURRENCY_LOCALE per-ISO overrides unchanged (data table byte-identical vs legacy; global handler-safety proof) |
+| P-129 | `fmtMoneyMinor(minor,code)`: Intl.NumberFormat currency style, per-currency locale+decimals; fallback to number+ISO | app.js:717–726 | 💰 | ✅ preserved · fmtMoneyMinor(minor,code) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-130 | `fmtWallet(w)`: STRICT — balance null/undefined/'' → `—`; real 0 → `0,00`; else localized native | app.js:729–738 | 💰 | ✅ preserved · fmtWallet(w) STRICT tri-state logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-131 | `normalizeMajor`/`parseMajorToMinor`: parse typed "2,15"/"1.500,00"; disambiguate decimal-vs-grouping; never over-parse | app.js:739–759 | 💰 | ✅ preserved · normalizeMajor/parseMajorToMinor logic unchanged (parser byte-identical vs legacy; global handler-safety proof) |
+| P-132 | `fmtCount(n)`: thousands-grouped in display-currency locale (12,480 / 12.480) | app.js:1130–1136 | | ✅ preserved · fmtCount(n) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-133 | `fmtCompactCount(n)`: grouped-exact <1M, "1.2M" above | app.js:1137–1143 | | ✅ preserved · fmtCompactCount(n) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-134 | `fmtUsdCompact`: cents precision <100k, "€1.2M" above | app.js:1144–1152 | 💰 | ✅ preserved · fmtUsdCompact logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-135 | `setCountStat(elem,n)`: compact text + exact grouped on hover (title) | app.js:1153–1160 | | ✅ preserved · setCountStat(elem,n) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-136 | `setMoneyStats(valueCents,walletUsd)`: compact display + exact `title`; null→`—` | app.js:1122–1128 | 💰 | ✅ preserved · setMoneyStats(valueCents,walletUsd) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-137 | `setCurrency(cur)`: persists `ssim.currency`, updates buttons, re-renders (localStorage) | app.js:761–766 | | ✅ preserved · setCurrency(cur) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -284,14 +284,14 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-138 | `setPriceSource(src)`: PUT `/api/pricing/source`; respects backend "effective" (falls back to Steam if no CSFloat key); toast; reload+repull; persists `ssim.priceSource` | app.js:791–808 | 💰 | |
-| P-139 | Toast (source): success "Price source: X — re-pricing…"; error "No CSFloat API key found — pricing from Steam…" | app.js:800–801 | | |
-| P-140 | `updatePriceSourceButton()`: label + logo swap Steam/CSFloat | app.js:786–790 | | |
-| P-141 | `formatFillEta(left)`: "~Ns left" (<90s) / "~N min left" (<90m) / "~N.N h left" (3500ms/name) | app.js:850–861 | | |
-| P-142 | `priceFillIndicator(status)`: show if running or queued>0; "long" hint if >200 left | app.js:863–870 | | |
-| P-143 | Floating "Fetching prices…" badge `#price-fill-indicator` (fixed bottom-4 right-4 z-40): `N left · N done · ~eta · (large inventory)`; spinner tag; hover explains single-IP throttle; auto-hides on drain | app.js:871–892 | | |
-| P-144 | `watchPriceFill(repull)`: polls `/api/pricing/status` every 2500ms; re-pulls whole fleet when `fetched` advances (coalesced ≥10s); drains-then-stops; 15-min no-progress safety stop; 24-consec-error dead-backend stop; token supersession (S10/S19/S42) | app.js:894–943, 826–843 | | |
-| P-145 | `pollRepricing()`: after source switch, watch fill + live-update | app.js:1120–1121 | | |
+| P-138 | `setPriceSource(src)`: PUT `/api/pricing/source`; respects backend "effective" (falls back to Steam if no CSFloat key); toast; reload+repull; persists `ssim.priceSource` | app.js:791–808 | 💰 | ✅ preserved · setPriceSource(src) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-139 | Toast (source): success "Price source: X — re-pricing…"; error "No CSFloat API key found — pricing from Steam…" | app.js:800–801 | | ✅ preserved · price-source toast strings unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-140 | `updatePriceSourceButton()`: label + logo swap Steam/CSFloat | app.js:786–790 | | ✅ preserved · updatePriceSourceButton() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-141 | `formatFillEta(left)`: "~Ns left" (<90s) / "~N min left" (<90m) / "~N.N h left" (3500ms/name) | app.js:850–861 | | ✅ preserved · formatFillEta(left) logic unchanged (formatter byte-identical vs legacy; global handler-safety proof) |
+| P-142 | `priceFillIndicator(status)`: show if running or queued>0; "long" hint if >200 left | app.js:863–870 | | ✅ preserved · priceFillIndicator(status) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-143 | Floating "Fetching prices…" badge `#price-fill-indicator` (fixed bottom-4 right-4 z-40): `N left · N done · ~eta · (large inventory)`; spinner tag; hover explains single-IP throttle; auto-hides on drain | app.js:871–892 | | ✅ preserved · #price-fill-indicator badge logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-144 | `watchPriceFill(repull)`: polls `/api/pricing/status` every 2500ms; re-pulls whole fleet when `fetched` advances (coalesced ≥10s); drains-then-stops; 15-min no-progress safety stop; 24-consec-error dead-backend stop; token supersession (S10/S19/S42) | app.js:894–943, 826–843 | | ✅ preserved · watchPriceFill(repull) poller logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-145 | `pollRepricing()`: after source switch, watch fill + live-update | app.js:1120–1121 | | ✅ preserved · pollRepricing() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -299,17 +299,17 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-146 | `watchSystemStatus()`: polls `/api/system/status` every 30000ms; launched once from init | app.js:1089–1118 | | |
-| P-147 | Runtime license revocation: `st.licensed===false` → `window.location.replace('/')` (activation screen) (H-LIC-008, strict ===) | app.js:1096–1100 | | |
-| P-148 | Update indicator badge `#update-indicator` (bottom-left z-40): "Update vX available — click to install" or blocked variant; click → confirm+install | app.js:984–1006 | 💰 | |
-| P-149 | Update install flow `confirmAndInstallUpdate()`: ssimConfirm "Install & restart"; then `triggerUpdate(true)` (S61 confirm-before-install) | app.js:955–982 | 💰 | |
-| P-150 | `triggerUpdate(install)`: POST `/api/app/check-update`; toasts "Installing update…", "Update vX available…", "You're on the latest version." | app.js:954–967 | 💰 | |
-| P-151 | Post-install reconcile: if install ended without swap, clear "installing…", re-show badge, toast outcome (S34) | app.js:1105–1109 | | |
-| P-152 | Breaker indicator `#breaker-indicator` (top-center rose z-50): "Money operations paused. {reason} — restart SSIM before more trades/buys." when `moneyOpsStable===false` (B3) | app.js:1008–1022 | 💰 | |
-| P-153 | Token-store warning `#tokenstore-warning` (amber): "Refresh-token store is corrupt. …restore refresh_tokens.json from .bak…" | app.js:1024–1038 | | |
-| P-154 | CSFloat key-store warning `#csfloatkeystore-warning` (amber): "CSFloat key store is corrupt. …restore csfloat_keys.json…" | app.js:1040–1054 | | |
-| P-155 | Crash banner `#crash-banner` (top-right amber, dismissible ✕): "SSIM's backend crashed last run ({time}, code N)…" (B1, render once) | app.js:1056–1072 | | |
-| P-156 | Capability banner `#capability-banner` (top-center rose): "This session lost its authorization… Fully restart SSIM…" on 401 capabilityRequired (S1) | app.js:1074–1087, 471 | | |
+| P-146 | `watchSystemStatus()`: polls `/api/system/status` every 30000ms; launched once from init | app.js:1089–1118 | | ✅ preserved · watchSystemStatus() 30s poll logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-147 | Runtime license revocation: `st.licensed===false` → `window.location.replace('/')` (activation screen) (H-LIC-008, strict ===) | app.js:1096–1100 | | ✅ preserved · runtime license-revocation (strict ===) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-148 | Update indicator badge `#update-indicator` (bottom-left z-40): "Update vX available — click to install" or blocked variant; click → confirm+install | app.js:984–1006 | 💰 | ✅ preserved · #update-indicator badge logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-149 | Update install flow `confirmAndInstallUpdate()`: ssimConfirm "Install & restart"; then `triggerUpdate(true)` (S61 confirm-before-install) | app.js:955–982 | 💰 | ✅ preserved · confirmAndInstallUpdate() ssimConfirm gate unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-150 | `triggerUpdate(install)`: POST `/api/app/check-update`; toasts "Installing update…", "Update vX available…", "You're on the latest version." | app.js:954–967 | 💰 | ✅ preserved · triggerUpdate(install) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-151 | Post-install reconcile: if install ended without swap, clear "installing…", re-show badge, toast outcome (S34) | app.js:1105–1109 | | ✅ preserved · post-install reconcile (S34) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-152 | Breaker indicator `#breaker-indicator` (top-center rose z-50): "Money operations paused. {reason} — restart SSIM before more trades/buys." when `moneyOpsStable===false` (B3) | app.js:1008–1022 | 💰 | ✅ preserved · #breaker-indicator (moneyOpsStable, B3) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-153 | Token-store warning `#tokenstore-warning` (amber): "Refresh-token store is corrupt. …restore refresh_tokens.json from .bak…" | app.js:1024–1038 | | ✅ preserved · #tokenstore-warning logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-154 | CSFloat key-store warning `#csfloatkeystore-warning` (amber): "CSFloat key store is corrupt. …restore csfloat_keys.json…" | app.js:1040–1054 | | ✅ preserved · #csfloatkeystore-warning logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-155 | Crash banner `#crash-banner` (top-right amber, dismissible ✕): "SSIM's backend crashed last run ({time}, code N)…" (B1, render once) | app.js:1056–1072 | | ✅ preserved · #crash-banner (B1, render-once) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-156 | Capability banner `#capability-banner` (top-center rose): "This session lost its authorization… Fully restart SSIM…" on 401 capabilityRequired (S1) | app.js:1074–1087, 471 | | ✅ preserved · #capability-banner (401 capabilityRequired, S1) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -317,10 +317,10 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-157 | `capToken()`: reads `window.__SSIM_CAP__`, persists to sessionStorage (survives reload), per-origin (S1/B26) | app.js:415–429 | | |
-| P-158 | `api()` sends `X-SSIM-Cap` header; mutating methods await token (≤3s); reads never block | app.js:430–475 | | |
-| P-159 | Every call bounded by client timeout (default 120000ms); AbortError → "The request timed out — the backend may be busy…" (S32) | app.js:448–463 | | |
-| P-160 | Global UI error handlers: `window.onerror`/`unhandledrejection` → toast + POST `/api/app/client-error`; coalesced 1/sec (S30) | app.js:477–504 | | |
+| P-157 | `capToken()`: reads `window.__SSIM_CAP__`, persists to sessionStorage (survives reload), per-origin (S1/B26) | app.js:415–429 | | ✅ preserved · capToken() logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-158 | `api()` sends `X-SSIM-Cap` header; mutating methods await token (≤3s); reads never block | app.js:430–475 | | ✅ preserved · api() X-SSIM-Cap header + token-await logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-159 | Every call bounded by client timeout (default 120000ms); AbortError → "The request timed out — the backend may be busy…" (S32) | app.js:448–463 | | ✅ preserved · client-timeout / AbortError (S32) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-160 | Global UI error handlers: `window.onerror`/`unhandledrejection` → toast + POST `/api/app/client-error`; coalesced 1/sec (S30) | app.js:477–504 | | ✅ preserved · window.onerror/unhandledrejection handlers (S30) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -374,24 +374,24 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-186 | `renderAccountView()`: header = displayName + Proxy/Local-IP pill + username (mono); placeholder if none | app.js:2079–2094, 2081 | | done · app.js:2080–2100 (.pill header + Full/LTD tier pill re-skin) |
-| P-187 | Trade-link render/bind (`renderTradeLink`/`bindTradeLink`) | app.js:2096, 2124 | | done · app.js:2101, 2124; renderTradeLink 2863–2874 (.btn btn-secondary) |
-| P-188 | "Check Bans" button → `checkAccountBans(username)` | app.js:2097–2099, 2125–2126 | | done · app.js:2102–2103, 2125–2126 (.btn btn-secondary btn-sm) |
-| P-189 | "Logs" button → `openAccountLogs(username)` | app.js:2100–2102, 2127–2128 | | done · app.js:2104–2105, 2127–2128 |
-| P-190 | "Trade-Ups" button (amber) → `openTradeUpModal(username)` | app.js:2104–2106, 2131–2132 | 💰 | done · app.js:2108–2109, 2131–2132 (.btn btn-secondary, amber icon) |
-| P-191 | "Storage" (caskets) button (sky) → `openCasketModal(username)` | app.js:2107–2109, 2133–2134 | | done · app.js:2110–2111, 2133–2134 (sky icon) |
-| P-192 | "Trade Offers" button → `openTradeOffers()` | app.js:2110–2112, 2129–2130 | 💰 | done · app.js:2112–2113, 2129–2130 (.btn btn-primary) |
-| P-193 | "CSFloat" button → `openCsFloat(username)` | app.js:2113–2115, 2135–2136 | 💰 | done · app.js:2114–2115, 2135–2136 |
-| P-194 | "SDA" button (emerald) → `openSda(username)` (Steam Guard + confirmations) | app.js:2116–2118, 2137–2138 | | done · app.js:2116–2117, 2137–2138 |
-| P-195 | "Browser" button (violet) → `openCleanBrowser(btn,username)` (logged-in via linked proxy, ephemeral) | app.js:2119–2122, 2139–2140 | | done · app.js:2118–2120, 2139–2140 |
-| P-196 | Refresh button shown+reset (enabled, rotate icon) | app.js:2142–2144 | | done · app.js:2142–2145 (unchanged; #btn-load chrome is V6) |
-| P-197 | Warning "not refreshed yet – trade-locked/listed may be missing" only when CS2 & `inv.source!=='gc'` | app.js:2148–2152, 1766–1774 | | done · app.js:2148–2153 (logic unchanged) |
-| P-198 | Stat labels: TF2 → "TF2 Items"/"TF2 Keys"; CS2 → "Items"/"Trade-Locked" | app.js:2152 | | done · app.js:2153 (logic unchanged) |
-| P-199 | GC-sourced CS2 → category pills; else plain "Items" pill; Active-Orders tab always available (`renderAccountTabs`) | app.js:2154–2159 | | done · app.js:2155–2160; renderAccountTabs 2922–2950 (.chip pills) |
-| P-200 | Stats: totalItems, locked/keys, value=`inv.totalValueUsd`, wallet=walletToUsd (0 when refreshed+empty); '—' when no cache | app.js:2161–2173 | 💰 | done · app.js:2162–2174 (tri-state logic unchanged, invariant 1) |
-| P-201 | Active-Orders tab → `renderOrdersView(username,appId)` | app.js:2175–2182 | | done · app.js:2176–2183 (logic unchanged) |
-| P-202 | Renders selectable table (both games; app-agnostic send) | app.js:2185–2190 | | done · app.js:2186–2191 (logic unchanged) |
-| P-203 | Empty: "No TF2 inventory cached yet"/"No inventory in cache yet" + 'Click "Refresh" to load it live.' | app.js:2191–2196 | | done · app.js:2192–2197 (.empty shell, texts unchanged) |
+| P-186 | `renderAccountView()`: header = displayName + Proxy/Local-IP pill + username (mono); placeholder if none | app.js:2079–2094, 2081 | | ✅ done · app.js:2080–2100 (.pill header + Full/LTD tier pill re-skin) |
+| P-187 | Trade-link render/bind (`renderTradeLink`/`bindTradeLink`) | app.js:2096, 2124 | | ✅ done · app.js:2101, 2124; renderTradeLink 2863–2874 (.btn btn-secondary) |
+| P-188 | "Check Bans" button → `checkAccountBans(username)` | app.js:2097–2099, 2125–2126 | | ✅ done · app.js:2102–2103, 2125–2126 (.btn btn-secondary btn-sm) |
+| P-189 | "Logs" button → `openAccountLogs(username)` | app.js:2100–2102, 2127–2128 | | ✅ done · app.js:2104–2105, 2127–2128 |
+| P-190 | "Trade-Ups" button (amber) → `openTradeUpModal(username)` | app.js:2104–2106, 2131–2132 | 💰 | ✅ done · app.js:2108–2109, 2131–2132 (.btn btn-secondary, amber icon) |
+| P-191 | "Storage" (caskets) button (sky) → `openCasketModal(username)` | app.js:2107–2109, 2133–2134 | | ✅ done · app.js:2110–2111, 2133–2134 (sky icon) |
+| P-192 | "Trade Offers" button → `openTradeOffers()` | app.js:2110–2112, 2129–2130 | 💰 | ✅ done · app.js:2112–2113, 2129–2130 (.btn btn-primary) |
+| P-193 | "CSFloat" button → `openCsFloat(username)` | app.js:2113–2115, 2135–2136 | 💰 | ✅ done · app.js:2114–2115, 2135–2136 |
+| P-194 | "SDA" button (emerald) → `openSda(username)` (Steam Guard + confirmations) | app.js:2116–2118, 2137–2138 | | ✅ done · app.js:2116–2117, 2137–2138 |
+| P-195 | "Browser" button (violet) → `openCleanBrowser(btn,username)` (logged-in via linked proxy, ephemeral) | app.js:2119–2122, 2139–2140 | | ✅ done · app.js:2118–2120, 2139–2140 |
+| P-196 | Refresh button shown+reset (enabled, rotate icon) | app.js:2142–2144 | | ✅ done · app.js:2142–2145 (unchanged; #btn-load chrome is V6) |
+| P-197 | Warning "not refreshed yet – trade-locked/listed may be missing" only when CS2 & `inv.source!=='gc'` | app.js:2148–2152, 1766–1774 | | ✅ done · app.js:2148–2153 (logic unchanged) |
+| P-198 | Stat labels: TF2 → "TF2 Items"/"TF2 Keys"; CS2 → "Items"/"Trade-Locked" | app.js:2152 | | ✅ done · app.js:2153 (logic unchanged) |
+| P-199 | GC-sourced CS2 → category pills; else plain "Items" pill; Active-Orders tab always available (`renderAccountTabs`) | app.js:2154–2159 | | ✅ done · app.js:2155–2160; renderAccountTabs 2922–2950 (.chip pills) |
+| P-200 | Stats: totalItems, locked/keys, value=`inv.totalValueUsd`, wallet=walletToUsd (0 when refreshed+empty); '—' when no cache | app.js:2161–2173 | 💰 | ✅ done · app.js:2162–2174 (tri-state logic unchanged, invariant 1) |
+| P-201 | Active-Orders tab → `renderOrdersView(username,appId)` | app.js:2175–2182 | | ✅ done · app.js:2176–2183 (logic unchanged) |
+| P-202 | Renders selectable table (both games; app-agnostic send) | app.js:2185–2190 | | ✅ done · app.js:2186–2191 (logic unchanged) |
+| P-203 | Empty: "No TF2 inventory cached yet"/"No inventory in cache yet" + 'Click "Refresh" to load it live.' | app.js:2191–2196 | | ✅ done · app.js:2192–2197 (.empty shell, texts unchanged) |
 
 ---
 
@@ -486,11 +486,11 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-267 | "Get trade link" button (no cached URL, `fa-link`) | app.js:2862–2868 | | |
-| P-268 | Cached link display: `<code>` truncated to 280px + "Copy" button | app.js:2869–2874 | | |
-| P-269 | Fetch trade link: loading state; on success stores + auto-copies; toast `Trade link fetched & copied[ (manual)]` | app.js:2882–2894 | | |
-| P-270 | Copy trade link: toast "Trade link copied" | app.js:2895–2900 | | |
-| P-271 | Clipboard fallback: hidden textarea + `execCommand('copy')` if `navigator.clipboard` fails | app.js:2901–2910 | | |
+| P-267 | "Get trade link" button (no cached URL, `fa-link`) | app.js:2862–2868 | | ✅ preserved · "Get trade link" button (renderTradeLink) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-268 | Cached link display: `<code>` truncated to 280px + "Copy" button | app.js:2869–2874 | | ✅ preserved · cached trade-link display logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-269 | Fetch trade link: loading state; on success stores + auto-copies; toast `Trade link fetched & copied[ (manual)]` | app.js:2882–2894 | | ✅ preserved · fetch-trade-link (store + auto-copy) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-270 | Copy trade link: toast "Trade link copied" | app.js:2895–2900 | | ✅ preserved · copy-trade-link logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-271 | Clipboard fallback: hidden textarea + `execCommand('copy')` if `navigator.clipboard` fails | app.js:2901–2910 | | ✅ preserved · clipboard execCommand fallback logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -498,41 +498,41 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-272 | Account category tab bar (GC): pills All / Owned Items / Trade-Locked / Listed on Market with per-bucket counts; flat inv collapses to single "Items" pill | app.js:2923–2938 | | done · app.js:2922–2946 (.chip aria-pressed toggles) |
-| P-273 | "Active Orders" tab (always appended): teal `fa-receipt`, separated by divider; click sets `state.gcCat` and re-renders | app.js:2939–2949 | | done · app.js:2947–2950 (.chip chip--buy, divider) |
-| P-274 | Windowed rendering for flat 10k list: only visible rows (+10 buffer) between spacer `<tr>`s, recomputed on scroll; row height auto-measured; selection stays data-driven | app.js:2952–2995 | | done · app.js:2952–2996 (windowing math UNCHANGED, invariant 7) |
-| P-275 | Per-row renderer (name/qty/rarity/value/status): item name colored by rarity; icon-with-lock; master row shows Accounts count instead of Exterior/Status | app.js:2997–3041 | | done · app.js:2998–3042 (.rar bar + .item-icon + is-selected rows) |
-| P-276 | Facet state per view: persists per `invMode:env:user/folder/master`; `{status[], rarity[], maxCents}` | app.js:3043–3051 | | done · app.js:3046–3055 (logic unchanged) |
-| P-277 | Apply facets: status/rarity include-filters + `maxCents` (price < threshold) | app.js:3052–3062 | | done · app.js:3056–3065 (logic unchanged) |
-| P-278 | Toggle / clear facet values: re-renders on each change | app.js:3063–3069 | | done · app.js:3066–3073 (logic unchanged) |
-| P-279 | Facet chip bar: "Filter" label; status chips (Tradable success / Trade-Locked warn / Listed listed) only in flat views; rarity chips sorted by weight; `≤ <sym>` value input; "Clear (N)" when active (TBL-03) | app.js:3070–3107 | | done · app.js:3075–3111 (already .chip; unchanged) |
-| P-280 | Facet value input currency-aware: EUR converts via `usdToEur`; symbol `€`/`$` | app.js:3086–3104 | 💰 | done · app.js:3090–3108 (logic unchanged) |
-| P-281 | Render items table (master vs account columns): master Item/Qty/Accounts/Rarity/Value; account Item/Qty/Exterior/Rarity/Value/Status | app.js:3109, 3137–3139 | | done · app.js:3113, 3141–3143 (thSort/thPlain/thCheck re-skin) |
-| P-282 | "Select under value" control visibility: only when rows selectable (account + folder-master) | app.js:3116–3117 | | done · app.js:3120–3121 (logic unchanged) |
-| P-283 | Trade-lock badge policy: shown in flat lists (TF2/not-fully-refreshed CS2) and categorized Trade-Locked tab; never in master/aggregate | app.js:3120–3125 | | done · app.js:3124–3129 (logic unchanged) |
-| P-284 | Search filter (name + marketHashName): corrupt name fields coerced to avoid throw (S30) | app.js:3142–3145 | | done · app.js:3146–3149 (logic unchanged) |
-| P-285 | Sort (active/default): with `state.sort` → `compareItems` asc/desc; default → locked-first (account only) then qty desc | app.js:3147–3155 | | done · app.js:3151–3159 (logic unchanged) |
-| P-286 | Search-empty message: "No items for this search." toggled on filtered length | app.js:3157; index.html:678 | | done · app.js:3161; index.html:875 |
-| P-287 | Categorized GC bucket rendering: 3 strictly-separated groups w/ section headers in "All" ("Owned · freely tradable" success / "Trade-Locked" warn / "Listed on Steam Market" listed), each `N item(s)` count; single-category → "No items in this category." | app.js:3163–3189 | | done · app.js:3167–3193 (section headers kept, .rar-driven rows) |
-| P-288 | Qty badge: `×N` (bold pill) for N>1, else muted `×1` | app.js:3206–3210 | | done · app.js:3210–3214 (unchanged) |
-| P-289 | Value cell: `undefined`→`…` (Price loading…); `null`→`—` (no market price); else `fmtCents(stackValueCents)` + `(fmtCents(price)/ea.)` when qty>1 | app.js:3211–3216 | 💰 | done · app.js:3215–3220 (pricing-honesty distinct states, invariant 5) |
-| P-290 | Rarity badge (colored) | app.js:3217–3219 | | done · app.js:3221–3223 (rarity-hex data color, unchanged) |
-| P-291 | Lock countdown text: "3 days, 14 h" / "5 h, 12 min" / "8 min" / "unlocked now" | app.js:3220–3230 | | done · app.js:3225–3235 (unchanged) |
-| P-292 | Compact lock badge: "7D" / "14H" / "32M" (null if free) | app.js:3231–3240 | | done · app.js:3236–3245 (unchanged) |
-| P-293 | Icon-with-lock overlay: amber corner badge title "Trade-Locked: unlocks in <countdown>" | app.js:3241–3254 | | done · app.js:3248–3259 (unchanged) |
-| P-294 | Status cell: locked → amber lock + countdown (title "Unlocks on <abs localeString>"); tradable → emerald "Tradable"; else rose "Locked" | app.js:3255–3263 | | done · app.js:3259–3267 (unchanged) |
-| P-295 | Sortable column header: click toggles asc/desc; active arrow ▲/▼ in brand color | app.js:3265–3276 | | done · app.js:3269–3280 (.items-table th, arrow kept) |
-| P-296 | Select-all header checkbox: title "Select all tradable" | app.js:3271 | | done · app.js:3275 (thCheck re-skin) |
-| P-297 | Selection mode-awareness: account = assetId keys; folder/selection = marketHashName keys | app.js:3278–3297 | | done · app.js:3282–3301 (logic unchanged) |
-| P-298 | Per-key max selectable qty: master (agg) uses `sendable` portion only; `aggItemByName` O(1) lookup for fan-out | app.js:3286–3297 | | done · app.js:3290–3301 (logic unchanged) |
-| P-299 | Per-row qty input (selected, maxSel>1): number input min 1 max maxSel; syncs all matching `.sel-qty` | app.js:3024–3025, 3298–3305 | | done · app.js:3025–3026, 3302–3309 (.sel-qty hook kept) |
-| P-300 | Targeted single-row re-render on toggle: preserves scroll + siblings | app.js:3307–3328 | | done · app.js:3311–3332 (logic unchanged) |
-| P-301 | Select-all (data-driven, windowed-safe): selects all selectable rows incl. off-screen; repaints window | app.js:3329–3347 | | done · app.js:3333–3351 (logic unchanged) |
-| P-302 | Delegated change/click dispatchers: `.sel-check`, `.sel-qty`, header sort, `#select-all` | app.js:3348–3361 | | done · app.js:3352–3365 (delegation unchanged, invariant 7) |
-| P-303 | Account send → concrete assetIds (single-owner send) | app.js:3363–3372 | 💰 | done · app.js:3367–3376 (logic unchanged) |
-| P-304 | Folder send → {username,assetId} refs across owners (mass send fan-out) | app.js:3373–3388 | 💰 | done · app.js:3377–3392 (logic unchanged) |
-| P-305 | Selection bar: shows/hides; hides Sell button in TF2 view (market SELL is CS2-only); count text `N Item(s) · M Bot(s)/Stack(s)` | app.js:3391–3405; index.html:639–653 | 💰 | done · app.js:3395–3409; index.html:829–846 (logic unchanged; opens modal only) |
-| P-306 | "Select under value" bulk-select: threshold in display currency → USD cents; skips locked/untradable/unpriced; toast `Selected N item(s) under <sym><val>` or `No items under …` | app.js:3407–3433; index.html:626–638 | 💰 | done · app.js:3411–3437; index.html:812–827 (logic unchanged; selection only) |
+| P-272 | Account category tab bar (GC): pills All / Owned Items / Trade-Locked / Listed on Market with per-bucket counts; flat inv collapses to single "Items" pill | app.js:2923–2938 | | ✅ done · app.js:2922–2946 (.chip aria-pressed toggles) |
+| P-273 | "Active Orders" tab (always appended): teal `fa-receipt`, separated by divider; click sets `state.gcCat` and re-renders | app.js:2939–2949 | | ✅ done · app.js:2947–2950 (.chip chip--buy, divider) |
+| P-274 | Windowed rendering for flat 10k list: only visible rows (+10 buffer) between spacer `<tr>`s, recomputed on scroll; row height auto-measured; selection stays data-driven | app.js:2952–2995 | | ✅ done · app.js:2952–2996 (windowing math UNCHANGED, invariant 7) |
+| P-275 | Per-row renderer (name/qty/rarity/value/status): item name colored by rarity; icon-with-lock; master row shows Accounts count instead of Exterior/Status | app.js:2997–3041 | | ✅ done · app.js:2998–3042 (.rar bar + .item-icon + is-selected rows) |
+| P-276 | Facet state per view: persists per `invMode:env:user/folder/master`; `{status[], rarity[], maxCents}` | app.js:3043–3051 | | ✅ done · app.js:3046–3055 (logic unchanged) |
+| P-277 | Apply facets: status/rarity include-filters + `maxCents` (price < threshold) | app.js:3052–3062 | | ✅ done · app.js:3056–3065 (logic unchanged) |
+| P-278 | Toggle / clear facet values: re-renders on each change | app.js:3063–3069 | | ✅ done · app.js:3066–3073 (logic unchanged) |
+| P-279 | Facet chip bar: "Filter" label; status chips (Tradable success / Trade-Locked warn / Listed listed) only in flat views; rarity chips sorted by weight; `≤ <sym>` value input; "Clear (N)" when active (TBL-03) | app.js:3070–3107 | | ✅ done · app.js:3075–3111 (already .chip; unchanged) |
+| P-280 | Facet value input currency-aware: EUR converts via `usdToEur`; symbol `€`/`$` | app.js:3086–3104 | 💰 | ✅ done · app.js:3090–3108 (logic unchanged) |
+| P-281 | Render items table (master vs account columns): master Item/Qty/Accounts/Rarity/Value; account Item/Qty/Exterior/Rarity/Value/Status | app.js:3109, 3137–3139 | | ✅ done · app.js:3113, 3141–3143 (thSort/thPlain/thCheck re-skin) |
+| P-282 | "Select under value" control visibility: only when rows selectable (account + folder-master) | app.js:3116–3117 | | ✅ done · app.js:3120–3121 (logic unchanged) |
+| P-283 | Trade-lock badge policy: shown in flat lists (TF2/not-fully-refreshed CS2) and categorized Trade-Locked tab; never in master/aggregate | app.js:3120–3125 | | ✅ done · app.js:3124–3129 (logic unchanged) |
+| P-284 | Search filter (name + marketHashName): corrupt name fields coerced to avoid throw (S30) | app.js:3142–3145 | | ✅ done · app.js:3146–3149 (logic unchanged) |
+| P-285 | Sort (active/default): with `state.sort` → `compareItems` asc/desc; default → locked-first (account only) then qty desc | app.js:3147–3155 | | ✅ done · app.js:3151–3159 (logic unchanged) |
+| P-286 | Search-empty message: "No items for this search." toggled on filtered length | app.js:3157; index.html:678 | | ✅ done · app.js:3161; index.html:875 |
+| P-287 | Categorized GC bucket rendering: 3 strictly-separated groups w/ section headers in "All" ("Owned · freely tradable" success / "Trade-Locked" warn / "Listed on Steam Market" listed), each `N item(s)` count; single-category → "No items in this category." | app.js:3163–3189 | | ✅ done · app.js:3167–3193 (section headers kept, .rar-driven rows) |
+| P-288 | Qty badge: `×N` (bold pill) for N>1, else muted `×1` | app.js:3206–3210 | | ✅ done · app.js:3210–3214 (unchanged) |
+| P-289 | Value cell: `undefined`→`…` (Price loading…); `null`→`—` (no market price); else `fmtCents(stackValueCents)` + `(fmtCents(price)/ea.)` when qty>1 | app.js:3211–3216 | 💰 | ✅ done · app.js:3215–3220 (pricing-honesty distinct states, invariant 5) |
+| P-290 | Rarity badge (colored) | app.js:3217–3219 | | ✅ done · app.js:3221–3223 (rarity-hex data color, unchanged) |
+| P-291 | Lock countdown text: "3 days, 14 h" / "5 h, 12 min" / "8 min" / "unlocked now" | app.js:3220–3230 | | ✅ done · app.js:3225–3235 (unchanged) |
+| P-292 | Compact lock badge: "7D" / "14H" / "32M" (null if free) | app.js:3231–3240 | | ✅ done · app.js:3236–3245 (unchanged) |
+| P-293 | Icon-with-lock overlay: amber corner badge title "Trade-Locked: unlocks in <countdown>" | app.js:3241–3254 | | ✅ done · app.js:3248–3259 (unchanged) |
+| P-294 | Status cell: locked → amber lock + countdown (title "Unlocks on <abs localeString>"); tradable → emerald "Tradable"; else rose "Locked" | app.js:3255–3263 | | ✅ done · app.js:3259–3267 (unchanged) |
+| P-295 | Sortable column header: click toggles asc/desc; active arrow ▲/▼ in brand color | app.js:3265–3276 | | ✅ done · app.js:3269–3280 (.items-table th, arrow kept) |
+| P-296 | Select-all header checkbox: title "Select all tradable" | app.js:3271 | | ✅ done · app.js:3275 (thCheck re-skin) |
+| P-297 | Selection mode-awareness: account = assetId keys; folder/selection = marketHashName keys | app.js:3278–3297 | | ✅ done · app.js:3282–3301 (logic unchanged) |
+| P-298 | Per-key max selectable qty: master (agg) uses `sendable` portion only; `aggItemByName` O(1) lookup for fan-out | app.js:3286–3297 | | ✅ done · app.js:3290–3301 (logic unchanged) |
+| P-299 | Per-row qty input (selected, maxSel>1): number input min 1 max maxSel; syncs all matching `.sel-qty` | app.js:3024–3025, 3298–3305 | | ✅ done · app.js:3025–3026, 3302–3309 (.sel-qty hook kept) |
+| P-300 | Targeted single-row re-render on toggle: preserves scroll + siblings | app.js:3307–3328 | | ✅ done · app.js:3311–3332 (logic unchanged) |
+| P-301 | Select-all (data-driven, windowed-safe): selects all selectable rows incl. off-screen; repaints window | app.js:3329–3347 | | ✅ done · app.js:3333–3351 (logic unchanged) |
+| P-302 | Delegated change/click dispatchers: `.sel-check`, `.sel-qty`, header sort, `#select-all` | app.js:3348–3361 | | ✅ done · app.js:3352–3365 (delegation unchanged, invariant 7) |
+| P-303 | Account send → concrete assetIds (single-owner send) | app.js:3363–3372 | 💰 | ✅ done · app.js:3367–3376 (logic unchanged) |
+| P-304 | Folder send → {username,assetId} refs across owners (mass send fan-out) | app.js:3373–3388 | 💰 | ✅ done · app.js:3377–3392 (logic unchanged) |
+| P-305 | Selection bar: shows/hides; hides Sell button in TF2 view (market SELL is CS2-only); count text `N Item(s) · M Bot(s)/Stack(s)` | app.js:3391–3405; index.html:639–653 | 💰 | ✅ done · app.js:3395–3409; index.html:829–846 (logic unchanged; opens modal only) |
+| P-306 | "Select under value" bulk-select: threshold in display currency → USD cents; skips locked/untradable/unpriced; toast `Selected N item(s) under <sym><val>` or `No items under …` | app.js:3407–3433; index.html:626–638 | 💰 | ✅ done · app.js:3411–3437; index.html:812–827 (logic unchanged; selection only) |
 
 ---
 
@@ -540,25 +540,25 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-307 | Select account: sets account mode, resets gcCat/search/sort/selection, clears search box | app.js:3439–3447 | | |
-| P-308 | Table skeleton rows: 9 shimmer rows mirroring table geometry (FB-03) | app.js:3450–3466 | | |
-| P-309 | Dashboard env-tile skeletons: 6 shimmer tiles on initial load | app.js:3467–3481 | | done · app.js:3468–3487 (.env-tile skeleton) |
-| P-310 | Inv loading skeleton toggle: hides bare spinner, empties header, shows skeleton; on off with skel still present re-renders | app.js:3482–3497 | | |
-| P-311 | Refresh single account (CS2): `/api/inventory/<u>?refresh=1`; complete fetch; toast `Inventory refreshed: N items · L locked · X listed` | app.js:3499–3520 | 💰 | |
-| P-312 | Refresh single account (TF2): `/api/inventory-tf2/<u>?refresh=1`; toast `TF2 inventory refreshed: N items, K keys` | app.js:3505–3510 | 💰 | |
-| P-313 | Background price-fill watch after refresh: `watchPriceFill` re-pulls so prices/totals update without restart (PRICE-REFRESH) | app.js:3521–3523 | | |
-| P-314 | Refresh button loading + finalize: "Refreshing…"; on done patches sidebar balances in place | app.js:3502, 3526–3530 | | |
-| P-315 | Start Refresh-All job: POST `/api/inventory/refresh-all`; shows progress bar, resets End-task btn + failure list + stall poller | app.js:3534–3546 | | |
-| P-316 | Failed-accounts panel: lists each failed `username – <shortError>`; persists until dismissed/next run | app.js:3547–3559; index.html:426–437 | | |
-| P-317 | shortError truncation: collapses whitespace, truncates >140 chars with `…` | app.js:3560–3564 | | |
-| P-318 | Refresh-All scope: global mode → only enabled accounts in selected envs (`state.globalEnvs`); else whole env; toast warn "No accounts…to refresh" if empty | app.js:3565–3580 | 💰 | |
-| P-319 | Refresh folder: `refreshFolder(usernames)` | app.js:3581–3583 | | |
-| P-320 | Refresh-All progress poller (800ms): bar %, `done/total` count, label "Cancelling…"/"Refreshing…"/"Done" | app.js:3584–3593 | | |
-| P-321 | Stall detection: no progress (not cancelling) → warn "Refresh appears stuck (no progress) – stopping the live updater. Check the server." + hide progress | app.js:3594–3599 | | |
-| P-322 | Poll completion re-pull (CS2/TF2): re-fetches full inventory map, invalidates history / heals TF2 load-error | app.js:3603–3619 | | |
-| P-323 | Refresh-All completion toast: with failures → panel + `Refresh complete/ended: done/total – failed: names[+N]` (warn); else `Refresh complete/ended: done/total` (success/warn if cancelled) | app.js:3620–3631 | | |
-| P-324 | Poll transient-error tolerance: bounded retry until continuous-error stall, then error toast + hide progress (S17) | app.js:3632–3640 | | |
-| P-325 | Soft hide/unhide account: toast `"<u>" hidden/shown` with **Undo** action; falls back to env master if hiding active account | app.js:3644–3653 | | |
+| P-307 | Select account: sets account mode, resets gcCat/search/sort/selection, clears search box | app.js:3439–3447 | | ✅ preserved · selectAccount (mode/reset) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-308 | Table skeleton rows: 9 shimmer rows mirroring table geometry (FB-03) | app.js:3450–3466 | | ✅ preserved · table skeleton rows (FB-03) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-309 | Dashboard env-tile skeletons: 6 shimmer tiles on initial load | app.js:3467–3481 | | ✅ done · app.js:3468–3487 (.env-tile skeleton) |
+| P-310 | Inv loading skeleton toggle: hides bare spinner, empties header, shows skeleton; on off with skel still present re-renders | app.js:3482–3497 | | ✅ preserved · inv-loading skeleton toggle logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-311 | Refresh single account (CS2): `/api/inventory/<u>?refresh=1`; complete fetch; toast `Inventory refreshed: N items · L locked · X listed` | app.js:3499–3520 | 💰 | ✅ preserved · refresh single account (CS2) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-312 | Refresh single account (TF2): `/api/inventory-tf2/<u>?refresh=1`; toast `TF2 inventory refreshed: N items, K keys` | app.js:3505–3510 | 💰 | ✅ preserved · refresh single account (TF2) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-313 | Background price-fill watch after refresh: `watchPriceFill` re-pulls so prices/totals update without restart (PRICE-REFRESH) | app.js:3521–3523 | | ✅ preserved · post-refresh watchPriceFill (PRICE-REFRESH) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-314 | Refresh button loading + finalize: "Refreshing…"; on done patches sidebar balances in place | app.js:3502, 3526–3530 | | ✅ preserved · refresh-button loading + patchSidebarBalances finalize logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-315 | Start Refresh-All job: POST `/api/inventory/refresh-all`; shows progress bar, resets End-task btn + failure list + stall poller | app.js:3534–3546 | | ✅ preserved · start Refresh-All job logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-316 | Failed-accounts panel: lists each failed `username – <shortError>`; persists until dismissed/next run | app.js:3547–3559; index.html:426–437 | | ✅ preserved · failed-accounts panel (username – shortError) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-317 | shortError truncation: collapses whitespace, truncates >140 chars with `…` | app.js:3560–3564 | | ✅ preserved · shortError truncation logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-318 | Refresh-All scope: global mode → only enabled accounts in selected envs (`state.globalEnvs`); else whole env; toast warn "No accounts…to refresh" if empty | app.js:3565–3580 | 💰 | ✅ preserved · Refresh-All scope (globalEnvs vs env) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-319 | Refresh folder: `refreshFolder(usernames)` | app.js:3581–3583 | | ✅ preserved · refreshFolder(usernames) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-320 | Refresh-All progress poller (800ms): bar %, `done/total` count, label "Cancelling…"/"Refreshing…"/"Done" | app.js:3584–3593 | | ✅ preserved · Refresh-All progress poller (800ms) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-321 | Stall detection: no progress (not cancelling) → warn "Refresh appears stuck (no progress) – stopping the live updater. Check the server." + hide progress | app.js:3594–3599 | | ✅ preserved · Refresh-All stall detection logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-322 | Poll completion re-pull (CS2/TF2): re-fetches full inventory map, invalidates history / heals TF2 load-error | app.js:3603–3619 | | ✅ preserved · poll-completion re-pull (CS2/TF2) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-323 | Refresh-All completion toast: with failures → panel + `Refresh complete/ended: done/total – failed: names[+N]` (warn); else `Refresh complete/ended: done/total` (success/warn if cancelled) | app.js:3620–3631 | | ✅ preserved · Refresh-All completion toast logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-324 | Poll transient-error tolerance: bounded retry until continuous-error stall, then error toast + hide progress (S17) | app.js:3632–3640 | | ✅ preserved · poll transient-error tolerance (S17) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-325 | Soft hide/unhide account: toast `"<u>" hidden/shown` with **Undo** action; falls back to env master if hiding active account | app.js:3644–3653 | | ✅ preserved · soft hide/unhide (Undo toast) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -784,9 +784,9 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-438 | End task (confirmed cancel) `endTask({label,endpoint,button})`: MANDATORY `ssimConfirm` danger "End task? …account in progress finishes; remaining skipped" → POST endpoint; btn→"Stopping…"; warn toast | app.js:5129–5146 | | |
-| P-439 | Reset end button `resetEndBtn`: re-enables + restores "End task" label on fresh run | app.js:5124–5128 | | |
-| P-440 | Wired end-task buttons: Refresh (`/api/inventory/refresh-cancel`), Mass trade (`/api/trade/mass-cancel`), Market sale (`/api/market/sell-cancel`), Mass buy (`/api/market/folder-buy-cancel`) | app.js:6357–6360 | 💰 | |
+| P-438 | End task (confirmed cancel) `endTask({label,endpoint,button})`: MANDATORY `ssimConfirm` danger "End task? …account in progress finishes; remaining skipped" → POST endpoint; btn→"Stopping…"; warn toast | app.js:5129–5146 | | ✅ preserved · endTask({label,endpoint,button}) ssimConfirm gate unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-439 | Reset end button `resetEndBtn`: re-enables + restores "End task" label on fresh run | app.js:5124–5128 | | ✅ preserved · resetEndBtn logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-440 | Wired end-task buttons: Refresh (`/api/inventory/refresh-cancel`), Mass trade (`/api/trade/mass-cancel`), Market sale (`/api/market/sell-cancel`), Mass buy (`/api/market/folder-buy-cancel`) | app.js:6357–6360 | 💰 | ✅ preserved · wired end-task buttons (refresh/mass-trade/sell/folder-buy cancel) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -836,11 +836,11 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-461 | Item search input `onSearch`: sets `state.search`, re-render | app.js:5627 | | |
-| P-462 | Toggle hidden accounts `onToggleHidden`: flips `state.showHidden`, re-render sidebar | app.js:5628 | | |
-| P-463 | Button loading helper `setButtonLoading(btn,loading,text,icon)`: spinner/icon swap | app.js:5630–5634 | | |
-| P-464 | Wallet resolver `walletOf(u)`: GLOBAL wallet (not per-game), prefers remembered newest, falls back to either game cache | app.js:5642–5652 | 💰 | |
-| P-465 | Buy currency code `buyCurrencyCode`: NEVER defaults to EUR (wrong scale would misprice); uses live buyWallet or `walletOf` | app.js:5655–5660 | 💰 | |
+| P-461 | Item search input `onSearch`: sets `state.search`, re-render | app.js:5627 | | ✅ preserved · onSearch logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-462 | Toggle hidden accounts `onToggleHidden`: flips `state.showHidden`, re-render sidebar | app.js:5628 | | ✅ preserved · onToggleHidden logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-463 | Button loading helper `setButtonLoading(btn,loading,text,icon)`: spinner/icon swap | app.js:5630–5634 | | ✅ preserved · setButtonLoading(btn,loading,text,icon) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-464 | Wallet resolver `walletOf(u)`: GLOBAL wallet (not per-game), prefers remembered newest, falls back to either game cache | app.js:5642–5652 | 💰 | ✅ preserved · walletOf(u) global-wallet resolver logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-465 | Buy currency code `buyCurrencyCode`: NEVER defaults to EUR (wrong scale would misprice); uses live buyWallet or `walletOf` | app.js:5655–5660 | 💰 | ✅ preserved · buyCurrencyCode (never defaults EUR) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
 | P-466 | Open buy modal `openBuyModal`: datalist of all accounts, preselects active bot, game from `state.game`, qty 1, empty price/name, fetches wallet | app.js:5661–5680 | | ✅ done · openBuyModal logic unchanged (only datalist `<option>`s emitted — no DS classes); modal shell re-skinned; hooks preserved |
 | P-467 | Render buy wallet `renderBuyWallet(w)`: currency label `(ISO)`/"(currency unknown)"; `Balance: …` or "Balance unknown – Refresh the account first (buying disabled)" | app.js:5682–5687 | 💰 | ✅ done · renderBuyWallet byte-identical (textContent only); wallet line re-skinned on host `#buy-wallet` → .t11; balance tri-state (unknown / 0,00 / value) kept visually distinct |
 | P-468 | Update buy wallet `updateBuyWallet`: instant local value, then GET `/api/accounts/:u/wallet` for freshest; caches | app.js:5690–5702 | 💰 | ✅ done · updateBuyWallet logic unchanged |
@@ -912,13 +912,13 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-501 | Toast API `toast(message,type,opts)`: types info/success/warn/error; de-dupes identical (`type\|message`); queue cap 50 (drops oldest) | app.js:6037–6050 | | |
-| P-502 | Stacking (max 3 visible) `TOAST_MAX=3`; rest queued; `drainToasts` refills as slots free (FB-02) | app.js:6030, 6051–6056 | | |
-| P-503 | Toast render: tone bg {success emerald, error rose, warn amber, info slate}; icon {circle-check, circle-exclamation, triangle-exclamation, circle-info}; role alert(error)/status | app.js:6057–6066 | | |
-| P-504 | Auto-dismiss / persist: errors 20 000ms TTL, others 4000ms (or `opts.duration`); optional inline "Undo" button | app.js:6064–6076 | | |
-| P-505 | Live-Logs floating launcher (duplicate anchor of P-025): bottom-LEFT pill "◳ Live Logs" (z-index 30, purple gradient); opens `/logs.html` popup + POST `/api/app/open-logs` (Tauri native window) | index.html:1516–1550 | | |
-| P-506 | Keep-alive heartbeat (duplicate anchor of P-024): `fetch('/api/app/ping')` every 4000ms | index.html:1509–1515 | | |
-| P-507 | Account activity log modal `#logs-overlay` `openAccountLogs(username)`: shows overlay, GET `/api/accounts/{username}/logs`; "Loading…"; entry row = timestamp (`toLocaleString`) + message, level tone error→rose / warn→amber / else slate; empty "No activity logged for this account yet."; error rose; `closeLogs()` hides | app.js:1317–1340; index.html:1343–1352 | | |
+| P-501 | Toast API `toast(message,type,opts)`: types info/success/warn/error; de-dupes identical (`type\|message`); queue cap 50 (drops oldest) | app.js:6037–6050 | | ✅ preserved · toast(message,type,opts) API logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-502 | Stacking (max 3 visible) `TOAST_MAX=3`; rest queued; `drainToasts` refills as slots free (FB-02) | app.js:6030, 6051–6056 | | ✅ preserved · TOAST_MAX stacking + drainToasts (FB-02) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-503 | Toast render: tone bg {success emerald, error rose, warn amber, info slate}; icon {circle-check, circle-exclamation, triangle-exclamation, circle-info}; role alert(error)/status | app.js:6057–6066 | | ✅ preserved · toast render (tone/icon/role) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-504 | Auto-dismiss / persist: errors 20 000ms TTL, others 4000ms (or `opts.duration`); optional inline "Undo" button | app.js:6064–6076 | | ✅ preserved · toast auto-dismiss/persist + Undo logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-505 | Live-Logs floating launcher (duplicate anchor of P-025): bottom-LEFT pill "◳ Live Logs" (z-index 30, purple gradient); opens `/logs.html` popup + POST `/api/app/open-logs` (Tauri native window) | index.html:1516–1550 | | ✅ done · index.html (DS shell; V1) — Live-Logs launcher (duplicate anchor of P-025) preserved |
+| P-506 | Keep-alive heartbeat (duplicate anchor of P-024): `fetch('/api/app/ping')` every 4000ms | index.html:1509–1515 | | ✅ done · index.html (DS shell; V1) — keep-alive heartbeat (duplicate anchor of P-024) preserved |
+| P-507 | Account activity log modal `#logs-overlay` `openAccountLogs(username)`: shows overlay, GET `/api/accounts/{username}/logs`; "Loading…"; entry row = timestamp (`toLocaleString`) + message, level tone error→rose / warn→amber / else slate; empty "No activity logged for this account yet."; error rose; `closeLogs()` hides | app.js:1317–1340; index.html:1343–1352 | | ✅ preserved · openAccountLogs(username) / #logs-overlay logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -928,21 +928,21 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-508 | Sticky header offset sync `syncStickyOffsets`/`setupStickyHeader`: `--ssim-stick-top` = live toolbar height (ResizeObserver) so pinned column headers sit flush | app.js:6115–6130 | | |
-| P-509 | Overlay closer registry `OVERLAY_CLOSERS`: Esc/registry routes each overlay through its REAL close fn (17 overlays incl. confirm=safe-cancel) | app.js:6138–6146 | | |
-| P-510 | Modal open lifecycle `onModalOpen`: records trigger, scroll-lock, autofocus first field | app.js:6165–6179 | | |
-| P-511 | Modal close lifecycle `onModalClose`: runs teardown hook, unlocks scroll, restores focus to trigger if still valid (`isRestorable`) | app.js:6182–6201 | | |
-| P-512 | Overlay MutationObserver `observeOverlay`: wires hidden↔shown class toggles to open/close lifecycle (also for lazily-built overlays) | app.js:6205–6212 | | |
-| P-513 | Modal infra setup `setupModalInfra`: focusin/pointerdown trigger tracking; Esc closes top overlay; Tab focus-trap | app.js:6214–6244 | | |
-| P-514 | Per-modal teardown hooks `MODAL_TEARDOWNS`: stops tradeup/casket status pollers on close (H-FE-010) | app.js:6152, 6603, 6753 | | |
-| P-515 | Confirm dialog `ssimConfirm(opts)`: async boolean; tones danger/spend/brand (icon+btn color); optional typed-word gate (disables OK until exact match); DEFENSIVE focus on Cancel (never destructive btn); backdrop/Esc = cancel | app.js:6251–6305 | 💰 | |
-| P-516 | Sidebar resize `setupSidebarResize`: drag `#sidebar-resizer` (220–560px), persists `ssim.sidebarWidth`, double-click resets | app.js:6307–6346; index.html:483 | | |
-| P-517 | Static event wiring `bindStaticEvents`: binds ALL nav/toolbar/modal/import/source-menu/currency controls | app.js:6348–6490 | | |
-| P-518 | Price-source + currency split menus: src-menu (Steam/CSFloat) + cur-menu (USD/EUR); mutually-exclusive open; click-away closes | app.js:6473–6477; index.html:571 | | |
-| P-519 | License gate (client-guard) `ensureLicensed`: bounded 8s probe of `/api/system/status`; licensed→sets footer version; 403/licensed:false→activation screen; unreachable→retry screen (no reload loop) | app.js:6510–6539 | | |
-| P-520 | Backend-unreachable screen `showBackendUnreachableScreen`: "Can't reach SSIM's backend" + Retry; auto re-probes every 3s, reloads once backend confirms licensed | app.js:6544–6566 | | |
-| P-521 | Timeout signal helper `timeoutSignal(ms)`: AbortSignal.timeout fallback (bounds hanging fetches S23/S32) | app.js:6503–6508 | | |
-| P-522 | Startup splash `playStartupSplash`: one-shot brand bloom on unlock→dashboard (sessionStorage-gated, skipped under reduced-motion) | app.js:6951–6966; index.html:338 | | |
+| P-508 | Sticky header offset sync `syncStickyOffsets`/`setupStickyHeader`: `--ssim-stick-top` = live toolbar height (ResizeObserver) so pinned column headers sit flush | app.js:6115–6130 | | ✅ preserved · syncStickyOffsets/setupStickyHeader logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-509 | Overlay closer registry `OVERLAY_CLOSERS`: Esc/registry routes each overlay through its REAL close fn (17 overlays incl. confirm=safe-cancel) | app.js:6138–6146 | | ✅ preserved · OVERLAY_CLOSERS registry logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-510 | Modal open lifecycle `onModalOpen`: records trigger, scroll-lock, autofocus first field | app.js:6165–6179 | | ✅ preserved · onModalOpen lifecycle logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-511 | Modal close lifecycle `onModalClose`: runs teardown hook, unlocks scroll, restores focus to trigger if still valid (`isRestorable`) | app.js:6182–6201 | | ✅ preserved · onModalClose (restore focus / isRestorable) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-512 | Overlay MutationObserver `observeOverlay`: wires hidden↔shown class toggles to open/close lifecycle (also for lazily-built overlays) | app.js:6205–6212 | | ✅ preserved · observeOverlay MutationObserver logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-513 | Modal infra setup `setupModalInfra`: focusin/pointerdown trigger tracking; Esc closes top overlay; Tab focus-trap | app.js:6214–6244 | | ✅ preserved · setupModalInfra (Esc + Tab focus-trap) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-514 | Per-modal teardown hooks `MODAL_TEARDOWNS`: stops tradeup/casket status pollers on close (H-FE-010) | app.js:6152, 6603, 6753 | | ✅ preserved · MODAL_TEARDOWNS (stop pollers, H-FE-010) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-515 | Confirm dialog `ssimConfirm(opts)`: async boolean; tones danger/spend/brand (icon+btn color); optional typed-word gate (disables OK until exact match); DEFENSIVE focus on Cancel (never destructive btn); backdrop/Esc = cancel | app.js:6251–6305 | 💰 | ✅ preserved · ssimConfirm(opts) (tones/typed-gate/defensive-focus) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-516 | Sidebar resize `setupSidebarResize`: drag `#sidebar-resizer` (220–560px), persists `ssim.sidebarWidth`, double-click resets | app.js:6307–6346; index.html:483 | | ✅ preserved · setupSidebarResize (220–560px, persist) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-517 | Static event wiring `bindStaticEvents`: binds ALL nav/toolbar/modal/import/source-menu/currency controls | app.js:6348–6490 | | ✅ preserved · bindStaticEvents (all nav/toolbar/modal wiring) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-518 | Price-source + currency split menus: src-menu (Steam/CSFloat) + cur-menu (USD/EUR); mutually-exclusive open; click-away closes | app.js:6473–6477; index.html:571 | | ✅ preserved · src-menu/cur-menu mutually-exclusive open + click-away logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-519 | License gate (client-guard) `ensureLicensed`: bounded 8s probe of `/api/system/status`; licensed→sets footer version; 403/licensed:false→activation screen; unreachable→retry screen (no reload loop) | app.js:6510–6539 | | ✅ preserved · ensureLicensed (8s probe, license gate) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-520 | Backend-unreachable screen `showBackendUnreachableScreen`: "Can't reach SSIM's backend" + Retry; auto re-probes every 3s, reloads once backend confirms licensed | app.js:6544–6566 | | ✅ preserved · showBackendUnreachableScreen (3s re-probe) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-521 | Timeout signal helper `timeoutSignal(ms)`: AbortSignal.timeout fallback (bounds hanging fetches S23/S32) | app.js:6503–6508 | | ✅ preserved · timeoutSignal(ms) (S23/S32) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-522 | Startup splash `playStartupSplash`: one-shot brand bloom on unlock→dashboard (sessionStorage-gated, skipped under reduced-motion) | app.js:6951–6966; index.html:338 | | ✅ preserved · playStartupSplash (one-shot, sessionStorage-gated) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
@@ -950,17 +950,17 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-523 | HTML/attr escaping `escapeHtml`/`escapeAttr`: entity-encode `&<>"'` | app.js:6078–6081 | | |
-| P-524 | Icon-host allow-list `safeIconUrl`: only steamstatic/akamaihd/steamcommunity https; else '' (anti IP-beacon) | app.js:6083–6093 | | |
-| P-525 | Poller stall guard `pollerStalled(key,done)` / `resetPoller`: 180 000ms (3min) zero-progress → give up | app.js:6095–6106 | | |
-| P-526 | Steam currency table `STEAM_CURRENCIES` (code→ISO+decimals, 46 entries); `curInfo` default EUR/2 | app.js:694–705 | | |
-| P-527 | Currency toggle `setCurrency(cur)`: persists `ssim.currency`, FX-provenance tooltip on `#cur-btn` (fallback/stale rate warnings) | app.js:761–779 | | |
-| P-528 | `itemColor(item)`: rarity hex (RARITY_HEX map, 8 tiers + Unknown), respects item.rarityColor | app.js:364–378 | | |
-| P-529 | `rarityWeight(r)` / `statusGroup(item)` / `compareItems(a,b,key)`: sort by name/quantity/rarity/value/accounts/status (locked expiry tiebreak) | app.js:379–403 | | |
-| P-530 | Bounded error-retry pattern (S17): every self-rescheduling poller keeps polling through transient status errors until POLL_STALL_MS, then gives up with a visible non-fabricated terminal line | app.js:4779, 5171, 5199, 5462, 5970, 6717, 6741, 6900, 6943 | | |
-| P-531 | Search debounce pattern: Buy/Fbuy/CSFloat-BO item search debounce ~300–350ms; ignore stale in-flight results | app.js:6458, 6469, 4336 | | |
-| P-532 | Post-action live refresh pattern: trade (9s deferred), buy, sell, mass-buy, casket all re-pull affected accounts / active-view-from-cache so sent/sold/moved items stop showing as owned (INV-E1) | app.js:5076, 5456, 5862, 6008, 6936 | 💰 | |
-| P-533 | Modal close policy: static data modals close only via X / Cancel / Esc (no backdrop-close, prevents accidental loss); confirm + feature overlays DO backdrop-close (safe cancel) | app.js:6378, 6595 | | |
+| P-523 | HTML/attr escaping `escapeHtml`/`escapeAttr`: entity-encode `&<>"'` | app.js:6078–6081 | | ✅ preserved · escapeHtml/escapeAttr logic unchanged (security helper byte-identical vs legacy; global handler-safety proof) |
+| P-524 | Icon-host allow-list `safeIconUrl`: only steamstatic/akamaihd/steamcommunity https; else '' (anti IP-beacon) | app.js:6083–6093 | | ✅ preserved · safeIconUrl allow-list (anti IP-beacon) logic unchanged (security helper byte-identical vs legacy; global handler-safety proof) |
+| P-525 | Poller stall guard `pollerStalled(key,done)` / `resetPoller`: 180 000ms (3min) zero-progress → give up | app.js:6095–6106 | | ✅ preserved · pollerStalled/resetPoller (180 000ms) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-526 | Steam currency table `STEAM_CURRENCIES` (code→ISO+decimals, 46 entries); `curInfo` default EUR/2 | app.js:694–705 | | ✅ preserved · STEAM_CURRENCIES table (46 entries) + curInfo unchanged (data table byte-identical vs legacy; global handler-safety proof) |
+| P-527 | Currency toggle `setCurrency(cur)`: persists `ssim.currency`, FX-provenance tooltip on `#cur-btn` (fallback/stale rate warnings) | app.js:761–779 | | ✅ preserved · setCurrency(cur) + #cur-btn FX-provenance tooltip logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-528 | `itemColor(item)`: rarity hex (RARITY_HEX map, 8 tiers + Unknown), respects item.rarityColor | app.js:364–378 | | ✅ preserved · itemColor(item) (RARITY_HEX) logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-529 | `rarityWeight(r)` / `statusGroup(item)` / `compareItems(a,b,key)`: sort by name/quantity/rarity/value/accounts/status (locked expiry tiebreak) | app.js:379–403 | | ✅ preserved · rarityWeight/statusGroup/compareItems sort logic unchanged (helper byte-identical vs legacy; global handler-safety proof) |
+| P-530 | Bounded error-retry pattern (S17): every self-rescheduling poller keeps polling through transient status errors until POLL_STALL_MS, then gives up with a visible non-fabricated terminal line | app.js:4779, 5171, 5199, 5462, 5970, 6717, 6741, 6900, 6943 | | ✅ preserved · bounded error-retry pattern (S17) logic unchanged (all pollers byte-identical vs legacy; global handler-safety proof) |
+| P-531 | Search debounce pattern: Buy/Fbuy/CSFloat-BO item search debounce ~300–350ms; ignore stale in-flight results | app.js:6458, 6469, 4336 | | ✅ preserved · search debounce pattern (~300–350ms) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-532 | Post-action live refresh pattern: trade (9s deferred), buy, sell, mass-buy, casket all re-pull affected accounts / active-view-from-cache so sent/sold/moved items stop showing as owned (INV-E1) | app.js:5076, 5456, 5862, 6008, 6936 | 💰 | ✅ preserved · post-action live-refresh pattern (INV-E1) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
+| P-533 | Modal close policy: static data modals close only via X / Cancel / Esc (no backdrop-close, prevents accidental loss); confirm + feature overlays DO backdrop-close (safe cancel) | app.js:6378, 6595 | | ✅ preserved · modal close policy (static=X/Cancel/Esc; confirm+feature backdrop-close) logic unchanged (handler byte-identical vs legacy; global handler-safety proof) |
 
 ---
 
