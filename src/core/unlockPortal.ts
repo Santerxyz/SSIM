@@ -8,6 +8,7 @@ import { publicDir } from '../utils/paths';
 import { openUiWindow } from '../appWindow';
 import { printLockScreen } from '../licensing/lockscreen';
 import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
+import { writeCrash } from '../utils/crashlog';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  unlockPortal.ts — the APP-WINDOW equivalent of the CLI Master-Password prompt.
@@ -178,6 +179,15 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
     const server = http.createServer(app);
     listenAndAnnounce(server, host, port).then((bound) => {
       logger.info(`vault unlock portal listening on ${host}:${bound}`);
+      // Runtime errors AFTER a successful bind (accept-time EMFILE/ENFILE under fd exhaustion,
+      // handle-level failures): honor serverPort.ts's caller contract — the portal installs its
+      // own runtime 'error' handler once listening, so a socket-layer event is filed as an
+      // UNLOCK PORTAL RUNTIME ERROR, not misclassified as an UNCAUGHT EXCEPTION. Mirrors the
+      // full-app counterpart in index.ts. (H-ACC-069.)
+      server.on('error', (err: NodeJS.ErrnoException) => {
+        writeCrash('UNLOCK PORTAL RUNTIME ERROR', err);
+        logger.error(`unlock portal runtime error: ${err.message}`);
+      });
       openUiWindow(`http://localhost:${bound}`);
     }).catch((err: NodeJS.ErrnoException) => {
       printLockScreen('The unlock server failed to start.', err.message);
