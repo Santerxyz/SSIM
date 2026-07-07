@@ -2,7 +2,7 @@ import './bootflags'; // MUST be first – sets process flags before deps load
 import fs from 'fs';
 import http, { type Server } from 'http';
 import { createApp, createDeps } from './api/server';
-import { acquireInstanceLock, releaseInstanceLock } from './core/singleInstance';
+import { acquireInstanceLock, releaseInstanceLock, lockRefusalDetail } from './core/singleInstance';
 import { listenAndAnnounce, clearStalePortFile, clearOwnPortFile } from './utils/serverPort';
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
@@ -392,9 +392,19 @@ async function bootstrap(): Promise<void> {
     // crash-log entry, which reads as a "silent crash" when an operator relaunches
     // over a still-running copy. Recording it here lets the heartbeat/crash logs tell
     // the two apart (lock-abort = operational, not a real crash — Phenomenon A).
-    writeCrash('SINGLE-INSTANCE LOCK ABORT (another SSIM is already running – not a crash)', new Error('lock held'));
-    printLockScreen('SSIM is already running!', 'Another SSIM instance is already running – close it first.');
-    logger.error('another SSIM instance is already running (lockfile) – aborting second start');
+    // H-BOOT-008: a permanent filesystem/permission fault (data/ read-only or access-denied)
+    // must NOT be reported as "another instance is running" — that sends the operator hunting a
+    // phantom copy. lockRefusalDetail() is set only on that io fault; undefined = genuinely held.
+    const lockIoDetail = lockRefusalDetail();
+    if (lockIoDetail) {
+      writeCrash('SINGLE-INSTANCE LOCK ABORT (lock file could not be created – filesystem/permission fault)', new Error('lock io'));
+      printLockScreen('SSIM could not start.', lockIoDetail);
+      logger.error(`single-instance lock could not be created – aborting start: ${lockIoDetail}`);
+    } else {
+      writeCrash('SINGLE-INSTANCE LOCK ABORT (another SSIM is already running – not a crash)', new Error('lock held'));
+      printLockScreen('SSIM is already running!', 'Another SSIM instance is already running – close it first.');
+      logger.error('another SSIM instance is already running (lockfile) – aborting second start');
+    }
     setTimeout(() => process.exit(1), 250);
     return;
   }
