@@ -77,6 +77,10 @@ export class CsFloatClient {
     if (!lim) { lim = new RateLimiter(1, 600); this.limiters.set(apiKey, lim); } // single-flight, ~1.5 req/s — conservative
     return lim;
   }
+  /** Drop the shared limiter for a key no live account holds any more, so the static cache does not
+   *  retain a dead RateLimiter (and the raw key string) for the process lifetime. A key that later
+   *  returns just gets a fresh limiter via limiterFor — create-on-miss is unchanged. */
+  static releaseLimiter(apiKey: string): void { this.limiters.delete(apiKey); }
 
   private readonly http: AxiosInstance;
   private readonly limiter: RateLimiter;

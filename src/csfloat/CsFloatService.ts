@@ -56,12 +56,19 @@ export class CsFloatService {
       }
       warning = `Stored, but could not verify via /me: ${(e as Error).message}`;
     }
+    const oldKey = this.keys.get(username);
     this.keys.set(username, trimmed);
     this.invalidate(username);
+    if (oldKey && oldKey !== trimmed) this.releaseLimiterIfUnused(oldKey);
     return { profile, warning };
   }
 
-  clearKey(username: string): void { this.keys.delete(username); this.invalidate(username); }
+  clearKey(username: string): void {
+    const oldKey = this.keys.get(username);
+    this.keys.delete(username);
+    this.invalidate(username);
+    this.releaseLimiterIfUnused(oldKey);
+  }
 
   /** Drops the cached per-account client (and the shared pricing client if it is bound to this
    *  account) so the NEXT request rebuilds on the account's current egress network. Called when an
@@ -159,6 +166,15 @@ export class CsFloatService {
   private invalidate(username: string): void {
     const c = this.clients.get(username.toLowerCase());
     if (c) { AgentFactory.destroyIfDisposable(c.agent); this.clients.delete(username.toLowerCase()); }
+  }
+
+  /** Release the shared per-key RateLimiter for a key no live account holds any more (INV-F4: a key
+   *  still configured on ANY account keeps its limiter, so the per-key CSFloat rate cap is never doubled).
+   *  A shared-key account keeps the limiter alive; a returning key just rebuilds one via limiterFor. */
+  private releaseLimiterIfUnused(key: string | undefined): void {
+    if (key && !this.keys.usernamesWithKeys().some((u) => this.keys.get(u) === key)) {
+      CsFloatClient.releaseLimiter(key);
+    }
   }
 
   private disposePricing(): void {
