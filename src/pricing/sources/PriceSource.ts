@@ -11,5 +11,8 @@ export type PriceSourceId = 'steam' | 'csfloat';
 
 export interface PriceSource {
   readonly id: PriceSourceId;
+  /** True when this source can currently serve a fetch (credential present, dependencies
+   *  reachable); always-available sources return a constant true. */
+  available(): boolean;
   fetchPriceCents(name: string, appid: number): Promise<number | null>;
 }
