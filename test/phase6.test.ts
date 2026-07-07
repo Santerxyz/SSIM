@@ -4,7 +4,10 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { generateTotpCode, msUntilNextTotp } from '../src/core/LoginFlow';
 import { shapeConfirmations } from '../src/trading/confirmations';
-import { buildIsolatedSession, parseCookieStrings, startProxyRelay } from '../src/trading/cleanBrowser';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { buildIsolatedSession, findChromium, parseCookieStrings, startProxyRelay } from '../src/trading/cleanBrowser';
 
 // ── OTP: known-answer against an INDEPENDENT Steam-TOTP computation ──────────
 // (Validates the production generateTotpCode; the independent impl here is test-only.)
@@ -263,4 +266,22 @@ test('A.4c — the relay PERSISTS across multiple browser connections (not one-s
 
 test('helpers: parseCookieStrings', () => {
   assert.deepEqual(parseCookieStrings(['a=1; Path=/', 'b=x=y', 'bad']), { a: '1', b: 'x=y' });
+});
+
+test('findChromium: resolves the browser from ProgramFiles(x86) (non-C: / OEM-drive hosts)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-pf86-'));
+  const exe = path.join(dir, 'Microsoft/Edge/Application/msedge.exe');
+  fs.mkdirSync(path.dirname(exe), { recursive: true });
+  fs.writeFileSync(exe, '');
+  const savedPf86 = process.env['ProgramFiles(x86)'];
+  const savedOverride = process.env.SSIM_BROWSER_EXE;
+  delete process.env.SSIM_BROWSER_EXE; // let the derived Edge path win
+  process.env['ProgramFiles(x86)'] = dir.replace(/\\/g, '/');
+  try {
+    assert.equal(findChromium(), dir.replace(/\\/g, '/') + '/Microsoft/Edge/Application/msedge.exe');
+  } finally {
+    if (savedPf86 === undefined) delete process.env['ProgramFiles(x86)']; else process.env['ProgramFiles(x86)'] = savedPf86;
+    if (savedOverride === undefined) delete process.env.SSIM_BROWSER_EXE; else process.env.SSIM_BROWSER_EXE = savedOverride;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

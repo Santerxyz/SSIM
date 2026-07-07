@@ -143,13 +143,17 @@ export function buildIsolatedSession(input: {
 
 // ── Launch (side-effect; smoke-level — needs a real Chromium + proxy + Steam) ───
 
-function findChromium(): string | null {
+export function findChromium(): string | null {
+  const pf = process.env['ProgramFiles'] ?? 'C:/Program Files';
+  const pf86 = process.env['ProgramFiles(x86)'] ?? 'C:/Program Files (x86)';
+  const lad = process.env['LOCALAPPDATA'];
   const c = [
     process.env.SSIM_BROWSER_EXE,
-    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-    'C:/Program Files/Google/Chrome/Application/chrome.exe',
-    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    pf86 + '/Microsoft/Edge/Application/msedge.exe',
+    pf + '/Microsoft/Edge/Application/msedge.exe',
+    pf + '/Google/Chrome/Application/chrome.exe',
+    pf86 + '/Google/Chrome/Application/chrome.exe',
+    lad && lad + '/Google/Chrome/Application/chrome.exe',
   ].filter(Boolean) as string[];
   for (const p of c) { try { if (fs.existsSync(p)) return p; } catch { /* ignore */ } }
   return null;
