@@ -48,7 +48,6 @@ export interface SkinDef {
   collection:  string;   // canonical (first) collection name; '' if none
   minFloat:    number;
   maxFloat:    number;
-  hasStatTrak: boolean;
 }
 
 /**
@@ -160,7 +159,6 @@ export class Cs2SchemaService {
         name, rarityId, collection,
         minFloat: numOr(s?.min_float, 0),
         maxFloat: numOr(s?.max_float, 1),
-        hasStatTrak: !!s?.stattrak,
       };
       const key = name.toLowerCase();
       if (!this.byBaseName.has(key)) this.byBaseName.set(key, def); // first wins (stable)
