@@ -6,6 +6,8 @@ import path from 'node:path';
 import fsExtra from 'fs-extra';
 import { TokenStore } from '../src/core/TokenStore';
 import { AccountVault } from '../src/core/AccountVault';
+import { logger } from '../src/utils/logger';
+import * as atomicJson from '../src/utils/atomicJson';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  B2 — a PRESENT-but-corrupt refresh_tokens.json must mark the store DEGRADED
@@ -180,6 +182,39 @@ test('H-ACC-055: an ENOENT from the existsSync→read TOCTOU window loads fresh 
   } finally {
     (fsExtra as unknown as { readJsonSync: typeof orig }).readJsonSync = orig;
   }
+});
+
+// ─── H-ACC-057: the set() outcome log must tell the truth on the persistence-failure paths ──────
+test('H-ACC-057: a failed plaintext save() logs "NOT persisted", never a bare "refresh token persisted"', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const s = new TokenStore(mk(undefined)); // fresh install → not degraded
+  const infoMsgs: string[] = [];
+  const origInfo = logger.info;
+  const origWrite = atomicJson.writeJsonAtomic;
+  try {
+    (logger as unknown as { info: (m: unknown) => unknown }).info = (m: unknown) => { infoMsgs.push(String(m)); return logger; };
+    (atomicJson as unknown as { writeJsonAtomic: () => void }).writeJsonAtomic = () => { throw new Error('ENOSPC: disk full'); };
+    assert.equal(s.set('a', 't'), false, 'a write failure reports NOT persisted from set()');
+  } finally {
+    (logger as unknown as { info: typeof origInfo }).info = origInfo;
+    (atomicJson as unknown as { writeJsonAtomic: typeof origWrite }).writeJsonAtomic = origWrite;
+  }
+  assert.equal(infoMsgs.some(m => m.includes('NOT persisted this attempt')), true, 'the honest in-memory-only line is logged');
+  assert.equal(infoMsgs.some(m => m.includes('refresh token persisted')), false, 'the misleading success line is NOT logged on a failed save');
+});
+
+test('H-ACC-057: a successful save() still logs the unchanged "refresh token persisted" success line', () => {
+  const p = mk(JSON.stringify({ version: 1, tokens: {} }));
+  const s = new TokenStore(p);
+  const infoMsgs: string[] = [];
+  const origInfo = logger.info;
+  try {
+    (logger as unknown as { info: (m: unknown) => unknown }).info = (m: unknown) => { infoMsgs.push(String(m)); return logger; };
+    assert.equal(s.set('dave', 'tok-d'), true, 'a healthy store persists');
+  } finally {
+    (logger as unknown as { info: typeof origInfo }).info = origInfo;
+  }
+  assert.equal(infoMsgs.includes('[dave] refresh token persisted'), true, 'the happy-path success line is unchanged');
 });
 
 test('S36: a fresh-install store must NOT leak tokens into a later instance (no shared EMPTY alias)', () => {

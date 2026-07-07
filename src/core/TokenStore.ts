@@ -208,7 +208,10 @@ export class TokenStore {
       this.file.tokens[this.key(username)] = token; // in-memory for THIS run
       persisted = this.save();                      // false while degraded / on write failure (see save())
     }
-    logger.info(`[${username}] refresh token persisted${this.degraded && !AccountVault.isEnabled() ? ' (in-memory only – store degraded)' : ''}`);
+    // H-ACC-057: log the ACTUAL outcome — the old line logged "persisted" unconditionally, so a vault
+    // setToken throw or a plaintext save() failure both printed success right after their own warn.
+    if (persisted) logger.info(`[${username}] refresh token persisted`);
+    else logger.info(`[${username}] refresh token held in memory only (NOT persisted this attempt)`);
     return persisted;
   }
 
