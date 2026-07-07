@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SSIM — Santer Steam Inventory Manager</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-  <link rel="apple-touch-icon" href="/assets/logo.png" />
+  <link rel="apple-touch-icon" href="/assets/image-Photoroom.png" />
 
   <!-- License client-guard: keep the dashboard physically hidden until app.js
        confirms (/api/system/status) that this device is licensed. If it isn't,
@@ -57,18 +57,31 @@
           // DS-03: semantic status aliases. New code uses text-success / bg-danger/40 /
           // border-listed/35 … all resolving from the :root status tokens (one source).
           success: 'rgb(var(--success-rgb) / <alpha-value>)',
+          balance: 'rgb(var(--balance-rgb) / <alpha-value>)',
           warn:    'rgb(var(--warn-rgb) / <alpha-value>)',
           danger:  'rgb(var(--danger-rgb) / <alpha-value>)',
           buy:     'rgb(var(--buy-rgb) / <alpha-value>)',
           listed:  'rgb(var(--listed-rgb) / <alpha-value>)',
         },
-        // Tighter radii → precise, enterprise feel (was up to 16px, now max ~10px)
-        borderRadius: { lg: '0.375rem', xl: '0.5rem', '2xl': '0.5rem', '3xl': '0.625rem' },
-        boxShadow: { glow: '0 0 18px -6px rgb(var(--brand-rgb) / .65)' },
-        fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
-        // DS-02: name the three sub-xs sizes that were arbitrary one-offs (text-2xs etc.).
-        // Exact px values → zero density change; now referenced as text-2xs / 3xs / 4xs.
-        fontSize: { '2xs': '11px', '3xs': '10px', '4xs': '9px' },
+        // Masterpiece "Design B" language — SOFT corners: buttons/rows 10–12,
+        // cards/tiles/modals 14–16. Re-pointing the existing scale softens all
+        // A-markup (rounded-lg / rounded-2xl) with zero markup edits.
+        borderRadius: { md: '8px', lg: '10px', xl: '12px', '2xl': '16px', '3xl': '16px' },
+        boxShadow: {
+          glow:     '0 0 24px -6px rgb(var(--brand-rgb) / .60)',
+          'glow-sm':'0 0 14px -4px rgb(var(--brand-rgb) / .55)',
+        },
+        fontFamily: {
+          sans: ['Inter', 'system-ui', 'sans-serif'],
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        },
+        // DS-02: one clean type scale — 10·11·12·13·14·16·20·28. The legacy
+        // 2xs/3xs/4xs one-offs are kept (still referenced by legacy view markup)
+        // and the masterpiece 13/28 steps are added for the new chrome.
+        fontSize: {
+          '4xs': '9px', '3xs': '10px', '2xs': '11px',
+          '13': '13px', '28': ['28px', '1.1'],
+        },
       } },
     };
   </script>
@@ -92,23 +105,73 @@
        palette tokens and stay as rgba(255,255,255|0,0,0, a). ── */
     :root {
       color-scheme: dark;
-      --brand-rgb: 147 51 234;     /* #9333ea */
-      --brand-d-rgb: 126 34 206;   /* #7e22ce */
-      --brand-l-rgb: 192 132 252;  /* #c084fc */
+      --brand-rgb: 147 51 234;     /* #9333ea primary */
+      --brand-d-rgb: 126 34 206;   /* #7e22ce deep/hover */
+      --brand-l-rgb: 192 132 252;  /* #c084fc light */
       --slate-50: 247 247 250;  --slate-100: 238 237 243; --slate-200: 221 219 230;
       --slate-300: 194 191 208; --slate-400: 146 141 163; --slate-500: 107 102 120;
       --slate-600: 70 66 79;    --slate-700: 44 41 55;    --slate-800: 30 28 41;
-      --slate-900: 18 17 25;    --slate-950: 10 10 15;    --bg-2: 13 12 20; /* #0d0c14 */
-      --success-rgb: 52 211 153; /* #34d399 */
-      --balance-rgb: 16 185 129; /* #10b981 */
-      --warn-rgb: 245 158 11;    /* #f59e0b */
-      --listed-rgb: 56 189 248;  /* #38bdf8 */
+      --slate-900: 18 17 25;    --slate-950: 10 10 15;    --bg-2: 13 12 20; /* #0d0c14 sunken */
+      --raised-rgb: 30 28 41;    /* #1e1c29 raised */
+      --border-strong: 70 66 79; /* #46424f */
+      --success-rgb: 52 211 153; /* #34d399 success/sell */
+      --balance-rgb: 16 185 129; /* #10b981 wallet */
+      --warn-rgb: 245 158 11;    /* #f59e0b warn / LTD / trade-locked */
+      --listed-rgb: 56 189 248;  /* #38bdf8 listed */
       /* DS-03: semantic status set — single source for the chip classes + aliases below */
       --danger-rgb: 244 63 94;   /* rose-500 #f43f5e */
       --buy-rgb: 20 184 166;     /* teal-500 #14b8a6 */
       --locked-rgb: var(--warn-rgb);    /* trade-locked == warn (amber) */
       --neutral-rgb: var(--slate-500);
+
+      /* accent-dark companions (filled-button resting fills; hover → base token) */
+      --success-d-rgb: 5 150 105; --buy-d-rgb: 13 148 136; --danger-d-rgb: 225 29 72;
+
+      /* ── Rich-frame gradients / glows — canonical purple ONLY (never #a855f7) ── */
+      --grad-brand:  linear-gradient(135deg, rgb(var(--brand-rgb)), rgb(var(--brand-d-rgb)));
+      --grad-brand-soft: linear-gradient(180deg, rgb(var(--brand-rgb) / .16), rgb(var(--brand-rgb) / .04));
+      --edge-light:  rgb(var(--brand-l-rgb));
+      --glow-sm: 0 0 14px -4px rgb(var(--brand-rgb) / .55);
+      --glow-md: 0 0 24px -6px rgb(var(--brand-rgb) / .60);
+
+      /* ── Borders / flat data-surface fills ── */
+      --border-1: rgb(var(--slate-700));      /* hairline divider (#2c2937) */
+      --border-2: rgb(var(--border-strong));  /* stronger interactive border (#46424f) */
+      --surface-0: rgb(var(--slate-950));     /* canvas */
+      --surface-1: rgb(var(--slate-900));     /* card / row resting (#121119) */
+      --surface-2: rgb(var(--raised-rgb));    /* raised control / hover (#1e1c29) */
+      --surface-sunken: rgb(var(--bg-2));     /* insets / fields (#0d0c14) */
+
+      /* ── Glass — OVERLAYS ONLY (modals, popovers, sticky header) ── */
+      --glass-bg: color-mix(in srgb, rgb(var(--slate-900)) 78%, transparent);
+      --glass-border: rgb(var(--slate-700) / .7);
+      --glass-blur: blur(18px) saturate(1.3);
+
+      /* ── Elevation (violet tint reserved for the top tier) ── */
+      --elev-1: 0 1px 2px rgb(0 0 0 / .40);
+      --elev-2: 0 8px 24px -10px rgb(0 0 0 / .60);
+      --elev-3: 0 28px 80px -24px rgb(var(--brand-rgb) / .32), 0 12px 40px rgb(0 0 0 / .62);
+
+      /* ── Focus / motion ── */
+      --focus-ring: rgb(var(--brand-rgb));
+      --ring-soft: rgb(var(--brand-rgb) / .5);
+      --dur-fast: 120ms; --dur: 160ms; --dur-slow: 240ms; --ease: cubic-bezier(.2,.8,.2,1);
+
+      /* ── Radius (SOFT — "Design B" language) ── */
+      --r-input: 10px; --r-chip: 10px; --r-row: 10px; --r-btn: 12px;
+      --r-card: 16px; --r-tile: 16px; --r-modal: 16px; --r-avatar: 10px;
+      /* legacy aliases still referenced by the linked ssim-ui.css foundation */
+      --r-control: 12px;
+
+      /* ── Type scale (single clean scale) ── */
+      --fs-10:10px; --fs-11:11px; --fs-12:12px; --fs-13:13px;
+      --fs-14:14px; --fs-16:16px; --fs-20:20px; --fs-28:28px;
     }
+    /* Clean type-scale helpers (used where Tailwind lacks the exact step) */
+    .t10{font-size:var(--fs-10)} .t11{font-size:var(--fs-11)} .t12{font-size:var(--fs-12)}
+    .t13{font-size:var(--fs-13)} .t14{font-size:var(--fs-14)} .t16{font-size:var(--fs-16)}
+    .t20{font-size:var(--fs-20);line-height:1.15} .t28{font-size:var(--fs-28);line-height:1.1}
+    .font-mono, .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
     html { font-feature-settings: "cv02","cv03","cv04","cv11"; }
 
     /* Atmosphere: faint violet aurora instead of a flat black canvas */
@@ -330,6 +393,146 @@
       border: 6px solid transparent; border-bottom-color: rgb(var(--slate-700));
     }
     .ssim-tip:hover .ssim-tip-bubble { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       MASTERPIECE DS LAYER — the shell chrome components (ported from
+       design_source.html:68-438). Loaded AFTER the linked assets/ssim-ui.css
+       foundation so these fuller/softer definitions win where they overlap.
+       "Flat data, rich frame." — canonical palette only, Inter, tabular numerics.
+       (CDN Tailwind / Font Awesome / Google-Fonts from the prototype are DROPPED;
+       proto-bar / portal state-switchers / designsys page / mock scripts / hash
+       deep-linking / hardcoded FX are NOT ported — DESIGN_SYSTEM §6.)
+       ────────────────────────────────────────────────────────────────────────── */
+
+    /* ── BUTTONS — one system: .btn + size + variant (masterpiece spec) ── */
+    .btn { display:inline-flex; align-items:center; justify-content:center; gap:.5rem;
+      padding:.625rem 1rem; border-radius:var(--r-btn); border:1px solid transparent;
+      font-size:var(--fs-14); font-weight:700; line-height:1; white-space:nowrap; cursor:pointer; user-select:none;
+      transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur-fast) var(--ease), opacity var(--dur) var(--ease); }
+    .btn:active:not(:disabled){ transform: translateY(1px) scale(.99); }
+    .btn:disabled{ opacity:.5; cursor:not-allowed; }
+    .btn-sm{ padding:.375rem .75rem; font-size:var(--fs-12); gap:.375rem; border-radius:10px; }
+    .btn-lg{ padding:.75rem 1.25rem; font-size:var(--fs-14); }
+    .btn-icon{ width:2.25rem; height:2.25rem; padding:0; gap:0; }
+    .btn-icon-sm{ width:1.75rem; height:1.75rem; padding:0; gap:0; border-radius:9px; }
+    .btn-primary{ color:#fff; background-image:var(--grad-brand);
+      box-shadow: inset 0 1px 0 rgb(var(--brand-l-rgb) / .35), var(--glow-sm), var(--elev-1); }
+    .btn-primary:hover:not(:disabled){ box-shadow: inset 0 1px 0 rgb(var(--brand-l-rgb) / .45), var(--glow-md), var(--elev-2); filter: brightness(1.06); }
+    .btn-sell{ color:#fff; background-color:rgb(var(--success-d-rgb)); }
+    .btn-sell:hover:not(:disabled){ background-color:rgb(var(--balance-rgb)); }
+    .btn-buy{ color:#fff; background-color:rgb(var(--buy-d-rgb)); }
+    .btn-buy:hover:not(:disabled){ background-color:rgb(var(--buy-rgb)); }
+    .btn-danger{ color:#fff; background-color:rgb(var(--danger-d-rgb)); }
+    .btn-danger:hover:not(:disabled){ background-color:rgb(var(--danger-rgb)); }
+    .btn-sell,.btn-buy,.btn-danger{ background-image: linear-gradient(180deg, rgb(255 255 255 / .10), rgb(255 255 255 / 0)); box-shadow: inset 0 1px 0 rgb(255 255 255 / .10), var(--elev-1); }
+    .btn-secondary{ color:rgb(var(--slate-200)); background-color:rgb(var(--slate-800)); }
+    .btn-secondary:hover:not(:disabled){ background-color:rgb(var(--slate-700)); }
+    .btn-ghost{ color:rgb(var(--slate-300)); background-color:transparent; }
+    .btn-ghost:hover:not(:disabled){ background-color:rgb(var(--slate-800)); color:#fff; }
+    .btn-soft{ color:rgb(var(--brand-l-rgb)); background:rgb(var(--brand-rgb) / .14); border-color:rgb(var(--brand-rgb) / .30); }
+    .btn-soft:hover:not(:disabled){ background:rgb(var(--brand-rgb) / .22); }
+    /* Auto-upgrade ported A-markup primaries to the RICH gradient (never inside .seg). */
+    button.bg-brand:not(.seg *){ background-image:var(--grad-brand) !important;
+      box-shadow: inset 0 1px 0 rgb(var(--brand-l-rgb) / .35), var(--glow-sm), var(--elev-1); }
+    button.bg-brand:not(.seg *):hover:not(:disabled){ filter: brightness(1.06);
+      box-shadow: inset 0 1px 0 rgb(var(--brand-l-rgb) / .45), var(--glow-md), var(--elev-2); }
+
+    /* ── FIELD — .field on the sunken fill (softer radius) ── */
+    .field{ width:100%; padding:.625rem .75rem; border-radius:var(--r-input);
+      background-color:var(--surface-0); border:1px solid var(--border-2); color:rgb(var(--slate-200)); font-size:var(--fs-14);
+      transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background-color var(--dur) var(--ease); }
+    .field::placeholder{ color:rgb(var(--slate-600)); }
+    .field:hover:not(:focus){ border-color:rgb(var(--slate-600)); }
+    .field:focus{ outline:none; border-color:rgb(var(--brand-rgb)); box-shadow: 0 0 0 2px var(--ring-soft); }
+    .surface .field, .modal-card .field { background-color:var(--surface-sunken); }
+    .field-label{ display:block; font-size:var(--fs-12); font-weight:600; color:rgb(var(--slate-400)); margin-bottom:.375rem; }
+
+    /* ── SURFACES / STAT CARD (masterpiece opaque + hairline) ── */
+    .surface{ background-color:rgb(var(--slate-900)); border:1px solid var(--border-1); border-radius:var(--r-card); }
+    .surface-sunken{ background-color:var(--surface-sunken); border:1px solid var(--border-1); border-radius:var(--r-card); }
+    .panel-head{ display:flex; align-items:center; gap:.5rem; padding:.75rem 1rem; border-bottom:1px solid var(--border-1); }
+    .panel-title{ font-size:var(--fs-11); font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:rgb(var(--slate-400)); }
+    .stat-card{ background-color:rgb(var(--slate-900)); border:1px solid var(--border-1); border-radius:var(--r-card); padding:.85rem 1rem; }
+    .stat-label{ font-size:var(--fs-11); text-transform:uppercase; letter-spacing:.05em; color:rgb(var(--slate-400)); }
+    .stat-value{ font-size:var(--fs-20); font-weight:700; margin-top:.15rem; }
+
+    /* ── RICH FRAME — env tiles / top-level cards / value-history / portals ── */
+    .card-rich{ position:relative; border-radius:var(--r-card); border:1px solid var(--border-1);
+      background: linear-gradient(180deg, rgb(var(--slate-800) / .40), rgb(var(--slate-900) / .30)), rgb(var(--slate-900));
+      box-shadow:var(--elev-2); }
+    .card-rich::before{ content:''; position:absolute; inset:0 0 auto 0; height:1px;
+      background: linear-gradient(90deg, transparent, rgb(var(--brand-l-rgb) / .5), transparent); }
+    .env-tile{ position:relative; overflow:hidden; border-radius:var(--r-tile); border:1px solid var(--border-1); padding:1.25rem;
+      background:
+        radial-gradient(120% 90% at 100% 0%, rgb(var(--brand-rgb) / .12), transparent 55%),
+        linear-gradient(180deg, rgb(var(--slate-800) / .55), rgb(var(--slate-900) / .35)),
+        rgb(var(--slate-900));
+      box-shadow:var(--elev-1);
+      transition: transform var(--dur-slow) var(--ease), border-color var(--dur-slow) var(--ease), box-shadow var(--dur-slow) var(--ease); }
+    .env-tile:hover{ transform: translateY(-4px); border-color:rgb(var(--brand-rgb) / .5); box-shadow: 0 18px 44px -20px rgb(var(--brand-rgb) / .55), var(--elev-2); }
+    .env-tile__glow{ position:absolute; inset:0 0 auto 0; height:2px; background:var(--grad-brand); opacity:.85; }
+    .env-tile__actions{ position:absolute; top:.75rem; right:.75rem; display:flex; gap:.375rem; opacity:0; transform: translateY(-2px); transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
+    .env-tile:hover .env-tile__actions, .env-tile:focus-within .env-tile__actions{ opacity:1; transform:none; }
+    .env-stat{ background:var(--surface-sunken); border:1px solid var(--border-1); border-radius:10px; padding:.5rem .7rem; }
+    .env-stat .k{ font-size:var(--fs-10); text-transform:uppercase; letter-spacing:.05em; color:rgb(var(--slate-500)); font-weight:600; }
+    .env-stat .v{ font-size:var(--fs-16); font-weight:700; margin-top:1px; }
+
+    /* ── PILLS (extend the linked foundation with the masterpiece variants) ── */
+    .pill{ display:inline-flex; align-items:center; gap:.35rem; padding:.125rem .5rem; border-radius:9999px;
+      font-size:var(--fs-11); font-weight:600; line-height:1.4; border:1px solid transparent; white-space:nowrap; }
+    .pill--brand{ color:rgb(var(--brand-l-rgb)); background:rgb(var(--brand-rgb) / .18); border-color:rgb(var(--brand-rgb) / .4); }
+    .pill--proxy,.pill--success{ color:rgb(var(--success-rgb)); background:rgb(var(--success-rgb) / .12); border-color:rgb(var(--success-rgb) / .35); }
+    .pill--wallet{ color:rgb(var(--balance-rgb)); background:rgb(var(--balance-rgb) / .12); border-color:rgb(var(--balance-rgb) / .35); }
+    .pill--warn,.pill--ltd{ color:rgb(var(--warn-rgb)); background:rgb(var(--warn-rgb) / .12); border-color:rgb(var(--warn-rgb) / .35); }
+    .pill--danger{ color:rgb(var(--danger-rgb)); background:rgb(var(--danger-rgb) / .12); border-color:rgb(var(--danger-rgb) / .35); }
+    .pill--listed{ color:rgb(var(--listed-rgb)); background:rgb(var(--listed-rgb) / .12); border-color:rgb(var(--listed-rgb) / .35); }
+    .pill--buy{ color:rgb(var(--buy-rgb)); background:rgb(var(--buy-rgb) / .12); border-color:rgb(var(--buy-rgb) / .35); }
+    .pill--local,.pill--neutral{ color:rgb(var(--slate-400)); background:rgb(var(--slate-800)); border-color:rgb(var(--slate-700)); }
+
+    /* ── SESSION DOTS + AVATARS (status via dot, not avatar hue) ── */
+    .dot{ width:8px; height:8px; border-radius:9999px; box-shadow: 0 0 0 3px rgb(var(--slate-900)); flex:none; }
+    .dot--online{ background:rgb(var(--success-rgb)); box-shadow: 0 0 0 3px rgb(var(--slate-900)), 0 0 8px rgb(var(--success-rgb) / .8); }
+    .dot--offline{ background:rgb(var(--slate-600)); }
+    .dot--error{ background:rgb(var(--danger-rgb)); box-shadow: 0 0 0 3px rgb(var(--slate-900)), 0 0 8px rgb(var(--danger-rgb) / .7); }
+    .avatar{ width:2.25rem; height:2.25rem; border-radius:var(--r-avatar); flex:none; display:flex; align-items:center; justify-content:center;
+      background: linear-gradient(180deg, rgb(var(--slate-700) / .8), rgb(var(--slate-800))); border:1px solid var(--border-1);
+      color:rgb(var(--slate-400)); font-size:var(--fs-13); font-weight:700; }
+    .avatar--lg{ width:2.75rem; height:2.75rem; }
+
+    /* ── DATA TABLE (masterpiece; the linked #items-* rules already skin the legacy table) ── */
+    .items-table{ width:100%; border-collapse:collapse; font-size:var(--fs-13); }
+    .items-table thead th{ position:sticky; top:0; z-index:1; background:rgb(var(--slate-950)); color:rgb(var(--slate-400));
+      font-size:var(--fs-11); text-transform:uppercase; letter-spacing:.05em; font-weight:600; text-align:left; padding:.6rem .75rem; box-shadow: inset 0 -1px 0 var(--border-1); white-space:nowrap; }
+    .items-table tbody tr{ border-bottom:1px solid rgb(var(--slate-800) / .7); transition: background-color .12s; content-visibility:auto; contain-intrinsic-size:auto 52px; }
+    .items-table tbody tr:hover{ background:rgb(var(--brand-rgb) / .06); }
+    .items-table tbody tr.is-selected{ background:rgb(var(--brand-rgb) / .10); }
+    .items-table td{ padding:.5rem .75rem; vertical-align:middle; }
+    /* rarity accent bar + name color = CS2 item DATA colors (not brand chrome) */
+    .rar{ width:3px; align-self:stretch; border-radius:2px; }
+    .rar-consumer{background:#b0c3d9}.rar-industrial{background:#5e98d9}.rar-milspec{background:#4b69ff}
+    .rar-restricted{background:#7c5cff}.rar-classified{background:#d32ce6}
+    .rar-covert{background:#eb4b4b}.rar-gold{background:#e4ae39}
+    .rn-consumer{color:#b0c3d9}.rn-industrial{color:#7fb3ea}.rn-milspec{color:#7d93ff}.rn-restricted{color:#a58cff}
+    .rn-classified{color:#e26ef0}.rn-covert{color:#ff6b6b}.rn-gold{color:#f0c34e}
+
+    /* ── SIDEBAR — account rows + folder tree ── */
+    .account-row{ position:relative; content-visibility:auto; contain-intrinsic-size:auto 56px; }
+    .account-btn{ position:relative; }
+    .account-btn.is-active{ background:rgb(var(--brand-rgb) / .12) !important; border-color:rgb(var(--brand-rgb) / .4) !important; }
+    .row-actions{ opacity:0; transition: opacity var(--dur) var(--ease); }
+    .account-row:hover .row-actions, .account-row:focus-within .row-actions{ opacity:1; }
+    .tree-line{ border-left:1px solid var(--border-1); }
+
+    /* ── SEGMENTED CONTROL (.seg) — children EXEMPT from bg-brand auto-upgrade ── */
+    .seg{ display:inline-flex; border:1px solid var(--border-1); border-radius:var(--r-btn); overflow:hidden; }
+    .seg button{ padding:.55rem .85rem; font-size:var(--fs-14); font-weight:700; background:rgb(var(--slate-800)); color:rgb(var(--slate-400)); }
+    .seg button:hover{ background:rgb(var(--slate-700)); }
+    .seg button.is-on{ background:rgb(var(--brand-rgb)); color:#fff; }
+    .seg .split{ width:1px; background:var(--border-1); }
+
+    /* ── value-history area fill (SVG can't read var() in presentation attrs) ── */
+    .hist-area-items{ fill: rgb(var(--brand-rgb) / .12); }
+    .hist-ylabel{ fill: rgb(var(--slate-600)); }
   </style>
 </head>
 
@@ -358,21 +561,23 @@
 
   <div class="flex h-screen">
 
-    <!-- ════════════════ SIDEBAR ════════════════ -->
-    <aside id="app-sidebar" class="w-72 shrink-0 bg-slate-900 border-r border-slate-800 flex flex-col">
+    <!-- ════════════════ SIDEBAR (masterpiece: app-sidebar depth gradient) ════════════════ -->
+    <aside id="app-sidebar" class="app-sidebar w-72 shrink-0 border-r border-slate-800 flex flex-col">
+      <!-- Brand lockup: SSIM shield + wordmark + full name -->
       <div class="px-5 py-5 border-b border-slate-800 flex items-center gap-3">
-        <img src="/assets/logo.png" alt="SSIM"
-             class="w-11 h-11 rounded-full shadow-glow shrink-0 select-none" draggable="false" />
+        <img src="/assets/image-Photoroom.png" alt="SSIM"
+             class="w-11 h-11 shrink-0 select-none" draggable="false"
+             style="filter:drop-shadow(0 0 12px rgb(147 51 234 / .5))" />
         <div class="min-w-0">
-          <h1 class="font-extrabold text-base tracking-[0.18em] text-white leading-none">SSIM</h1>
-          <p class="text-2xs font-semibold text-brand-light/90 mt-1 leading-tight">Santer Steam<br>Inventory Manager</p>
+          <h1 class="font-extrabold t16 tracking-[0.18em] text-white leading-none">SSIM</h1>
+          <p class="t11 font-semibold text-brand-light/90 mt-1 leading-tight">Santer Steam<br>Inventory Manager</p>
         </div>
       </div>
 
       <!-- Context nav -->
       <div id="sidebar-nav" class="hidden px-4 pt-3 space-y-2">
         <button id="btn-back-dashboard"
-          class="w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold
+          class="w-full px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 t12 font-semibold
                  transition flex items-center gap-2">
           <i class="fa-solid fa-arrow-left"></i><span>All environments</span>
         </button>
@@ -380,28 +585,28 @@
 
       <!-- Environment context (only inside an environment) -->
       <div id="env-context" class="hidden px-4 pt-3 space-y-2">
-        <div class="px-3 py-2.5 rounded-lg bg-slate-800/50 border border-slate-700/50">
-          <p id="env-name" class="text-sm font-bold text-white truncate">—</p>
-          <p id="env-proxy" class="text-2xs text-slate-500 truncate mt-0.5 font-mono"></p>
+        <div class="px-3 py-2.5 rounded-xl bg-slate-800/50 border border-slate-700/50">
+          <p id="env-name" class="t14 font-bold text-white truncate">—</p>
+          <p id="env-proxy" class="t11 text-slate-500 truncate mt-0.5 font-mono"></p>
         </div>
         <button id="btn-env-master"
-          class="w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold
+          class="w-full px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 t12 font-semibold
                  transition flex items-center justify-center gap-2">
           <i class="fa-solid fa-chart-pie text-brand"></i><span>Master (environment)</span>
         </button>
         <div class="flex gap-2">
           <button id="btn-add-account"
-            class="flex-1 px-2 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold
+            class="flex-1 px-2 py-2 rounded-xl bg-brand hover:bg-brand-dark text-white t12 font-bold
                    transition flex items-center justify-center gap-1.5">
             <i class="fa-solid fa-plus"></i><span>Account</span>
           </button>
           <button id="btn-add-folder" title="Create new folder"
-            class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition">
+            class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 t12 transition">
             <i class="fa-solid fa-folder-plus"></i>
           </button>
         </div>
         <button id="btn-refresh-all"
-          class="w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold
+          class="w-full px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 t12 font-semibold
                  transition flex items-center justify-center gap-2">
           <i class="fa-solid fa-rotate"></i><span>Refresh all</span>
         </button>
@@ -409,23 +614,23 @@
 
       <!-- Refresh-All progress (standalone so it shows in Global-Master too) -->
       <div id="refresh-progress" class="hidden px-4 pt-2">
-        <div class="flex justify-between text-2xs text-slate-400 mb-1">
+        <div class="flex justify-between t11 text-slate-400 mb-1">
           <span id="refresh-label">Refreshing…</span><span id="refresh-count" class="font-mono"></span>
         </div>
         <div class="h-1.5 rounded-full bg-slate-800 overflow-hidden">
           <div id="refresh-bar" class="h-full bg-brand transition-all duration-300" style="width:0%"></div>
         </div>
         <button id="refresh-end" type="button"
-          class="mt-2 w-full px-2 py-1 rounded-md bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-50">
+          class="mt-2 w-full px-2 py-1 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white t11 font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-50">
           <i class="fa-solid fa-stop"></i><span>End task</span>
         </button>
       </div>
 
       <!-- Failed accounts of the last refresh: WHICH account failed and WHY.
            Persists until dismissed or the next refresh starts. -->
-      <div id="refresh-failed" class="hidden mx-3 mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10">
+      <div id="refresh-failed" class="hidden mx-3 mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10">
         <div class="flex items-center justify-between px-3 pt-2">
-          <span class="text-2xs font-semibold text-amber-400">
+          <span class="t11 font-semibold text-amber-400">
             <i class="fa-solid fa-triangle-exclamation mr-1"></i>Failed accounts
           </span>
           <button id="refresh-failed-close" title="Hide"
@@ -433,30 +638,28 @@
             <i class="fa-solid fa-xmark"></i>
           </button>
         </div>
-        <ul id="refresh-failed-list" class="px-3 pb-2 pt-1 space-y-1 max-h-40 overflow-y-auto text-2xs"></ul>
+        <ul id="refresh-failed-list" class="px-3 pb-2 pt-1 space-y-1 max-h-40 overflow-y-auto t11"></ul>
       </div>
 
       <div id="accounts-label" class="hidden px-4 py-3 flex items-center justify-between">
-        <span class="text-2xs font-semibold uppercase tracking-wider text-slate-400">Accounts</span>
-        <span id="account-count" class="text-2xs font-mono text-slate-600">0</span>
+        <span class="t11 font-semibold uppercase tracking-wider text-slate-400">Accounts</span>
+        <span id="account-count" class="t11 font-mono text-slate-600">0</span>
       </div>
 
       <!-- Phase 2 (B+C): account search + quick inventory filter -->
       <div id="account-tools" class="hidden px-4 pb-2 space-y-2">
         <div class="relative">
-          <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs z-10"></i>
           <input id="account-search" type="text" autocomplete="off" placeholder="Search accounts…"
-            class="w-full pl-8 pr-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+            class="field pl-8 py-2 t12" />
         </div>
         <div class="grid grid-cols-2 gap-2">
-          <select id="account-filter"
-            class="w-full px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-300 focus:outline-none focus:ring-2 focus:ring-brand/50 cursor-pointer">
+          <select id="account-filter" class="field py-2 t12 cursor-pointer">
             <option value="all">All accounts</option>
             <option value="has">Has items</option>
             <option value="empty">Empty inventory</option>
           </select>
-          <select id="account-sort" title="Sort accounts by wallet balance"
-            class="w-full px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-300 focus:outline-none focus:ring-2 focus:ring-brand/50 cursor-pointer">
+          <select id="account-sort" title="Sort accounts by wallet balance" class="field py-2 t12 cursor-pointer">
             <option value="default">Default order</option>
             <option value="balance-desc">Balance: High → Low</option>
             <option value="balance-asc">Balance: Low → High</option>
@@ -467,12 +670,12 @@
       <nav id="account-list" class="flex-1 overflow-y-auto px-3 pb-2 space-y-1"></nav>
 
       <button id="btn-toggle-hidden"
-        class="hidden mx-3 mb-2 px-3 py-1.5 rounded-md text-2xs text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition text-left">
+        class="hidden mx-3 mb-2 px-3 py-1.5 rounded-lg t11 text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition text-left">
       </button>
 
       <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
-        <div class="flex items-center gap-2 text-2xs text-slate-500 min-w-0">
-          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
+        <div class="flex items-center gap-2 t11 text-slate-500 min-w-0">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot shrink-0"></span>
           <!-- Version text is filled at runtime from the API (pkg.version -> app.js), so there is
                exactly ONE version source and the footer can never drift. No hardcoded literal here. -->
           <span id="footer-status" data-no-i18n class="truncate font-mono"></span>
@@ -495,83 +698,78 @@
 
       <!-- ─────── DASHBOARD SCREEN ─────── -->
       <section id="screen-dashboard" class="hidden flex-1 flex flex-col overflow-hidden">
-        <header class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between">
+        <header class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h2 class="text-2xl font-bold text-white tracking-tight">Environments</h2>
-            <p class="text-sm text-slate-500 mt-1">Choose a farm environment or create a new one.</p>
+            <h2 class="t28 font-bold text-white tracking-tight">Environments</h2>
+            <p class="t14 text-slate-500 mt-1">Choose a farm environment or create a new one.</p>
           </div>
-          <div class="flex gap-3">
-            <button id="btn-global-master"
-              class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-sm font-bold transition flex items-center gap-2">
+          <div class="flex gap-3 flex-wrap">
+            <button id="btn-global-master" class="btn btn-secondary">
               <i class="fa-solid fa-globe text-brand"></i><span>Global Master</span>
             </button>
-            <button id="btn-account-login" title="Log in &amp; import an account via QR or credentials"
-              class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2">
+            <button id="btn-account-login" title="Log in &amp; import an account via QR or credentials" class="btn btn-secondary">
               <i class="fa-solid fa-right-to-bracket text-brand"></i><span>Account Login</span>
             </button>
-            <button id="btn-bulk-import"
-              class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2">
+            <button id="btn-bulk-import" class="btn btn-secondary">
               <i class="fa-solid fa-file-import"></i><span>Import bots</span>
             </button>
-            <button id="btn-new-env"
-              class="px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center gap-2">
+            <button id="btn-new-env" class="btn bg-brand text-white">
               <i class="fa-solid fa-plus"></i><span>New environment</span>
             </button>
           </div>
         </header>
         <div class="flex-1 overflow-y-auto p-8">
           <div id="env-tiles" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5"></div>
-          <div id="env-empty" class="hidden text-center py-20">
-            <div class="w-20 h-20 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-5 mx-auto">
-              <i class="fa-solid fa-layer-group text-3xl text-slate-700"></i>
-            </div>
-            <p class="text-slate-400 font-medium">No environments yet</p>
-            <p class="text-slate-600 text-sm mt-1">Create your first farm environment.</p>
+          <div id="env-empty" class="hidden empty py-20">
+            <div class="empty-icon"><i class="fa-solid fa-layer-group"></i></div>
+            <p class="empty-title">No environments yet</p>
+            <p class="empty-sub">Create your first farm environment.</p>
           </div>
         </div>
       </section>
 
       <!-- ─────── INVENTORY SCREEN (account / env-master / global-master) ─────── -->
       <section id="screen-inventory" class="hidden flex-1 flex flex-col overflow-hidden">
-        <header class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40">
-          <nav id="breadcrumb" class="hidden text-2xs mb-2 flex items-center flex-wrap gap-y-1" aria-label="Breadcrumb"></nav>
+        <header class="frosted px-8 py-5 border-b border-slate-800 bg-slate-900/40">
+          <nav id="breadcrumb" class="hidden t11 mb-2 flex items-center flex-wrap gap-y-1 text-slate-500" aria-label="Breadcrumb"></nav>
           <div id="main-header" class="flex items-center justify-between"></div>
 
-          <div id="stat-bar" class="hidden mt-5 flex items-center gap-4">
-            <div class="flex gap-4">
-              <div class="stat-card px-4 py-3 rounded-lg bg-slate-900/70 border border-slate-800 min-w-[130px]" style="--stat-accent:rgb(var(--brand-rgb))">
-                <p id="stat-items-label" class="text-2xs uppercase tracking-wider text-slate-400">Items</p>
-                <p id="stat-items" class="text-xl font-bold text-white font-mono mt-0.5">—</p>
+          <div id="stat-bar" class="hidden mt-5 flex items-center gap-3">
+            <div class="flex gap-3 flex-wrap">
+              <div class="stat-card min-w-[128px]" style="--stat-accent:rgb(var(--brand-rgb))">
+                <p id="stat-items-label" class="stat-label">Items</p>
+                <p id="stat-items" class="stat-value text-white font-mono">—</p>
               </div>
-              <div class="stat-card px-4 py-3 rounded-lg bg-slate-900/70 border border-slate-800 min-w-[130px]" style="--stat-accent:rgb(var(--warn-rgb)); overflow:visible">
+              <div class="stat-card min-w-[128px]" style="--stat-accent:rgb(var(--warn-rgb)); overflow:visible">
                 <div class="flex items-center gap-1.5">
-                  <p id="stat-locked-label" class="text-2xs uppercase tracking-wider text-slate-400">Trade-Locked</p>
+                  <p id="stat-locked-label" class="stat-label">Trade-Locked</p>
                 </div>
-                <p id="stat-locked" class="text-xl font-bold text-amber-400 font-mono mt-0.5">—</p>
+                <p id="stat-locked" class="stat-value text-amber-400 font-mono">—</p>
               </div>
-              <div class="stat-card px-4 py-3 rounded-lg bg-slate-900/70 border border-slate-800 min-w-[130px]" style="--stat-accent:rgb(var(--brand-l-rgb))">
-                <p id="stat-value-label" class="text-2xs uppercase tracking-wider text-slate-400">Item value</p>
-                <p id="stat-value" class="text-xl font-bold text-brand-light font-mono mt-0.5">—</p>
+              <div class="stat-card min-w-[128px]" style="--stat-accent:rgb(var(--brand-l-rgb))">
+                <p id="stat-value-label" class="stat-label">Item value</p>
+                <p id="stat-value" class="stat-value text-brand-light font-mono">—</p>
               </div>
-              <div class="stat-card px-4 py-3 rounded-lg bg-slate-900/70 border border-slate-800 min-w-[130px]" style="--stat-accent:rgb(var(--balance-rgb))">
-                <p id="stat-wallet-label" class="text-2xs uppercase tracking-wider text-slate-400">Balance</p>
-                <p id="stat-wallet" class="text-xl font-bold text-emerald-400 font-mono mt-0.5">—</p>
+              <div class="stat-card min-w-[128px]" style="--stat-accent:rgb(var(--balance-rgb))">
+                <p id="stat-wallet-label" class="stat-label">Balance</p>
+                <p id="stat-wallet" class="stat-value text-emerald-400 font-mono">—</p>
               </div>
             </div>
             <div class="flex-1"></div>
-            <!-- Game switch: CS2 (appid 730) ↔ TF2 (appid 440, key counting) -->
-            <div id="game-toggle" data-no-i18n class="flex rounded-lg overflow-hidden border border-slate-700 shrink-0">
-              <button id="btn-game-cs2" class="px-3 py-2.5 text-sm font-bold transition bg-brand text-white">CS2</button>
-              <button id="btn-game-tf2" class="px-3 py-2.5 text-sm font-bold transition bg-slate-800 text-slate-400 hover:bg-slate-700">TF2</button>
-            </div>
-            <button id="btn-buy-market" title="Buy on the Steam market (Buy Order)"
-              class="px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition flex items-center gap-2">
+            <!-- Game switch: CS2 (appid 730) ↔ TF2 (appid 440, key counting). Masterpiece .seg
+                 control; app.js updateGameToggle() now toggles .is-on on the active button
+                 (ids #btn-game-cs2/#btn-game-tf2 + their setGame handlers unchanged). -->
+            <div id="game-toggle" data-no-i18n class="seg shrink-0"><button id="btn-game-cs2" class="is-on">CS2</button><div class="split"></div><button id="btn-game-tf2">TF2</button></div>
+            <button id="btn-buy-market" title="Buy on the Steam market (Buy Order)" class="btn btn-buy">
               <i class="fa-solid fa-cart-shopping"></i><span>Buy</span>
             </button>
-            <!-- Feature 3: price-source (Steam ⟷ CSFloat) + currency (USD ⟷ EUR) split control -->
-            <div class="flex items-stretch rounded-lg border border-slate-700 bg-slate-800 text-sm font-bold">
+            <!-- Feature 3: price-source (Steam ⟷ CSFloat) + currency (USD ⟷ EUR) split control.
+                 #src-logo is an <img> whose .src app.js swaps on source change, and #src-menu /
+                 #cur-menu are the popovers app.js toggles — kept as real elements (not the seg's
+                 icon-only variant) so the JS contract stays intact. -->
+            <div class="flex items-stretch rounded-xl border border-slate-700 bg-slate-800 text-sm font-bold overflow-hidden">
               <div class="relative">
-                <button id="src-btn" title="Price source" class="h-full px-3 py-2.5 rounded-l-lg hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
+                <button id="src-btn" title="Price source" class="h-full px-3 py-2.5 hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
                   <img id="src-logo" src="/assets/logos/steam.svg" alt="" class="w-4 h-4 shrink-0"/><span id="src-label">Steam</span><i class="fa-solid fa-chevron-down text-3xs text-slate-500"></i>
                 </button>
                 <div id="src-menu" class="hidden absolute right-0 mt-1 w-48 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl z-50 overflow-hidden py-1">
@@ -581,7 +779,7 @@
               </div>
               <div class="w-px bg-slate-700"></div>
               <div class="relative">
-                <button id="cur-btn" title="Currency" class="h-full px-3 py-2.5 rounded-r-lg hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
+                <button id="cur-btn" title="Currency" class="h-full px-3 py-2.5 hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
                   <i class="fa-solid fa-coins text-brand-light"></i><span id="currency-label">EUR</span><i class="fa-solid fa-chevron-down text-3xs text-slate-500"></i>
                 </button>
                 <div id="cur-menu" class="hidden absolute right-0 mt-1 w-32 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl z-50 overflow-hidden py-1">
@@ -593,8 +791,7 @@
             <!-- The single Refresh button assembles the COMPLETE inventory (owned +
                  trade-locked + listed) directly from Steam — one button, does everything. -->
             <button id="btn-load"
-              class="px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold
-                     transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+              class="btn bg-brand text-white disabled:opacity-50 disabled:cursor-not-allowed">
               <i class="fa-solid fa-rotate"></i><span>Refresh</span>
             </button>
           </div>
@@ -604,74 +801,71 @@
           <!-- Global-master environment filter -->
           <div id="global-filter" class="hidden mb-6"></div>
 
-          <!-- Value history: one (worth, wallet) point per refresh → curve -->
-          <div id="history-wrap" class="hidden mb-6 rounded-lg border border-slate-800 bg-slate-900/45 p-4 fade-in">
+          <!-- Value history: one (worth, wallet) point per refresh → curve. The inner
+               #history-legend + #history-chart are the mount points renderHistory() draws into. -->
+          <div id="history-wrap" class="hidden card-rich mb-6 p-4 fade-in">
             <div class="flex items-center justify-between mb-3">
-              <p class="text-2xs font-semibold uppercase tracking-wider text-slate-400">
+              <p class="t11 font-semibold uppercase tracking-wider text-slate-400">
                 <i class="fa-solid fa-chart-line mr-1.5 text-brand"></i>Value history
               </p>
-              <div id="history-legend" class="flex items-center gap-4 text-2xs text-slate-400"></div>
+              <div id="history-legend" class="flex items-center gap-4 t11 text-slate-400"></div>
             </div>
             <div id="history-chart" class="w-full"></div>
           </div>
 
           <!-- Toolbar: search + selection actions -->
-          <div id="toolbar" class="hidden mb-2 flex items-center gap-3 fade-in">
-            <div class="relative flex-1 max-w-md">
-              <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm"></i>
-              <input id="search-input" type="text" placeholder="Search items…"
-                class="w-full pl-9 pr-3 py-2.5 rounded-lg bg-slate-900 border border-slate-700
-                       text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <div id="toolbar" class="hidden mb-3 flex items-center gap-3 flex-wrap fade-in">
+            <div class="relative flex-1 max-w-md min-w-[220px]">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm z-10"></i>
+              <input id="search-input" type="text" placeholder="Search items…" class="field pl-9 py-2.5" />
             </div>
             <!-- Phase 2 (A): bulk-select items under a value threshold (account + folder views) -->
             <div id="value-filter" class="hidden items-center gap-2">
-              <span class="text-2xs text-slate-500 whitespace-nowrap">Select under</span>
+              <span class="t11 text-slate-500 whitespace-nowrap">Select under</span>
               <div class="relative">
-                <span id="value-filter-cur" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">€</span>
+                <span id="value-filter-cur" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs z-10">€</span>
                 <input id="value-filter-input" type="number" step="0.01" min="0" inputmode="decimal" placeholder="1.50"
-                  class="w-24 pl-6 pr-2 py-2.5 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+                  class="field w-24 pl-6 pr-2 py-2.5" />
               </div>
-              <button id="value-filter-btn" type="button"
-                class="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-brand hover:text-white text-slate-300 text-sm font-semibold transition whitespace-nowrap flex items-center gap-1.5">
+              <button id="value-filter-btn" type="button" class="btn btn-secondary btn-sm whitespace-nowrap">
                 <i class="fa-solid fa-filter-circle-dollar"></i><span>Select</span>
               </button>
             </div>
             <div id="selection-bar" class="hidden items-center gap-3 ml-auto">
-              <span id="selection-count" class="text-sm text-slate-400"></span>
-              <button id="btn-clear-selection"
-                class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">
-                Clear selection
-              </button>
-              <button id="btn-sell-selected"
-                class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition flex items-center gap-2">
+              <span id="selection-count" class="t14 text-slate-400"></span>
+              <button id="btn-clear-selection" class="btn btn-secondary btn-sm">Clear selection</button>
+              <button id="btn-sell-selected" class="btn btn-sell btn-sm">
                 <i class="fa-solid fa-tag"></i><span>Sell on market</span>
               </button>
-              <button id="btn-send-selected"
-                class="px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center gap-2">
+              <button id="btn-send-selected" class="btn bg-brand text-white btn-sm">
                 <i class="fa-solid fa-paper-plane"></i><span>Send selected items</span>
               </button>
             </div>
           </div>
 
-          <div id="empty-state" class="h-full flex flex-col items-center justify-center text-center">
-            <div class="w-20 h-20 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-5">
-              <i class="fa-solid fa-boxes-stacked text-3xl text-slate-700"></i>
-            </div>
-            <p class="text-slate-400 font-medium">No inventory loaded yet</p>
-            <p class="text-slate-600 text-sm mt-1">Select an account and click "Refresh".</p>
+          <!-- Empty state. app.js sets the two <p> texts via querySelector('p') (title) and
+               querySelector('p:last-child') (sub) — the sub must remain the LAST child. -->
+          <div id="empty-state" class="hidden empty">
+            <div class="empty-icon"><i class="fa-solid fa-boxes-stacked"></i></div>
+            <p class="empty-title">No inventory loaded yet</p>
+            <p class="empty-sub">Select an account and click "Refresh".</p>
           </div>
 
           <!-- TBL-03: faceted filter chips (status / rarity / value), composable with search -->
-          <div id="facet-bar" class="hidden mb-2 flex items-center flex-wrap gap-1.5 fade-in"></div>
+          <div id="facet-bar" class="hidden mb-3 flex items-center flex-wrap gap-1.5 fade-in"></div>
 
           <!-- GC 3-category filter pills (populated + shown only for GC-fetched inventories) -->
-          <div id="gc-cat-tabs" class="hidden mb-2 flex items-center gap-2 fade-in"></div>
+          <div id="gc-cat-tabs" class="hidden mb-3 flex items-center gap-2 flex-wrap fade-in"></div>
 
-          <div id="items-wrap" class="hidden fade-in">
-            <table class="w-full text-sm">
+          <!-- Item table: #items-head (thead row) + #items-body (windowed rows) + #search-empty
+               are the mount points the render/windowing pipeline drives (V4). Re-skinned to the
+               masterpiece .items-wrap frame + .items-table (sticky glass thead, hairline rows,
+               row-virtualization hint). The OUTER `#screen-inventory section.overflow-y-auto` stays
+               the scroll container — mountWindowedRows keys off it, so NO inner scroller is added. -->
+          <div id="items-wrap" class="hidden fade-in items-wrap">
+            <table class="items-table">
               <thead>
-                <tr id="items-head"
-                    class="text-left text-2xs uppercase tracking-wider text-slate-400 border-b border-slate-800"></tr>
+                <tr id="items-head"></tr>
               </thead>
               <tbody id="items-body"></tbody>
             </table>
@@ -696,38 +890,35 @@
   <div id="modal-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-user-plus text-brand mr-2"></i>Add account</h3>
-        <button id="modal-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-user-plus text-brand mr-2"></i>Add account</h3>
+        <button id="modal-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="add-form" class="px-6 py-5 space-y-4">
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Environment</label>
-          <select name="environmentId" id="add-env"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Environment</label>
+          <select name="environmentId" id="add-env" class="field"></select>
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Username</label>
-          <input name="username" required class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Steam Username</label>
+          <input name="username" required class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Password</label>
-          <input name="password" type="password" required class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Password</label>
+          <input name="password" type="password" required class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">maFile path</label>
-          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">maFile path</label>
+          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile" class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">
+          <label class="field-label">
             Proxy override <span class="text-slate-600 font-normal">(optional – empty = environment proxy)</span>
           </label>
-          <input name="proxy" placeholder="http://user:pass@host:3128"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <input name="proxy" placeholder="http://user:pass@host:3128" class="field" />
         </div>
         <div class="flex gap-3 pt-2">
-          <button type="button" id="modal-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="modal-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="modal-submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span>Add</span>
           </button>
         </div>
@@ -739,56 +930,55 @@
   <div id="login-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-right-to-bracket text-brand mr-2"></i>Account Login</h3>
-        <button id="login-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-right-to-bracket text-brand mr-2"></i>Account Login</h3>
+        <button id="login-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <div class="px-6 py-5 space-y-4">
         <!-- Environment is shared by both methods: it sets the proxy the token is minted on. -->
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Environment</label>
-          <select id="login-env"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Environment</label>
+          <select id="login-env" class="field"></select>
         </div>
-        <!-- Method tabs -->
+        <!-- Method tabs (JS-driven toggle via switchLoginTab — kept byte-identical) -->
         <div class="flex rounded-lg overflow-hidden border border-slate-700">
           <button type="button" data-login-tab="qr" class="login-tab flex-1 px-3 py-2 text-sm font-bold transition inline-flex items-center justify-center gap-2"><i class="fa-solid fa-qrcode"></i><span>QR code</span></button>
           <button type="button" data-login-tab="credentials" class="login-tab flex-1 px-3 py-2 text-sm font-bold transition inline-flex items-center justify-center gap-2"><i class="fa-solid fa-keyboard"></i><span>Credentials</span></button>
         </div>
         <!-- QR pane -->
         <div id="login-pane-qr" class="space-y-3">
-          <div class="rounded-xl bg-white p-3 mx-auto w-[232px] h-[232px] flex items-center justify-center relative">
+          <div class="rounded-2xl bg-white p-3 mx-auto w-[232px] h-[232px] flex items-center justify-center relative">
             <img id="login-qr-img" alt="" class="w-full h-full object-contain" />
-            <div id="login-qr-overlay" class="hidden absolute inset-0 rounded-xl bg-slate-950/90 flex flex-col items-center justify-center text-center p-4"></div>
+            <div id="login-qr-overlay" class="hidden absolute inset-0 rounded-2xl bg-slate-950/90 flex flex-col items-center justify-center text-center p-4"></div>
           </div>
           <div id="login-qr-status" class="flex items-center justify-center gap-1.5 flex-wrap"></div>
-          <p class="text-2xs text-slate-500 text-center leading-relaxed">
+          <p class="t11 text-slate-500 text-center leading-relaxed">
             Open the <b class="text-slate-300">Steam Mobile App</b> → <b class="text-slate-300">Steam&nbsp;Guard</b> → scan this code, then approve the login.
           </p>
         </div>
         <!-- Credentials pane -->
         <form id="login-cred-form" class="hidden space-y-3">
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Username</label>
-            <input name="username" autocomplete="off" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+            <label class="field-label">Steam Username</label>
+            <input name="username" autocomplete="off" class="field" />
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Password</label>
-            <input name="password" type="password" autocomplete="off" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+            <label class="field-label">Password</label>
+            <input name="password" type="password" autocomplete="off" class="field" />
           </div>
           <div id="login-guard" class="hidden">
-            <label id="login-guard-label" class="block text-xs font-semibold text-slate-400 mb-1.5">Steam Guard code</label>
+            <label id="login-guard-label" class="field-label">Steam Guard code</label>
             <input id="login-guard-input" inputmode="numeric" autocomplete="one-time-code" placeholder="•••••"
-              class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 tracking-[0.4em] text-center focus:outline-none focus:ring-2 focus:ring-brand/50" />
+              class="field text-center tracking-[0.4em]" />
           </div>
-          <p id="login-cred-msg" class="hidden text-2xs"></p>
-          <button type="submit" id="login-cred-submit" class="w-full px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 inline-flex items-center justify-center gap-2">
+          <p id="login-cred-msg" class="hidden t10"></p>
+          <button type="submit" id="login-cred-submit" class="btn btn-primary w-full">
             <i class="fa-solid fa-right-to-bracket"></i><span id="login-cred-submit-label">Log in</span>
           </button>
         </form>
         <!-- Limited-tier note -->
-        <div class="rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2.5 flex gap-2.5">
-          <i class="fa-solid fa-circle-info text-amber-400 mt-0.5 shrink-0"></i>
-          <p class="text-2xs text-slate-400 leading-relaxed">
+        <div class="rounded-xl bg-slate-950/60 border border-slate-800 px-3 py-2.5 flex gap-2.5">
+          <i class="fa-solid fa-circle-info text-warn mt-0.5 shrink-0"></i>
+          <p class="t11 text-slate-400 leading-relaxed">
             Imports as a <b class="text-amber-300">Limited</b> account (no maFile): buy orders, market buys &amp; cancels work; sell listings &amp; trade offers are queued <b class="text-slate-300">pending confirmation</b>. Attach a maFile later to upgrade to <b class="text-emerald-300">Full</b>.
           </p>
         </div>
@@ -800,19 +990,18 @@
   <div id="attach-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-shield-halved text-emerald-400 mr-2"></i>Attach maFile</h3>
-        <button id="attach-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-shield-halved text-emerald-400 mr-2"></i>Attach maFile</h3>
+        <button id="attach-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="attach-form" class="px-6 py-5 space-y-4">
-        <p class="text-2xs text-slate-400 leading-relaxed">Upgrade <b id="attach-username" class="text-slate-200"></b> from <b class="text-amber-300">Limited</b> to <b class="text-emerald-300">Full</b>. Drop the maFile into <span class="font-mono text-slate-500">./mafiles</span> and enter its filename — its <b class="text-slate-300">identity_secret</b> enables sell-listing &amp; trade confirmations.</p>
+        <p class="t11 text-slate-400 leading-relaxed">Upgrade <b id="attach-username" class="text-slate-200"></b> from <b class="text-amber-300">Limited</b> to <b class="text-emerald-300">Full</b>. Drop the maFile into <span class="font-mono text-slate-500">./mafiles</span> and enter its filename — its <b class="text-slate-300">identity_secret</b> enables sell-listing &amp; trade confirmations.</p>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">maFile path</label>
-          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">maFile path</label>
+          <input name="maFilePath" required placeholder="username.maFile  or  C:\…\file.maFile" class="field" />
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="attach-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="attach-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition disabled:opacity-50 inline-flex items-center justify-center gap-2">
+          <button type="button" id="attach-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="attach-submit" class="btn btn-sell flex-1">
             <i class="fa-solid fa-arrow-up"></i><span>Upgrade to Full</span>
           </button>
         </div>
@@ -824,13 +1013,13 @@
   <div id="csfloat-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-4xl h-[85vh] bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in flex flex-col">
       <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between shrink-0">
-        <h3 class="text-lg font-bold text-white flex items-center gap-2">
+        <h3 class="t16 font-bold text-white flex items-center gap-2">
           <i class="fa-solid fa-water text-cyan-400"></i>CSFloat
-          <span id="csfloat-account" class="text-sm font-mono text-slate-500"></span>
+          <span id="csfloat-account" class="t13 font-mono text-slate-500"></span>
         </h3>
-        <button id="csfloat-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <button id="csfloat-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
-      <div id="csfloat-tabs" class="px-6 pt-3 flex gap-1 flex-wrap border-b border-slate-800 shrink-0"></div>
+      <div id="csfloat-tabs" class="px-6 pt-3 pb-3 flex gap-1 flex-wrap border-b border-slate-800 shrink-0"></div>
       <div id="csfloat-body" class="flex-1 overflow-y-auto px-6 py-5"></div>
     </div>
   </div>
@@ -839,19 +1028,19 @@
   <div id="sda-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-3xl h-[85vh] bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in flex flex-col">
       <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between shrink-0">
-        <h3 class="text-lg font-bold text-white flex items-center gap-2">
+        <h3 class="t16 font-bold text-white flex items-center gap-2">
           <i class="fa-solid fa-mobile-screen-button text-emerald-400"></i>SDA
-          <span id="sda-account" class="text-sm font-mono text-slate-500"></span>
+          <span id="sda-account" class="t13 font-mono text-slate-500"></span>
         </h3>
-        <button id="sda-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <button id="sda-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <div class="flex-1 overflow-y-auto px-6 py-5 space-y-6">
         <!-- OTP: current Steam Guard code, large, auto-rolling with a 30s countdown bar -->
-        <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-5 text-center">
-          <p class="text-2xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Steam Guard code</p>
+        <div class="rounded-2xl border border-slate-800 bg-slate-950/40 p-5 text-center">
+          <p class="t11 font-semibold uppercase tracking-wider text-slate-500 mb-2">Steam Guard code</p>
           <div class="flex items-center justify-center gap-3">
-            <span id="sda-otp" class="text-4xl font-mono font-bold tracking-[0.3em] text-emerald-300 select-all">·····</span>
-            <button id="sda-otp-copy" title="Copy the current code" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition inline-flex items-center gap-1.5"><i class="fa-regular fa-copy"></i><span id="sda-otp-copy-label">Copy</span></button>
+            <span id="sda-otp" class="t28 font-mono font-bold tracking-[0.3em] text-emerald-300 select-all" style="font-size:34px">·····</span>
+            <button id="sda-otp-copy" title="Copy the current code" class="btn btn-secondary btn-sm"><i class="fa-regular fa-copy"></i><span id="sda-otp-copy-label">Copy</span></button>
           </div>
           <div class="mt-3 h-1.5 w-full max-w-xs mx-auto rounded-full bg-slate-800 overflow-hidden">
             <div id="sda-otp-bar" class="h-full bg-emerald-500" style="width:100%"></div>
@@ -860,12 +1049,12 @@
         <!-- Confirmations: live list (trade/market) with single / multi-select / approve-all -->
         <div>
           <div class="flex items-center gap-2 mb-3 flex-wrap">
-            <p class="text-sm font-semibold text-slate-300 mr-auto"><i class="fa-solid fa-list-check text-emerald-400 mr-1.5"></i>Pending confirmations <span id="sda-conf-count" class="text-slate-500 font-mono"></span></p>
-            <button id="sda-conf-approve-sel" disabled class="px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-bold transition disabled:opacity-40 inline-flex items-center gap-1.5"><i class="fa-solid fa-check"></i><span>Approve selected (<span id="sda-conf-sel-count">0</span>)</span></button>
-            <button id="sda-conf-approve-all" class="px-3 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-check-double"></i><span>Approve all</span></button>
-            <button id="sda-conf-refresh" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
+            <p class="t14 font-semibold text-slate-300 mr-auto"><i class="fa-solid fa-list-check text-emerald-400 mr-1.5"></i>Pending confirmations <span id="sda-conf-count" class="text-slate-500 font-mono"></span></p>
+            <button id="sda-conf-approve-sel" disabled class="btn btn-sm bg-emerald-700/80 text-white"><i class="fa-solid fa-check"></i><span>Approve selected (<span id="sda-conf-sel-count">0</span>)</span></button>
+            <button id="sda-conf-approve-all" class="btn btn-sm bg-emerald-600 text-white"><i class="fa-solid fa-check-double"></i><span>Approve all</span></button>
+            <button id="sda-conf-refresh" class="btn btn-sm btn-secondary"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
           </div>
-          <div id="sda-conf-body" class="rounded-lg border border-slate-800 bg-slate-900/45 divide-y divide-slate-800/60"></div>
+          <div id="sda-conf-body" class="rounded-xl border border-slate-800 bg-slate-900/45 divide-y divide-slate-800/60"></div>
         </div>
       </div>
     </div>
@@ -875,26 +1064,24 @@
   <div id="env-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 id="env-modal-title" class="text-lg font-bold text-white"><i class="fa-solid fa-layer-group text-brand mr-2"></i>New environment</h3>
-        <button id="env-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 id="env-modal-title" class="t16 font-bold text-white"><i class="fa-solid fa-layer-group text-brand mr-2"></i>New environment</h3>
+        <button id="env-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="env-form" class="px-6 py-5 space-y-4">
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Name</label>
-          <input name="name" id="env-name-input" required placeholder="e.g. Germany farm"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Name</label>
+          <input name="name" id="env-name-input" required placeholder="e.g. Germany farm" class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">
+          <label class="field-label">
             Global (rotating) proxy <span class="text-slate-600 font-normal">(empty = local IP)</span>
           </label>
-          <input name="proxy" id="env-proxy-input" placeholder="host:port:user:pass · user:pass@host:port · http://…"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
-          <p class="text-3xs text-slate-600 mt-1.5 leading-relaxed">Any format works — <span class="font-mono text-slate-500">host:port:user:pass</span>, <span class="font-mono text-slate-500">host:port@user:pass</span>, <span class="font-mono text-slate-500">user:pass:host:port</span>, <span class="font-mono text-slate-500">user:pass@host:port</span>, or a full URL.</p>
+          <input name="proxy" id="env-proxy-input" placeholder="host:port:user:pass · user:pass@host:port · http://…" class="field" />
+          <p class="t10 text-slate-600 mt-1.5 leading-relaxed">Any format works — <span class="font-mono text-slate-500">host:port:user:pass</span>, <span class="font-mono text-slate-500">host:port@user:pass</span>, <span class="font-mono text-slate-500">user:pass:host:port</span>, <span class="font-mono text-slate-500">user:pass@host:port</span>, or a full URL.</p>
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="env-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center justify-center gap-2">
+          <button type="button" id="env-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span id="env-submit-label">Create</span>
           </button>
         </div>
@@ -906,18 +1093,17 @@
   <div id="folder-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 id="folder-modal-title" class="text-lg font-bold text-white"><i class="fa-solid fa-folder-plus text-brand mr-2"></i>New folder</h3>
-        <button id="folder-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 id="folder-modal-title" class="t16 font-bold text-white"><i class="fa-solid fa-folder-plus text-brand mr-2"></i>New folder</h3>
+        <button id="folder-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="folder-form" class="px-6 py-5 space-y-4">
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Folder name</label>
-          <input id="folder-name" name="name" required autocomplete="off" placeholder="e.g. Storage accounts"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Folder name</label>
+          <input id="folder-name" name="name" required autocomplete="off" placeholder="e.g. Storage accounts" class="field" />
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="folder-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center justify-center gap-2">
+          <button type="button" id="folder-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span>Save</span>
           </button>
         </div>
@@ -929,22 +1115,22 @@
   <div id="move-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-folder-tree text-brand mr-2"></i>Move account</h3>
-        <button id="move-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-folder-tree text-brand mr-2"></i>Move account</h3>
+        <button id="move-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="move-form" class="px-6 py-5 space-y-4">
-        <p id="move-account-label" class="text-sm text-slate-400"></p>
+        <p id="move-account-label" class="t14 text-slate-400"></p>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Environment</label>
-          <select id="move-env" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Environment</label>
+          <select id="move-env" class="field"></select>
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Target folder</label>
-          <select id="move-folder" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+          <label class="field-label">Target folder</label>
+          <select id="move-folder" class="field"></select>
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="move-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition flex items-center justify-center gap-2">
+          <button type="button" id="move-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-arrow-right-to-bracket"></i><span>Move</span>
           </button>
         </div>
@@ -956,52 +1142,48 @@
   <div id="edit-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-pen text-brand mr-2"></i>Edit account</h3>
-        <button id="edit-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-pen text-brand mr-2"></i>Edit account</h3>
+        <button id="edit-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="edit-form" class="px-6 py-5 space-y-4">
-        <p id="edit-account-label" class="text-sm text-slate-400 font-mono"></p>
+        <p id="edit-account-label" class="t14 text-slate-400 font-mono"></p>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Display name <span class="text-slate-600 font-normal">(optional)</span></label>
-          <input id="edit-displayname" autocomplete="off"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">Display name <span class="text-slate-600 font-normal">(optional)</span></label>
+          <input id="edit-displayname" autocomplete="off" class="field" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Network <span class="text-slate-600 font-normal">(proxy)</span></label>
-          <p id="edit-proxy-current" class="text-2xs mb-1.5 font-mono text-slate-500"></p>
-          <label class="flex items-center gap-2 mb-2 text-xs font-medium text-slate-300 cursor-pointer">
+          <label class="field-label">Network <span class="text-slate-600 font-normal">(proxy)</span></label>
+          <p id="edit-proxy-current" class="t11 mb-1.5 font-mono text-slate-500"></p>
+          <label class="flex items-center gap-2 mb-2 t12 font-medium text-slate-300 cursor-pointer">
             <input type="checkbox" id="edit-use-env-proxy" class="accent-violet-500 w-4 h-4" />
             Use environment proxy
           </label>
-          <input id="edit-proxy" placeholder="Leave empty for local proxy" autocomplete="off"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
-          <p class="text-2xs text-slate-500 mt-1.5">
+          <input id="edit-proxy" placeholder="Leave empty for local proxy" autocomplete="off" class="field" />
+          <p class="t11 text-slate-500 mt-1.5">
             <i class="fa-solid fa-circle-info mr-1 text-brand"></i><b class="text-slate-400">On</b> = use the environment proxy. <b class="text-slate-400">Off</b> = enter a custom proxy, or leave empty for local proxy (local IP).
           </p>
         </div>
         <details>
-          <summary class="text-xs font-semibold text-slate-400 cursor-pointer select-none hover:text-slate-200">Change credentials (optional)</summary>
+          <summary class="t12 font-semibold text-slate-400 cursor-pointer select-none hover:text-slate-200">Change credentials (optional)</summary>
           <div class="space-y-3 mt-3">
-            <input id="edit-password" type="password" placeholder="New password (empty = unchanged)" autocomplete="new-password"
-              class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
-            <input id="edit-mafile" placeholder="New maFile path (empty = unchanged)" autocomplete="off"
-              class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+            <input id="edit-password" type="password" placeholder="New password (empty = unchanged)" autocomplete="new-password" class="field" />
+            <input id="edit-mafile" placeholder="New maFile path (empty = unchanged)" autocomplete="off" class="field" />
           </div>
         </details>
-        <div class="px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-2xs text-slate-500">
+        <div class="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 t11 text-slate-500">
           <i class="fa-solid fa-circle-info mr-1 text-brand"></i>On proxy change the account is re-logged in (takes effect from the next "Refresh").
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="edit-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="edit-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="edit-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="edit-submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-check"></i><span>Save</span>
           </button>
         </div>
         <div class="pt-3 mt-1 border-t border-slate-800">
-          <button type="button" id="edit-delete" class="w-full px-4 py-2.5 rounded-lg bg-rose-900/30 hover:bg-rose-900/50 text-rose-400 hover:text-rose-300 border border-rose-800/50 text-sm font-semibold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="edit-delete" class="w-full px-4 py-2.5 rounded-xl bg-rose-900/30 hover:bg-rose-900/50 text-rose-400 hover:text-rose-300 border border-rose-800/50 t14 font-semibold transition disabled:opacity-50 flex items-center justify-center gap-2">
             <i class="fa-solid fa-trash-can"></i><span>Delete account</span>
           </button>
-          <p class="text-2xs text-slate-500 mt-2 text-center">
+          <p class="t11 text-slate-500 mt-2 text-center">
             <i class="fa-solid fa-circle-info mr-1"></i>Removes only from SSIM (logs out + clears cache). Re-addable via "Import bots".
           </p>
         </div>
@@ -1013,24 +1195,24 @@
   <div id="trade-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-paper-plane text-brand mr-2"></i>Send items</h3>
-        <button id="trade-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-paper-plane text-brand mr-2"></i>Send items</h3>
+        <button id="trade-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="trade-form" class="px-6 py-5 space-y-4">
-        <div class="px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-sm text-slate-400">
+        <div class="px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 t14 text-slate-400">
           <i class="fa-solid fa-box mr-1.5 text-brand"></i>
           <span id="trade-summary">—</span> from <span id="trade-from" class="text-slate-200 font-semibold"></span>
         </div>
         <div class="flex gap-2">
           <label class="flex-1">
             <input type="radio" name="target" value="internal" class="peer sr-only" checked />
-            <div class="px-3 py-2.5 rounded-lg border border-slate-700 text-center text-sm font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
+            <div class="px-3 py-2.5 rounded-xl border border-slate-700 text-center t14 font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
               <i class="fa-solid fa-users mr-1"></i>Internal account
             </div>
           </label>
           <label class="flex-1">
             <input type="radio" name="target" value="external" class="peer sr-only" />
-            <div class="px-3 py-2.5 rounded-lg border border-slate-700 text-center text-sm font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
+            <div class="px-3 py-2.5 rounded-xl border border-slate-700 text-center t14 font-semibold text-slate-400 cursor-pointer peer-checked:border-brand peer-checked:text-brand peer-checked:bg-brand/10 transition">
               <i class="fa-solid fa-link mr-1"></i>External link
             </div>
           </label>
@@ -1038,38 +1220,36 @@
         <div id="trade-internal-block" class="space-y-3">
           <div class="grid grid-cols-2 gap-2">
             <div>
-              <label class="block text-xs font-semibold text-slate-400 mb-1.5">1 · Environment</label>
-              <select id="trade-env" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+              <label class="field-label">1 · Environment</label>
+              <select id="trade-env" class="field"></select>
             </div>
             <div>
-              <label class="block text-xs font-semibold text-slate-400 mb-1.5">2 · Folder</label>
-              <select id="trade-folder" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+              <label class="field-label">2 · Folder</label>
+              <select id="trade-folder" class="field"></select>
             </div>
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">3 · Recipient</label>
+            <label class="field-label">3 · Recipient</label>
             <div class="relative">
               <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-              <input id="trade-search" type="text" autocomplete="off" placeholder="Search account…"
-                class="w-full pl-9 pr-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+              <input id="trade-search" type="text" autocomplete="off" placeholder="Search account…" class="field pl-9" />
             </div>
             <div id="trade-recipient-list"
-              class="mt-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 divide-y divide-slate-800/60"></div>
-            <p id="trade-recipient-empty" class="hidden text-center text-slate-600 text-xs py-5">No matching accounts.</p>
-            <p id="trade-recipient-count" class="mt-1.5 text-2xs text-slate-500"></p>
+              class="mt-2 max-h-56 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 divide-y divide-slate-800/60"></div>
+            <p id="trade-recipient-empty" class="hidden text-center text-slate-600 t11 py-5">No matching accounts.</p>
+            <p id="trade-recipient-count" class="mt-1.5 t11 text-slate-500"></p>
           </div>
         </div>
         <div id="trade-external-block" class="hidden">
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">External trade link</label>
-          <input id="trade-target-url" type="text" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=…&token=…"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand/50" />
+          <label class="field-label">External trade link</label>
+          <input id="trade-target-url" type="text" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=…&token=…" class="field" />
         </div>
-        <div class="px-3 py-2 rounded-lg bg-amber-900/20 border border-amber-700/40 text-2xs text-amber-400/90">
+        <div class="px-3 py-2 rounded-xl bg-amber-900/20 border border-amber-700/40 t11 text-amber-400/90">
           <i class="fa-solid fa-shield-halved mr-1"></i>The trade is automatically confirmed via 2FA (identity_secret) and sent immediately.
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="trade-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="trade-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="trade-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="trade-submit" class="btn btn-primary flex-1">
             <i class="fa-solid fa-paper-plane"></i><span>Send & confirm</span>
           </button>
         </div>
@@ -1081,60 +1261,58 @@
   <div id="sell-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-2xl max-h-[92vh] overflow-y-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between sticky top-0 bg-slate-900 z-10">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-tag text-emerald-400 mr-2"></i>Sell on Steam market</h3>
-        <button id="sell-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-tag text-emerald-400 mr-2"></i>Sell on Steam market</h3>
+        <button id="sell-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="sell-form" class="px-6 py-5 space-y-4">
-        <div class="px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-sm text-slate-400">
+        <div class="px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 t14 text-slate-400">
           <i class="fa-solid fa-box mr-1.5 text-emerald-400"></i>
           <span id="sell-summary">—</span> from <span id="sell-from" class="text-slate-200 font-semibold"></span>
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-2">Sale price (EUR)</label>
+          <label class="field-label mb-2">Sale price (EUR)</label>
           <div class="space-y-2">
             <label class="block">
               <input type="radio" name="sellstrategy" value="lowest" class="peer sr-only" checked />
-              <div class="px-3 py-2.5 rounded-lg border border-slate-700 text-sm cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-500/10 transition">
+              <div class="px-3 py-2.5 rounded-xl border border-slate-700 t14 cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-500/10 transition">
                 <span class="font-semibold text-slate-200">Lowest listing price</span>
-                <span class="block text-2xs text-slate-500">Set to the current lowest market price – sells quickly.</span>
+                <span class="block t11 text-slate-500">Set to the current lowest market price – sells quickly.</span>
               </div>
             </label>
             <label class="block">
               <input type="radio" name="sellstrategy" value="undercut" class="peer sr-only" />
-              <div class="px-3 py-2.5 rounded-lg border border-slate-700 text-sm cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-500/10 transition">
+              <div class="px-3 py-2.5 rounded-xl border border-slate-700 t14 cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-500/10 transition">
                 <span class="font-semibold text-slate-200">1 cent below</span>
-                <span class="block text-2xs text-slate-500">Undercut the lowest price by 1 cent – first in the list.</span>
+                <span class="block t11 text-slate-500">Undercut the lowest price by 1 cent – first in the list.</span>
               </div>
             </label>
             <label class="block">
               <input type="radio" name="sellstrategy" value="custom" class="peer sr-only" />
-              <div class="px-3 py-2.5 rounded-lg border border-slate-700 text-sm cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-500/10 transition">
+              <div class="px-3 py-2.5 rounded-xl border border-slate-700 t14 cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-500/10 transition">
                 <span class="font-semibold text-slate-200">Custom price</span>
-                <span class="block text-2xs text-slate-500">Set a fixed net amount (payout to you) for all selected items.</span>
+                <span class="block t11 text-slate-500">Set a fixed net amount (payout to you) for all selected items.</span>
               </div>
             </label>
             <div id="sell-custom-row" class="hidden flex items-center gap-2 pl-1">
-              <span class="text-sm text-slate-400">€</span>
-              <input id="sell-custom-price" type="number" step="0.01" min="0.01" inputmode="decimal" placeholder="e.g. 1.50"
-                class="w-32 px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50" />
-              <span class="text-2xs text-slate-500">per item (net, after fee)</span>
+              <span class="t14 text-slate-400">€</span>
+              <input id="sell-custom-price" type="number" step="0.01" min="0.01" inputmode="decimal" placeholder="e.g. 1.50" class="field w-32" />
+              <span class="t11 text-slate-500">per item (net, after fee)</span>
             </div>
           </div>
         </div>
         <div>
-          <button type="button" id="sell-preview-btn"
-            class="w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition flex items-center justify-center gap-2">
-            <i class="fa-solid fa-calculator"></i><span>Calculate prices & proceeds</span>
+          <button type="button" id="sell-preview-btn" class="btn btn-secondary btn-sm w-full">
+            <i class="fa-solid fa-calculator"></i><span>Calculate prices &amp; proceeds</span>
           </button>
-          <div id="sell-preview-result" class="hidden mt-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-400 max-h-72 overflow-y-auto"></div>
+          <div id="sell-preview-result" class="hidden mt-2 rounded-xl bg-slate-950 border border-slate-800 t12 text-slate-400 max-h-72 overflow-y-auto"></div>
         </div>
-        <div class="px-3 py-2 rounded-lg bg-amber-900/20 border border-amber-700/40 text-2xs text-amber-400/90">
+        <div class="px-3 py-2 rounded-xl bg-amber-900/20 border border-amber-700/40 t11 text-amber-400/90">
           <i class="fa-solid fa-triangle-exclamation mr-1"></i>Listings are automatically confirmed via 2FA and are <b>irreversible</b>. <b>Gross</b> = buyer pays · <b>Net</b> = you get (after Steam fee). Steam rejects trade-protected items.
         </div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="sell-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="sell-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
-            <i class="fa-solid fa-tag"></i><span>Sell & confirm</span>
+          <button type="button" id="sell-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="sell-submit" class="btn btn-sell flex-1">
+            <i class="fa-solid fa-tag"></i><span>Sell &amp; confirm</span>
           </button>
         </div>
       </form>
@@ -1145,60 +1323,54 @@
   <div id="buy-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-cart-shopping text-teal-400 mr-2"></i>Buy on Steam market</h3>
-        <button id="buy-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-cart-shopping text-teal-400 mr-2"></i>Buy on Steam market</h3>
+        <button id="buy-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="buy-form" class="px-6 py-5 space-y-4">
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Bot account <span class="text-slate-600 font-normal">(buys &amp; pays)</span></label>
-          <input id="buy-account" list="buy-account-list" autocomplete="off" placeholder="Search or select bot…"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-teal-500/50" />
+          <label class="field-label">Bot account <span class="text-slate-600 font-normal">(buys &amp; pays)</span></label>
+          <input id="buy-account" list="buy-account-list" autocomplete="off" placeholder="Search or select bot…" class="field" />
           <datalist id="buy-account-list"></datalist>
-          <p id="buy-wallet" class="text-2xs text-slate-500 mt-1 font-mono"></p>
+          <p id="buy-wallet" class="t11 text-slate-500 mt-1 font-mono"></p>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Game</label>
-            <select id="buy-game" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/50">
+            <label class="field-label">Game</label>
+            <select id="buy-game" class="field">
               <option value="730">CS2 (730)</option>
               <option value="440">TF2 (440)</option>
             </select>
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Quantity</label>
+            <label class="field-label">Quantity</label>
             <div class="flex items-center gap-2">
-              <input id="buy-qty" type="number" min="1" max="100" step="1" value="1" inputmode="numeric"
-                class="flex-1 min-w-0 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/50" />
-              <button type="button" id="buy-max" title="Spend entire balance: fill the maximum quantity this account can afford at the price below"
-                class="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-teal-600 hover:text-white text-slate-300 text-sm font-semibold transition shrink-0">Max</button>
+              <input id="buy-qty" type="number" min="1" max="100" step="1" value="1" inputmode="numeric" class="field flex-1 min-w-0" />
+              <button type="button" id="buy-max" title="Spend entire balance: fill the maximum quantity this account can afford at the price below" class="btn btn-secondary btn-sm shrink-0">Max</button>
             </div>
           </div>
         </div>
         <div class="relative">
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Search item <span class="text-slate-600 font-normal">(live search on Steam)</span></label>
-          <input id="buy-name" type="text" autocomplete="off" placeholder="Type item name, e.g. AK-47 or Mann Co…"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-teal-500/50" />
-          <div id="buy-name-results" class="hidden absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 shadow-2xl divide-y divide-slate-800/60"></div>
+          <label class="field-label">Search item <span class="text-slate-600 font-normal">(live search on Steam)</span></label>
+          <input id="buy-name" type="text" autocomplete="off" placeholder="Type item name, e.g. AK-47 or Mann Co…" class="field" />
+          <div id="buy-name-results" class="hidden absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 shadow-2xl divide-y divide-slate-800/60"></div>
         </div>
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Price per item <span id="buy-cur" class="text-slate-600 font-normal">(EUR)</span></label>
+          <label class="field-label">Price per item <span id="buy-cur" class="text-slate-600 font-normal">(EUR)</span></label>
           <div class="flex items-center gap-2">
-            <input id="buy-price" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 2.02"
-              class="w-28 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-teal-500/50" />
-            <button type="button" id="buy-price-fetch" title="Fetch current market price (lowest offer)"
-              class="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-teal-600 hover:text-white text-slate-300 text-sm font-semibold transition shrink-0 flex items-center gap-1.5">
+            <input id="buy-price" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 2.02" class="field w-28" />
+            <button type="button" id="buy-price-fetch" title="Fetch current market price (lowest offer)" class="btn btn-secondary btn-sm shrink-0">
               <i class="fa-solid fa-tag"></i><span>Market price</span>
             </button>
-            <span class="text-2xs text-slate-500">× <span id="buy-qty-echo">1</span> = <span id="buy-total" class="text-slate-300 font-mono font-semibold">—</span></span>
+            <span class="t11 text-slate-500">× <span id="buy-qty-echo">1</span> = <span id="buy-total" class="text-slate-300 font-mono font-semibold">—</span></span>
           </div>
         </div>
-        <div class="px-3 py-2 rounded-lg bg-amber-900/20 border border-amber-700/40 text-2xs text-amber-400/90">
+        <div class="px-3 py-2 rounded-xl bg-amber-900/20 border border-amber-700/40 t11 text-amber-400/90">
           <i class="fa-solid fa-circle-info mr-1"></i>A <b>Buy Order</b> is created at your price and confirmed via 2FA. If the price is ≥ the lowest offer, it fills instantly; otherwise it rests. Success is verified via the real inventory increase.
         </div>
         <div id="buy-result" class="hidden px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-xs"></div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="buy-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Cancel</button>
-          <button type="submit" id="buy-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="buy-cancel" class="btn btn-secondary flex-1">Cancel</button>
+          <button type="submit" id="buy-submit" class="btn btn-buy flex-1">
             <i class="fa-solid fa-cart-shopping"></i><span>Buy &amp; confirm</span>
           </button>
         </div>
@@ -1210,53 +1382,49 @@
   <div id="fbuy-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-cart-arrow-down text-teal-400 mr-2"></i>Mass Buy across folder</h3>
-        <button id="fbuy-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-cart-arrow-down text-teal-400 mr-2"></i>Mass Buy across folder</h3>
+        <button id="fbuy-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <form id="fbuy-form" class="px-6 py-5 space-y-4">
-        <p id="fbuy-summary" class="text-xs text-slate-400"></p>
+        <p id="fbuy-summary" class="t12 text-slate-400"></p>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Game</label>
-            <select id="fbuy-game" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/50">
+            <label class="field-label">Game</label>
+            <select id="fbuy-game" class="field">
               <option value="730">CS2 (730)</option>
               <option value="440">TF2 (440)</option>
             </select>
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5">Price / item <span class="text-slate-600 font-normal">(own cur.)</span></label>
+            <label class="field-label">Price / item <span class="text-slate-600 font-normal">(own cur.)</span></label>
             <div class="flex items-center gap-2">
-              <input id="fbuy-price" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 2.02"
-                class="flex-1 min-w-0 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-teal-500/50" />
-              <button type="button" id="fbuy-price-fetch" title="Fetch current market price (lowest offer)"
-                class="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-teal-600 hover:text-white text-slate-300 text-sm font-semibold transition shrink-0"><i class="fa-solid fa-tag"></i></button>
+              <input id="fbuy-price" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 2.02" class="field flex-1 min-w-0" />
+              <button type="button" id="fbuy-price-fetch" title="Fetch current market price (lowest offer)" class="btn btn-secondary btn-sm shrink-0"><i class="fa-solid fa-tag"></i></button>
             </div>
           </div>
         </div>
         <div class="relative">
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5">Search item <span class="text-slate-600 font-normal">(live search on Steam)</span></label>
-          <input id="fbuy-name" type="text" autocomplete="off" placeholder="Type item name, e.g. Mann Co. Supply Crate Key…"
-            class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-teal-500/50" />
-          <div id="fbuy-name-results" class="hidden absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 shadow-2xl divide-y divide-slate-800/60"></div>
+          <label class="field-label">Search item <span class="text-slate-600 font-normal">(live search on Steam)</span></label>
+          <input id="fbuy-name" type="text" autocomplete="off" placeholder="Type item name, e.g. Mann Co. Supply Crate Key…" class="field" />
+          <div id="fbuy-name-results" class="hidden absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 shadow-2xl divide-y divide-slate-800/60"></div>
         </div>
-        <div class="px-3 py-2 rounded-lg bg-amber-900/20 border border-amber-700/40 text-2xs text-amber-400/90">
+        <div class="px-3 py-2 rounded-xl bg-amber-900/20 border border-amber-700/40 t11 text-amber-400/90">
           <i class="fa-solid fa-shield-halved mr-1"></i>Every account's balance is <b>refreshed live first</b>, then each bot maxes out its purchase at this price (in its own wallet currency). Price applies per bot's own currency; orders are capped by the per-order safety ceiling.
         </div>
         <!-- progress (shown while a run is in flight) -->
         <div id="fbuy-progress" class="hidden">
-          <div class="flex items-center justify-between text-2xs text-slate-400 mb-1">
+          <div class="flex items-center justify-between t10 text-slate-400 mb-1">
             <span id="fbuy-phase">Refreshing balances…</span><span id="fbuy-count" class="font-mono"></span>
           </div>
-          <div class="h-2 rounded-full bg-slate-800 overflow-hidden"><div id="fbuy-bar" class="h-full bg-teal-500 transition-all" style="width:0%"></div></div>
-          <button id="fbuy-end" type="button"
-            class="mt-2 w-full px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center justify-center gap-2 disabled:opacity-50">
+          <div class="h-2 rounded-full bg-slate-800 overflow-hidden"><div id="fbuy-bar" class="h-full bg-brand transition-all" style="width:0%"></div></div>
+          <button id="fbuy-end" type="button" class="btn btn-danger btn-sm w-full mt-2">
             <i class="fa-solid fa-stop"></i><span>End task</span>
           </button>
         </div>
-        <div id="fbuy-results" class="hidden max-h-56 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 divide-y divide-slate-800/60 text-xs"></div>
+        <div id="fbuy-results" class="hidden max-h-56 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950 divide-y divide-slate-800/60 text-xs"></div>
         <div class="flex gap-3 pt-1">
-          <button type="button" id="fbuy-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Close</button>
-          <button type="submit" id="fbuy-submit" class="flex-1 px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button type="button" id="fbuy-cancel" class="btn btn-secondary flex-1">Close</button>
+          <button type="submit" id="fbuy-submit" class="btn btn-buy flex-1">
             <i class="fa-solid fa-cart-arrow-down"></i><span>Start mass buy</span>
           </button>
         </div>
@@ -1268,50 +1436,50 @@
   <div id="bulk-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
     <div class="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
       <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-file-import text-brand mr-2"></i>Import bots</h3>
-        <button id="bulk-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <h3 class="t16 font-bold text-white"><i class="fa-solid fa-file-import text-brand mr-2"></i>Import bots</h3>
+        <button id="bulk-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <div class="px-6 py-5 space-y-4">
         <!-- Step 1 + 2: destination -->
         <div class="flex gap-3">
           <div class="flex-1">
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5"><span class="text-brand">1.</span> Target environment</label>
-            <select id="bulk-env" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+            <label class="field-label"><span class="text-brand">1.</span> Target environment</label>
+            <select id="bulk-env" class="field"></select>
           </div>
           <div class="flex-1">
-            <label class="block text-xs font-semibold text-slate-400 mb-1.5"><span class="text-brand">2.</span> Target folder</label>
-            <select id="bulk-folder" class="w-full px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/50"></select>
+            <label class="field-label"><span class="text-brand">2.</span> Target folder</label>
+            <select id="bulk-folder" class="field"></select>
           </div>
         </div>
 
-        <!-- Step 3: method chooser -->
+        <!-- Step 3: method chooser (the ONLY three import methods — invariant 9) -->
         <div>
-          <label class="block text-xs font-semibold text-slate-400 mb-1.5"><span class="text-brand">3.</span> Import method</label>
+          <label class="field-label"><span class="text-brand">3.</span> Import method</label>
           <div class="grid grid-cols-3 gap-2">
-            <button type="button" data-method="vault" class="import-method px-2 py-2.5 rounded-lg border border-slate-700 bg-slate-950 text-slate-300 text-xs font-semibold transition hover:border-brand/60"><i class="fa-solid fa-lock block text-base mb-1 text-brand"></i>SSIM Vault</button>
-            <button type="button" data-method="csv" class="import-method px-2 py-2.5 rounded-lg border border-slate-700 bg-slate-950 text-slate-300 text-xs font-semibold transition hover:border-brand/60"><i class="fa-solid fa-file-csv block text-base mb-1 text-emerald-400"></i>CSV</button>
-            <button type="button" data-method="mafiles" class="import-method px-2 py-2.5 rounded-lg border border-slate-700 bg-slate-950 text-slate-300 text-xs font-semibold transition hover:border-brand/60"><i class="fa-solid fa-key block text-base mb-1 text-sky-400"></i>maFiles</button>
+            <button type="button" data-method="vault" class="import-method px-2 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-slate-300 t12 font-semibold transition hover:border-brand/60"><i class="fa-solid fa-lock block text-base mb-1 text-brand"></i>SSIM Vault</button>
+            <button type="button" data-method="csv" class="import-method px-2 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-slate-300 t12 font-semibold transition hover:border-brand/60"><i class="fa-solid fa-file-csv block text-base mb-1 text-emerald-400"></i>CSV</button>
+            <button type="button" data-method="mafiles" class="import-method px-2 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-slate-300 t12 font-semibold transition hover:border-brand/60"><i class="fa-solid fa-key block text-base mb-1 text-sky-400"></i>maFiles</button>
           </div>
         </div>
 
         <!-- Panel: Import SSIM Vault (merge another device's vault.enc + accounts.json) -->
-        <div id="method-vault" class="import-panel hidden rounded-lg bg-slate-950 border border-slate-800 p-3 space-y-2">
-          <p class="text-2xs text-slate-500">Select BOTH <code class="text-slate-400">vault.enc</code> (secrets) and <code class="text-slate-400">accounts.json</code> (folders/org) from the source <code class="text-slate-400">Vault/</code> folder — only NEW bots are added, and their folder structure is recreated. Needs that vault's master password.</p>
-          <input id="bulk-vault-file" type="file" accept=".enc,.json,application/json" multiple class="block w-full text-xs text-slate-300 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:bg-slate-800 file:text-slate-200" />
-          <p class="text-3xs text-slate-600"><code class="text-slate-500">accounts.json</code> is optional — without it, imported bots land at the environment root.</p>
-          <input id="bulk-vault-pw" type="password" placeholder="Source vault master password" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand/40" />
-          <button type="button" id="bulk-vault-import" class="w-full px-3 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold transition flex items-center justify-center gap-1.5"><i class="fa-solid fa-lock"></i> Import vault</button>
+        <div id="method-vault" class="import-panel hidden rounded-xl bg-slate-950 border border-slate-800 p-3 space-y-2">
+          <p class="t11 text-slate-500">Select BOTH <code class="text-slate-400">vault.enc</code> (secrets) and <code class="text-slate-400">accounts.json</code> (folders/org) from the source <code class="text-slate-400">Vault/</code> folder — only NEW bots are added, and their folder structure is recreated. Needs that vault's master password.</p>
+          <input id="bulk-vault-file" type="file" accept=".enc,.json,application/json" multiple class="block w-full t12 text-slate-300 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:bg-slate-800 file:text-slate-200" />
+          <p class="t10 text-slate-600"><code class="text-slate-500">accounts.json</code> is optional — without it, imported bots land at the environment root.</p>
+          <input id="bulk-vault-pw" type="password" placeholder="Source vault master password" class="field" />
+          <button type="button" id="bulk-vault-import" class="btn w-full bg-brand text-white btn-sm"><i class="fa-solid fa-lock"></i> Import vault</button>
           <p id="bulk-vault-status" class="text-2xs hidden"></p>
         </div>
 
         <!-- Panel: CSV (username,password,shared_secret,identity_secret) -->
-        <div id="method-csv" class="import-panel hidden rounded-lg bg-slate-950 border border-slate-800 p-3">
+        <div id="method-csv" class="import-panel hidden rounded-xl bg-slate-950 border border-slate-800 p-3">
           <div class="flex items-center justify-between gap-2">
             <div class="min-w-0">
-              <p class="text-xs font-semibold text-slate-300">Import from CSV</p>
-              <p class="text-2xs text-slate-500 truncate font-mono">username,password,shared_secret,identity_secret</p>
+              <p class="t12 font-semibold text-slate-300">Import from CSV</p>
+              <p class="t10 text-slate-500 truncate font-mono">username,password,shared_secret,identity_secret</p>
             </div>
-            <label class="shrink-0 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-brand hover:text-white text-slate-300 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5">
+            <label class="btn btn-secondary btn-sm shrink-0 cursor-pointer">
               <i class="fa-solid fa-file-csv"></i><span>Choose CSV…</span>
               <input id="bulk-csv" type="file" accept=".csv,text/csv,text/plain" class="hidden" />
             </label>
@@ -1322,19 +1490,19 @@
         <!-- Panel: maFiles & accounts.txt (classic drop-zone) -->
         <div id="method-mafiles" class="import-panel hidden space-y-3">
           <div class="flex items-center justify-between">
-            <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+            <label class="flex items-center gap-1.5 t12 text-slate-400 cursor-pointer">
               <input type="checkbox" id="bulk-select-all" class="accent-violet-500 w-4 h-4" /> All Accounts
             </label>
-            <span class="text-2xs font-semibold uppercase tracking-wider text-slate-400">Found maFiles</span>
+            <span class="t10 font-semibold uppercase tracking-wider text-slate-400">Found maFiles</span>
           </div>
-          <div id="bulk-list" class="max-h-56 overflow-y-auto space-y-1.5 pr-1"></div>
-          <button type="button" id="bulk-submit" class="w-full px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <div id="bulk-list" class="surface p-2 max-h-56 overflow-y-auto space-y-1.5"></div>
+          <button type="button" id="bulk-submit" class="btn btn-primary w-full">
             <i class="fa-solid fa-file-import"></i><span id="bulk-submit-label">Import</span>
           </button>
         </div>
 
         <div class="flex pt-1">
-          <button type="button" id="bulk-cancel" class="w-full px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition">Close</button>
+          <button type="button" id="bulk-cancel" class="btn btn-secondary w-full">Close</button>
         </div>
       </div>
     </div>
@@ -1359,17 +1527,15 @@
       <!-- Header -->
       <div class="px-6 py-4 border-b border-slate-800 flex items-center gap-3 shrink-0 flex-wrap">
         <i class="fa-solid fa-right-left text-brand text-lg"></i>
-        <h3 class="text-lg font-bold text-white">Trade Offers</h3>
-        <span id="offers-scope" class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40"></span>
+        <h3 class="t16 font-bold text-white">Trade Offers</h3>
+        <span id="offers-scope" class="pill pill--brand"></span>
         <div class="ml-auto flex items-center gap-2">
           <div class="relative">
             <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-            <input id="offers-search" type="text" placeholder="Search partner, bot or item…"
-              class="pl-8 pr-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 w-64 focus:outline-none focus:ring-2 focus:ring-brand/40" />
+            <input id="offers-search" type="text" placeholder="Search partner, bot or item…" class="field pl-8 pr-3 py-1.5 w-64" />
           </div>
-          <button id="offers-refresh" title="Reload offers live from Steam"
-            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
-          <button id="offers-close" aria-label="Close" class="text-slate-500 hover:text-white transition ml-1"><i class="fa-solid fa-xmark text-lg"></i></button>
+          <button id="offers-refresh" title="Reload offers live from Steam" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
+          <button id="offers-close" aria-label="Close" class="modal-x ml-1"><i class="fa-solid fa-xmark text-lg"></i></button>
         </div>
       </div>
 
@@ -1388,10 +1554,8 @@
               <label class="flex items-center gap-1.5 text-2xs text-slate-400 cursor-pointer select-none">
                 <input id="offers-sent-selall" type="checkbox" class="accent-violet-500 w-4 h-4" /> Select all (active)
               </label>
-              <button id="offers-sent-cancel-selected" disabled
-                class="ml-auto px-2.5 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="offers-sent-sel-count">0</span>)</span></button>
-              <button id="offers-sent-cancel-all"
-                class="px-2.5 py-1.5 rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
+              <button id="offers-sent-cancel-selected" disabled class="btn btn-sm btn-danger ml-auto"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="offers-sent-sel-count">0</span>)</span></button>
+              <button id="offers-sent-cancel-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
             </div>
           </div>
           <div id="offers-sent-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/60 min-h-0"></div>
@@ -1409,14 +1573,10 @@
               <label class="flex items-center gap-1.5 text-2xs text-slate-400 cursor-pointer select-none">
                 <input id="offers-recv-selall" type="checkbox" class="accent-violet-500 w-4 h-4" /> Select all (active)
               </label>
-              <button id="offers-recv-accept-selected" disabled
-                class="ml-auto px-2.5 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white text-2xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-check"></i><span>Accept (<span id="offers-recv-sel-count">0</span>)</span></button>
-              <button id="offers-recv-decline-selected" disabled
-                class="px-2.5 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-xmark"></i><span>Decline</span></button>
-              <button id="offers-recv-accept-all"
-                class="px-2.5 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-check-double"></i><span>Accept all</span></button>
-              <button id="offers-recv-decline-all"
-                class="px-2.5 py-1.5 rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-trash"></i><span>Decline all</span></button>
+              <button id="offers-recv-accept-selected" disabled class="btn btn-sm bg-emerald-600 text-white ml-auto"><i class="fa-solid fa-check"></i><span>Accept (<span id="offers-recv-sel-count">0</span>)</span></button>
+              <button id="offers-recv-decline-selected" disabled class="btn btn-sm btn-danger"><i class="fa-solid fa-xmark"></i><span>Decline</span></button>
+              <button id="offers-recv-accept-all" class="btn btn-sm bg-emerald-700/80 text-white"><i class="fa-solid fa-check-double"></i><span>Accept all</span></button>
+              <button id="offers-recv-decline-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Decline all</span></button>
             </div>
           </div>
           <div id="offers-recv-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/60 min-h-0"></div>
@@ -1432,11 +1592,11 @@
   <div id="ban-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-30 flex items-center justify-center p-4">
     <div class="w-full max-w-2xl max-h-[85vh] bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col overflow-hidden fade-in">
       <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
-        <h3 class="text-lg font-bold text-white">
+        <h3 class="t16 font-bold text-white">
           <i class="fa-solid fa-shield-halved text-brand mr-2"></i>Ban Checker
-          <span id="ban-scope" class="text-slate-500 font-mono text-sm font-normal ml-2"></span>
+          <span id="ban-scope" class="text-slate-500 font-mono t14 font-normal ml-2"></span>
         </h3>
-        <button id="ban-close" aria-label="Close" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+        <button id="ban-close" aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
       <div id="ban-summary" class="px-6 py-4 border-b border-slate-800 shrink-0"></div>
       <div id="ban-body" class="px-4 py-4 overflow-y-auto space-y-2"></div>
@@ -1462,7 +1622,7 @@
         </div>
       </div>
       <div class="px-6 pb-5 flex gap-3">
-        <button type="button" id="confirm-cancel" class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold transition">Cancel</button>
+        <button type="button" id="confirm-cancel" class="btn btn-secondary flex-1">Cancel</button>
         <button type="button" id="confirm-ok" class="flex-1 px-4 py-2.5 rounded-lg text-white text-sm font-bold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"></button>
       </div>
     </div>
@@ -1471,15 +1631,14 @@
   <!-- Mass-send progress (bottom center) -->
   <div id="mass-progress" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 w-[420px] max-w-[90vw] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 px-5 py-4 fade-in">
     <div class="flex items-center justify-between mb-2">
-      <span class="text-sm font-bold text-white flex items-center gap-2"><i class="fa-solid fa-paper-plane cs2-spin text-brand"></i>Mass trade running…</span>
-      <span id="mass-count" class="text-xs font-mono text-slate-400"></span>
+      <span class="t14 font-bold text-white flex items-center gap-2"><i class="fa-solid fa-paper-plane cs2-spin text-brand"></i>Mass trade running…</span>
+      <span id="mass-count" class="t12 font-mono text-slate-400"></span>
     </div>
     <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
       <div id="mass-bar" class="h-full bg-brand transition-all duration-300" style="width:0%"></div>
     </div>
-    <p id="mass-detail" class="text-2xs text-slate-500 mt-2"></p>
-    <button id="mass-end" type="button"
-      class="mt-3 w-full px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center justify-center gap-2 disabled:opacity-50">
+    <p id="mass-detail" class="t10 text-slate-500 mt-2"></p>
+    <button id="mass-end" type="button" class="btn btn-danger btn-sm w-full mt-3">
       <i class="fa-solid fa-stop"></i><span>End task</span>
     </button>
   </div>
@@ -1487,15 +1646,14 @@
   <!-- Mass-sell progress (bottom center) -->
   <div id="sell-progress" class="hidden fixed bottom-[11rem] left-1/2 -translate-x-1/2 w-[420px] max-w-[90vw] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 px-5 py-4 fade-in">
     <div class="flex items-center justify-between mb-2">
-      <span class="text-sm font-bold text-white flex items-center gap-2"><i class="fa-solid fa-tag cs2-spin text-emerald-400"></i>Market sale running…</span>
-      <span id="sell-count" class="text-xs font-mono text-slate-400"></span>
+      <span class="t14 font-bold text-white flex items-center gap-2"><i class="fa-solid fa-tag cs2-spin text-emerald-400"></i>Market sale running…</span>
+      <span id="sell-count" class="t12 font-mono text-slate-400"></span>
     </div>
     <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
-      <div id="sell-bar" class="h-full bg-emerald-500 transition-all duration-300" style="width:0%"></div>
+      <div id="sell-bar" class="h-full bg-brand transition-all duration-300" style="width:0%"></div>
     </div>
-    <p id="sell-detail" class="text-2xs text-slate-500 mt-2"></p>
-    <button id="sell-end" type="button"
-      class="mt-3 w-full px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center justify-center gap-2 disabled:opacity-50">
+    <p id="sell-detail" class="t10 text-slate-500 mt-2"></p>
+    <button id="sell-end" type="button" class="btn btn-danger btn-sm w-full mt-3">
       <i class="fa-solid fa-stop"></i><span>End task</span>
     </button>
   </div>

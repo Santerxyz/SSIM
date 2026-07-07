@@ -557,10 +557,10 @@ async function loadTf2Inventories() {
 }
 
 function updateGameToggle() {
-  const on  = 'px-3 py-2.5 text-sm font-bold transition bg-brand text-white';
-  const off = 'px-3 py-2.5 text-sm font-bold transition bg-slate-800 text-slate-400 hover:bg-slate-700';
-  if (el.btnGameCs2) el.btnGameCs2.className = state.game === 'cs2' ? on : off;
-  if (el.btnGameTf2) el.btnGameTf2.className = state.game === 'tf2' ? on : off;
+  // .seg control (index.html): the active button carries .is-on (brand fill via the DS);
+  // toggle it rather than overwriting className so the seg structure + ids stay intact.
+  if (el.btnGameCs2) el.btnGameCs2.classList.toggle('is-on', state.game === 'cs2');
+  if (el.btnGameTf2) el.btnGameTf2.classList.toggle('is-on', state.game === 'tf2');
 }
 
 async function reloadAll() {
@@ -1342,40 +1342,38 @@ function closeLogs() { el.logsOverlay.classList.add('hidden'); }
 function envTile(env) {
   const count = state.allAccounts.filter((a) => a.environmentId === env.id).length;
   const last = envLastUpdated(env.id);
+  const proxyPill = env.hasProxy
+    ? `<span class="pill pill--proxy"><i class="fa-solid fa-shield-halved"></i>Proxy</span>`
+    : `<span class="pill pill--local"><i class="fa-solid fa-network-wired"></i>Local IP</span>`;
   return `
-    <div data-env="${escapeAttr(env.id)}"
-      class="env-tile group relative cursor-pointer rounded-2xl bg-slate-900 border border-slate-800 hover:border-brand/50 p-5">
-      <div class="flex items-start justify-between">
-        <div class="w-11 h-11 rounded-xl bg-brand/15 flex items-center justify-center">
-          <i class="fa-solid fa-layer-group text-brand text-lg"></i>
-        </div>
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full ${env.hasProxy
-          ? 'bg-emerald-900/40 text-emerald-400 border border-emerald-700/40'
-          : 'bg-slate-800 text-slate-400 border border-slate-700'}">
-          <i class="fa-solid ${env.hasProxy ? 'fa-shield-halved' : 'fa-network-wired'} mr-1"></i>${env.hasProxy ? 'Proxy' : 'Local IP'}</span>
+    <div data-env="${escapeAttr(env.id)}" role="button" tabindex="0"
+      class="env-tile group cursor-pointer">
+      <div class="env-tile__glow"></div>
+      <div class="env-tile__actions">
+        <button data-env-edit="${escapeAttr(env.id)}" title="Edit environment" class="btn btn-icon-sm btn-secondary">
+          <i class="fa-solid fa-pen t11"></i></button>
+        <button data-env-del="${escapeAttr(env.id)}" data-name="${escapeAttr(env.name)}" title="Delete environment" class="btn btn-icon-sm btn-secondary">
+          <i class="fa-solid fa-trash-can t11" style="color:rgb(var(--danger-rgb))"></i></button>
       </div>
-      <h3 class="text-lg font-bold text-white mt-4 truncate">${escapeHtml(env.name)}</h3>
-      <p class="text-2xs text-slate-500 font-mono truncate mt-0.5">${env.hasProxy ? escapeHtml(env.proxy) : 'local IP'}</p>
-      <div class="flex items-baseline gap-5 mt-4">
-        <div class="flex items-baseline gap-1.5">
-          <span class="text-2xl font-bold text-white font-mono leading-none">${fmtCount(count)}</span>
-          <span class="text-slate-500 text-xs">Accounts</span>
+      <div class="flex items-center gap-3 mb-3">
+        <span class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style="background:rgb(var(--brand-rgb)/.15);color:rgb(var(--brand-l-rgb))">
+          <i class="fa-solid fa-layer-group"></i></span>
+        <div class="min-w-0 flex-1">
+          <p class="t16 font-bold text-white truncate">${escapeHtml(env.name)}</p>
+          <p class="t10 font-mono text-slate-500 truncate">${env.hasProxy
+            ? `<i class="fa-solid fa-globe mr-1" style="color:rgb(var(--listed-rgb))"></i>${escapeHtml(env.proxy)}`
+            : 'local IP'}</p>
         </div>
-        <div class="text-slate-500 text-xs flex items-center gap-1.5"><i class="fa-regular fa-clock"></i>${last ? formatAgo(last) : 'never loaded'}</div>
+        ${proxyPill}
       </div>
-      <div class="mt-4 pt-3 border-t border-slate-800 flex items-center gap-2">
-        <button data-proxy-test="${escapeAttr(env.id)}" title="Test this environment's proxy connection"
-          class="px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-brand hover:text-white text-slate-300 text-xs font-semibold transition flex items-center gap-1.5 shrink-0">
+      <div class="grid grid-cols-2 gap-2">
+        <div class="env-stat"><p class="k">Accounts</p><p class="v font-mono text-white">${fmtCount(count)}</p></div>
+        <div class="env-stat"><p class="k">Updated</p><p class="v font-mono text-slate-300">${last ? escapeHtml(formatAgo(last)) : 'never'}</p></div>
+      </div>
+      <div class="flex items-center gap-2 mt-3">
+        <button data-proxy-test="${escapeAttr(env.id)}" title="Test this environment's proxy connection" class="btn btn-ghost btn-sm shrink-0">
           <i class="fa-solid fa-tower-broadcast"></i><span>Test proxy</span></button>
         <span id="proxytest-${escapeAttr(env.id)}" class="text-2xs text-slate-500 truncate min-w-0"></span>
-      </div>
-      <div class="absolute right-3 top-3 opacity-0 group-hover:opacity-100 flex items-center gap-1.5">
-        <button data-env-edit="${escapeAttr(env.id)}" title="Edit environment"
-          class="w-7 h-7 rounded-md bg-slate-800 text-slate-500 hover:text-brand hover:bg-slate-700 transition flex items-center justify-center">
-          <i class="fa-solid fa-pen text-xs"></i></button>
-        <button data-env-del="${escapeAttr(env.id)}" data-name="${escapeAttr(env.name)}" title="Delete environment"
-          class="w-7 h-7 rounded-md bg-slate-800 text-slate-500 hover:text-rose-400 hover:bg-slate-700 transition flex items-center justify-center">
-          <i class="fa-solid fa-trash text-xs"></i></button>
       </div>
     </div>`;
 }
@@ -1436,22 +1434,25 @@ function renderFolderNode(node, depth, sibIndex = 0, sibCount = 1) {
   const count = subtreeCount(node);
   const isFirst = sibIndex === 0;
   const isLast = sibIndex === sibCount - 1;
+  const activeFolder = state.invMode === 'folder' && state.activeFolder === id;
   const header = `
     <div class="folder-header group flex items-center gap-1.5 pr-2 py-1.5 rounded-lg hover:bg-slate-800/50 transition" style="padding-left:${pad}px">
-      <button data-toggle="${escapeAttr(id)}" class="w-4 h-4 flex items-center justify-center text-slate-500 hover:text-slate-300 shrink-0">
-        <i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} text-3xs"></i></button>
-      <i class="fa-solid ${collapsed ? 'fa-folder' : 'fa-folder-open'} text-violet-400/80 text-xs shrink-0"></i>
+      <button data-toggle="${escapeAttr(id)}" class="w-4 h-4 flex items-center justify-center text-slate-500 hover:text-slate-300 shrink-0" aria-label="${collapsed ? 'Expand' : 'Collapse'} folder ${escapeAttr(name)}">
+        <i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} t10"></i></button>
+      <i class="fa-solid ${collapsed ? 'fa-folder' : 'fa-folder-open'} text-brand t12 shrink-0"></i>
       <span data-folder="${escapeAttr(id)}" title="Open folder master (aggregated inventory)"
-        class="text-sm font-semibold truncate flex-1 cursor-pointer ${state.invMode === 'folder' && state.activeFolder === id ? 'text-brand' : 'text-slate-300 hover:text-white'}">${escapeHtml(name)}</span>
-      <span class="text-3xs text-slate-600 font-mono mr-1">${count}</span>
-      <button ${isFirst ? 'disabled' : `data-folderup="${escapeAttr(id)}"`} title="Move folder up"
-        class="opacity-0 group-hover:opacity-100 transition w-4 text-center ${isFirst ? 'text-slate-700 cursor-default' : 'text-slate-500 hover:text-white'}"><i class="fa-solid fa-angle-up text-2xs"></i></button>
-      <button ${isLast ? 'disabled' : `data-folderdown="${escapeAttr(id)}"`} title="Move folder down"
-        class="opacity-0 group-hover:opacity-100 transition w-4 text-center ${isLast ? 'text-slate-700 cursor-default' : 'text-slate-500 hover:text-white'}"><i class="fa-solid fa-angle-down text-2xs"></i></button>
-      <button data-banfolder="${escapeAttr(id)}" title="Check bans for all accounts in this folder" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-brand transition w-5 text-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>
-      <button data-addsub="${escapeAttr(id)}" title="Create subfolder" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-brand transition w-5 text-center"><i class="fa-solid fa-folder-plus text-2xs"></i></button>
-      <button data-rename="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Rename" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white transition w-5 text-center"><i class="fa-solid fa-pen text-2xs"></i></button>
-      <button data-delfolder="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Delete folder (contents move up)" class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 transition w-5 text-center"><i class="fa-solid fa-trash text-2xs"></i></button>
+        class="t12 font-semibold truncate flex-1 cursor-pointer ${activeFolder ? 'text-brand-light' : 'text-slate-300 hover:text-white'}">${escapeHtml(name)}</span>
+      <span class="t10 font-mono text-slate-600 mr-1">${count}</span>
+      <span class="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <button ${isFirst ? 'disabled' : `data-folderup="${escapeAttr(id)}"`} title="Move folder up" aria-label="Move folder ${escapeAttr(name)} up"
+          class="btn btn-icon-sm btn-ghost ${isFirst ? 'opacity-40' : ''}"><i class="fa-solid fa-angle-up t10"></i></button>
+        <button ${isLast ? 'disabled' : `data-folderdown="${escapeAttr(id)}"`} title="Move folder down" aria-label="Move folder ${escapeAttr(name)} down"
+          class="btn btn-icon-sm btn-ghost ${isLast ? 'opacity-40' : ''}"><i class="fa-solid fa-angle-down t10"></i></button>
+        <button data-banfolder="${escapeAttr(id)}" title="Check bans for all accounts in this folder" aria-label="Check bans for folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
+        <button data-addsub="${escapeAttr(id)}" title="Create subfolder" aria-label="Create subfolder in ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-folder-plus t10"></i></button>
+        <button data-rename="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Rename" aria-label="Rename folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-pen t10"></i></button>
+        <button data-delfolder="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Delete folder (contents move up)" aria-label="Delete folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-trash-can t10" style="color:rgb(var(--danger-rgb))"></i></button>
+      </span>
     </div>`;
   const body = collapsed ? '' : renderNodes(node.children, depth + 1) + renderAccounts(node.accounts, depth + 1);
   return `<div class="folder-node">${header}${body}</div>`;
@@ -1482,37 +1483,37 @@ function renderAccountRow(acc, depth) {
   // the balance fades out and the mini action buttons fade in over the same right-hand slot,
   // so they never truncate the name nor overlap the balance. P1 states (—/0,00/value) unchanged.
   return `
-    <div class="account-row group relative flex items-stretch ${selected ? 'bg-brand/5 rounded-lg' : ''}" style="padding-left:${pad}px">
+    <div class="account-row group relative flex items-stretch ${selected ? 'bg-brand/5 rounded-xl' : ''}" style="padding-left:${pad}px">
       <label class="acct-check-wrap flex items-center pl-1 pr-1.5 shrink-0 cursor-pointer" title="Select for multi-account actions (Mass Buy/Sell/Trade + master)">
         <input type="checkbox" data-selacct="${escapeAttr(acc.username)}" ${selected ? 'checked' : ''}
           aria-label="Select ${escapeAttr(acc.username)} for multi-account actions"
-          class="acct-check w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-brand cursor-pointer ${selected ? '' : 'opacity-40 group-hover:opacity-100'}"></label>
+          class="acct-check w-4 h-4 rounded accent-brand cursor-pointer ${selected ? '' : 'opacity-40'}"></label>
       <button data-username="${escapeAttr(acc.username)}"
-        class="account-btn flex-1 min-w-0 text-left pr-3 py-2.5 rounded-lg transition flex items-center gap-3
-               ${active ? 'is-active bg-brand/15 ring-1 ring-brand/40' : 'hover:bg-slate-800'} ${acc.hidden ? 'opacity-50' : ''}">
-        <div class="w-8 h-8 rounded-md bg-slate-800 flex items-center justify-center shrink-0">
-          <i class="fa-solid fa-user text-xs ${active ? 'text-brand' : 'text-slate-500'}"></i></div>
+        class="account-btn flex-1 min-w-0 text-left pr-3 py-2 rounded-xl border border-transparent transition flex items-center gap-2.5
+               ${active ? 'is-active' : 'hover:bg-slate-800/60'} ${acc.hidden ? 'opacity-50' : ''}">
+        <span class="avatar shrink-0" style="width:2rem;height:2rem">
+          <i class="fa-solid fa-user t11 ${active ? 'text-brand-light' : ''}"></i></span>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1.5">
-            <p class="text-sm font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-300'}">
-              ${escapeHtml(acc.displayName || acc.username)}</p>
-            ${acc.canConfirm === false ? `<span class="shrink-0 text-3xs font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30" title="Cannot confirm trades — its maFile has no identity_secret (or none is attached). Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need one. Attach a maFile to fix.">LTD</span>` : ''}
-            <span class="acct-balance ml-auto shrink-0 text-2xs font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
+            <span class="t13 font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-200'}">
+              ${escapeHtml(acc.displayName || acc.username)}</span>
+            ${acc.canConfirm === false ? `<span class="pill pill--ltd t10 shrink-0" style="padding:0 .4rem" title="Cannot confirm trades — its maFile has no identity_secret (or none is attached). Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need one. Attach a maFile to fix.">LTD</span>` : ''}
+            <span class="acct-balance ml-auto shrink-0 t11 font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
           </div>
-          <p class="text-2xs text-slate-500 truncate">${escapeHtml(acc.username)}</p></div>
+          <p class="t10 text-slate-500 truncate font-mono">${escapeHtml(acc.username)}</p></div>
       </button>
-      <div class="acct-actions absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      <div class="acct-actions row-actions absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
         <button data-edit="${escapeAttr(acc.username)}" title="Edit account" aria-label="Edit ${escapeAttr(acc.username)}"
-          class="edit-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid fa-pen text-2xs"></i></button>
+          class="edit-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-pen t10"></i></button>
         <button data-move="${escapeAttr(acc.username)}" title="Move" aria-label="Move ${escapeAttr(acc.username)}"
-          class="move-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid fa-folder-tree text-2xs"></i></button>
+          class="move-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-folder-tree t10"></i></button>
         <button data-bancheck="${escapeAttr(acc.username)}" title="Check bans" aria-label="Check bans for ${escapeAttr(acc.username)}"
-          class="bancheck-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>
+          class="bancheck-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
         <button data-hide="${escapeAttr(acc.username)}" data-hidden="${acc.hidden ? '1' : '0'}"
           title="${acc.hidden ? 'Show' : 'Hide'}" aria-label="${acc.hidden ? 'Show' : 'Hide'} ${escapeAttr(acc.username)}"
-          class="hide-btn w-6 h-6 rounded-md bg-slate-900/95 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} text-2xs"></i></button>
+          class="hide-btn btn btn-icon-sm btn-ghost"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} t10"></i></button>
         ${acc.canConfirm === false ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
-          class="attach-btn w-6 h-6 rounded-md bg-slate-900/95 text-emerald-400 hover:text-white hover:bg-emerald-700 transition flex items-center justify-center"><i class="fa-solid fa-shield-halved text-2xs"></i></button>` : ''}
+          class="attach-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10" style="color:rgb(var(--success-rgb))"></i></button>` : ''}
       </div>
     </div>`;
 }
@@ -1531,11 +1532,11 @@ function renderSidebar() {
     if (sorting) matches = sortAccountsByBalance(matches, state.accountSort === 'balance-asc' ? 'asc' : 'desc');
     html = matches.length
       ? matches.map((a) => renderAccountRow(a, 0)).join('')
-      : `<p class="text-sm text-slate-600 px-3 py-4 text-center">No matching accounts.</p>`;
+      : `<p class="t12 text-slate-600 px-3 py-6 text-center">No matching accounts.</p>`;
   } else {
     html = renderNodes(state.tree.folders, 0) + renderAccounts(state.tree.accounts, 0);
   }
-  el.accountList.innerHTML = html || `<p class="text-sm text-slate-600 px-3 py-4 text-center">No accounts.</p>`;
+  el.accountList.innerHTML = html || `<p class="t12 text-slate-600 px-3 py-6 text-center">No accounts.</p>`;
   // PERF-01: events are delegated once (setupDelegation) — no per-row re-binding here.
 
   const hiddenCount = envAccounts().filter((a) => a.hidden).length;
@@ -1692,10 +1693,11 @@ function renderBreadcrumb() {
     // env-master → just Environments › {env}
   }
   bc.classList.remove('hidden');
+  // Masterpiece spine: chevron separators + brand-light active (last) segment (design_source:1615).
   bc.innerHTML = seg.map((s, i) => {
     const last = i === seg.length - 1;
-    const sep = i > 0 ? '<span class="text-slate-600 mx-1.5" aria-hidden="true">›</span>' : '';
-    const cls = last ? 'text-slate-300 font-medium' : 'text-slate-400';
+    const sep = i > 0 ? '<i class="fa-solid fa-chevron-right t10 text-slate-700 mx-2" aria-hidden="true"></i>' : '';
+    const cls = last ? 'text-brand-light font-medium' : 'text-slate-400';
     return s.go && !last
       ? `${sep}<button data-bc="${s.go}"${s.id ? ` data-bc-id="${escapeAttr(s.id)}"` : ''} class="${cls} hover:text-brand-light transition">${escapeHtml(s.label)}</button>`
       : `${sep}<span class="${cls}"${last ? ' aria-current="page"' : ''}>${escapeHtml(s.label)}</span>`;
@@ -1861,12 +1863,14 @@ function renderHistoryChart(points) {
   const walletPath = linePath('wallet', y);
   const areaPath = `${itemsPath}L${x(t1).toFixed(1)},${PAD_T + ih}L${x(t0).toFixed(1)},${PAD_T + ih}Z`;
 
+  // English-only UI (invariant 8): the time axis reads in en-GB (24h, DD/MM) — never de-DE.
+  // de-DE stays ONLY for EUR *money* formatting (ST-02); it must never leak into a chart axis.
   const fmtTime = (t) => {
     const d = new Date(t);
     const sameDay = new Date(t0).toDateString() === new Date(t1).toDateString();
     return sameDay
-      ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
-      : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+      ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   };
   const tMid = t0 + tSpan / 2;
 
@@ -1899,11 +1903,14 @@ function renderHistoryChart(points) {
       <text x="${W - PAD_R}" y="${H - 6}" class="hist-axis" font-size="10" text-anchor="end">${fmtTime(t1)}</text>
     </svg>`;
 
+  // Masterpiece legend markers = slim bar swatches matching each SVG line's stroke color
+  // (items = --brand-rgb, wallet = --success-rgb, same as .hist-line-* in the shell); the
+  // "(incomplete)" pricing-honesty marker (S2/S13) + point count are preserved verbatim.
   el.historyLegend.innerHTML = `
-    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--brand-rgb))"></span>
-      Items worth <b class="text-slate-200">${fmtCents(last.items)}</b></span>
-    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--success-rgb))"></span>
-      Balance <b class="text-slate-200">${fmtCents(last.wallet)}</b>${last.partial === true ? ` <span class="text-slate-600" title="Some wallet balances are in a currency that cannot be converted to USD — the balance line undercounts the real total.">(incomplete)</span>` : ''}</span>
+    <span class="flex items-center gap-1.5"><span style="width:9px;height:3px;border-radius:2px;background:rgb(var(--brand-rgb));display:inline-block"></span>
+      Items worth <b class="font-mono text-brand-light ml-1">${fmtCents(last.items)}</b></span>
+    <span class="flex items-center gap-1.5"><span style="width:9px;height:3px;border-radius:2px;background:rgb(var(--success-rgb));display:inline-block"></span>
+      Balance <b class="font-mono text-emerald-400 ml-1">${fmtCents(last.wallet)}</b>${last.partial === true ? ` <span class="text-slate-600" title="Some wallet balances are in a currency that cannot be converted to USD — the balance line undercounts the real total.">(incomplete)</span>` : ''}</span>
     <span class="text-slate-600">${pts.length} points</span>`;
 }
 
@@ -1964,20 +1971,20 @@ function renderFolderMaster() {
   state.aggItems = agg; state._aggIndex = new Map(agg.map((i) => [i.marketHashName, i]));   // TBL-02: O(1) lookup index
   const totalSendable = agg.reduce((s, i) => s + (i.sendable || 0), 0);
 
+  // Master headers follow the masterpiece pattern (V4): icon-less title + .pill pill--brand scope
+  // badge + .btn <variant> btn-sm actions. Every id/handler hook is byte-identical to legacy.
   el.mainHeader.innerHTML = `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-folder-open text-brand"></i> ${escapeHtml(node.folder.name)}
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">Folder-Master</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">${escapeHtml(node.folder.name)}</h2>
+        <span class="pill pill--brand">Folder-Master</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1">${usernames.length} account(s) · aggregated 1:1 with the single views</p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-folder-massbuy" title="Mass Buy: max out a purchase of one item across every account in this folder"
-        class="px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
-      <button id="btn-folder-bans" title="Check every account in this folder for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-refresh-folder" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-rotate"></i><span>Refresh folder</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-folder-massbuy" title="Mass Buy: max out a purchase of one item across every account in this folder" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
+      <button id="btn-folder-bans" title="Check every account in this folder for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+      <button id="btn-refresh-folder" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh folder</span></button>
     </div>`;
   const rf = $('btn-refresh-folder');
   if (rf) rf.addEventListener('click', () => refreshFolder(usernames));
@@ -2023,11 +2030,11 @@ function renderSelectionMaster() {
   const totalSendable = agg.reduce((s, i) => s + (i.sendable || 0), 0);
 
   el.mainHeader.innerHTML = `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-layer-group text-brand"></i> Multi-Select
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">${usernames.length} account(s)</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">Multi-Select</h2>
+        <span class="pill pill--brand">${usernames.length} account(s)</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
         <span>Hand-picked accounts · aggregated 1:1 with the single views</span>
         <span class="text-slate-700">·</span>
@@ -2035,16 +2042,12 @@ function renderSelectionMaster() {
         <button id="sel-clear-all" class="text-2xs text-slate-400 hover:text-white font-semibold transition">Clear</button>
       </p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-sel-massbuy" title="Mass Buy: max out a purchase of one item across every selected account"
-        class="px-4 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
-      <button id="btn-sel-refresh" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-rotate"></i><span>Refresh selected</span></button>
-      <button id="btn-sel-move" title="Move every selected account into a folder / environment"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-folder-tree"></i><span>Move Selected</span></button>
-      <button id="btn-sel-bans" title="Check every selected account for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-sel-delete" title="Remove every selected account from SSIM (maFiles are kept)"
-        class="px-4 py-2.5 rounded-lg bg-rose-900/40 hover:bg-rose-800/60 text-rose-300 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-trash-can"></i><span>Delete Selected</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-sel-massbuy" title="Mass Buy: max out a purchase of one item across every selected account" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
+      <button id="btn-sel-refresh" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh selected</span></button>
+      <button id="btn-sel-move" title="Move every selected account into a folder / environment" class="btn btn-secondary btn-sm"><i class="fa-solid fa-folder-tree"></i><span>Move Selected</span></button>
+      <button id="btn-sel-bans" title="Check every selected account for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+      <button id="btn-sel-delete" title="Remove every selected account from SSIM (maFiles are kept)" class="btn btn-danger btn-sm"><i class="fa-solid fa-trash-can"></i><span>Delete Selected</span></button>
     </div>`;
   $('btn-sel-refresh')?.addEventListener('click', () => refreshFolder(usernames));
   $('btn-sel-massbuy')?.addEventListener('click', () => openFolderBuy(`${usernames.length} selected account(s)`, usernames));
@@ -2082,43 +2085,43 @@ function renderAccountView() {
   const acc = state.allAccounts.find((a) => a.username === username);
   const inv = invFor(username);
 
+  // Full vs Limited (LTD) tier pill — Login imports as "Limited" only (invariant 9); Attach-maFile
+  // is the sole Limited→Full path. Kept as a read-only status pill next to the network pill.
+  const tierPill = acc?.tier === 'limited'
+    ? '<span class="pill pill--ltd" title="Limited — attach a maFile to upgrade to Full">Limited</span>'
+    : '<span class="pill pill--success">Full</span>';
   el.mainHeader.innerHTML = `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        ${escapeHtml(acc?.displayName || username)}
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">${escapeHtml(acc?.displayName || username)}</h2>
         ${acc?.network?.type === 'proxy'
-          ? '<span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 border border-emerald-700/40"><i class="fa-solid fa-shield-halved mr-1"></i>Proxy</span>'
-          : '<span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700"><i class="fa-solid fa-network-wired mr-1"></i>Local IP</span>'}
-      </h2>
-      <p class="text-sm text-slate-500 mt-1 font-mono">${escapeHtml(username)}</p>
+          ? '<span class="pill pill--proxy"><i class="fa-solid fa-shield-halved"></i>Proxy</span>'
+          : '<span class="pill pill--local"><i class="fa-solid fa-network-wired"></i>Local IP</span>'}
+        ${tierPill}
+      </div>
+      <p class="text-sm text-slate-500 mt-1 font-mono truncate">${escapeHtml(username)}</p>
     </div>
-    <div class="text-right">
-      ${renderTradeLink(username)}
-      <button id="btn-account-bans" title="Check this account for Steam bans"
-        class="mb-2 mr-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5">
-        <i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-account-logs" title="View this account's recent activity log"
-        class="mb-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5">
-        <i class="fa-solid fa-clock-rotate-left"></i><span>Logs</span></button>
-      <div class="flex justify-end gap-2">
-        <button id="btn-tradeups" title="Find profitable trade-up contracts from this account's skins"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-arrow-trend-up"></i><span>Trade-Ups</span></button>
-        <button id="btn-caskets" title="Manage this account's storage units (caskets)"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-box-archive"></i><span>Storage</span></button>
-        <button id="btn-trade-offers" title="Manage this account's sent &amp; received trade offers"
-          class="px-3 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold transition inline-flex items-center gap-2">
+    <div class="flex flex-col items-end gap-2">
+      <div class="flex items-center gap-2 flex-wrap justify-end">
+        ${renderTradeLink(username)}
+        <button id="btn-account-bans" title="Check this account for Steam bans" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+        <button id="btn-account-logs" title="View this account's recent activity log" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-clock-rotate-left"></i><span>Logs</span></button>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap justify-end">
+        <button id="btn-tradeups" title="Find profitable trade-up contracts from this account's skins" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-arrow-trend-up text-amber-300"></i><span>Trade-Ups</span></button>
+        <button id="btn-caskets" title="Manage this account's storage units (caskets)" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-box-archive text-sky-300"></i><span>Storage</span></button>
+        <button id="btn-trade-offers" title="Manage this account's sent &amp; received trade offers" class="btn btn-primary btn-sm">
           <i class="fa-solid fa-right-left"></i><span>Trade Offers</span></button>
-        <button id="btn-csfloat" title="Manage this account on CSFloat (listings, market, trades)"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-brand-light text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-water"></i><span>CSFloat</span></button>
-        <button id="btn-sda" title="Steam Guard code + pending mobile confirmations for this account"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-mobile-screen-button"></i><span>SDA</span></button>
-        <button id="btn-clean-browser" title="Open a browser with this account logged in, routed through its linked proxy"
-          class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-violet-300 text-sm font-bold transition inline-flex items-center gap-2">
-          <i class="fa-solid fa-window-restore"></i><span>Browser</span>
+        <button id="btn-csfloat" title="Manage this account on CSFloat (listings, market, trades)" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-water text-brand-light"></i><span>CSFloat</span></button>
+        <button id="btn-sda" title="Steam Guard code + pending mobile confirmations for this account" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-mobile-screen-button text-emerald-300"></i><span>SDA</span></button>
+        <button id="btn-clean-browser" title="Open a browser with this account logged in, routed through its linked proxy" class="btn btn-secondary btn-sm">
+          <i class="fa-solid fa-window-restore text-violet-300"></i><span>Browser</span>
           <i class="fa-solid fa-circle-info text-2xs text-slate-400 hover:text-slate-200" title="Opens a browser with this account already logged in, through its linked proxy — an isolated, ephemeral session (closing the window discards it)."></i></button>
       </div></div>`;
   bindTradeLink(username);
@@ -2207,7 +2210,7 @@ async function renderOrdersView(username, appId) {
   el.ordersWrap.classList.remove('hidden');
   el.ordersWrap.innerHTML = `
     <div class="flex items-center justify-center py-16 text-center">
-      <i class="fa-solid fa-spinner cs2-spin text-2xl text-teal-400 mr-3"></i>
+      <i class="fa-solid fa-spinner cs2-spin text-2xl text-brand mr-3"></i>
       <span class="text-slate-300">Loading active orders live from Steam…</span>
     </div>`;
   // Guard: the user may switch account/tab while this live fetch is in flight.
@@ -2228,25 +2231,30 @@ async function renderOrdersView(username, appId) {
   bindOrdersControls(username, appId);
 }
 
-/** Two-section shell (Buy / Sell) with a header + refresh button. */
+/** Two-section shell (Buy / Sell) with a header + refresh button.
+ *  STRUCTURE IS LOAD-BEARING: each section = header `.panel-head` (with a `span.font-mono`
+ *  count) immediately followed by the rows-list container. `removeOrderRow()` walks
+ *  row.parentElement (the rows-list) → previousElementSibling (the header) →
+ *  querySelector('span.font-mono') to update the count, so that shape must not change. */
 function ordersShellHtml(buyInner, sellInner, counts = {}) {
   const section = (title, icon, color, countKey, inner) => `
-    <div class="rounded-lg border border-slate-800 bg-slate-900/45 overflow-hidden">
-      <div class="px-4 py-2.5 border-b border-slate-800 flex items-center gap-2">
+    <div class="surface overflow-hidden">
+      <div class="panel-head">
         <i class="fa-solid ${icon}" style="color:${color}"></i>
-        <span class="text-xs font-bold uppercase tracking-wider text-slate-300">${title}</span>
-        <span class="ml-1 text-2xs font-mono text-slate-500">${counts[countKey] != null ? counts[countKey] : ''}</span>
+        <span class="panel-title">${title} <span class="font-mono opacity-70 text-slate-500">${counts[countKey] != null ? counts[countKey] : ''}</span></span>
       </div>
       <div class="divide-y divide-slate-800/60">${inner}</div>
     </div>`;
   return `
-    <div class="flex flex-wrap items-center gap-2 mb-4">
-      <p class="text-sm text-slate-400 mr-auto"><i class="fa-solid fa-receipt text-teal-400 mr-2"></i>Active market orders</p>
-      <input id="orders-search" type="text" placeholder="Search item…" class="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 w-44 focus:outline-none focus:ring-2 focus:ring-brand/40" />
-      <button id="orders-cancel-selected" disabled class="px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="orders-sel-count">0</span>)</span></button>
-      <button id="orders-cancel-all" class="px-3 py-1.5 rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
-      <button id="orders-refresh" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
-    </div>
+    <div class="surface mb-4"><div class="panel-head justify-between flex-wrap gap-2">
+      <div class="flex items-center gap-2"><i class="fa-solid fa-receipt text-brand"></i><span class="panel-title" style="font-size:var(--fs-13)">Active market orders</span></div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <div class="relative"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i><input id="orders-search" type="text" placeholder="Search item…" class="field pl-8 py-1.5 t12 w-48" /></div>
+        <button id="orders-cancel-selected" disabled class="btn btn-sm btn-danger"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="orders-sel-count">0</span>)</span></button>
+        <button id="orders-cancel-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
+        <button id="orders-refresh" class="btn btn-sm btn-secondary"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
+      </div>
+    </div></div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
       ${section('Active Buy Orders', 'fa-cart-arrow-down', 'rgb(var(--success-rgb))', 'buy', buyInner)}
       ${section('Active Sell Orders', 'fa-tag', 'rgb(var(--listed-rgb))', 'sell', sellInner)}
@@ -2273,8 +2281,9 @@ function orderIcon(o) {
     : '<div class="w-10 h-8 shrink-0"></div>';
 }
 function cancelBtn(attr, id) {
-  return `<button ${attr}="${escapeAttr(id)}" title="Cancel this order on the Steam market"
-    class="order-cancel shrink-0 px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-xmark"></i><span>Cancel</span></button>`;
+  // .order-cancel hook preserved (bulkCancelOrders/removeOrderRow depend on it); inner is
+  // '<i fa-xmark/><span>Cancel</span>' — MUST match bulkCancelOrders' hard-coded restore string.
+  return `<button ${attr}="${escapeAttr(id)}" title="Cancel this order on the Steam market" class="order-cancel btn btn-sm btn-secondary shrink-0" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i><span>Cancel</span></button>`;
 }
 function orderCheck() {
   return '<input type="checkbox" class="order-check accent-violet-500 w-4 h-4 shrink-0" />';
@@ -2285,20 +2294,20 @@ function buyOrderRow(o) {
   return `<div class="order-row flex items-center gap-3 px-4 py-2.5" data-order-kind="buy" data-order-id="${escapeAttr(o.buyOrderId)}" data-order-name="${escapeAttr(String(o.name || '').toLowerCase())}">
     ${orderCheck()}
     ${orderIcon(o)}
-    <div class="min-w-0 flex-1"><div class="text-sm text-slate-200 truncate" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</div>
-      <div class="text-2xs text-slate-500 font-mono">#${escapeHtml(o.buyOrderId)}</div></div>
-    <div class="text-right shrink-0 mr-1"><div class="text-sm font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</div>
-      <div class="text-2xs text-slate-500">qty ${escapeHtml(qtyTxt)}</div></div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate font-semibold" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</p>
+      <p class="t10 text-slate-500 font-mono">#${escapeHtml(o.buyOrderId)}</p></div>
+    <div class="text-right shrink-0 mr-1"><p class="t13 font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</p>
+      <p class="t10 text-slate-500">qty ${escapeHtml(qtyTxt)}</p></div>
     ${cancelBtn('data-cancel-buy', o.buyOrderId)}</div>`;
 }
 function sellOrderRow(o) {
   return `<div class="order-row flex items-center gap-3 px-4 py-2.5" data-order-kind="sell" data-order-id="${escapeAttr(o.listingId)}" data-order-name="${escapeAttr(String(o.name || '').toLowerCase())}">
     ${orderCheck()}
     ${orderIcon(o)}
-    <div class="min-w-0 flex-1"><div class="text-sm text-slate-200 truncate" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</div>
-      <div class="text-2xs text-slate-500 font-mono">#${escapeHtml(o.listingId)}</div></div>
-    <div class="text-right shrink-0 mr-1"><div class="text-sm font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</div>
-      <div class="text-2xs text-slate-500">qty ${o.quantity || 1}</div></div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate font-semibold" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</p>
+      <p class="t10 text-slate-500 font-mono">#${escapeHtml(o.listingId)}</p></div>
+    <div class="text-right shrink-0 mr-1"><p class="t13 font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</p>
+      <p class="t10 text-slate-500">qty ${o.quantity || 1}</p></div>
     ${cancelBtn('data-cancel-listing', o.listingId)}</div>`;
 }
 
@@ -2479,18 +2488,19 @@ function resetSelAll() {
 }
 
 // ── ETradeOfferState → status badge ────────────────────────────────────────────
+// State badge → masterpiece .pill variant class (consumed as `pill ${cls}` in offersRowHtml).
 function offerStateBadge(o) {
   if (o.active) {
-    if (o.state === 11) return { label: 'In escrow',     cls: 'bg-amber-900/40 text-amber-300 border-amber-700/40' };
-    if (o.state === 9)  return { label: 'Needs confirm',  cls: 'bg-amber-900/40 text-amber-300 border-amber-700/40' };
-    return { label: 'Active', cls: 'bg-sky-900/40 text-sky-300 border-sky-700/40' };
+    if (o.state === 11) return { label: 'In escrow',     cls: 'pill--warn' };
+    if (o.state === 9)  return { label: 'Needs confirm',  cls: 'pill--warn' };
+    return { label: 'Active', cls: 'pill--listed' };
   }
-  if (o.state === 3)               return { label: 'Accepted', cls: 'bg-emerald-900/40 text-emerald-300 border-emerald-700/40' };
-  if (o.state === 7)               return { label: 'Declined', cls: 'bg-rose-900/40 text-rose-300 border-rose-700/40' };
-  if (o.state === 6 || o.state === 10) return { label: 'Cancelled', cls: 'bg-slate-800 text-slate-400 border-slate-700' };
-  if (o.state === 5)               return { label: 'Expired',  cls: 'bg-slate-800 text-slate-400 border-slate-700' };
-  if (o.state === 4)               return { label: 'Countered',cls: 'bg-slate-800 text-slate-400 border-slate-700' };
-  return { label: o.stateName || 'History', cls: 'bg-slate-800 text-slate-400 border-slate-700' };
+  if (o.state === 3)               return { label: 'Accepted', cls: 'pill--success' };
+  if (o.state === 7)               return { label: 'Declined', cls: 'pill--danger' };
+  if (o.state === 6 || o.state === 10) return { label: 'Cancelled', cls: 'pill--neutral' };
+  if (o.state === 5)               return { label: 'Expired',  cls: 'pill--neutral' };
+  if (o.state === 4)               return { label: 'Countered',cls: 'pill--neutral' };
+  return { label: o.stateName || 'History', cls: 'pill--neutral' };
 }
 
 /** Coloured headline value: sent shows −value of items GIVEN (red), received shows
@@ -2533,12 +2543,13 @@ function offerPartnerLabel(o, side) {
 }
 
 function offerRowActions(side) {
+  // .offer-act + data-offer-action hooks preserved (onSingleOfferAction wiring); DS buttons.
   if (side === 'sent') {
-    return `<button data-offer-action="cancel" class="offer-act px-2.5 py-1 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1"><i class="fa-solid fa-xmark"></i>Cancel</button>`;
+    return `<button data-offer-action="cancel" class="offer-act btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i>Cancel</button>`;
   }
   return `<div class="flex gap-1.5">
-    <button data-offer-action="accept" class="offer-act px-2.5 py-1 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white text-2xs font-bold transition flex items-center gap-1"><i class="fa-solid fa-check"></i>Accept</button>
-    <button data-offer-action="decline" class="offer-act px-2.5 py-1 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1"><i class="fa-solid fa-xmark"></i>Decline</button>
+    <button data-offer-action="accept" class="offer-act btn btn-sm bg-emerald-600 text-white"><i class="fa-solid fa-check"></i>Accept</button>
+    <button data-offer-action="decline" class="offer-act btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i>Decline</button>
   </div>`;
 }
 
@@ -2557,7 +2568,7 @@ function offersRowHtml(o, side) {
     <div class="min-w-0 flex-1 space-y-2">
       <div class="flex items-center gap-2 flex-wrap">
         ${offerPartnerLabel(o, side)}
-        <span class="text-2xs font-medium px-1.5 py-0.5 rounded border ${badge.cls}">${escapeHtml(badge.label)}</span>
+        <span class="pill ${badge.cls}">${escapeHtml(badge.label)}</span>
         ${whenTxt ? `<span class="text-2xs text-slate-600 ml-auto whitespace-nowrap">${escapeHtml(whenTxt)}</span>` : ''}
       </div>
       <div class="flex items-center gap-2 flex-wrap">
@@ -2794,16 +2805,15 @@ function renderEnvMaster() {
   const env = state.environments.find((e) => e.id === state.activeEnv);
   const usernames = envAccounts().map((a) => a.username);
   renderAggregate(usernames, `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-chart-pie text-brand"></i> ${escapeHtml(env?.name || 'Environment')}
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">Portfolio</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">${escapeHtml(env?.name || 'Environment')}</h2>
+        <span class="pill pill--brand">Portfolio</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1">${usernames.length} account(s) in this environment</p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-env-bans" title="Check every account in this environment for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-env-bans" title="Check every account in this environment for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
     </div>`);
   const eb = $('btn-env-bans');
   if (eb) eb.addEventListener('click', () => openBanChecker(usernames, env?.name || 'Environment'));
@@ -2813,17 +2823,16 @@ function renderGlobalMaster() {
   renderGlobalFilter();
   const usernames = state.allAccounts.filter((a) => state.globalEnvs.has(a.environmentId)).map((a) => a.username);
   renderAggregate(usernames, `
-    <div>
-      <h2 class="text-2xl font-bold text-white flex items-center gap-3">
-        <i class="fa-solid fa-globe text-brand"></i> Global Master
-        <span class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40">Cross-environment</span>
-      </h2>
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="text-2xl font-bold text-white truncate">Global Master</h2>
+        <span class="pill pill--brand">Cross-environment</span>
+      </div>
       <p class="text-sm text-slate-500 mt-1">${state.globalEnvs.size} of ${state.environments.length} environments aggregated</p>
     </div>
-    <div class="flex items-stretch gap-2">
-      <button id="btn-global-bans" title="Check every aggregated account for Steam bans"
-        class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-      <button id="btn-refresh-global" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition flex items-center gap-2"><i class="fa-solid fa-rotate"></i><span>Refresh all</span></button>
+    <div class="flex items-center gap-2 flex-wrap justify-end">
+      <button id="btn-global-bans" title="Check every aggregated account for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
+      <button id="btn-refresh-global" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh all</span></button>
     </div>`);
   const b = $('btn-refresh-global');
   if (b) b.addEventListener('click', refreshAll);
@@ -2832,14 +2841,14 @@ function renderGlobalMaster() {
 }
 
 function renderGlobalFilter() {
+  // Aggregate-environments toggles → masterpiece .chip aria-pressed control inside a .surface strip.
+  // data-genv hook preserved verbatim; renderMain still owns #global-filter show/hide.
   el.globalFilter.innerHTML = `
-    <p class="text-2xs font-semibold uppercase tracking-wider text-slate-400">Aggregate environments</p>
-    <div class="flex flex-wrap gap-2 mt-2">${state.environments.map((e) => {
+    <div class="surface p-3 flex items-center gap-2 flex-wrap">
+      <span class="t11 text-slate-500 mr-1">Aggregate:</span>${state.environments.map((e) => {
       const on = state.globalEnvs.has(e.id);
       const count = state.allAccounts.filter((a) => a.environmentId === e.id).length;
-      return `<button data-genv="${escapeAttr(e.id)}"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium border transition ${on ? 'border-brand bg-brand/10 text-brand' : 'border-slate-700 text-slate-400 hover:bg-slate-800'}">
-        <i class="fa-solid ${on ? 'fa-square-check' : 'fa-square'} mr-1.5"></i>${escapeHtml(e.name)} <span class="text-xs opacity-70">(${count})</span></button>`;
+      return `<button data-genv="${escapeAttr(e.id)}" class="chip" aria-pressed="${on}"><i class="fa-solid ${on ? 'fa-square-check' : 'fa-square'}"></i>${escapeHtml(e.name)} <span class="font-mono opacity-70">${count}</span></button>`;
     }).join('')}</div>`;
   el.globalFilter.querySelectorAll('[data-genv]').forEach((b) => b.addEventListener('click', () => {
     const id = b.dataset.genv;
@@ -2862,15 +2871,13 @@ function showPlaceholder(msg) {
 function renderTradeLink(username) {
   const url = state.tradeUrls[username];
   if (!url) {
-    return `<button data-tl-fetch="${escapeAttr(username)}"
-      class="mb-2 mr-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5">
+    return `<button data-tl-fetch="${escapeAttr(username)}" class="btn btn-secondary btn-sm">
       <i class="fa-solid fa-link"></i><span>Get trade link</span></button>`;
   }
   return `
-    <div class="mb-2 mr-2 inline-flex items-center gap-2 align-middle">
+    <div class="inline-flex items-center gap-2 align-middle">
       <code class="text-2xs text-slate-400 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 max-w-[280px] truncate" title="${escapeAttr(url)}">${escapeHtml(url)}</code>
-      <button data-tl-copy="${escapeAttr(username)}" title="Copy trade link"
-        class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-copy"></i><span>Copy</span></button>
+      <button data-tl-copy="${escapeAttr(username)}" title="Copy trade link" class="btn btn-secondary btn-sm"><i class="fa-solid fa-copy"></i><span>Copy</span></button>
     </div>`;
 }
 function bindTradeLink(username) {
@@ -2928,24 +2935,25 @@ function renderAccountTabs(items, active, opts = {}) {
     const counts = { all: 0, tradable: 0, tradelocked: 0, listed: 0 };
     for (const i of items || []) { const q = i.quantity || 1; counts.all += q; counts[i.category || 'tradable'] += q; }
     pills.push(
-      { key: 'all',         label: 'All',              count: counts.all },
-      { key: 'tradable',    label: 'Owned Items',      count: counts.tradable },
-      { key: 'tradelocked', label: 'Trade-Locked',     count: counts.tradelocked },
-      { key: 'listed',      label: 'Listed on Market', count: counts.listed },
+      { key: 'all',         label: 'All',              count: counts.all,         icon: 'fa-layer-group', variant: '' },
+      { key: 'tradable',    label: 'Owned Items',      count: counts.tradable,     icon: 'fa-box',         variant: 'chip--success' },
+      { key: 'tradelocked', label: 'Trade-Locked',     count: counts.tradelocked,  icon: 'fa-lock',        variant: 'chip--warn' },
+      { key: 'listed',      label: 'Listed on Market', count: counts.listed,       icon: 'fa-tag',         variant: 'chip--listed' },
     );
   } else {
-    pills.push({ key: 'all', label: 'Items', count: null });
+    pills.push({ key: 'all', label: 'Items', count: null, icon: '', variant: '' });
   }
   const ordersOn = active === 'orders';
   el.gcCatTabs.classList.remove('hidden');
   el.gcCatTabs.innerHTML =
     pills.map((t) => {
       const on = t.key === active;
-      const cnt = t.count != null ? `<span class="font-mono ${on ? 'text-white/70' : 'text-slate-500'}">${t.count}</span>` : '';
-      return `<button data-cat="${t.key}" class="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${on ? 'bg-brand text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}">${t.label}${cnt}</button>`;
+      const cnt = t.count != null ? `<span class="font-mono opacity-70">${t.count}</span>` : '';
+      const ic = t.icon ? `<i class="fa-solid ${t.icon}"></i>` : '';
+      return `<button data-cat="${t.key}" class="chip ${t.variant}" aria-pressed="${on}">${ic}${t.label}${cnt}</button>`;
     }).join('')
     + '<span class="mx-1 w-px self-stretch bg-slate-700/70" aria-hidden="true"></span>'
-    + `<button data-cat="orders" title="Active market orders (sell listings + buy orders)" class="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${ordersOn ? 'bg-teal-600 text-white' : 'bg-slate-800 text-teal-300 hover:bg-slate-700'}"><i class="fa-solid fa-receipt"></i>Active Orders</button>`;
+    + `<button data-cat="orders" title="Active market orders (sell listings + buy orders)" class="chip chip--buy" aria-pressed="${ordersOn}"><i class="fa-solid fa-receipt"></i>Active Orders</button>`;
   el.gcCatTabs.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.gcCat = b.dataset.cat; renderMain(); }));
 }
 
@@ -3001,9 +3009,13 @@ function renderItemRow(item, ctx) {
   const { master, selectable, showLockBadge } = ctx;
   const keyOf = (it) => (master ? it.marketHashName : it.assetId);
   const color = itemColor(item);
+  // Leading .rar accent bar (CS2 rarity item-data color, exempt from the brand palette) + the
+  // real icon-with-lock + rarity-colored name. The bar stretches the row via align-self:stretch.
+  // (The backend name already carries any "StatTrak™" prefix, so it is not re-added here.)
   const nameCell = `
-      <td class="py-2.5 ${selectable ? 'pl-2' : 'pl-3'} pr-2">
-        <div class="flex items-center gap-3">
+      <td>
+        <div class="flex items-center gap-2.5">
+          <span class="rar" style="background:${color}" aria-hidden="true"></span>
           ${iconWithLock(item, 'item-icon w-12 h-9 object-contain', showLockBadge)}
           <span class="font-semibold" style="color:${color}">${escapeHtml(item.name)}</span></div></td>`;
 
@@ -3016,28 +3028,28 @@ function renderItemRow(item, ctx) {
     sel = state.selection[key];
     checked = sel != null;
     const canSelect = master ? (maxSel > 0) : (item.tradable && !item.tradeLockExpiry);
-    checkCell = `<td class="py-2.5 pl-3 pr-1 align-middle">
+    checkCell = `<td class="w-8">
         ${canSelect
           ? `<input type="checkbox" class="sel-check accent-violet-500 w-4 h-4 cursor-pointer align-middle" data-sel="${escapeAttr(key)}" ${checked ? 'checked' : ''} />`
           : `<span title="not tradable / trade-locked" class="text-slate-700"><i class="fa-solid fa-lock text-3xs"></i></span>`}</td>`;
   }
   const qtyCell = (selectable && checked && maxSel > 1)
-    ? `<td class="py-2.5 px-2"><input type="number" class="sel-qty w-16 px-2 py-1 rounded bg-slate-950 border border-brand/50 text-xs text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-brand" data-sel="${escapeAttr(keyOf(item))}" data-max="${maxSel}" value="${sel}" min="1" max="${maxSel}" /></td>`
-    : `<td class="py-2.5 px-2">${qtyBadge(item.quantity)}</td>`;
+    ? `<td><input type="number" class="sel-qty w-16 px-2 py-1 rounded bg-slate-950 border border-brand/50 text-xs text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-brand" data-sel="${escapeAttr(keyOf(item))}" data-max="${maxSel}" value="${sel}" min="1" max="${maxSel}" /></td>`
+    : `<td>${qtyBadge(item.quantity)}</td>`;
 
   if (master) {
-    return `<tr class="border-b border-slate-800/60 hover:bg-slate-900/50 transition ${checked ? 'bg-brand/5' : ''}">
+    return `<tr class="${checked ? 'is-selected' : ''}">
         ${checkCell}${nameCell}${qtyCell}
-        <td class="py-2.5 px-2"><span class="text-xs font-mono text-slate-400">${item.accounts.size}</span></td>
-        <td class="py-2.5 px-2">${rarityBadge(item, color)}</td>
-        <td class="py-2.5 px-2 pr-4 text-right">${valueCell(item)}</td></tr>`;
+        <td><span class="text-xs font-mono text-slate-400">${item.accounts.size}</span></td>
+        <td>${rarityBadge(item, color)}</td>
+        <td class="pr-4 text-right">${valueCell(item)}</td></tr>`;
   }
-  return `<tr class="border-b border-slate-800/60 hover:bg-slate-900/50 transition ${checked ? 'bg-brand/5' : ''}">
+  return `<tr class="${checked ? 'is-selected' : ''}">
       ${checkCell}${nameCell}${qtyCell}
-      <td class="py-2.5 px-2 text-slate-400">${item.exterior ? escapeHtml(item.exterior) : '<span class="text-slate-600">—</span>'}</td>
-      <td class="py-2.5 px-2">${rarityBadge(item, color)}</td>
-      <td class="py-2.5 px-2 text-right">${valueCell(item)}</td>
-      <td class="py-2.5 px-2 pr-4 text-right">${statusCell(item)}</td></tr>`;
+      <td class="text-slate-400">${item.exterior ? escapeHtml(item.exterior) : '<span class="text-slate-600">—</span>'}</td>
+      <td>${rarityBadge(item, color)}</td>
+      <td class="text-right">${valueCell(item)}</td>
+      <td class="pr-4 text-right">${statusCell(item)}</td></tr>`;
 }
 
 // ── TBL-03: faceted filter chips (status / rarity / value) ──────────────────────────
@@ -3265,10 +3277,10 @@ function statusCell(item) {
 function thSort(label, key, extra = '') {
   const active = state.sort && state.sort.key === key;
   const arrow = active ? (state.sort.dir === 'asc' ? '▲' : '▼') : '';
-  return `<th data-sort="${key}" class="py-3 px-2 font-semibold cursor-pointer select-none hover:text-slate-200 transition ${extra}">${label}<span class="ml-1 text-brand">${arrow}</span></th>`;
+  return `<th data-sort="${key}" class="cursor-pointer select-none hover:text-slate-200 transition ${extra}">${label}<span class="ml-1 text-brand">${arrow}</span></th>`;
 }
-function thPlain(label, extra = '') { return `<th class="py-3 px-2 font-semibold ${extra}">${label}</th>`; }
-function thCheck() { return `<th class="py-3 pl-3 pr-1 w-8"><input type="checkbox" id="select-all" title="Select all tradable" class="accent-violet-500 w-4 h-4 cursor-pointer align-middle" /></th>`; }
+function thPlain(label, extra = '') { return `<th class="${extra}">${label}</th>`; }
+function thCheck() { return `<th class="w-8"><input type="checkbox" id="select-all" title="Select all tradable" class="accent-violet-500 w-4 h-4 cursor-pointer align-middle" /></th>`; }
 function onHeaderSort(key) {
   if (state.sort && state.sort.key === key) state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
   else state.sort = { key, dir: key === 'name' ? 'asc' : 'desc' };
@@ -3470,11 +3482,18 @@ function renderDashboardSkeleton() {
   el.envEmpty?.classList.add('hidden');
   let html = '';
   for (let i = 0; i < 6; i++) {
-    html += `<div class="rounded-2xl bg-slate-900 border border-slate-800 p-5">
-      <div class="flex items-start justify-between"><span class="skel" style="width:44px;height:44px;border-radius:.75rem"></span><span class="skel" style="width:64px;height:22px;border-radius:9999px"></span></div>
-      <span class="skel block mt-4" style="width:60%;height:18px"></span>
-      <span class="skel block mt-2" style="width:80%;height:11px"></span>
-      <div class="mt-4 flex gap-4"><span class="skel" style="width:40px;height:24px"></span><span class="skel" style="width:70px;height:14px"></span></div>
+    html += `<div class="env-tile">
+      <div class="env-tile__glow"></div>
+      <div class="flex items-center gap-3 mb-3">
+        <span class="skel shrink-0" style="width:36px;height:36px;border-radius:.75rem"></span>
+        <div class="min-w-0 flex-1"><span class="skel block" style="width:60%;height:16px"></span><span class="skel block mt-1.5" style="width:80%;height:10px"></span></div>
+        <span class="skel shrink-0" style="width:64px;height:20px;border-radius:9999px"></span>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <span class="skel block" style="height:46px;border-radius:10px"></span>
+        <span class="skel block" style="height:46px;border-radius:10px"></span>
+      </div>
+      <div class="mt-3"><span class="skel block" style="width:96px;height:28px;border-radius:.5rem"></span></div>
     </div>`;
   }
   el.envTiles.innerHTML = html;
@@ -3874,9 +3893,9 @@ function renderQrStatus(stateName) {
   const idx = order.indexOf(isTerminalLogin(stateName) && stateName !== 'imported' ? 'waiting' : stateName);
   el.loginQrStatus.innerHTML = steps.map(([key, label, icon], i) => {
     const done = i < idx, cur = i === idx;
-    const cls = cur ? 'bg-brand/20 text-brand-light border-brand/40' : done ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-slate-800/60 text-slate-500 border-slate-700';
+    const cls = cur ? 'pill--brand' : done ? 'pill--success' : 'pill--neutral';
     const ic = (cur && key !== 'imported') ? 'fa-spinner cs2-spin' : icon;
-    return `<span class="text-3xs font-semibold px-2 py-0.5 rounded-full border ${cls} inline-flex items-center gap-1"><i class="fa-solid ${ic}"></i>${label}</span>`;
+    return `<span class="pill ${cls}"><i class="fa-solid ${ic}"></i>${label}</span>`;
   }).join('');
 }
 
@@ -3935,7 +3954,7 @@ function applyCredStatus(st) {
 }
 
 function showCredMsg(msg, tone) {
-  el.loginCredMsg.className = `text-2xs ${tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-slate-400' : 'text-emerald-300'}`;
+  el.loginCredMsg.className = `t10 ${tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-slate-400' : 'text-emerald-300'}`;
   el.loginCredMsg.textContent = msg;
   el.loginCredMsg.classList.remove('hidden');
 }
@@ -4003,7 +4022,7 @@ function csfSkeleton(rows = 5) { return `<div class="space-y-2">${Array.from({ l
 function csfError(msg) { return `<div class="empty"><div class="empty-icon text-warn"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="empty-title">${escapeHtml(msg)}</div><button data-csf="retry" class="btn btn-secondary btn-sm mt-4"><i class="fa-solid fa-rotate-right"></i>Retry</button></div>`; }
 function csfEmpty(icon, msg) { return `<div class="empty"><div class="empty-icon"><i class="fa-solid ${icon}"></i></div><div class="empty-title">${escapeHtml(msg)}</div></div>`; }
 function csfArr(res) { if (Array.isArray(res)) return res; const r = res || {}; return r.data || r.listings || r.orders || r.trades || r.results || r.items || []; }
-function csfMsg(eln, text, tone) { if (!eln) return; eln.className = `text-2xs mt-2 ${tone === 'error' ? 'text-rose-300' : tone === 'ok' ? 'text-emerald-300' : 'text-slate-400'}`; eln.textContent = text; eln.classList.remove('hidden'); }
+function csfMsg(eln, text, tone) { if (!eln) return; eln.className = `t10 mt-2 ${tone === 'error' ? 'text-rose-300' : tone === 'ok' ? 'text-emerald-300' : 'text-slate-400'}`; eln.textContent = text; eln.classList.remove('hidden'); }
 
 async function openCsFloat(username) {
   CSF.username = username; CSF.tab = 'dashboard'; CSF.market = { cursor: null, items: [], query: {}, loading: false };
@@ -4107,7 +4126,7 @@ async function refreshSdaConfirmations() {
   } catch (e) {
     if (!SDA.open || SDA.username !== username) return;
     const msg = escapeHtml(e.message || 'failed to load confirmations');
-    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-rose-300 text-sm"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}<div class="mt-3"><button id="sda-conf-retry" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold">Refresh</button></div></div>`;
+    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-rose-300 text-sm"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}<div class="mt-3"><button id="sda-conf-retry" class="btn btn-secondary btn-sm">Refresh</button></div></div>`;
     const r = $('sda-conf-retry'); if (r) r.addEventListener('click', refreshSdaConfirmations);
   }
 }
@@ -4115,7 +4134,7 @@ async function refreshSdaConfirmations() {
 function renderSdaConfirmations() {
   if (el.sdaConfCount) el.sdaConfCount.textContent = SDA.confs.length ? `(${SDA.confs.length})` : '';
   if (!SDA.confs.length) {
-    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-slate-600 text-sm">No pending confirmations.</div>`;
+    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-slate-600 t13">No pending confirmations.</div>`;
     updateSdaSelCount(); return;
   }
   const typeIcon = (t) => (t === 'trade' ? 'fa-right-left' : t === 'market' ? 'fa-tag' : 'fa-shield-halved');
@@ -4124,10 +4143,10 @@ function renderSdaConfirmations() {
       <input type="checkbox" class="sda-conf-check accent-emerald-500 w-4 h-4 shrink-0" />
       ${c.iconUrl ? `<img src="${escapeAttr(safeIconUrl(c.iconUrl))}" alt="" loading="lazy" class="w-9 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : `<i class="fa-solid ${typeIcon(c.typeName)} text-slate-500 w-9 text-center shrink-0"></i>`}
       <div class="min-w-0 flex-1">
-        <div class="text-sm text-slate-200 truncate" title="${escapeAttr(c.title)}">${escapeHtml(c.title)}</div>
-        <div class="text-2xs text-slate-500 truncate">${escapeHtml(c.typeName)}${c.sending ? ' · gives ' + escapeHtml(c.sending) : ''}${c.receiving ? ' · gets ' + escapeHtml(c.receiving) : ''}</div>
+        <div class="t13 text-slate-200 font-semibold truncate" title="${escapeAttr(c.title)}">${escapeHtml(c.title)}</div>
+        <div class="t11 text-slate-500 truncate">${escapeHtml(c.typeName)}${c.sending ? ' · gives ' + escapeHtml(c.sending) : ''}${c.receiving ? ' · gets ' + escapeHtml(c.receiving) : ''}</div>
       </div>
-      <button data-conf-approve="${escapeAttr(c.id)}" class="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-bold transition inline-flex items-center gap-1.5"><i class="fa-solid fa-check"></i><span>Approve</span></button>
+      <button data-conf-approve="${escapeAttr(c.id)}" class="btn btn-sm bg-emerald-600 text-white shrink-0"><i class="fa-solid fa-check"></i><span>Approve</span></button>
     </div>`).join('');
   el.sdaConfBody.querySelectorAll('.sda-conf-check').forEach((cb) => cb.addEventListener('change', updateSdaSelCount));
   el.sdaConfBody.querySelectorAll('[data-conf-approve]').forEach((b) => b.addEventListener('click', () => respondSda([b.dataset.confApprove], true)));
@@ -4182,7 +4201,7 @@ function csfRenderTabs() {
   const tabs = [...core, ...(CSF.experimental ? exp : []), ['settings', 'Settings', 'fa-gear']];
   el.csfloatTabs.innerHTML = tabs.map(([id, label, icon]) => {
     const on = CSF.tab === id;
-    return `<button data-csf-tab="${id}" class="px-3 py-2 -mb-px text-sm font-bold transition inline-flex items-center gap-2 border-b-2 ${on ? 'border-brand text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}"><i class="fa-solid ${icon}"></i>${label}</button>`;
+    return `<button data-csf-tab="${id}" class="chip" aria-pressed="${on}"><i class="fa-solid ${icon}"></i>${label}</button>`;
   }).join('');
 }
 
@@ -4212,13 +4231,13 @@ async function csfLoadDashboard() {
         ${csfStat('Account', escapeHtml(String(name)), 'fa-user', 'text-slate-300')}
       </div>
       <div class="flex gap-2">
-        <button data-csf-tab="market" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold"><i class="fa-solid fa-store mr-1.5"></i>Browse market</button>
-        <button data-csf-tab="listings" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold"><i class="fa-solid fa-tags mr-1.5"></i>My listings</button>
+        <button data-csf-tab="market" class="btn btn-secondary btn-sm"><i class="fa-solid fa-store mr-1.5"></i>Browse market</button>
+        <button data-csf-tab="listings" class="btn btn-secondary btn-sm"><i class="fa-solid fa-tags mr-1.5"></i>My listings</button>
       </div>`;
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
 }
 function csfStat(label, value, icon, color) {
-  return `<div class="surface px-4 py-3"><p class="text-2xs uppercase tracking-wider text-slate-500 mb-1">${label}</p><p class="text-xl font-bold ${color} truncate"><i class="fa-solid ${icon} mr-1.5 text-sm"></i>${value}</p></div>`;
+  return `<div class="stat-card"><p class="stat-label">${label}</p><p class="stat-value ${color} truncate"><i class="fa-solid ${icon} mr-1.5 t13"></i>${value}</p></div>`;
 }
 
 // ── My Listings ──
@@ -4233,27 +4252,27 @@ function csfListingRow(l) {
   const item = l.item || {}; const id = l.id || l.listing_id || '';
   const name = item.market_hash_name || item.full_item_name || item.item_name || 'Unknown item';
   const price = l.price ?? 0; const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
-  return `<div class="csf-row flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+  return `<div class="csf-row flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
     ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="text-2xs text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="t10 text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
     <input type="number" step="0.01" min="0.03" placeholder="${(price / 100).toFixed(2)}" class="csf-price field !w-24 !py-1.5 text-right" />
-    <button data-csf="editprice" data-id="${escapeAttr(id)}" title="Update price" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold"><i class="fa-solid fa-pen"></i></button>
-    <button data-csf="delist" data-id="${escapeAttr(id)}" title="Delist" class="px-2.5 py-1.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold"><i class="fa-solid fa-xmark"></i></button>
-    <span class="text-sm font-bold text-emerald-400 w-20 text-right">${csfUsd(price)}</span></div>`;
+    <button data-csf="editprice" data-id="${escapeAttr(id)}" title="Update price" class="btn btn-icon-sm btn-secondary"><i class="fa-solid fa-pen"></i></button>
+    <button data-csf="delist" data-id="${escapeAttr(id)}" title="Delist" class="btn btn-icon-sm btn-danger"><i class="fa-solid fa-xmark"></i></button>
+    <span class="t13 font-bold text-emerald-400 font-mono w-20 text-right">${csfUsd(price)}</span></div>`;
 }
 
 // ── Market ──
 function csfRenderMarket() {
   el.csfloatBody.innerHTML = `
     <form id="csf-market-form" class="flex flex-wrap items-end gap-2 mb-4">
-      <div class="flex-1 min-w-[180px]"><label class="block text-2xs text-slate-500 mb-1">Search</label>
+      <div class="flex-1 min-w-[180px]"><label class="field-label">Search</label>
         <input name="market_hash_name" placeholder="e.g. AK-47 | Redline" class="field" /></div>
-      <div><label class="block text-2xs text-slate-500 mb-1">Min $</label><input name="min" type="number" step="0.01" class="field !w-24" /></div>
-      <div><label class="block text-2xs text-slate-500 mb-1">Max $</label><input name="max" type="number" step="0.01" class="field !w-24" /></div>
-      <div><label class="block text-2xs text-slate-500 mb-1">Sort</label>
+      <div><label class="field-label">Min $</label><input name="min" type="number" step="0.01" class="field !w-24" /></div>
+      <div><label class="field-label">Max $</label><input name="max" type="number" step="0.01" class="field !w-24" /></div>
+      <div><label class="field-label">Sort</label>
         <select name="sort_by" class="field !w-auto">
           <option value="best_deal">Best deal</option><option value="lowest_price">Lowest price</option><option value="highest_price">Highest price</option><option value="most_recent">Most recent</option><option value="lowest_float">Lowest float</option><option value="highest_float">Highest float</option></select></div>
-      <button type="submit" class="px-4 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold"><i class="fa-solid fa-magnifying-glass mr-1.5"></i>Search</button>
+      <button type="submit" class="btn btn-primary"><i class="fa-solid fa-magnifying-glass"></i>Search</button>
     </form>
     <div id="csf-market-results">${CSF.market.items.length ? '' : csfEmpty('fa-store', 'Search the CSFloat marketplace above.')}</div>`;
   if (CSF.market.items.length) csfRenderMarketResults();
@@ -4286,7 +4305,7 @@ function csfRenderMarketResults() {
   const results = $('csf-market-results'); if (!results) return;
   if (!CSF.market.items.length) { results.innerHTML = csfEmpty('fa-store', 'No listings match — try a different search.'); return; }
   results.innerHTML = `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">${CSF.market.items.map(csfMarketCard).join('')}</div>
-    ${CSF.market.cursor ? '<div class="text-center mt-4"><button data-csf="marketmore" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold">Load more</button></div>' : ''}`;
+    ${CSF.market.cursor ? '<div class="text-center mt-4"><button data-csf="marketmore" class="btn btn-secondary btn-sm">Load more</button></div>' : ''}`;
 }
 function csfMarketCard(l) {
   const item = l.item || {}; const id = l.id || ''; const price = l.price ?? 0;
@@ -4294,11 +4313,11 @@ function csfMarketCard(l) {
   const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : ''; const wear = item.wear_name || '';
   return `<div class="rounded-xl bg-slate-950/50 border border-slate-800 p-3 flex flex-col">
     <div class="flex items-center justify-center h-24 mb-2">${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="max-h-24 object-contain"/>` : '<i class="fa-solid fa-image text-slate-700 text-2xl"></i>'}</div>
-    <p class="text-sm text-slate-200 truncate" title="${escapeAttr(name)}">${escapeHtml(name)}</p>
-    <p class="text-2xs text-slate-500 mb-2 truncate">${escapeHtml(wear)}${fl ? ` · ${fl}` : ''}</p>
+    <p class="t13 text-slate-200 truncate" title="${escapeAttr(name)}">${escapeHtml(name)}</p>
+    <p class="t10 text-slate-500 mb-2 truncate">${escapeHtml(wear)}${fl ? ` · ${fl}` : ''}</p>
     <div class="mt-auto flex items-center justify-between">
-      <span class="text-base font-bold text-emerald-400">${csfUsd(price)}</span>
-      <button data-csf="buy" data-id="${escapeAttr(id)}" data-price="${price}" data-name="${escapeAttr(name)}" class="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"><i class="fa-solid fa-cart-shopping mr-1"></i>Buy</button>
+      <span class="t14 font-bold text-emerald-400 font-mono">${csfUsd(price)}</span>
+      <button data-csf="buy" data-id="${escapeAttr(id)}" data-price="${price}" data-name="${escapeAttr(name)}" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-shopping"></i>Buy</button>
     </div></div>`;
 }
 
@@ -4358,10 +4377,10 @@ function csfWireBoSearch() {
 function csfBuyOrderRow(o) {
   const id = o.id || ''; const name = o.market_hash_name || o.expression || (o.item && o.item.market_hash_name) || 'Buy order';
   const price = o.max_price ?? o.price ?? 0; const qty = o.quantity ?? o.qty ?? 1;
-  return `<div class="flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="text-2xs text-slate-500">qty ${escapeHtml(String(qty))}</p></div>
-    <span class="text-sm font-bold text-emerald-400">${csfUsd(price)}</span>
-    <button data-csf="delorder" data-id="${escapeAttr(id)}" class="px-2.5 py-1.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold"><i class="fa-solid fa-xmark"></i></button></div>`;
+  return `<div class="flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="t10 text-slate-500">qty ${escapeHtml(String(qty))}</p></div>
+    <span class="t13 font-bold text-emerald-400 font-mono">${csfUsd(price)}</span>
+    <button data-csf="delorder" data-id="${escapeAttr(id)}" class="btn btn-icon-sm btn-danger"><i class="fa-solid fa-xmark"></i></button></div>`;
 }
 
 // ── Trades (experimental) — incl. the Auto-Accept toggle ──
@@ -4378,7 +4397,7 @@ async function csfLoadTrades() {
     el.csfloatBody.innerHTML = `
       <div class="surface flex items-center justify-between px-4 py-3 mb-4">
         <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? "Unavailable — this account's maFile has no identity_secret to confirm the Steam delivery. Attach a maFile with one to enable." : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
-        <button data-csf="autoaccept" data-enabled="${auto.enabled ? '1' : '0'}" ${limited ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-bold ${auto.enabled ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
+        <button data-csf="autoaccept" data-enabled="${auto.enabled ? '1' : '0'}" ${limited ? 'disabled' : ''} class="btn btn-sm ${auto.enabled ? 'btn-primary' : 'btn-secondary'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
       </div>
       ${trades.length ? `<div class="space-y-2">${trades.map(csfTradeRow).join('')}</div>` : csfEmpty('fa-right-left', 'No trades yet.')}`;
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
@@ -4387,9 +4406,9 @@ function csfTradeRow(t) {
   const item = (t.contract && t.contract.item) || t.item || {};
   const name = item.market_hash_name || 'Trade'; const st = t.state || t.status || '';
   const price = (t.contract && t.contract.price) ?? t.price ?? 0;
-  return `<div class="flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="text-2xs text-slate-500">${escapeHtml(String(st))}</p></div>
-    <span class="text-sm font-bold text-emerald-400">${csfUsd(price)}</span></div>`;
+  return `<div class="flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="t10 text-slate-500">${escapeHtml(String(st))}</p></div>
+    <span class="t13 font-bold text-emerald-400 font-mono">${csfUsd(price)}</span></div>`;
 }
 
 // ── Inventory (experimental) — list an item for sale ──
@@ -4406,11 +4425,11 @@ function csfInvRow(it) {
   const item = it.item || it; const asset = item.asset_id || item.assetid || it.asset_id || '';
   const name = item.market_hash_name || item.full_item_name || 'Item';
   const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
-  return `<div class="csf-row flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+  return `<div class="csf-row flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
     ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="text-2xs text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="t10 text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
     <input type="number" step="0.01" min="0.03" placeholder="price $" class="csf-price field !w-24 !py-1.5 text-right" />
-    <button data-csf="listasset" data-asset="${escapeAttr(asset)}" ${asset ? '' : 'disabled'} class="px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold ${asset ? '' : 'opacity-40'}">List</button></div>`;
+    <button data-csf="listasset" data-asset="${escapeAttr(asset)}" ${asset ? '' : 'disabled'} class="btn btn-sm btn-primary">List</button></div>`;
 }
 
 // ── Settings ──
@@ -4419,18 +4438,18 @@ function csfRenderSettings() {
   el.csfloatBody.innerHTML = `
     <div class="max-w-lg space-y-5">
       <div>
-        <h4 class="text-sm font-bold text-slate-200 mb-1">CSFloat API key</h4>
-        <p class="text-2xs text-slate-500 mb-3">Generate a key at <span class="text-brand-light">csfloat.com/profile → Developer</span>. Stored encrypted per-account in your vault; never shown again.</p>
+        <h4 class="t14 font-bold text-slate-200 mb-1">CSFloat API key</h4>
+        <p class="t10 text-slate-500 mb-3">Generate a key at <span class="text-brand-light">csfloat.com/profile → Developer</span>. Stored encrypted per-account in your vault; never shown again.</p>
         <form id="csf-key-form" class="flex gap-2">
           <input name="apiKey" type="password" autocomplete="off" placeholder="${k.configured ? 'configured (ending …' + escapeHtml(k.tail || '') + ') — paste to replace' : 'paste your CSFloat API key'}" class="field flex-1"/>
-          <button type="submit" class="px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold">Save</button>
-          ${k.configured ? '<button type="button" data-csf="clearkey" class="px-4 py-2.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-sm font-bold">Clear</button>' : ''}
+          <button type="submit" class="btn btn-primary">Save</button>
+          ${k.configured ? '<button type="button" data-csf="clearkey" class="btn btn-danger">Clear</button>' : ''}
         </form>
-        <p id="csf-key-msg" class="hidden text-2xs mt-2"></p>
+        <p id="csf-key-msg" class="hidden t10 mt-2"></p>
       </div>
       <div class="surface px-4 py-3 flex items-center justify-between gap-3">
-        <div><p class="text-sm font-bold text-slate-200">Experimental features</p><p class="text-2xs text-slate-500">Buy Orders, Trades &amp; Inventory tabs + auto-accept. These use undocumented CSFloat endpoints that may change.</p></div>
-        <button data-csf="experimental" class="px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 ${CSF.experimental ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'}">${CSF.experimental ? 'ON' : 'OFF'}</button>
+        <div><p class="t14 font-bold text-slate-200">Experimental features</p><p class="t10 text-slate-500">Buy Orders, Trades &amp; Inventory tabs + auto-accept. These use undocumented CSFloat endpoints that may change.</p></div>
+        <button data-csf="experimental" class="btn btn-sm shrink-0 ${CSF.experimental ? 'btn-primary' : 'btn-secondary'}">${CSF.experimental ? 'ON' : 'OFF'}</button>
       </div>
     </div>`;
 }
@@ -4741,12 +4760,12 @@ async function batchDeleteAccounts(usernames) {
 
 // Category display order + styling. Literal class strings (Tailwind-JIT safe, like toasts).
 const BAN_CATS = [
-  { key: 'clean',     label: 'Clean',                 icon: 'fa-circle-check',        text: 'text-emerald-400', badge: 'bg-emerald-500/15 text-emerald-300', movable: false },
-  { key: 'vac',       label: 'VAC Banned',            icon: 'fa-ban',                 text: 'text-rose-400',    badge: 'bg-rose-500/15 text-rose-300',       movable: true  },
-  { key: 'game',      label: 'Game Banned',           icon: 'fa-gamepad',             text: 'text-orange-400',  badge: 'bg-orange-500/15 text-orange-300',   movable: true  },
-  { key: 'community', label: 'Community Banned',      icon: 'fa-comment-slash',       text: 'text-amber-400',   badge: 'bg-amber-500/15 text-amber-300',     movable: true  },
-  { key: 'economy',   label: 'Economy / Trade Banned', icon: 'fa-handshake-slash',    text: 'text-fuchsia-400', badge: 'bg-fuchsia-500/15 text-fuchsia-300', movable: true  },
-  { key: 'error',     label: 'Lookup Failed',         icon: 'fa-triangle-exclamation', text: 'text-slate-400',  badge: 'bg-slate-600/30 text-slate-300',     movable: false },
+  { key: 'clean',     label: 'Clean',                  icon: 'fa-circle-check',         text: 'text-emerald-400', pill: 'success', acc: 'border-slate-800 bg-slate-950/40',        movable: false },
+  { key: 'vac',       label: 'VAC Banned',             icon: 'fa-ban',                  text: 'text-rose-400',    pill: 'danger',  acc: 'border-rose-800/40 bg-rose-900/10',       movable: true  },
+  { key: 'game',      label: 'Game Banned',            icon: 'fa-gamepad',              text: 'text-orange-400',  pill: 'warn',    acc: 'border-orange-800/40 bg-orange-900/10',   movable: true  },
+  { key: 'community', label: 'Community Banned',       icon: 'fa-comment-slash',        text: 'text-amber-400',   pill: 'neutral', acc: 'border-amber-800/40 bg-amber-900/10',     movable: true  },
+  { key: 'economy',   label: 'Economy / Trade Banned', icon: 'fa-handshake-slash',      text: 'text-fuchsia-400', pill: 'danger',  acc: 'border-fuchsia-800/40 bg-fuchsia-900/10', movable: true  },
+  { key: 'error',     label: 'Lookup Failed',          icon: 'fa-triangle-exclamation', text: 'text-slate-400',   pill: 'listed',  acc: 'border-sky-800/40 bg-sky-900/10',         movable: false },
 ];
 
 /** Opens the Ban Checker for a set of accounts and renders the result modal.
@@ -4849,10 +4868,10 @@ function renderBanResult(res) {
   // Summary header: one chip per category with its count (errors only shown when present).
   el.banSummary.innerHTML = `
     <div class="flex flex-wrap items-center gap-2">
-      <span class="text-2xs uppercase tracking-wide text-slate-500 font-semibold mr-1">${t.total || 0} checked</span>
+      <span class="t10 uppercase tracking-wide text-slate-500 font-semibold mr-1">${t.total || 0} checked</span>
       ${BAN_CATS.filter((c) => c.key !== 'error' || (t.error || 0) > 0).map((c) => `
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${c.badge} text-xs font-semibold">
-          <i class="fa-solid ${c.icon} ${c.text}"></i>${escapeHtml(c.label)}
+        <span class="pill pill--${c.pill}">
+          <i class="fa-solid ${c.icon}"></i>${escapeHtml(c.label)}
           <span class="font-mono">${(groups[c.key] || []).length}</span>
         </span>`).join('')}
     </div>`;
@@ -4862,54 +4881,48 @@ function renderBanResult(res) {
     .filter((c) => (groups[c.key] || []).length > 0)
     .map((c) => banAccordion(c, groups[c.key]))
     .join('');
-  el.banBody.innerHTML = sections || `<p class="text-sm text-slate-500 px-2 py-4 text-center">No accounts to display.</p>`;
+  el.banBody.innerHTML = sections || `<p class="t13 text-slate-500 px-2 py-4 text-center">No accounts to display.</p>`;
 }
 
 function banAccordion(cat, accounts) {
   const moveBtn = cat.movable
     ? `<button data-ban-move="${escapeAttr(cat.key)}" title="Move every account in this category into a folder"
-         class="ml-auto shrink-0 px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-folder-tree"></i>Move this Category</button>`
+         class="btn btn-sm btn-secondary ml-auto shrink-0"><i class="fa-solid fa-folder-tree"></i>Move this Category</button>`
     : '';
   const rows = accounts.map((a) => banAccountRow(a, cat.key)).join('');
   return `
-    <div class="rounded-lg border border-slate-800 overflow-hidden">
-      <div data-ban-toggle="${escapeAttr(cat.key)}" class="flex items-center gap-2.5 px-4 py-2.5 cursor-pointer hover:bg-slate-800/50 transition">
-        <i class="fa-solid fa-chevron-right ban-caret text-3xs text-slate-500 transition-transform"></i>
+    <div class="rounded-xl border ${cat.acc} overflow-hidden">
+      <div data-ban-toggle="${escapeAttr(cat.key)}" class="flex items-center gap-2.5 px-4 py-3 cursor-pointer select-none">
+        <i class="fa-solid fa-chevron-right ban-caret t10 text-slate-500 transition-transform"></i>
         <i class="fa-solid ${cat.icon} ${cat.text}"></i>
-        <span class="font-semibold text-slate-200">${escapeHtml(cat.label)}</span>
-        <span class="text-2xs font-mono px-2 py-0.5 rounded-full ${cat.badge}">${accounts.length}</span>
+        <span class="t14 font-semibold ${cat.text}">${escapeHtml(cat.label)}</span>
+        <span class="pill pill--${cat.pill} font-mono">${accounts.length}</span>
         ${moveBtn}
       </div>
-      <div class="ban-acc-body hidden border-t border-slate-800 divide-y divide-slate-800/60">${rows}</div>
+      <div class="ban-acc-body hidden border-t border-slate-800/60 divide-y divide-slate-800/60">${rows}</div>
     </div>`;
 }
 
 /** Small coloured tags describing one account's specific bans. */
 function banTags(a) {
-  if (a.error) return `<span class="text-2xs text-slate-500">${escapeHtml(a.error)}</span>`;
+  if (a.error) return `<span class="pill pill--listed">${escapeHtml(a.error)}</span>`;
   const tags = [];
-  if (a.vacBanned)       tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300">VAC${a.vacCount > 1 ? ` ×${a.vacCount}` : ''}</span>`);
-  if (a.gameBanned)      tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300">Game${a.gameCount > 1 ? ` ×${a.gameCount}` : ''}</span>`);
-  if (a.communityBanned) tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">Community</span>`);
-  if (a.economyBan && a.economyBan !== 'none') tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-fuchsia-500/15 text-fuchsia-300">Trade: ${escapeHtml(a.economyBan)}</span>`);
-  if (!tags.length) tags.push(`<span class="text-2xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">No bans</span>`);
+  if (a.vacBanned)       tags.push(`<span class="pill pill--danger">VAC${a.vacCount > 1 ? ` ×${a.vacCount}` : ''}</span>`);
+  if (a.gameBanned)      tags.push(`<span class="pill pill--warn">Game${a.gameCount > 1 ? ` ×${a.gameCount}` : ''}</span>`);
+  if (a.communityBanned) tags.push(`<span class="pill pill--neutral">Community</span>`);
+  if (a.economyBan && a.economyBan !== 'none') tags.push(`<span class="pill pill--danger">Trade: ${escapeHtml(a.economyBan)}</span>`);
+  if (!tags.length) tags.push(`<span class="pill pill--success">No bans</span>`);
   if (typeof a.daysSinceLastBan === 'number' && a.daysSinceLastBan > 0 && !a.error)
-    tags.push(`<span class="text-2xs text-slate-500">${a.daysSinceLastBan}d since last ban</span>`);
+    tags.push(`<span class="t10 text-slate-500">${a.daysSinceLastBan}d since last ban</span>`);
   return tags.join(' ');
 }
 
 function banAccountRow(a, catKey) {
   const name = a.displayName && a.displayName !== a.username ? `${a.displayName}` : a.username;
   return `
-    <div class="flex items-start gap-3 px-4 py-2.5">
-      <i class="fa-solid fa-user text-2xs text-slate-600 mt-1 shrink-0"></i>
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-sm font-medium text-slate-200 truncate">${escapeHtml(name)}</span>
-          ${a.steamId ? `<span class="text-2xs font-mono text-slate-500">${escapeHtml(a.steamId)}</span>` : ''}
-        </div>
-        <div class="mt-1 flex items-center gap-1.5 flex-wrap">${banTags(a)}</div>
-      </div>
+    <div class="flex items-center justify-between gap-3 px-4 py-2">
+      <span class="min-w-0 flex-1 t13 text-slate-300 truncate">${escapeHtml(name)}${a.steamId ? ` <span class="t10 font-mono text-slate-600">${escapeHtml(a.steamId)}</span>` : ''}</span>
+      <span class="flex items-center gap-1.5 flex-wrap justify-end shrink-0">${banTags(a)}</span>
     </div>`;
 }
 
@@ -5024,11 +5037,11 @@ function recipientRow(a) {
   const folderName = a.folderId && state.tradeFolderName[a.folderId] ? state.tradeFolderName[a.folderId] : 'no folder';
   return `<button type="button" data-recip="${escapeAttr(a.username)}"
     class="w-full flex items-center gap-2.5 px-3 py-2 text-left transition ${sel ? 'bg-brand/15 ring-1 ring-inset ring-brand/50' : 'hover:bg-slate-800/60'}">
-    <span class="w-6 h-6 rounded bg-slate-800 flex items-center justify-center shrink-0">
-      <i class="fa-solid fa-user text-3xs ${sel ? 'text-brand' : 'text-slate-500'}"></i></span>
+    <span class="avatar shrink-0" style="width:2rem;height:2rem">
+      <i class="fa-solid fa-user ${sel ? 'text-brand' : 'text-slate-500'}"></i></span>
     <span class="flex-1 min-w-0">
-      <span class="block text-sm truncate ${sel ? 'text-brand font-semibold' : 'text-slate-200'}">${escapeHtml(a.displayName || a.username)}</span>
-      <span class="block text-3xs text-slate-500 truncate"><i class="fa-solid fa-folder mr-1"></i>${escapeHtml(folderName)}</span>
+      <span class="block t13 truncate ${sel ? 'text-brand font-semibold' : 'text-slate-200'}">${escapeHtml(a.displayName || a.username)}</span>
+      <span class="block t10 text-slate-500 truncate"><i class="fa-solid fa-folder mr-1"></i>${escapeHtml(folderName)}</span>
     </span>
     ${sel ? '<i class="fa-solid fa-check text-brand text-sm shrink-0"></i>' : ''}</button>`;
 }
@@ -5335,10 +5348,10 @@ function renderSellPreview() {
       missing += cnt;
       return `<tr class="border-t border-slate-800/60">
         <td class="py-1.5 pl-3 pr-2"><span class="text-slate-400">${escapeHtml(n)}</span> <span class="text-slate-600 font-mono">×${cnt}</span></td>
-        <td class="py-1.5 px-2 text-right text-rose-400" colspan="2">no price</td>
+        <td class="py-1.5 px-2 text-right" colspan="2"><span class="pill pill--danger">no price</span></td>
         <td class="py-1.5 pl-2 pr-3 text-right">
           <button type="button" data-reprice="${escapeAttr(n)}" title="Re-query only this item"
-            class="px-2 py-1 rounded-md bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 text-2xs font-semibold transition">
+            class="btn btn-icon-sm btn-secondary">
             <i class="fa-solid fa-rotate-right"></i></button></td></tr>`;
     }
     const fee = Math.max(0, p.buyerCents - p.netCents);
@@ -5353,9 +5366,9 @@ function renderSellPreview() {
   }).join('');
 
   el.sellPreviewResult.innerHTML = `
-    <table class="w-full text-xs">
+    <table class="w-full t13">
       <thead>
-        <tr class="text-3xs uppercase tracking-wider text-slate-400">
+        <tr class="t10 uppercase tracking-wider text-slate-500">
           <th class="py-2 pl-3 pr-2 text-left font-semibold">Item / ea.</th>
           <th class="py-2 px-2 text-right font-semibold">Gross</th>
           <th class="py-2 px-2 text-right font-semibold">Steam fee</th>
@@ -5372,7 +5385,7 @@ function renderSellPreview() {
         </tr>
       </tfoot>
     </table>
-    ${missing ? `<div class="text-2xs text-amber-400 px-3 py-1.5 border-t border-slate-800">${missing} item(s) without price – use <i class="fa-solid fa-rotate-right"></i> to re-query individually (otherwise skipped).</div>` : ''}`;
+    ${missing ? `<div class="t10 text-amber-400 px-3 py-1.5 border-t border-slate-800">${missing} item(s) without price – use <i class="fa-solid fa-rotate-right"></i> to re-query individually (otherwise skipped).</div>` : ''}`;
   el.sellPreviewResult.querySelectorAll('[data-reprice]').forEach((b) =>
     b.addEventListener('click', () => retryOnePrice(b.dataset.reprice, b)));
   el.sellPreviewResult.classList.remove('hidden');
@@ -5539,19 +5552,19 @@ async function loadBulkList() {
   let list = [];
   try { list = await api('/api/mafiles/unlinked'); } catch (err) { toast(err.message, 'error'); }
   if (!list.length) {
-    el.bulkList.innerHTML = `<p class="text-center text-slate-600 py-8 text-sm">No new maFiles in <code class="text-slate-500">mafiles/</code></p>`;
+    el.bulkList.innerHTML = `<p class="text-center text-slate-600 py-8 t13">No new maFiles in <code class="text-slate-500">mafiles/</code></p>`;
     el.bulkSubmit.disabled = true;
     return;
   }
   el.bulkList.innerHTML = list.map((f) => `
-    <label class="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 ${f.hasPassword ? 'cursor-pointer hover:border-slate-700' : 'opacity-60'}">
+    <label class="flex items-center gap-3 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 ${f.hasPassword ? 'cursor-pointer hover:border-slate-700' : 'opacity-60'}">
       <input type="checkbox" class="bulk-check accent-violet-500 w-4 h-4" data-file="${escapeAttr(f.file)}" data-haspw="${f.hasPassword ? '1' : '0'}" ${f.hasPassword ? '' : 'disabled'} />
       <div class="flex-1 min-w-0">
-        <p class="text-sm font-semibold text-slate-200 truncate">${escapeHtml(f.accountName)}</p>
-        <p class="text-2xs text-slate-500 truncate font-mono">${escapeHtml(f.file)}</p></div>
+        <p class="t13 font-semibold text-slate-200 truncate">${escapeHtml(f.accountName)}</p>
+        <p class="t10 text-slate-500 truncate font-mono">${escapeHtml(f.file)}</p></div>
       ${f.hasPassword
-        ? '<span class="text-2xs px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 border border-emerald-700/40 shrink-0"><i class="fa-solid fa-check mr-1"></i>Password</span>'
-        : '<span class="text-2xs px-2 py-0.5 rounded-full bg-rose-900/30 text-rose-400 border border-rose-700/40 shrink-0"><i class="fa-solid fa-xmark mr-1"></i>no password</span>'}
+        ? '<span class="pill pill--success shrink-0"><i class="fa-solid fa-check mr-1"></i>Password</span>'
+        : '<span class="pill pill--danger shrink-0"><i class="fa-solid fa-xmark mr-1"></i>no password</span>'}
     </label>`).join('');
   el.bulkList.querySelectorAll('.bulk-check').forEach((cb) => cb.addEventListener('change', updateBulkSubmit));
   updateBulkSubmit();
@@ -5784,11 +5797,11 @@ function hideBuySearch() { el.buyNameResults.classList.add('hidden'); el.buyName
 function renderBuySearch(list) {
   if (!list || !list.length) { hideBuySearch(); return; }
   el.buyNameResults.innerHTML = list.map((it, i) => `
-    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-teal-600/20 transition">
+    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand/15 transition">
       ${it.iconUrl ? `<img src="${escapeAttr(safeIconUrl(it.iconUrl))}" class="w-7 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : ''}
       <span class="min-w-0 flex-1">
-        <span class="block text-sm text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
-        ${it.priceText ? `<span class="block text-2xs text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}
+        <span class="block t13 text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
+        ${it.priceText ? `<span class="block t10 text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}
       </span>
     </button>`).join('');
   el.buyNameResults.querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => {
@@ -5894,10 +5907,12 @@ function hideFbuySearch() { el.fbuyNameResults.classList.add('hidden'); el.fbuyN
 function renderFbuySearch(list) {
   if (!list || !list.length) { hideFbuySearch(); return; }
   el.fbuyNameResults.innerHTML = list.map((it, i) => `
-    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-teal-600/20 transition">
+    <button type="button" data-i="${i}" class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand/15 transition">
       ${it.iconUrl ? `<img src="${escapeAttr(safeIconUrl(it.iconUrl))}" class="w-7 h-7 object-contain shrink-0" onerror="this.style.display='none'" />` : ''}
-      <span class="min-w-0 flex-1"><span class="block text-sm text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
-      ${it.priceText ? `<span class="block text-2xs text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}</span>
+      <span class="min-w-0 flex-1">
+        <span class="block t13 text-slate-200 truncate">${escapeHtml(it.name || it.marketHashName)}</span>
+        ${it.priceText ? `<span class="block t10 text-slate-500">from ${escapeHtml(it.priceText)}</span>` : ''}
+      </span>
     </button>`).join('');
   el.fbuyNameResults.querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => {
     el.fbuyName.value = list[Number(b.dataset.i)].marketHashName; hideFbuySearch(); el.fbuyName.focus();
@@ -6011,14 +6026,15 @@ function pollFolderBuy() {
 function renderFolderBuyResults(job) {
   const rows = (job.results || []).slice().sort((a, b) => (b.filled - a.filled) || (b.plannedQty - a.plannedQty));
   const styleOf = (s) => ({ bought: 'text-emerald-300', placed: 'text-teal-300', skipped: 'text-slate-400', failed: 'text-rose-300', 'refresh-failed': 'text-rose-300' }[s] || 'text-slate-300');
+  const pillOf  = (s) => ({ bought: 'pill--success', placed: 'pill--listed', skipped: 'pill--neutral', failed: 'pill--danger', 'refresh-failed': 'pill--danger' }[s] || 'pill--neutral');
   const iconOf  = (s) => ({ bought: 'fa-circle-check', placed: 'fa-circle-check', skipped: 'fa-circle-minus', failed: 'fa-circle-xmark', 'refresh-failed': 'fa-triangle-exclamation' }[s] || 'fa-circle-info');
   el.fbuyResults.innerHTML = rows.map((r) => {
     const qty = r.filled > 0 ? `${r.filled}×` : (r.plannedQty ? `0/${r.plannedQty}` : '—');
     return `<div class="flex items-center gap-2 px-3 py-2">
       <i class="fa-solid ${iconOf(r.status)} ${styleOf(r.status)} shrink-0"></i>
-      <span class="font-semibold text-slate-200 truncate" style="max-width:9rem" title="${escapeAttr(r.username)}">${escapeHtml(r.username)}</span>
-      <span class="${styleOf(r.status)} font-mono text-2xs shrink-0">${escapeHtml(qty)}</span>
-      <span class="text-slate-500 text-2xs truncate flex-1" title="${escapeAttr(r.message)}">${escapeHtml(r.message)}</span>
+      <span class="t13 font-semibold text-slate-200 truncate" style="max-width:9rem" title="${escapeAttr(r.username)}">${escapeHtml(r.username)}</span>
+      <span class="pill ${pillOf(r.status)} font-mono shrink-0">${escapeHtml(qty)}</span>
+      <span class="t10 text-slate-500 truncate flex-1" title="${escapeAttr(r.message)}">${escapeHtml(r.message)}</span>
     </div>`;
   }).join('') || '<div class="px-3 py-6 text-center text-slate-600">No accounts processed.</div>';
   el.fbuyResults.classList.remove('hidden');
@@ -6275,16 +6291,17 @@ function ssimConfirm(opts = {}) {
     _confirmState = { finish };
     $('confirm-title').textContent = title;
     $('confirm-body').innerHTML = body;    // callers escapeHtml all dynamic values
+    // Tone → DS .btn variant (presentation only; the money-confirm LOGIC below is untouched).
     const tones = {
-      danger: { wrap: 'bg-danger/15 text-danger', icon: 'fa-triangle-exclamation', btn: 'bg-rose-600 hover:bg-rose-500' },
-      spend:  { wrap: 'bg-buy/15 text-buy',        icon: 'fa-circle-exclamation',    btn: 'bg-teal-600 hover:bg-teal-500' },
-      brand:  { wrap: 'bg-brand/15 text-brand',    icon: 'fa-circle-info',           btn: 'bg-brand hover:bg-brand-dark' },
+      danger: { wrap: 'bg-danger/15 text-danger', icon: 'fa-triangle-exclamation', btn: 'btn-danger' },
+      spend:  { wrap: 'bg-buy/15 text-buy',        icon: 'fa-circle-exclamation',    btn: 'btn-buy' },
+      brand:  { wrap: 'bg-brand/15 text-brand',    icon: 'fa-circle-info',           btn: 'btn-primary' },
     };
     const t = tones[tone] || tones.danger;
     const iconEl = $('confirm-icon');
     iconEl.className = `w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${t.wrap}`;
     iconEl.innerHTML = `<i class="fa-solid ${opts.iconClass || t.icon}"></i>`;
-    ok.className = `flex-1 px-4 py-2.5 rounded-lg text-white text-sm font-bold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${t.btn}`;
+    ok.className = `btn ${t.btn} flex-1 disabled:opacity-50 disabled:cursor-not-allowed`;
     ok.innerHTML = `<i class="fa-solid ${confirmIcon}"></i><span>${escapeHtml(confirmLabel)}</span>`;
     if (typedWord) {                        // typed-confirm gate for the largest spends
       typedWrap.classList.remove('hidden');
@@ -6579,14 +6596,14 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
   ov = document.createElement('div');
   ov.id = id;
   ov.className = 'hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4';
-  ov.innerHTML = `<div class="w-full ${widthClass || 'max-w-4xl'} max-h-[88vh] modal-card flex flex-col overflow-hidden fade-in">
+  ov.innerHTML = `<div class="w-full ${widthClass || 'max-w-4xl'} max-h-[88vh] bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col overflow-hidden fade-in">
     <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
-      <h3 class="text-lg font-bold text-white"><i class="fa-solid ${icon} text-brand mr-2"></i>${title}<span data-scope class="text-slate-500 font-mono text-sm font-normal ml-2"></span></h3>
+      <h3 class="t16 font-bold text-white"><i class="fa-solid ${icon} text-brand mr-2"></i>${title}<span data-scope class="text-slate-500 font-mono t14 font-normal ml-2"></span></h3>
       <button data-close aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
     </div>
     <div data-toolbar class="px-6 py-3 border-b border-slate-800 shrink-0 flex items-center gap-3 flex-wrap"></div>
     <div data-body class="overflow-y-auto grow"></div>
-    <div data-foot class="px-6 py-2.5 border-t border-slate-800 shrink-0 text-2xs text-slate-500"></div>
+    <div data-foot class="px-6 py-2.5 border-t border-slate-800 shrink-0 t10 text-slate-500"></div>
   </div>`;
   document.body.appendChild(ov);
   observeOverlay(ov); // route hidden↔shown through the FB-04 lifecycle (H-FE-009: no stranded scroll-lock)
@@ -6660,26 +6677,26 @@ function renderTuList() {
     for (const i of c.inputs) inputsByName[i.baseName] = (inputsByName[i.baseName] || 0) + 1;
     const inputsTxt = Object.entries(inputsByName).map(([n, q]) => `${q}× ${escapeHtml(n)}`).join(', ');
     const outsTxt = c.outcomes.map(o =>
-      `<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-950/60 border border-slate-800 text-2xs"><span class="text-slate-200">${escapeHtml(o.name)}</span><span class="text-slate-500">${escapeHtml(o.wear)}</span><span class="text-listed font-semibold">${(o.probability * 100).toFixed(1)}%</span><span class="font-mono ${o.priceCents == null ? 'text-slate-600' : 'text-slate-300'}">${o.priceCents == null ? '—' : fmtCents(o.priceCents)}</span></span>`).join('');
+      `<span class="pill pill--neutral"><span class="text-slate-200">${escapeHtml(o.name)}</span><span class="text-slate-500">${escapeHtml(o.wear)}</span><span class="text-listed font-semibold">${(o.probability * 100).toFixed(1)}%</span><span class="font-mono ${o.priceCents == null ? 'text-slate-600' : 'text-slate-300'}">${o.priceCents == null ? '—' : fmtCents(o.priceCents)}</span></span>`).join('');
     const profit = c.profitCents > 0;
     const executable = c.inputs.every(i => i.assetId);
     return `<label class="surface p-3.5 flex gap-3 items-start cursor-pointer transition ${sel ? selCls : 'hover:border-brand/40'}">
       <input type="checkbox" data-tu-id="${escapeAttr(c.id)}" ${sel ? 'checked' : ''} class="mt-1 accent-brand w-4 h-4 shrink-0">
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-sm font-bold text-white">${escapeHtml(c.rarityLabel)} <i class="fa-solid fa-arrow-right-long text-brand-light text-2xs mx-0.5"></i> ${escapeHtml(c.outputRarityLabel)}</span>
+          <span class="t13 font-bold text-white">${escapeHtml(c.rarityLabel)} <i class="fa-solid fa-arrow-right-long text-brand-light t10 mx-0.5"></i> ${escapeHtml(c.outputRarityLabel)}</span>
           <span class="pill pill--neutral">${escapeHtml(c.collectionLabel)}</span>
           <span class="pill pill--neutral">avg float ${c.avgFloat.toFixed(3)}</span>
           ${c.fullyPriced ? '' : '<span class="pill pill--warn" title="Some prices still loading">~est prices</span>'}
           ${executable ? '' : '<span class="pill pill--danger" title="Missing asset ids — cannot execute">no asset ids</span>'}
         </div>
-        <div class="text-2xs text-slate-500 mt-1.5 truncate" title="${escapeAttr(inputsTxt)}">Inputs: ${inputsTxt}</div>
+        <div class="t10 text-slate-500 mt-1.5 truncate" title="${escapeAttr(inputsTxt)}">Inputs: ${inputsTxt}</div>
         <div class="flex flex-wrap gap-1.5 mt-2">${outsTxt}</div>
       </div>
       <div class="text-right shrink-0 pl-3 border-l border-slate-800 self-stretch flex flex-col justify-center">
-        <div class="text-lg font-bold ${profit ? 'text-success' : 'text-danger'} leading-none">${profit ? '+' : '−'}${fmtCents(Math.abs(c.profitCents))}</div>
-        <div class="text-3xs text-slate-500 font-mono mt-1.5">cost ${fmtCents(c.costCents)}</div>
-        <div class="text-3xs text-slate-500 font-mono">EV ${fmtCents(c.evCents)}</div>
+        <div class="t16 font-bold ${profit ? 'text-success' : 'text-danger'} leading-none">${profit ? '+' : '−'}${fmtCents(Math.abs(c.profitCents))}</div>
+        <div class="t10 text-slate-500 font-mono mt-1.5">cost ${fmtCents(c.costCents)}</div>
+        <div class="t10 text-slate-500 font-mono">EV ${fmtCents(c.evCents)}</div>
       </div></label>`;
   }).join('') + `</div>`;
   body.querySelectorAll('[data-tu-id]').forEach((cb) => cb.addEventListener('change', () => {
@@ -6756,7 +6773,7 @@ async function openCasketModal(username) {
   const ov = ensureFeatureOverlay('casket-overlay', 'Storage Units', 'fa-box-archive', 'max-w-5xl');
   Object.assign(ckState, { username, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', error: null });
   ov.querySelector('[data-scope]').textContent = `· ${username}`;
-  ov.querySelector('[data-toolbar]').innerHTML = `<label class="text-2xs uppercase tracking-wide text-slate-500 font-semibold">Storage unit</label><select data-ck-unit class="field !w-auto !py-1.5 text-sm"><option value="">— loading… —</option></select>`;
+  ov.querySelector('[data-toolbar]').innerHTML = `<label class="t10 uppercase tracking-wide text-slate-500 font-semibold">Storage unit</label><select data-ck-unit class="field !w-auto !py-1.5 t13"><option value="">— loading… —</option></select>`;
   ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-spinner cs2-spin"></i></div><div class="empty-title">Connecting to the game coordinator…</div></div>`;
   ov.classList.remove('hidden'); // observeOverlay (H-FE-009) fires onModalOpen off the class mutation
   // Load units (needs the GC library; degrades clearly if unavailable — shown in the unit panel).
@@ -6819,43 +6836,43 @@ function renderCasketPanels() {
   const unit = ckState.caskets.find(c => c.id === ckState.casketId);
   const invInner = invRows.length ? invRows.map(i => {
     if (!casketStorable(i)) {
-      return `<div class="flex items-center gap-2.5 px-3 py-2 text-xs opacity-40 cursor-not-allowed" title="This item type can't be stored in a storage unit">
+      return `<div class="flex items-center gap-2.5 px-3 py-2 t12 opacity-40 cursor-not-allowed" title="This item type can't be stored in a storage unit">
         <i class="fa-solid fa-ban w-3.5 text-slate-600 shrink-0"></i>
         <span class="truncate flex-1 text-slate-300">${escapeHtml(i.name || i.marketHashName)}</span>
-        <span class="text-3xs uppercase tracking-wide text-slate-600 shrink-0">not storable</span>
+        <span class="t10 uppercase tracking-wide text-slate-600 shrink-0">not storable</span>
         <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></div>`;
     }
     const sel = ckState.invSel.has(i.marketHashName);
-    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer text-xs">
+    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer t12">
       <input type="checkbox" data-ck-inv="${escapeAttr(i.marketHashName)}" ${sel ? 'checked' : ''} class="accent-brand w-3.5 h-3.5 shrink-0">
       <span class="truncate flex-1 text-slate-200">${escapeHtml(i.name || i.marketHashName)}</span>
       <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></label>`;
   }).join('') : `<div class="empty !py-10"><div class="empty-icon"><i class="fa-solid fa-box-open"></i></div><div class="empty-title">No depositable items in cache.</div><div class="empty-sub">Refresh the account to populate it.</div></div>`;
   const unitInner = ckState.contents.length ? ckState.contents.map(it => {
     const id = String(it.id); const sel = ckState.unitSel.has(id);
-    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer text-xs">
+    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer t12">
       <input type="checkbox" data-ck-unit-item="${escapeAttr(id)}" ${sel ? 'checked' : ''} class="accent-brand w-3.5 h-3.5 shrink-0">
       <span class="truncate flex-1 text-slate-200">${escapeHtml(it.custom_name || ('Item ' + id))}</span>
       <span class="text-slate-600 font-mono">${it.def_index != null ? 'def ' + it.def_index : ''}</span></label>`;
   }).join('') : `<div class="empty !py-10"><div class="empty-icon ${ckState.error ? 'text-warn' : ''}"><i class="fa-solid fa-${ckState.error ? 'triangle-exclamation' : 'box-archive'}"></i></div><div class="empty-title">${ckState.error ? escapeHtml(ckState.error) : (ckState.casketId ? 'Empty storage unit.' : 'No storage unit selected.')}</div>${ckState.error ? '<div class="empty-sub">Storage units need the GC layer (install globaloffensive + set SSIM_GC_VERIFIED=1).</div>' : ''}</div>`;
 
   const pct = unit ? Math.min(100, Math.round((unit.count / 1000) * 100)) : 0;
-  const capBar = unit ? `<div class="px-3 pt-2.5"><div class="h-1.5 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full bg-brand" style="width:${pct}%"></div></div><div class="text-3xs text-slate-500 mt-1 font-mono">${unit.count} / 1000</div></div>` : '';
+  const capBar = unit ? `<div class="px-3 pt-2.5"><div class="h-1.5 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full bg-brand" style="width:${pct}%"></div></div><div class="t10 text-slate-500 mt-1 font-mono">${unit.count} / 1000</div></div>` : '';
 
   ov.querySelector('[data-body]').innerHTML =
     `<div class="px-5 py-3 flex items-center gap-2 border-b border-slate-800">
-       <input data-ck-search value="${escapeAttr(ckState.search)}" placeholder="Filter inventory…" class="field !py-1.5 !w-56 text-xs">
+       <input data-ck-search value="${escapeAttr(ckState.search)}" placeholder="Filter inventory…" class="field !py-1.5 !w-56 t12">
        <span class="ml-auto"></span>
        <button data-ck-deposit class="btn btn-primary btn-sm">Deposit <i class="fa-solid fa-arrow-right"></i></button>
        <button data-ck-withdraw class="btn btn-secondary btn-sm"><i class="fa-solid fa-arrow-left"></i> Withdraw</button>
      </div>
      <div class="grid grid-cols-2 gap-3 p-3" style="height:46vh">
        <div class="surface flex flex-col min-h-0">
-         <div class="panel-head"><span class="panel-title">Inventory</span><span class="text-2xs text-slate-500">${invCount} item(s)</span><button data-ck-sel="inv" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
+         <div class="panel-head"><span class="panel-title">Inventory</span><span class="t10 text-slate-500">${invCount} item(s)</span><button data-ck-sel="inv" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
          <div class="overflow-y-auto grow divide-y divide-slate-800/60">${invInner}</div>
        </div>
        <div class="surface flex flex-col min-h-0">
-         <div class="panel-head"><span class="panel-title truncate">${unit ? escapeHtml(unit.name) : 'Storage unit'}</span><span class="text-2xs text-slate-500 shrink-0">${ckState.unitSel.size} selected</span><button data-ck-sel="unit" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
+         <div class="panel-head"><span class="panel-title truncate">${unit ? escapeHtml(unit.name) : 'Storage unit'}</span><span class="t10 text-slate-500 shrink-0">${ckState.unitSel.size} selected</span><button data-ck-sel="unit" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
          ${capBar}
          <div class="overflow-y-auto grow divide-y divide-slate-800/60 ${capBar ? 'mt-1' : ''}">${unitInner}</div>
        </div>
