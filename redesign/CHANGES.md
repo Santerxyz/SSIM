@@ -203,3 +203,30 @@ Deliberate DECISION (kept, not changed — for reviewer awareness):
   `--border-1`, `slate-800`), so it reads as part of the same control family while keeping
   `#src-logo` (whose `.src` app.js swaps) and both popovers (`data-src` / `data-cur`) intact — the
   JS contract V1 protected stays protected.
+
+---
+
+## V7 — Value-history chart (`app.js` `renderHistoryChart`)  ·  2026-07-07
+
+**Net IA/flow change: NONE.** The dual-line SVG already renders through the `.hist-*` DS classes
+(`.hist-line-items` = `--brand-rgb`, `.hist-line-wallet` = `--success-rgb`, `.hist-area-items`,
+`.hist-grid`, `.hist-axis`, `.hist-ylabel`) inside the `.card-rich` wrap from the V1 shell, so the
+chart was already on-design. Two focused refinements:
+
+1. **Time axis locale `de-DE` → `en-GB`.** The X-axis time labels (`fmtTime`) formatted dates/times
+   with the German locale in an English-only UI (invariant 8) — the exact cosmetic issue the P4
+   polish fixes in legacy `public/app.js`. Switched to `en-GB` (24-hour, `DD/MM`), which preserves
+   the day-before-month ordering and 24h clock the old `de-DE` produced. **Critically, `de-DE` is
+   retained everywhere it is the correct *money* format** (EUR values, ST-02: `fmtUsd`, `fmtEurCents`,
+   `fmtCount`, `fmtCompact`, `localeForIso`) — the change is scoped to the chart axis only, so EUR
+   figures still render `1.234,56`.
+
+2. **Legend markers → masterpiece bar swatches.** The round dot swatches became the design's slim
+   `9×3px` bars, and the values are bolded `font-mono` in each line's color (`text-brand-light` /
+   `text-emerald-400`). The swatch colors are pinned to the actual SVG line strokes
+   (`--brand-rgb` / `--success-rgb`), **not** the prototype's `--balance-rgb`, so legend and line
+   always agree.
+
+**Pricing-honesty (S2/S13) preserved verbatim:** a partial wallet series still dashes the balance
+line (`stroke-dasharray 4 3`) and appends the "(incomplete)" legend note with its explanatory
+tooltip; the shared-money-scale math, area fill, last-point dots and point count are untouched.

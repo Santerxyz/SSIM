@@ -1863,12 +1863,14 @@ function renderHistoryChart(points) {
   const walletPath = linePath('wallet', y);
   const areaPath = `${itemsPath}L${x(t1).toFixed(1)},${PAD_T + ih}L${x(t0).toFixed(1)},${PAD_T + ih}Z`;
 
+  // English-only UI (invariant 8): the time axis reads in en-GB (24h, DD/MM) — never de-DE.
+  // de-DE stays ONLY for EUR *money* formatting (ST-02); it must never leak into a chart axis.
   const fmtTime = (t) => {
     const d = new Date(t);
     const sameDay = new Date(t0).toDateString() === new Date(t1).toDateString();
     return sameDay
-      ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
-      : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+      ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   };
   const tMid = t0 + tSpan / 2;
 
@@ -1901,11 +1903,14 @@ function renderHistoryChart(points) {
       <text x="${W - PAD_R}" y="${H - 6}" class="hist-axis" font-size="10" text-anchor="end">${fmtTime(t1)}</text>
     </svg>`;
 
+  // Masterpiece legend markers = slim bar swatches matching each SVG line's stroke color
+  // (items = --brand-rgb, wallet = --success-rgb, same as .hist-line-* in the shell); the
+  // "(incomplete)" pricing-honesty marker (S2/S13) + point count are preserved verbatim.
   el.historyLegend.innerHTML = `
-    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--brand-rgb))"></span>
-      Items worth <b class="text-slate-200">${fmtCents(last.items)}</b></span>
-    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:rgb(var(--success-rgb))"></span>
-      Balance <b class="text-slate-200">${fmtCents(last.wallet)}</b>${last.partial === true ? ` <span class="text-slate-600" title="Some wallet balances are in a currency that cannot be converted to USD — the balance line undercounts the real total.">(incomplete)</span>` : ''}</span>
+    <span class="flex items-center gap-1.5"><span style="width:9px;height:3px;border-radius:2px;background:rgb(var(--brand-rgb));display:inline-block"></span>
+      Items worth <b class="font-mono text-brand-light ml-1">${fmtCents(last.items)}</b></span>
+    <span class="flex items-center gap-1.5"><span style="width:9px;height:3px;border-radius:2px;background:rgb(var(--success-rgb));display:inline-block"></span>
+      Balance <b class="font-mono text-emerald-400 ml-1">${fmtCents(last.wallet)}</b>${last.partial === true ? ` <span class="text-slate-600" title="Some wallet balances are in a currency that cannot be converted to USD — the balance line undercounts the real total.">(incomplete)</span>` : ''}</span>
     <span class="text-slate-600">${pts.length} points</span>`;
 }
 

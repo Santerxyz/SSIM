@@ -328,14 +328,14 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-161 | `loadHistory(seriesId)`: 10s-TTL cache; global mode aggregates selected envs (POST `/api/history/aggregate`); else GET `/api/history/{id}?game=`; async race guard by cache key + game | app.js:1780–1821 | | |
-| P-162 | `invalidateHistory()` on refresh complete | app.js:1823–1824, 630 | | |
-| P-163 | Dual-line SVG chart: Items worth (brand) + Balance (emerald); shared money Y-axis (USD cents); area fill under items; last-point dots; dependency-free | app.js:1826–1901 | 💰 | |
-| P-164 | <2 points → "Not enough data points yet – the curve grows with the next refresh." | app.js:1835–1839 | | |
-| P-165 | Partial-wallet series: emerald line dashed + "(incomplete)" legend note w/ tooltip | app.js:1834, 1894, 1906 | | |
-| P-166 | X-axis time labels: same-day → `HH:mm` (de-DE); cross-day → `dd.MM HH:mm` | app.js:1864–1870 | | |
-| P-167 | Y-axis labels via `fmtCents`; grid lines at 25/50/75% | app.js:1873–1877 | 💰 | |
-| P-168 | Legend: "Items worth {fmtCents} · Balance {fmtCents} · N points" | app.js:1902–1907 | 💰 | |
+| P-161 | `loadHistory(seriesId)`: 10s-TTL cache; global mode aggregates selected envs (POST `/api/history/aggregate`); else GET `/api/history/{id}?game=`; async race guard by cache key + game | app.js:1780–1821 | | ✅ done · app.js (logic unchanged) |
+| P-162 | `invalidateHistory()` on refresh complete | app.js:1823–1824, 630 | | ✅ done · app.js (logic unchanged) |
+| P-163 | Dual-line SVG chart: Items worth (brand) + Balance (emerald); shared money Y-axis (USD cents); area fill under items; last-point dots; dependency-free | app.js:1826–1901 | 💰 | ✅ done · app.js:1834–1902 (SVG uses .hist-* DS classes + --brand/--success tokens; shared-scale math + dots + area unchanged) |
+| P-164 | <2 points → "Not enough data points yet – the curve grows with the next refresh." | app.js:1835–1839 | | ✅ done · app.js:1837–1841 (neutral DS message; unchanged) |
+| P-165 | Partial-wallet series: emerald line dashed + "(incomplete)" legend note w/ tooltip | app.js:1834, 1894, 1906 | | ✅ done · app.js:1836, 1896, 1913 (partial dashing + honesty marker preserved verbatim) |
+| P-166 | X-axis time labels: same-day → `HH:mm`; cross-day → `DD/MM HH:mm` (English, 24h) | app.js:1864–1870 | | ✅ done · app.js:1866–1873 (de-DE→en-GB axis; invariant 8 English-only / P4-align) |
+| P-167 | Y-axis labels via `fmtCents`; grid lines at 25/50/75% | app.js:1873–1877 | 💰 | ✅ done · app.js:1877–1881 (unchanged) |
+| P-168 | Legend: bar-swatch markers + "Items worth {fmtCents} · Balance {fmtCents} · N points" | app.js:1902–1907 | 💰 | ✅ done · app.js:1910–1915 (masterpiece bar swatches matching line colors; fmtCents + point count unchanged) |
 
 ---
 
