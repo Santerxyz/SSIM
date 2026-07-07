@@ -430,37 +430,37 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-225 | Opens for CURRENTLY-SELECTED account only; requires `state.activeUsername` else toast "Select an account first" (warn) | app.js:2424–2433 | | |
-| P-226 | Scope pill shows displayName/username; search reset on open | app.js:2429–2430 | | |
-| P-227 | Close manager hides overlay | app.js:2434 | | |
-| P-228 | Loading state (both panes): spinner + "Loading offers live from Steam…" | app.js:2439–2442 | | |
-| P-229 | Load error (both panes): rose triangle + `err.message`; closed-mid-fetch guard bails if overlay hidden | app.js:2448–2453 | | |
-| P-230 | Sort: active first, then newest by updatedAt/createdAt | app.js:2460–2464 | | |
-| P-231 | Per-account load-failure surfacing: errors joined `username: error · …`; toast single error or "N account(s) could not be loaded" (warn) | app.js:2467–2472 | | |
-| P-232 | Offer state → badge: 11 In escrow / 9 Needs confirm (amber); active Active (sky); 3 Accepted (emerald); 7 Declined (rose); 6/10 Cancelled; 5 Expired; 4 Countered; else stateName/History | app.js:2482–2494 | | |
-| P-233 | Coloured headline value: sent `−<fmtCents(valueGiveCents)>` (rose); received `+<fmtCents(valueReceiveCents)>` (emerald); empty if unpriced | app.js:2498–2504 | 💰 | |
-| P-234 | Per-side item thumbs: count pill + up to 5 real icons (bare items skipped), `+N` overflow; "nothing" italic when empty | app.js:2508–2519 | | |
-| P-235 | Partner label + Steam profile link: "To/From <partnerName\|SteamId>", links `steamcommunity.com/profiles/<id>`; id suffix shown when name resolved | app.js:2523–2533 | | |
-| P-236 | Row actions: sent → Cancel (rose); received → Accept (emerald) + Decline (rose) | app.js:2535–2543 | 💰 | |
-| P-237 | Offer row markup: checkbox only when active; date `toLocaleDateString(month:'short',day:'numeric',year:'numeric')`; give→arrow→receive thumbs; optional quoted message | app.js:2545–2575 | | |
-| P-238 | Empty pane: error variant (rose) if `offersError`, else "No sent/received offers." | app.js:2577–2582 | | |
-| P-239 | Pane counts: `N active · M total` per side | app.js:2585–2591 | | |
-| P-240 | Single offer action confirm: tone accept→`spend`, else `danger`; body "Accept/Decline/Cancel trade offer #<id>?" | app.js:2604–2615 | 💰 | |
-| P-241 | Single accept "unconfirmed" outcome: `res.status==='unconfirmed'` → warn "Offer accepted — awaiting mobile confirmation"; else success `Offer accepted/declined/cancelled` | app.js:2618–2623 | 💰 | |
-| P-242 | Single action failure: error `Accept/Decline/Cancel failed: <msg>`, row un-busied | app.js:2624–2627 | | |
-| P-243 | Batch accept/decline/cancel: `/api/trade/offers-batch`; backend caps concurrency at 2 | app.js:2630–2644 | 💰 | |
-| P-244 | Batch confirm modal: title "Accept/Decline/Cancel N offer(s)", body with count | app.js:2634–2638 | 💰 | |
-| P-245 | Batch "unconfirmed" handling: ok rows removed; unconfirmed counted separately | app.js:2650–2659 | 💰 | |
-| P-246 | Batch result toast: `Accept: X ok[, N await mobile confirmation][, N failed]`; warn if fail/unconfirmed else success | app.js:2660–2664 | | |
-| P-247 | Row busy state: opacity .5, pointer-events none, buttons disabled | app.js:2667–2671 | | |
-| P-248 | Row removal syncs data + counts + empty: splices `offersData`, recomputes `N active · M total` | app.js:2674–2686 | | |
-| P-249 | Multi-select: visible+active only; select-all, checked-row helpers | app.js:2688–2706 | | |
-| P-250 | Select-all indeterminate sync: header checkbox checked/indeterminate per side | app.js:2700–2706 | | |
-| P-251 | Selection counts + button enable: sent cancel-sel, recv accept-sel/decline-sel disabled at 0 | app.js:2707–2717 | | |
-| P-252 | Offers search (both sides): filters by partner SteamID / bot name / item names (`data-search`); unchecks hidden | app.js:2719–2728 | | |
-| P-253 | Static batch controls wiring: Sent → Cancel selected / Cancel all. Recv → Accept sel / Decline sel / Accept all / Decline all | app.js:2731–2743; index.html:1391–1419 | 💰 | |
-| P-254 | Offers modal static layout: two-sided (Sent left rose / Received right emerald), max-w 1400px h-90vh, per-side "Select all (active)"; env-wide aggregation | index.html:1354–1426 | | |
-| P-255 | `openTradeOffers()` entry: scope pill; two sides — Sent (💰 Cancel selected (N), 💰 Cancel all) / Received (💰 Accept (N), 💰 Decline, 💰 Accept all, 💰 Decline all); per-side lists+counts | index.html:1354–1426 | 💰 | |
+| P-225 | Opens for CURRENTLY-SELECTED account only; requires `state.activeUsername` else toast "Select an account first" (warn) | app.js:2424–2433 | | ✅ done · openTradeOffers logic unchanged |
+| P-226 | Scope pill shows displayName/username; search reset on open | app.js:2429–2430 | | ✅ done · #offers-scope now .pill pill--brand; text set by unchanged JS |
+| P-227 | Close manager hides overlay | app.js:2434 | | ✅ done · logic unchanged |
+| P-228 | Loading state (both panes): spinner + "Loading offers live from Steam…" | app.js:2439–2442 | | ✅ done · logic unchanged |
+| P-229 | Load error (both panes): rose triangle + `err.message`; closed-mid-fetch guard bails if overlay hidden | app.js:2448–2453 | | ✅ done · logic unchanged |
+| P-230 | Sort: active first, then newest by updatedAt/createdAt | app.js:2460–2464 | | ✅ done · logic unchanged |
+| P-231 | Per-account load-failure surfacing: errors joined; toast single error or "N account(s) could not be loaded" | app.js:2467–2472 | | ✅ done · logic unchanged (honesty surfacing preserved) |
+| P-232 | Offer state → badge: In escrow/Needs confirm (warn); Active (listed); Accepted (success); Declined (danger); Cancelled/Expired/Countered/History (neutral) | app.js:2482–2494 | | ✅ done · offerStateBadge → .pill pill--* variants |
+| P-233 | Coloured headline value: sent `−<fmtCents(valueGiveCents)>` (rose); received `+<fmtCents(valueReceiveCents)>` (emerald); empty if unpriced | app.js:2498–2504 | 💰 | ✅ done · offerHeadlineValue unchanged (money format intact) |
+| P-234 | Per-side item thumbs: count pill + up to 5 real icons (bare items skipped), `+N` overflow; "nothing" italic when empty | app.js:2508–2519 | | ✅ done · offerSideThumbs preserved (real icons kept over prototype's count-only pills) |
+| P-235 | Partner label + Steam profile link | app.js:2523–2533 | | ✅ done · offerPartnerLabel unchanged |
+| P-236 | Row actions: sent → Cancel; received → Accept + Decline | app.js:2535–2543 | 💰 | ✅ done · offerRowActions → .btn btn-sm; .offer-act + data-offer-action preserved |
+| P-237 | Offer row markup: checkbox only when active; date; give→arrow→receive thumbs; optional quoted message | app.js:2545–2575 | | ✅ done · offersRowHtml (badge span → .pill; all data-* hooks preserved) |
+| P-238 | Empty pane: error variant (rose) if `offersError`, else "No sent/received offers." | app.js:2577–2582 | | ✅ done · emptyOffers unchanged (error honesty preserved) |
+| P-239 | Pane counts: `N active · M total` per side | app.js:2585–2591 | | ✅ done · renderOffers count text unchanged |
+| P-240 | Single offer action confirm: tone accept→`spend`, else `danger`; body "Accept/Decline/Cancel trade offer #<id>?" | app.js:2604–2615 | 💰 | ✅ done · onSingleOfferAction ssimConfirm gate UNCHANGED |
+| P-241 | Single accept "unconfirmed" outcome → warn "awaiting mobile confirmation"; else success | app.js:2618–2623 | 💰 | ✅ done · 2FA-honesty surfacing UNCHANGED |
+| P-242 | Single action failure: error toast, row un-busied | app.js:2624–2627 | | ✅ done · unchanged |
+| P-243 | Batch accept/decline/cancel: `/api/trade/offers-batch`; backend caps concurrency at 2 | app.js:2630–2644 | 💰 | ✅ done · batchOffers API UNCHANGED |
+| P-244 | Batch confirm modal: title "Accept/Decline/Cancel N offer(s)", body with count | app.js:2634–2638 | 💰 | ✅ done · ssimConfirm gate UNCHANGED |
+| P-245 | Batch "unconfirmed" handling: ok rows removed; unconfirmed counted separately | app.js:2650–2659 | 💰 | ✅ done · 2FA-honesty UNCHANGED |
+| P-246 | Batch result toast: `Accept: X ok[, N await mobile confirmation][, N failed]` | app.js:2660–2664 | | ✅ done · unchanged |
+| P-247 | Row busy state: opacity .5, pointer-events none, buttons disabled | app.js:2667–2671 | | ✅ done · unchanged |
+| P-248 | Row removal syncs data + counts + empty: splices `offersData`, recomputes count | app.js:2674–2686 | | ✅ done · removeOfferRow UNCHANGED |
+| P-249 | Multi-select: visible+active only; select-all, checked-row helpers | app.js:2688–2706 | | ✅ done · unchanged |
+| P-250 | Select-all indeterminate sync: header checkbox checked/indeterminate per side | app.js:2700–2706 | | ✅ done · unchanged |
+| P-251 | Selection counts + button enable: sent cancel-sel, recv accept-sel/decline-sel disabled at 0 | app.js:2707–2717 | | ✅ done · unchanged (ids preserved) |
+| P-252 | Offers search (both sides): filters by partner SteamID / bot name / item names (`data-search`); unchecks hidden | app.js:2719–2728 | | ✅ done · unchanged (data-search hook preserved) |
+| P-253 | Static batch controls wiring: Sent → Cancel selected / Cancel all. Recv → Accept sel / Decline sel / Accept all / Decline all | app.js:2731–2743; index.html:1391–1419 | 💰 | ✅ done · bindOffersControls unchanged; buttons → .btn btn-sm (ids preserved) |
+| P-254 | Offers modal static layout: two-sided (Sent left rose / Received right emerald), max-w 1400px h-90vh, per-side "Select all (active)"; env-wide aggregation | index.html:1354–1426 | | ✅ done · index.html:1551–1620 (header .t16/.field/.modal-x; batch btns → .btn btn-sm) |
+| P-255 | `openTradeOffers()` entry: scope pill; both sides' batch buttons; per-side lists+counts | index.html:1354–1426 | 💰 | ✅ done · #offers-scope .pill pill--brand; all list/count/button ids preserved |
 
 ---
 

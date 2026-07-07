@@ -2488,18 +2488,19 @@ function resetSelAll() {
 }
 
 // ── ETradeOfferState → status badge ────────────────────────────────────────────
+// State badge → masterpiece .pill variant class (consumed as `pill ${cls}` in offersRowHtml).
 function offerStateBadge(o) {
   if (o.active) {
-    if (o.state === 11) return { label: 'In escrow',     cls: 'bg-amber-900/40 text-amber-300 border-amber-700/40' };
-    if (o.state === 9)  return { label: 'Needs confirm',  cls: 'bg-amber-900/40 text-amber-300 border-amber-700/40' };
-    return { label: 'Active', cls: 'bg-sky-900/40 text-sky-300 border-sky-700/40' };
+    if (o.state === 11) return { label: 'In escrow',     cls: 'pill--warn' };
+    if (o.state === 9)  return { label: 'Needs confirm',  cls: 'pill--warn' };
+    return { label: 'Active', cls: 'pill--listed' };
   }
-  if (o.state === 3)               return { label: 'Accepted', cls: 'bg-emerald-900/40 text-emerald-300 border-emerald-700/40' };
-  if (o.state === 7)               return { label: 'Declined', cls: 'bg-rose-900/40 text-rose-300 border-rose-700/40' };
-  if (o.state === 6 || o.state === 10) return { label: 'Cancelled', cls: 'bg-slate-800 text-slate-400 border-slate-700' };
-  if (o.state === 5)               return { label: 'Expired',  cls: 'bg-slate-800 text-slate-400 border-slate-700' };
-  if (o.state === 4)               return { label: 'Countered',cls: 'bg-slate-800 text-slate-400 border-slate-700' };
-  return { label: o.stateName || 'History', cls: 'bg-slate-800 text-slate-400 border-slate-700' };
+  if (o.state === 3)               return { label: 'Accepted', cls: 'pill--success' };
+  if (o.state === 7)               return { label: 'Declined', cls: 'pill--danger' };
+  if (o.state === 6 || o.state === 10) return { label: 'Cancelled', cls: 'pill--neutral' };
+  if (o.state === 5)               return { label: 'Expired',  cls: 'pill--neutral' };
+  if (o.state === 4)               return { label: 'Countered',cls: 'pill--neutral' };
+  return { label: o.stateName || 'History', cls: 'pill--neutral' };
 }
 
 /** Coloured headline value: sent shows −value of items GIVEN (red), received shows
@@ -2542,12 +2543,13 @@ function offerPartnerLabel(o, side) {
 }
 
 function offerRowActions(side) {
+  // .offer-act + data-offer-action hooks preserved (onSingleOfferAction wiring); DS buttons.
   if (side === 'sent') {
-    return `<button data-offer-action="cancel" class="offer-act px-2.5 py-1 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1"><i class="fa-solid fa-xmark"></i>Cancel</button>`;
+    return `<button data-offer-action="cancel" class="offer-act btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i>Cancel</button>`;
   }
   return `<div class="flex gap-1.5">
-    <button data-offer-action="accept" class="offer-act px-2.5 py-1 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white text-2xs font-bold transition flex items-center gap-1"><i class="fa-solid fa-check"></i>Accept</button>
-    <button data-offer-action="decline" class="offer-act px-2.5 py-1 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1"><i class="fa-solid fa-xmark"></i>Decline</button>
+    <button data-offer-action="accept" class="offer-act btn btn-sm bg-emerald-600 text-white"><i class="fa-solid fa-check"></i>Accept</button>
+    <button data-offer-action="decline" class="offer-act btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i>Decline</button>
   </div>`;
 }
 
@@ -2566,7 +2568,7 @@ function offersRowHtml(o, side) {
     <div class="min-w-0 flex-1 space-y-2">
       <div class="flex items-center gap-2 flex-wrap">
         ${offerPartnerLabel(o, side)}
-        <span class="text-2xs font-medium px-1.5 py-0.5 rounded border ${badge.cls}">${escapeHtml(badge.label)}</span>
+        <span class="pill ${badge.cls}">${escapeHtml(badge.label)}</span>
         ${whenTxt ? `<span class="text-2xs text-slate-600 ml-auto whitespace-nowrap">${escapeHtml(whenTxt)}</span>` : ''}
       </div>
       <div class="flex items-center gap-2 flex-wrap">

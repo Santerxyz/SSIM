@@ -260,3 +260,25 @@ The amber partial-snapshot banner (`data.partial`) is unchanged — a truncated 
 still reads visibly as "incomplete", not as "no orders" (pricing/UI honesty S2/S13). The
 `ssimConfirm` danger gates on both single-cancel (`cancelOrder`) and bulk-cancel
 (`bulkCancelOrders`) are exactly as before (invariant 3).
+
+---
+
+## V9 💰 — Global Trade-Offers manager (`app.js` offer helpers + `index.html` `#offers-overlay`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin of a 💰 view.** `app.js`: `offerStateBadge` now
+returns a `.pill pill--*` variant (In escrow/Needs confirm → `warn`, Active → `listed`, Accepted →
+`success`, Declined → `danger`, else `neutral`) consumed as `pill ${cls}`; `offerRowActions` →
+`.btn btn-sm` (Accept emerald, Cancel/Decline `btn-secondary` + `--danger-rgb`). `index.html`:
+the `#offers-overlay` chrome (header `.t16` / `.field` search / `.modal-x` close / `#offers-scope`
+→ `.pill pill--brand`) and all six batch buttons → `.btn btn-sm`.
+
+**Every controller stayed byte-identical:** `loadOffers`, `onSingleOfferAction` + `batchOffers`
+(their `ssimConfirm` gates and the `/api/trade/offers-batch` call), `removeOfferRow`,
+`bindOffersControls`, the search + select-all helpers. All 18 `#offers-*` ids and the
+`.offer-row` / `.offer-check` / `.offer-act` / `data-offer-action|-id|-active|-search|-username`
+hooks are preserved.
+
+Deliberate DECISION (design-source deviation, not IA): **the prototype simplifies each side's items
+to a single count pill; the port keeps `offerSideThumbs`' real item icons** (count pill + up to 5
+thumbnails + `+N`) — strictly more informative and already truthful. **2FA-honesty preserved:** an
+accepted-but-unconfirmed offer still surfaces "awaiting mobile confirmation" (invariant 3).

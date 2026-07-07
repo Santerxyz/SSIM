@@ -1553,17 +1553,15 @@
       <!-- Header -->
       <div class="px-6 py-4 border-b border-slate-800 flex items-center gap-3 shrink-0 flex-wrap">
         <i class="fa-solid fa-right-left text-brand text-lg"></i>
-        <h3 class="text-lg font-bold text-white">Trade Offers</h3>
-        <span id="offers-scope" class="text-2xs font-medium px-2 py-0.5 rounded-full bg-brand/20 text-brand-light border border-brand/40"></span>
+        <h3 class="t16 font-bold text-white">Trade Offers</h3>
+        <span id="offers-scope" class="pill pill--brand"></span>
         <div class="ml-auto flex items-center gap-2">
           <div class="relative">
             <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-            <input id="offers-search" type="text" placeholder="Search partner, bot or item…"
-              class="pl-8 pr-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 w-64 focus:outline-none focus:ring-2 focus:ring-brand/40" />
+            <input id="offers-search" type="text" placeholder="Search partner, bot or item…" class="field pl-8 pr-3 py-1.5 w-64" />
           </div>
-          <button id="offers-refresh" title="Reload offers live from Steam"
-            class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
-          <button id="offers-close" aria-label="Close" class="text-slate-500 hover:text-white transition ml-1"><i class="fa-solid fa-xmark text-lg"></i></button>
+          <button id="offers-refresh" title="Reload offers live from Steam" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
+          <button id="offers-close" aria-label="Close" class="modal-x ml-1"><i class="fa-solid fa-xmark text-lg"></i></button>
         </div>
       </div>
 
@@ -1582,10 +1580,8 @@
               <label class="flex items-center gap-1.5 text-2xs text-slate-400 cursor-pointer select-none">
                 <input id="offers-sent-selall" type="checkbox" class="accent-violet-500 w-4 h-4" /> Select all (active)
               </label>
-              <button id="offers-sent-cancel-selected" disabled
-                class="ml-auto px-2.5 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="offers-sent-sel-count">0</span>)</span></button>
-              <button id="offers-sent-cancel-all"
-                class="px-2.5 py-1.5 rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
+              <button id="offers-sent-cancel-selected" disabled class="btn btn-sm btn-danger ml-auto"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="offers-sent-sel-count">0</span>)</span></button>
+              <button id="offers-sent-cancel-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
             </div>
           </div>
           <div id="offers-sent-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/60 min-h-0"></div>
@@ -1603,14 +1599,10 @@
               <label class="flex items-center gap-1.5 text-2xs text-slate-400 cursor-pointer select-none">
                 <input id="offers-recv-selall" type="checkbox" class="accent-violet-500 w-4 h-4" /> Select all (active)
               </label>
-              <button id="offers-recv-accept-selected" disabled
-                class="ml-auto px-2.5 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white text-2xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-check"></i><span>Accept (<span id="offers-recv-sel-count">0</span>)</span></button>
-              <button id="offers-recv-decline-selected" disabled
-                class="px-2.5 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-2xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-xmark"></i><span>Decline</span></button>
-              <button id="offers-recv-accept-all"
-                class="px-2.5 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-check-double"></i><span>Accept all</span></button>
-              <button id="offers-recv-decline-all"
-                class="px-2.5 py-1.5 rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white text-2xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-trash"></i><span>Decline all</span></button>
+              <button id="offers-recv-accept-selected" disabled class="btn btn-sm bg-emerald-600 text-white ml-auto"><i class="fa-solid fa-check"></i><span>Accept (<span id="offers-recv-sel-count">0</span>)</span></button>
+              <button id="offers-recv-decline-selected" disabled class="btn btn-sm btn-danger"><i class="fa-solid fa-xmark"></i><span>Decline</span></button>
+              <button id="offers-recv-accept-all" class="btn btn-sm bg-emerald-700/80 text-white"><i class="fa-solid fa-check-double"></i><span>Accept all</span></button>
+              <button id="offers-recv-decline-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Decline all</span></button>
             </div>
           </div>
           <div id="offers-recv-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/60 min-h-0"></div>
