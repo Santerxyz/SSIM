@@ -103,7 +103,7 @@ export interface MassSellJob {
   blocked:     Array<{ username: string; assetId: string; error: string }>;
   /** Live progress for the UI so the operator isn't staring at a blank bar. */
   currentBot?: string;
-  phase?:      'preflight' | 'pricing' | 'listing' | 'confirming' | 'done';
+  phase?:      'preflight' | 'listing' | 'confirming' | 'done';
   startedAt?:  string;
   finishedAt?: string;
 }

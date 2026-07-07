@@ -5429,7 +5429,7 @@ function pollSell() {
       if (deferred) parts.push(`${deferred} deferred`);
       parts.push(`${job.failed.length} failed`);
       // Live phase + current bot so the operator sees motion, not a frozen bar.
-      const phaseLabel = { preflight: 'Connecting', pricing: 'Pricing', listing: 'Listing', confirming: 'Confirming 2FA', done: 'Done' }[job.phase] || '…';
+      const phaseLabel = { preflight: 'Connecting', listing: 'Listing', confirming: 'Confirming 2FA', done: 'Done' }[job.phase] || '…';
       const head = job.cancelling
         ? '<span class="text-amber-400 font-semibold">Cancelling…</span> finishing the listing in flight'
         : (job.currentBot ? `<span class="text-brand-light font-semibold">${escapeHtml(job.currentBot)}</span> · ${phaseLabel}` : phaseLabel);
