@@ -103,7 +103,6 @@ export interface MassBuyJob {
   filled:            number;   // total items received across the folder
   skipped:           number;   // couldn't afford ≥1 / unknown wallet
   failed:            number;   // buy step threw
-  currentAccount?:   string;
   startedAt?:        string;
   finishedAt?:       string;
   results:           MassBuyAccountResult[];
@@ -450,7 +449,6 @@ export class BuyService {
         while (queue.length) {
           if (this.massCancel) break; // "End Task": stop committing money on the remaining accounts
           const u = queue.shift()!;
-          this.massJob.currentAccount = u;
           await this.massBuyOne(u, p, wallets.get(u) ?? null);
           this.massJob.processed++;
           if (queue.length && !this.massCancel) await sleep(MASS_BUY_ACCOUNT_DELAY_MS);
@@ -467,7 +465,6 @@ export class BuyService {
     this.massJob.cancelling = false;
     this.massJob.cancelled = this.massCancel;
     this.massJob.phase = 'done';
-    this.massJob.currentAccount = undefined;
     this.massJob.finishedAt = new Date().toISOString();
     logger.info(
       `[mass-buy] ═══ ${this.massCancel ? 'CANCELLED' : 'COMPLETE'}: ${this.massJob.marketHashName} – ${this.massJob.placed} order(s) placed / ` +
