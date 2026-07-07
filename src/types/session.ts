@@ -27,7 +27,7 @@ export interface ManagedSession {
   account:       AccountConfig;
   client:        SteamUser;
   state:         SessionState;
-  /** Per-account isolated HTTPS agent (local IP bind or proxy) for web API calls */
+  /** HTTPS agent for web API calls. Proxy accounts: per-account instance. Local-IP accounts: SHARED pooled https.Agent per bind IP (AgentFactory.localIpPool) — NEVER call destroy() on it directly; all teardown must go through AgentFactory.destroyIfDisposable, which refuses to destroy shared pool members. */
   httpsAgent:    HttpAgent;
   /**
    * The loaded maFile (when available). Carries shared_secret + identity_secret,
