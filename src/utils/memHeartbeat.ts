@@ -33,6 +33,10 @@ const INTERVAL_MS = Math.max(2_000, Number(process.env.SSIM_HEARTBEAT_MS) || 15_
 const MAX_BYTES   = 8 * 1024 * 1024; // roll the file once it passes ~8 MB (a sample is ~120 B)
 
 let timer: NodeJS.Timeout | undefined;
+/** In-process byte counter for the append-only sink — rolls at MAX_BYTES without a per-tick statSync
+ *  (this is the hot per-write sink rollLog.ts's comment steers toward a counter). Seeded once from
+ *  disk on start so a large file from a prior run still rolls; reset on stop so start re-seeds. */
+let bytesWritten = 0;
 /** Monotonic ms of the previous sample — used to detect an EVENT-LOOP STALL (a gap far larger
  *  than INTERVAL_MS means the loop was blocked, e.g. by sync IO or stdout-pipe backpressure, so the
  *  timer couldn't fire on time). A stall freezes BOTH this heartbeat and ssim.log at once, which
@@ -54,14 +58,6 @@ function handleCounts(): { handles: number; requests: number } {
   try { handles = p._getActiveHandles?.().length ?? -1; } catch { /* ignore */ }
   try { requests = p._getActiveRequests?.().length ?? -1; } catch { /* ignore */ }
   return { handles, requests };
-}
-
-/** Roll the file to .1 (overwriting any prior roll) once it grows past MAX_BYTES. */
-function rollIfLarge(): void {
-  try {
-    const st = fs.statSync(HEARTBEAT_FILE);
-    if (st.size > MAX_BYTES) fs.renameSync(HEARTBEAT_FILE, HEARTBEAT_FILE + '.1');
-  } catch { /* no file yet, or rename raced – ignore */ }
 }
 
 function sample(): void {
@@ -89,8 +85,14 @@ function sample(): void {
       try { Object.assign(rec, statsProvider()); } catch { /* stats are best-effort */ }
     }
     if (stalledMs) rec.stallMs = stalledMs; // event-loop stall breadcrumb (only when one occurred)
-    rollIfLarge();
-    fs.appendFileSync(HEARTBEAT_FILE, JSON.stringify(rec) + '\n');
+    const line = JSON.stringify(rec) + '\n';
+    // Roll FIRST (so this sample lands in the fresh file), gated by the in-process counter — no statSync.
+    if (bytesWritten > MAX_BYTES) {
+      try { fs.renameSync(HEARTBEAT_FILE, HEARTBEAT_FILE + '.1'); } catch { /* rename raced – ignore */ }
+      bytesWritten = 0;
+    }
+    fs.appendFileSync(HEARTBEAT_FILE, line);
+    bytesWritten += Buffer.byteLength(line);
   } catch { /* a heartbeat must never throw */ }
 }
 
@@ -102,6 +104,7 @@ function sample(): void {
 export function startMemHeartbeat(stats?: () => Record<string, number>): void {
   if (timer) return; // already running
   statsProvider = stats;
+  try { bytesWritten = fs.statSync(HEARTBEAT_FILE).size; } catch { bytesWritten = 0; } // seed so a prior run's large file still rolls
   sample(); // baseline at boot
   timer = armInterval(timer, sample, INTERVAL_MS); // armInterval unref()'s it — never keep the process alive just for the sampler
 }
@@ -111,6 +114,7 @@ export function stopMemHeartbeat(): void {
   timer = undefined;
   statsProvider = undefined;
   lastSampleAt = 0; // so a later restart doesn't mis-read the gap as a stall
+  bytesWritten = 0; // so the next start re-seeds the roll counter from disk
 }
 
 /** Test-only: drive a single sample synchronously (production drives it via the interval). */
