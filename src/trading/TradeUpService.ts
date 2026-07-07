@@ -342,8 +342,27 @@ export class TradeUpService {
     candidates.sort((a, b) => (Number(b.fullyPriced) - Number(a.fullyPriced)) || (b.profitCents - a.profitCents));
     const top = candidates.slice(0, MAX_CANDIDATES);
 
-    if (top.some((c) => !c.fullyPriced)) {
+    // H-TRD-073: the price cache is tri-state (PricingService.priceCents: undefined = not fetched yet
+    // → a re-click can fill it; null = FRESH authoritative "no market price", cached 24h per S2 → a
+    // re-click never changes it; number = priced). The old single warning told the user to "click again
+    // in a moment" for BOTH gap kinds, so a candidate whose only gap is an authoritative no-price
+    // outcome looked perpetually loading. Partition the not-fully-priced candidates' involved names and
+    // warn per real cause. (computeContract's null-in = unpriced math contract stays untouched.)
+    let anyLoading = false;
+    let anyNoPrice = false;
+    for (const c of top) {
+      if (c.fullyPriced) continue;
+      for (const mhn of [...c.inputs.map((i) => i.marketHashName), ...c.outcomes.map((o) => o.marketHashName)]) {
+        const p = this.pricing.priceCents(mhn, CS2_APPID);
+        if (p === undefined) anyLoading = true;
+        else if (p === null) anyNoPrice = true;
+      }
+    }
+    if (anyLoading) {
       warnings.push('Some prices are still loading — EV/profit shown are estimates; click again in a moment for accurate figures.');
+    }
+    if (anyNoPrice) {
+      warnings.push('Some items have no current market price — their EV contribution is 0 (not loading; re-clicking will not change this).');
     }
     warnings.push(realFloats
       ? 'Input floats are the REAL per-item GC floats — output wears + EV are accurate (subject to live market prices).'
