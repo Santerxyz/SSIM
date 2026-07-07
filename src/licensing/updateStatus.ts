@@ -91,19 +91,3 @@ export interface PriorCrash {
 let priorCrash: PriorCrash | undefined;
 export function setPriorCrash(c: PriorCrash | undefined): void { priorCrash = c; }
 export function getPriorCrash(): PriorCrash | undefined { return priorCrash; }
-
-/** The projection the dashboard status route returns (C3 / B3). Pure — no side effects. */
-export interface UpdateStatusView {
-  currentOutcome?: UpdateOutcome;
-  available?: AvailableUpdate;
-  blocked?: BlockedUpdate;
-  lastCheckedAt?: number;
-}
-export function updateStatusView(): UpdateStatusView {
-  return {
-    currentOutcome: lastOutcome,
-    available,
-    blocked,
-    lastCheckedAt,
-  };
-}
