@@ -24,7 +24,7 @@ export function scaleConcurrency(
   const max = opts?.max ?? MAX_CONCURRENCY;
   const per = Math.max(1, opts?.per ?? ACCOUNTS_PER_THREAD);
   const n = Math.max(0, Math.floor(count || 0));
-  if (n <= 0) return min;
+  if (n <= 0) return Math.min(min, max);
   return Math.min(max, Math.max(min, Math.ceil(n / per)));
 }
 
