@@ -11,6 +11,33 @@ import { logger } from '../utils/logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+/**
+ * Resolves an env-tunable safety cap, honestly and observably.
+ *   • unset / blank / non-numeric        → `dflt` (silent — the normal case)
+ *   • `zeroOptOut` && the literal "0"     → 0, cap DISABLED (warned; only "0", never Number('')===0)
+ *   • value ≥ `min`                       → `Math.floor(value)`
+ *   • value < `min` (a TIGHTER request)   → clamped UP to `min` (never down to the looser `dflt`), warned
+ * An operator lowering a cap below its structural floor is met at the floor, not silently
+ * replaced by the weaker default — the whole point of the finding this helper fixes.
+ */
+export function resolveCapEnv(
+  name: string,
+  raw: string | undefined,
+  min: number,
+  dflt: number,
+  zeroOptOut: boolean,
+): number {
+  if (zeroOptOut && raw?.trim() === '0') {
+    logger.warn(`${name}=0 – cap DISABLED`);
+    return 0;
+  }
+  const value = Number(raw);
+  if (raw === undefined || raw.trim() === '' || !Number.isFinite(value)) return dflt;
+  if (value >= min) return Math.floor(value);
+  logger.warn(`${name}=${raw} is below the minimum ${min} – clamped to ${min}`);
+  return min;
+}
+
 // ─── Timeouts (generous – slow residential / rotating proxies need headroom) ──
 // FAIL FAST: a dead proxy must release the queue slot in ~15s, NOT tie it up for 90s × 5.
 // The 5 connection retries (MAX_CONNECTION_ATTEMPTS) with backoff remain, but each attempt
@@ -32,10 +59,7 @@ const WEB_SESSION_REFRESH_S  = 20 * 60; // refresh web cookies every 20 min
 // queue (FIFO) and start as slots free. Per-account dedup (loginsInFlight) still
 // collapses duplicate logins for the SAME account and never consumes a slot.
 // Tunable via SSIM_MAX_CONCURRENT_LOGINS for ops; defaults to the documented 25 ceiling.
-const MAX_CONCURRENT_LOGINS = (() => {
-  const raw = Number(process.env.SSIM_MAX_CONCURRENT_LOGINS);
-  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 25;
-})();
+const MAX_CONCURRENT_LOGINS = resolveCapEnv('SSIM_MAX_CONCURRENT_LOGINS', process.env.SSIM_MAX_CONCURRENT_LOGINS, 1, 25, false);
 
 // ─── Hard resident-session ceiling (structural anti-storm backstop) ────────────
 // MAX_CONCURRENT_LOGINS bounds how many logins HANDSHAKE at once; it does NOT bound how many
@@ -49,11 +73,7 @@ const MAX_CONCURRENT_LOGINS = (() => {
 // live-session count past a safe socket budget. A re-login of an ALREADY-resident account is exempt
 // (it replaces, never grows). Generous default (150 » every 25-wide pool, « socket exhaustion);
 // tune via SSIM_MAX_LIVE_SESSIONS, set 0 to disable.
-const MAX_LIVE_SESSIONS = (() => {
-  const raw = Number(process.env.SSIM_MAX_LIVE_SESSIONS);
-  if (raw === 0) return 0;                                   // explicit opt-out
-  return Number.isFinite(raw) && raw >= 25 ? Math.floor(raw) : 150;
-})();
+const MAX_LIVE_SESSIONS = resolveCapEnv('SSIM_MAX_LIVE_SESSIONS', process.env.SSIM_MAX_LIVE_SESSIONS, 25, 150, true);
 
 // ─── Idle-session reaper (anti-accumulation for SINGLE-account ops) ─────────────
 // Bulk ops release the sessions they create, but SINGLE-account paths (single send /
@@ -64,10 +84,7 @@ const MAX_LIVE_SESSIONS = (() => {
 // one-shot op's leftover session is reclaimed instead of accumulating. A session in active use
 // is touched (markUsed) on every op entry, so its lastActivityAt stays fresh and it is never
 // reaped mid-use; the proactive cookie refresh is maintenance and deliberately does NOT count.
-const IDLE_SESSION_TTL_MS = (() => {
-  const raw = Number(process.env.SSIM_IDLE_SESSION_TTL_MS);
-  return Number.isFinite(raw) && raw >= 60_000 ? Math.floor(raw) : 30 * 60_000; // default 30 min
-})();
+const IDLE_SESSION_TTL_MS = resolveCapEnv('SSIM_IDLE_SESSION_TTL_MS', process.env.SSIM_IDLE_SESSION_TTL_MS, 60_000, 30 * 60_000, false); // default 30 min; always ≥ 60 000 (no opt-out)
 const REAPER_INTERVAL_MS = 5 * 60_000;
 
 // ─── Retry strategy (Problem 1: transient NoConnection / proxy failures) ──────
@@ -149,10 +166,10 @@ export class SessionManager extends EventEmitter {
 
   constructor() {
     super();
-    if (IDLE_SESSION_TTL_MS > 0) {
-      this.reaperTimer = setInterval(() => { void this.reapIdleSessions(); }, REAPER_INTERVAL_MS);
-      this.reaperTimer.unref?.();
-    }
+    // IDLE_SESSION_TTL_MS is always ≥ 60 000 (resolveCapEnv floors it, no opt-out), so the reaper
+    // always runs. To disable the anti-storm machinery, set SSIM_MAX_LIVE_SESSIONS=0 (the ceiling), not the TTL.
+    this.reaperTimer = setInterval(() => { void this.reapIdleSessions(); }, REAPER_INTERVAL_MS);
+    this.reaperTimer.unref?.();
   }
 
   /** Marks a session as actively USED right now (called at every genuine op entry) so the idle
