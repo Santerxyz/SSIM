@@ -47,10 +47,15 @@ export class CsFloatDeliveredStore {
         logger.error(`${this.MARKER_PATH} present – a prior run could not persist delivered ids; CSFloat auto-delivery stays DISABLED until the disk/permission fault is cleared, ${this.MARKER_PATH} is removed, and the app is restarted.`);
       }
       if (!fsExtra.existsSync(this.path)) return; // fresh install → empty is correct, not degraded
-      const parsed = fsExtra.readJsonSync(this.path) as { ids?: unknown } | null;
+      const parsed = fsExtra.readJsonSync(this.path) as { version?: unknown; ids?: unknown } | null;
       if (parsed && Array.isArray(parsed.ids)) {
-        this.ids = parsed.ids.map(String);
-        for (const id of this.ids) this.set.add(id);
+        if (parsed.version !== undefined && parsed.version !== 1) {
+          this.degraded = true; // unknown/newer on-disk format → do NOT misread it as v1
+          logger.error(`${this.path} is version ${String(parsed.version)} (a newer/unknown format) – CSFloat auto-delivery DISABLED to avoid misreading it as v1 and re-delivering already-sent sales. Fix or remove the file, then restart.`);
+        } else {
+          this.ids = parsed.ids.map(String);
+          for (const id of this.ids) this.set.add(id);
+        }
       } else {
         this.degraded = true; // present but wrong shape → dedup memory is untrustworthy
         logger.error(`${this.path} is present but malformed – CSFloat auto-delivery DISABLED to avoid re-delivering already-sent sales. Fix or remove the file, then restart.`);
