@@ -689,73 +689,81 @@ export class TradeService {
     // opts.delayMs may RAISE the floor (slower = safer) but never drop below the 1s minimum.
     const minGap = Math.max(TRADE_MIN_DELAY_MS, opts?.delayMs ?? 0);
     const maxGap = Math.max(TRADE_MAX_DELAY_MS, minGap);
-    const queue  = [...groups];
-    // Snapshot which senders were ALREADY live so we release ONLY the sessions this send creates.
-    const wasLiveBefore = this.snapshotLive(groups.map((g) => g.username));
+    // wasLiveBefore stays outside the try so the finally can release ONLY sessions this run created.
+    let wasLiveBefore: Set<string> | undefined;
+    try {
+      const queue  = [...groups];
+      // Snapshot which senders were ALREADY live so we release ONLY the sessions this send creates.
+      wasLiveBefore = this.snapshotLive(groups.map((g) => g.username));
 
-    // Global dispatch throttle (shared across ALL workers): reserve time slots `gap` apart so the
-    // gap is between ANY two offers, not just two sends by the same worker. At the default ceiling
-    // of 1 this means offers go out strictly one-at-a-time, each ≥1–2s after the last — the safest
-    // possible cadence against Steam Error 15. (If the ceiling is ever raised, the throttle still
-    // guarantees the inter-offer gap regardless of worker count.)
-    let nextSlotAt = 0;
-    const throttle = async (): Promise<void> => {
-      const gap = minGap + Math.floor(Math.random() * (maxGap - minGap + 1));
-      const now = Date.now();
-      const wait = Math.max(0, nextSlotAt - now);
-      nextSlotAt = Math.max(now, nextSlotAt) + gap;
-      if (wait > 0) await sleep(wait);
-    };
+      // Global dispatch throttle (shared across ALL workers): reserve time slots `gap` apart so the
+      // gap is between ANY two offers, not just two sends by the same worker. At the default ceiling
+      // of 1 this means offers go out strictly one-at-a-time, each ≥1–2s after the last — the safest
+      // possible cadence against Steam Error 15. (If the ceiling is ever raised, the throttle still
+      // guarantees the inter-offer gap regardless of worker count.)
+      let nextSlotAt = 0;
+      const throttle = async (): Promise<void> => {
+        const gap = minGap + Math.floor(Math.random() * (maxGap - minGap + 1));
+        const now = Date.now();
+        const wait = Math.max(0, nextSlotAt - now);
+        nextSlotAt = Math.max(now, nextSlotAt) + gap;
+        if (wait > 0) await sleep(wait);
+      };
 
-    const worker = async (): Promise<void> => {
-      while (queue.length > 0) {
-        if (this.massCancel) break; // "End Task": stop pulling new bots; in-flight offer (if any) finishes
-        const group = queue.shift()!;
-        await throttle(); // pace the dispatch BEFORE sending (anti-spam, per-recipient Error 15 guard)
-        if (this.massCancel) break; // re-check after the pacing wait so we don't fire a freshly-paced offer
-        try {
-          const res = await this.sendTrade(group.username, {
-            tradeUrl,
-            // Carry each asset's real app/context so a TF2 (440) mass-send builds a TF2 offer,
-            // not a CS2 one. group.appId/contextId default to CS2 in toEconItem. (App-agnostic.)
-            myItems: group.assetIds.map(id => ({ assetId: id, appId: group.appId, contextId: group.contextId })),
-            message: opts?.message,
-          });
-          this.massJob.sent++;
-          if (res.status === 'confirmed')   this.massJob.confirmed++;
-          if (res.status === 'unconfirmed') this.massJob.unconfirmed++;
-          this.massJob.results.push({ username: group.username, offerId: res.offerId, status: res.status });
-          logger.info(`[mass] ${group.username} → offer ${res.offerId} (${res.status})  [${this.massJob.done + 1}/${this.massJob.total}]`);
-        } catch (err) {
-          this.massJob.failed.push({ username: group.username, error: (err as Error).message });
-          logger.error(`[mass] ${group.username} failed: ${(err as Error).message}`);
-          // Every group targets the SAME receiver, so a full-inventory rejection dooms every
-          // remaining bot (login + pacing gap + a refused offer each). Stop the run at the first
-          // one, exactly as an operator "End Task" does — the cooperative-cancel checks (667/670)
-          // drain the queue and the epilogue marks cancelled:true. Remedy is free space + re-run.
-          if ((err as { inventoryFull?: boolean }).inventoryFull === true && !this.massCancel) {
-            this.massCancel = true;
-            this.massJob.cancelling = true;
-            this.massJob.stopReason = 'Receiver inventory full — remaining bots skipped';
-            logger.error(`[mass] receiver inventory is full — stopping the run (${queue.length} bot(s) skipped)`);
+      const worker = async (): Promise<void> => {
+        while (queue.length > 0) {
+          if (this.massCancel) break; // "End Task": stop pulling new bots; in-flight offer (if any) finishes
+          const group = queue.shift()!;
+          await throttle(); // pace the dispatch BEFORE sending (anti-spam, per-recipient Error 15 guard)
+          if (this.massCancel) break; // re-check after the pacing wait so we don't fire a freshly-paced offer
+          try {
+            const res = await this.sendTrade(group.username, {
+              tradeUrl,
+              // Carry each asset's real app/context so a TF2 (440) mass-send builds a TF2 offer,
+              // not a CS2 one. group.appId/contextId default to CS2 in toEconItem. (App-agnostic.)
+              myItems: group.assetIds.map(id => ({ assetId: id, appId: group.appId, contextId: group.contextId })),
+              message: opts?.message,
+            });
+            this.massJob.sent++;
+            if (res.status === 'confirmed')   this.massJob.confirmed++;
+            if (res.status === 'unconfirmed') this.massJob.unconfirmed++;
+            this.massJob.results.push({ username: group.username, offerId: res.offerId, status: res.status });
+            logger.info(`[mass] ${group.username} → offer ${res.offerId} (${res.status})  [${this.massJob.done + 1}/${this.massJob.total}]`);
+          } catch (err) {
+            this.massJob.failed.push({ username: group.username, error: (err as Error).message });
+            logger.error(`[mass] ${group.username} failed: ${(err as Error).message}`);
+            // Every group targets the SAME receiver, so a full-inventory rejection dooms every
+            // remaining bot (login + pacing gap + a refused offer each). Stop the run at the first
+            // one, exactly as an operator "End Task" does — the cooperative-cancel checks (667/670)
+            // drain the queue and the epilogue marks cancelled:true. Remedy is free space + re-run.
+            if ((err as { inventoryFull?: boolean }).inventoryFull === true && !this.massCancel) {
+              this.massCancel = true;
+              this.massJob.cancelling = true;
+              this.massJob.stopReason = 'Receiver inventory full — remaining bots skipped';
+              logger.error(`[mass] receiver inventory is full — stopping the run (${queue.length} bot(s) skipped)`);
+            }
+          } finally {
+            this.massJob.done++;
           }
-        } finally {
-          this.massJob.done++;
         }
-      }
-    };
+      };
 
-    const workers = Math.max(1, Math.min(concurrency, groups.length || 1));
-    await Promise.all(Array.from({ length: workers }, () => worker()));
-    // Release the sessions this send created so a mass-send doesn't leave the whole folder resident.
-    await this.releaseCreatedSessions(groups.map((g) => g.username), wasLiveBefore);
-
-    this.massJob.running = false;
-    this.massJob.cancelling = false;
-    this.massJob.cancelled = this.massCancel;
-    this.massJob.finishedAt = new Date().toISOString();
-    logger.info(`[mass] ${this.massCancel ? 'CANCELLED' : 'complete'}: ${this.massJob.sent} sent / ${this.massJob.confirmed} confirmed / ${this.massJob.unconfirmed} unconfirmed / ${this.massJob.failed.length} failed`);
-    this.massCancel = false;
+      const workers = Math.max(1, Math.min(concurrency, groups.length || 1));
+      await Promise.all(Array.from({ length: workers }, () => worker()));
+    } finally {
+      // Terminal epilogue runs even if the orchestrator throws, so the job never latches a
+      // contradictory half-dead state (cancelling with no finishedAt) and created sessions are freed.
+      // Guard: an undefined wasLiveBefore means the snapshot never completed ⇒ the pool never ran ⇒
+      // this run created no sessions; releasing with an empty set would wrongly tear down accounts
+      // that were live before (INV-A6). The .catch keeps a release failure from skipping the state writes.
+      if (wasLiveBefore) await this.releaseCreatedSessions(groups.map((g) => g.username), wasLiveBefore).catch(() => undefined);
+      this.massJob.running = false;
+      this.massJob.cancelling = false;
+      this.massJob.cancelled = this.massCancel;
+      this.massJob.finishedAt = new Date().toISOString();
+      logger.info(`[mass] ${this.massCancel ? 'CANCELLED' : 'complete'}: ${this.massJob.sent} sent / ${this.massJob.confirmed} confirmed / ${this.massJob.unconfirmed} unconfirmed / ${this.massJob.failed.length} failed`);
+      this.massCancel = false;
+    }
   }
 
   // ── Feature 5: auto-accept internal offers ───────────────────────────────

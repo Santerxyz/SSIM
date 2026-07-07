@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MarketService } from '../src/trading/MarketService';
+import { TradeService } from '../src/trading/TradeService';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  S33 — a fire-and-forget `void this.runMass…()` that ever REJECTS would escape
@@ -29,4 +30,50 @@ test('S33: the mass-send / mass-buy void launches also finalize on rejection', (
   // Each catch releases its job so a rejection can't latch the job type.
   assert.ok(/\.catch\(\(err\) => \{\s*this\.massJob\.running = false;/.test(trade), 'mass-send catch releases the job');
   assert.ok(/\.catch\(\(err\) => \{\s*this\.massJob\.running = false;/.test(buy), 'mass-buy catch releases the job');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-TRD-014 — runMassSend's terminal epilogue now lives in a `finally`, so a
+//  rejecting orchestrator still reaches a truthful terminal state (running:false,
+//  cancelling:false, finishedAt set) instead of leaving a half-dead job forever.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function freshMassJob() {
+  return {
+    running: true, cancelling: false, cancelled: false, total: 1, done: 0,
+    sent: 0, confirmed: 0, unconfirmed: 0, failed: [] as any[], results: [] as any[],
+  };
+}
+
+test('H-TRD-014: a runMassSend that throws before the snapshot still finalizes and skips release (INV-A6 guard)', async () => {
+  const svc: any = Object.create(TradeService.prototype);
+  svc.massJob = freshMassJob();
+  svc.massCancel = false;
+  let logoutCalled = false;
+  svc.sessions = { isLive: () => false, logoutAccount: () => { logoutCalled = true; return Promise.resolve(); } };
+  svc.snapshotLive = () => { throw new Error('boom'); }; // snapshot never completes ⇒ pool never ran
+
+  await assert.rejects(svc.runMassSend([{ username: 'a', assetIds: ['1'] }], 'url'), /boom/);
+
+  const status = svc.massStatus();
+  assert.equal(status.running, false, 'running reset in the finally');
+  assert.equal(status.cancelling, false, 'cancelling cleared — no contradictory latched state');
+  assert.ok(status.finishedAt, 'finishedAt stamped even on the crash path');
+  assert.equal(logoutCalled, false, 'release skipped: this run created no sessions (guard held)');
+});
+
+test('H-TRD-014: a release failure does not skip the terminal state writes', async () => {
+  const svc: any = Object.create(TradeService.prototype);
+  svc.massJob = freshMassJob();
+  svc.massCancel = false;
+  svc.snapshotLive = () => new Set<string>();
+  svc.releaseCreatedSessions = () => Promise.reject(new Error('release boom'));
+  svc.sendTrade = () => Promise.resolve({ offerId: '1', status: 'confirmed' });
+
+  await svc.runMassSend([{ username: 'a', assetIds: ['1'] }], 'url'); // resolves — release reject is swallowed
+
+  const status = svc.massStatus();
+  assert.equal(status.running, false, 'running reset despite the release throw');
+  assert.equal(status.cancelling, false);
+  assert.ok(status.finishedAt, 'finishedAt still stamped');
 });
