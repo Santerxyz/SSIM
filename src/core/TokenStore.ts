@@ -128,7 +128,16 @@ export class TokenStore {
     // Returning null routes it to the .bak-or-degrade path → write-refusal protects the newer store.
     if (parsed.version !== undefined && Number(parsed.version) > 1) return null;
     const tokens: Record<string, string> = Object.create(null) as Record<string, string>; // H-ACC-061: null-proto (prototype-key usernames)
-    for (const [k, v] of Object.entries(parsed.tokens)) if (typeof v === 'string' && v) tokens[k] = v;
+    // H-ACC-062: the per-entry tolerance itself is deliberate (#37 — a glitched entry is not whole-file
+    // corruption), but dropping the sole credential of a token-only account SILENTLY leaves the operator with
+    // "token missing → needs re-import" and nothing in the log. Name the dropped KEYS (usernames aren't secrets)
+    // so the loss is timestamped and diagnosable. Token VALUES must never be logged.
+    const dropped: string[] = [];
+    for (const [k, v] of Object.entries(parsed.tokens)) {
+      if (typeof v === 'string' && v) tokens[k] = v;
+      else dropped.push(k);
+    }
+    if (dropped.length) logger.warn(`refresh token store: dropped ${dropped.length} malformed token entr${dropped.length === 1 ? 'y' : 'ies'} (${dropped.join(', ')}) — affected account(s) will need credential/2FA login`);
     return tokens;
   }
 

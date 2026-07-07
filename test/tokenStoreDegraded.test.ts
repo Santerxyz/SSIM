@@ -250,6 +250,30 @@ test('H-ACC-061: a "constructor" username has() is false until set, and a valid 
   assert.equal(s.get('missing'), undefined, 'an unset lookup is undefined, not a prototype member');
 });
 
+// ─── H-ACC-062: malformed per-entry tokens are dropped WITH a single diagnostic warn (keys, never values) ─────
+test('H-ACC-062: non-string/empty entries are dropped and a single warn names the dropped keys', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const p = mk(JSON.stringify({ version: 1, tokens: { alice: 'tok', bob: 42, carol: '' } }));
+  const warnMsgs: string[] = [];
+  const origWarn = logger.warn;
+  let s: TokenStore;
+  try {
+    (logger as unknown as { warn: (m: unknown) => unknown }).warn = (m: unknown) => { warnMsgs.push(String(m)); return logger; };
+    s = new TokenStore(p);
+  } finally {
+    (logger as unknown as { warn: typeof origWarn }).warn = origWarn;
+  }
+  assert.equal(s.isDegraded(), false, 'a per-entry glitch is tolerated (#37), not whole-file corruption');
+  assert.equal(s.get('alice'), 'tok', 'the valid entry survives');
+  assert.equal(s.get('bob'), undefined, 'a non-string value is dropped');
+  assert.equal(s.get('carol'), undefined, 'an empty-string value is dropped');
+  const dropWarns = warnMsgs.filter(m => m.includes('dropped') && m.includes('malformed token'));
+  assert.equal(dropWarns.length, 1, 'exactly one drop-warn line is emitted');
+  assert.equal(dropWarns[0].includes('bob'), true, 'the dropped key "bob" is named');
+  assert.equal(dropWarns[0].includes('carol'), true, 'the dropped key "carol" is named');
+  assert.equal(dropWarns[0].includes('42'), false, 'the dropped VALUE is never logged');
+});
+
 test('S36: a fresh-install store must NOT leak tokens into a later instance (no shared EMPTY alias)', () => {
   assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
   // Instance A is a fresh install (missing file). In the buggy `{ ...EMPTY }` code its in-memory tokens
