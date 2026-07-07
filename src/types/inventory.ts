@@ -147,10 +147,10 @@ export interface RawDescription {
   appid:            number;
   classid:          string;
   instanceid:       string;
-  market_name:      string;
+  market_name?:     string;
   market_hash_name: string;
   name:             string;
-  type:             string;
+  type?:            string;
   tradable:         number;
   marketable:       number;
   commodity:        number;
