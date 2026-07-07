@@ -97,6 +97,11 @@ export class MarketPricing {
     // (viaPriceOverview throws on any non-200 or success!==true). Track it so an
     // exhausted-with-no-price result is still authoritative if any try was answered.
     let sawAuthoritative = false;
+    // H-PRC-003: name the egress route honestly. A proxy agent yields a FRESH exit IP
+    // per try; agentless calls (no username, or trader resolution failed → priceCtxFor
+    // returns {}) all egress from the SHARED local IP, so only the UA rotates. The log
+    // must not assert IP rotation that isn't happening — that masks the degraded case.
+    const route = opts?.httpsAgent ? 'fresh proxy IP + different UA' : 'SHARED local IP (no agent) + different UA';
     for (let i = 0; i < methods.length; i++) {
       const n = i + 1;
       const m = methods[i];
@@ -109,7 +114,7 @@ export class MarketPricing {
       // (b) Cap this try's axios timeout to the time left in the budget.
       const timeout = Math.min(m.stepTimeout, deadline - Date.now());
       const ts = Date.now();
-      plog(`[Try ${n}/3] "${short}" → trying ${m.label}…`);
+      plog(`[Try ${n}/3] "${short}" → trying ${m.label} [${opts?.httpsAgent ? 'proxy' : 'shared IP'}]…`);
       try {
         const info = await this.viaPriceOverview(name, opts, m.ua, timeout, m.allowMedian);
         sawAuthoritative = true;
@@ -129,7 +134,7 @@ export class MarketPricing {
           plog(`[Try ${n}/3] budget exhausted for "${short}" – skipping backoff (total ${Date.now() - t0}ms)`, 'warn');
           break;
         }
-        plog(`[Try ${n}/3] → Backoff ${backoff}ms (fresh IP + different UA), then fallback ${n + 1}…`, 'warn');
+        plog(`[Try ${n}/3] → Backoff ${backoff}ms (${route}), then fallback ${n + 1}…`, 'warn');
         await sleep(backoff);
       }
     }
