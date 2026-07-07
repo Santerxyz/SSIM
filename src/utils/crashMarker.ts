@@ -32,18 +32,17 @@ export const crashMarkerFile = (): string => logsDir('last-crash.json');
  * a marker must never block boot. Best-effort delete: a stale marker would at worst re-fire next boot.
  */
 export function consumeCrashMarker(file: string = crashMarkerFile()): CrashMarker | undefined {
-  const f = file;
   const dropCorrupt = (): undefined => {
     // Corrupt/half-written marker → drop it so it can't wedge every boot.
-    try { fs.unlinkSync(f); } catch { /* best-effort */ }
+    try { fs.unlinkSync(file); } catch { /* best-effort */ }
     return undefined;
   };
-  if (!fs.existsSync(f)) return undefined;
+  if (!fs.existsSync(file)) return undefined;
   // A transient read failure (EBUSY/EPERM/EACCES from an AV lock, EMFILE at boot) must NOT
   // destroy a real crash banner — leave the file in place so it re-fires next boot.
   let text: string;
   try {
-    text = fs.readFileSync(f, 'utf8');
+    text = fs.readFileSync(file, 'utf8');
   } catch (err) {
     logger.warn('last-crash.json unreadable this boot (' + ((err as NodeJS.ErrnoException)?.code ?? 'IO error') + ') — leaving in place');
     return undefined;
@@ -57,6 +56,6 @@ export function consumeCrashMarker(file: string = crashMarkerFile()): CrashMarke
   // `at <= 0` is the shell writer's clock-lookup failure sentinel (lib.rs `.unwrap_or(0)`),
   // not a real death time — drop it rather than stamp the banner/log with a false 1970 date.
   if (!Number.isFinite(raw?.at) || raw.at <= 0) return dropCorrupt();
-  try { fs.unlinkSync(f); } catch { /* best-effort */ }
+  try { fs.unlinkSync(file); } catch { /* best-effort */ }
   return raw;
 }
