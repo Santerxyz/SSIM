@@ -9,10 +9,13 @@ import {
 
 // ════════════════════════════════════════════════════════════════════════════
 //  MarketListings – the 3rd dashboard bucket: items CURRENTLY ON SALE on the
-//  Steam Community Market. These are NOT in the inventory (the market holds them
-//  while listed), so neither the web nor the GC inventory fetch can see them –
-//  they have to be read from the seller's own listings endpoint. Routed through
-//  the account's isolated agent + cookies, same as every other web call.
+//  Steam Community Market. A listed asset CAN still surface in the web inventory
+//  (confirmed listings appear in ctx16, pending-confirmation listings are still
+//  in ctx2), which is exactly why fetchListedItems returns the `assetIds` superset
+//  that the inventory refresh (InventoryService.doRefreshOneViaGc) subtracts from
+//  ctx2+ctx16 – so one asset is never double-bucketed. The rows themselves are read
+//  from the seller's own listings endpoint. Routed through the account's isolated
+//  agent + cookies, same as every other web call.
 //
 //  Parsing is delegated to the SINGLE canonical parser (MarketModel.parseMyListings)
 //  so the "Listed" bucket, the "Active Orders" view and the mass-sell pre-flight can
