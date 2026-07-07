@@ -25,6 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -94,6 +95,22 @@ for (const sentinel of ['DEV_PEPPER_replace_at_build_time', 'license.example.com
     console.error(`✗ DEV placeholder "${sentinel}" survived the bake — aborting (no DEV-secret binary ships).`);
     process.exit(1);
   }
+}
+// The sentinel scan only catches KNOWN placeholder strings; it does not prove the baked key is a
+// real Ed25519 SPKI key. A mis-typed / truncated / wrong-curve LICENSE_PUBLIC_KEY passes the scan
+// yet at runtime rejects EVERY license token AND every update manifest (config.ts's LICENSE_PUBLIC_KEY
+// verifies both — see DIRECTIVES §5) → a field brick behind a green build log. Parse it here so the
+// build fails LOUDLY instead. The env value is baked verbatim (bakeResults above all landed) and is
+// \n-escaped (see header); normalise to real newlines the way config.ts does before parsing.
+try {
+  const pubKey = crypto.createPublicKey(process.env.LICENSE_PUBLIC_KEY.replace(/\\n/g, '\n'));
+  if (pubKey.asymmetricKeyType !== 'ed25519') {
+    console.error(`✗ baked public key is not a valid Ed25519 key (got ${pubKey.asymmetricKeyType}) — aborting.`);
+    process.exit(1);
+  }
+} catch (e) {
+  console.error(`✗ baked public key is not a valid Ed25519 key — aborting: ${e.message}`);
+  process.exit(1);
 }
 
 // 4. Obfuscate the sensitive surface (licensing + entry). Keep it scoped – we do
