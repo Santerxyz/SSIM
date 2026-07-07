@@ -4022,7 +4022,7 @@ function csfSkeleton(rows = 5) { return `<div class="space-y-2">${Array.from({ l
 function csfError(msg) { return `<div class="empty"><div class="empty-icon text-warn"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="empty-title">${escapeHtml(msg)}</div><button data-csf="retry" class="btn btn-secondary btn-sm mt-4"><i class="fa-solid fa-rotate-right"></i>Retry</button></div>`; }
 function csfEmpty(icon, msg) { return `<div class="empty"><div class="empty-icon"><i class="fa-solid ${icon}"></i></div><div class="empty-title">${escapeHtml(msg)}</div></div>`; }
 function csfArr(res) { if (Array.isArray(res)) return res; const r = res || {}; return r.data || r.listings || r.orders || r.trades || r.results || r.items || []; }
-function csfMsg(eln, text, tone) { if (!eln) return; eln.className = `text-2xs mt-2 ${tone === 'error' ? 'text-rose-300' : tone === 'ok' ? 'text-emerald-300' : 'text-slate-400'}`; eln.textContent = text; eln.classList.remove('hidden'); }
+function csfMsg(eln, text, tone) { if (!eln) return; eln.className = `t10 mt-2 ${tone === 'error' ? 'text-rose-300' : tone === 'ok' ? 'text-emerald-300' : 'text-slate-400'}`; eln.textContent = text; eln.classList.remove('hidden'); }
 
 async function openCsFloat(username) {
   CSF.username = username; CSF.tab = 'dashboard'; CSF.market = { cursor: null, items: [], query: {}, loading: false };
@@ -4201,7 +4201,7 @@ function csfRenderTabs() {
   const tabs = [...core, ...(CSF.experimental ? exp : []), ['settings', 'Settings', 'fa-gear']];
   el.csfloatTabs.innerHTML = tabs.map(([id, label, icon]) => {
     const on = CSF.tab === id;
-    return `<button data-csf-tab="${id}" class="px-3 py-2 -mb-px text-sm font-bold transition inline-flex items-center gap-2 border-b-2 ${on ? 'border-brand text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}"><i class="fa-solid ${icon}"></i>${label}</button>`;
+    return `<button data-csf-tab="${id}" class="chip" aria-pressed="${on}"><i class="fa-solid ${icon}"></i>${label}</button>`;
   }).join('');
 }
 
@@ -4237,7 +4237,7 @@ async function csfLoadDashboard() {
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
 }
 function csfStat(label, value, icon, color) {
-  return `<div class="surface px-4 py-3"><p class="text-2xs uppercase tracking-wider text-slate-500 mb-1">${label}</p><p class="text-xl font-bold ${color} truncate"><i class="fa-solid ${icon} mr-1.5 text-sm"></i>${value}</p></div>`;
+  return `<div class="stat-card"><p class="stat-label">${label}</p><p class="stat-value ${color} truncate"><i class="fa-solid ${icon} mr-1.5 t13"></i>${value}</p></div>`;
 }
 
 // ── My Listings ──
@@ -4252,27 +4252,27 @@ function csfListingRow(l) {
   const item = l.item || {}; const id = l.id || l.listing_id || '';
   const name = item.market_hash_name || item.full_item_name || item.item_name || 'Unknown item';
   const price = l.price ?? 0; const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
-  return `<div class="csf-row flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+  return `<div class="csf-row flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
     ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="text-2xs text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="t10 text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
     <input type="number" step="0.01" min="0.03" placeholder="${(price / 100).toFixed(2)}" class="csf-price field !w-24 !py-1.5 text-right" />
-    <button data-csf="editprice" data-id="${escapeAttr(id)}" title="Update price" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold"><i class="fa-solid fa-pen"></i></button>
-    <button data-csf="delist" data-id="${escapeAttr(id)}" title="Delist" class="px-2.5 py-1.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold"><i class="fa-solid fa-xmark"></i></button>
-    <span class="text-sm font-bold text-emerald-400 w-20 text-right">${csfUsd(price)}</span></div>`;
+    <button data-csf="editprice" data-id="${escapeAttr(id)}" title="Update price" class="btn btn-icon-sm btn-secondary"><i class="fa-solid fa-pen"></i></button>
+    <button data-csf="delist" data-id="${escapeAttr(id)}" title="Delist" class="btn btn-icon-sm btn-danger"><i class="fa-solid fa-xmark"></i></button>
+    <span class="t13 font-bold text-emerald-400 font-mono w-20 text-right">${csfUsd(price)}</span></div>`;
 }
 
 // ── Market ──
 function csfRenderMarket() {
   el.csfloatBody.innerHTML = `
     <form id="csf-market-form" class="flex flex-wrap items-end gap-2 mb-4">
-      <div class="flex-1 min-w-[180px]"><label class="block text-2xs text-slate-500 mb-1">Search</label>
+      <div class="flex-1 min-w-[180px]"><label class="field-label">Search</label>
         <input name="market_hash_name" placeholder="e.g. AK-47 | Redline" class="field" /></div>
-      <div><label class="block text-2xs text-slate-500 mb-1">Min $</label><input name="min" type="number" step="0.01" class="field !w-24" /></div>
-      <div><label class="block text-2xs text-slate-500 mb-1">Max $</label><input name="max" type="number" step="0.01" class="field !w-24" /></div>
-      <div><label class="block text-2xs text-slate-500 mb-1">Sort</label>
+      <div><label class="field-label">Min $</label><input name="min" type="number" step="0.01" class="field !w-24" /></div>
+      <div><label class="field-label">Max $</label><input name="max" type="number" step="0.01" class="field !w-24" /></div>
+      <div><label class="field-label">Sort</label>
         <select name="sort_by" class="field !w-auto">
           <option value="best_deal">Best deal</option><option value="lowest_price">Lowest price</option><option value="highest_price">Highest price</option><option value="most_recent">Most recent</option><option value="lowest_float">Lowest float</option><option value="highest_float">Highest float</option></select></div>
-      <button type="submit" class="px-4 py-2 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold"><i class="fa-solid fa-magnifying-glass mr-1.5"></i>Search</button>
+      <button type="submit" class="btn btn-primary"><i class="fa-solid fa-magnifying-glass"></i>Search</button>
     </form>
     <div id="csf-market-results">${CSF.market.items.length ? '' : csfEmpty('fa-store', 'Search the CSFloat marketplace above.')}</div>`;
   if (CSF.market.items.length) csfRenderMarketResults();
@@ -4305,7 +4305,7 @@ function csfRenderMarketResults() {
   const results = $('csf-market-results'); if (!results) return;
   if (!CSF.market.items.length) { results.innerHTML = csfEmpty('fa-store', 'No listings match — try a different search.'); return; }
   results.innerHTML = `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">${CSF.market.items.map(csfMarketCard).join('')}</div>
-    ${CSF.market.cursor ? '<div class="text-center mt-4"><button data-csf="marketmore" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold">Load more</button></div>' : ''}`;
+    ${CSF.market.cursor ? '<div class="text-center mt-4"><button data-csf="marketmore" class="btn btn-secondary btn-sm">Load more</button></div>' : ''}`;
 }
 function csfMarketCard(l) {
   const item = l.item || {}; const id = l.id || ''; const price = l.price ?? 0;
@@ -4313,11 +4313,11 @@ function csfMarketCard(l) {
   const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : ''; const wear = item.wear_name || '';
   return `<div class="rounded-xl bg-slate-950/50 border border-slate-800 p-3 flex flex-col">
     <div class="flex items-center justify-center h-24 mb-2">${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="max-h-24 object-contain"/>` : '<i class="fa-solid fa-image text-slate-700 text-2xl"></i>'}</div>
-    <p class="text-sm text-slate-200 truncate" title="${escapeAttr(name)}">${escapeHtml(name)}</p>
-    <p class="text-2xs text-slate-500 mb-2 truncate">${escapeHtml(wear)}${fl ? ` · ${fl}` : ''}</p>
+    <p class="t13 text-slate-200 truncate" title="${escapeAttr(name)}">${escapeHtml(name)}</p>
+    <p class="t10 text-slate-500 mb-2 truncate">${escapeHtml(wear)}${fl ? ` · ${fl}` : ''}</p>
     <div class="mt-auto flex items-center justify-between">
-      <span class="text-base font-bold text-emerald-400">${csfUsd(price)}</span>
-      <button data-csf="buy" data-id="${escapeAttr(id)}" data-price="${price}" data-name="${escapeAttr(name)}" class="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"><i class="fa-solid fa-cart-shopping mr-1"></i>Buy</button>
+      <span class="t14 font-bold text-emerald-400 font-mono">${csfUsd(price)}</span>
+      <button data-csf="buy" data-id="${escapeAttr(id)}" data-price="${price}" data-name="${escapeAttr(name)}" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-shopping"></i>Buy</button>
     </div></div>`;
 }
 
@@ -4377,10 +4377,10 @@ function csfWireBoSearch() {
 function csfBuyOrderRow(o) {
   const id = o.id || ''; const name = o.market_hash_name || o.expression || (o.item && o.item.market_hash_name) || 'Buy order';
   const price = o.max_price ?? o.price ?? 0; const qty = o.quantity ?? o.qty ?? 1;
-  return `<div class="flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="text-2xs text-slate-500">qty ${escapeHtml(String(qty))}</p></div>
-    <span class="text-sm font-bold text-emerald-400">${csfUsd(price)}</span>
-    <button data-csf="delorder" data-id="${escapeAttr(id)}" class="px-2.5 py-1.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold"><i class="fa-solid fa-xmark"></i></button></div>`;
+  return `<div class="flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="t10 text-slate-500">qty ${escapeHtml(String(qty))}</p></div>
+    <span class="t13 font-bold text-emerald-400 font-mono">${csfUsd(price)}</span>
+    <button data-csf="delorder" data-id="${escapeAttr(id)}" class="btn btn-icon-sm btn-danger"><i class="fa-solid fa-xmark"></i></button></div>`;
 }
 
 // ── Trades (experimental) — incl. the Auto-Accept toggle ──
@@ -4406,9 +4406,9 @@ function csfTradeRow(t) {
   const item = (t.contract && t.contract.item) || t.item || {};
   const name = item.market_hash_name || 'Trade'; const st = t.state || t.status || '';
   const price = (t.contract && t.contract.price) ?? t.price ?? 0;
-  return `<div class="flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="text-2xs text-slate-500">${escapeHtml(String(st))}</p></div>
-    <span class="text-sm font-bold text-emerald-400">${csfUsd(price)}</span></div>`;
+  return `<div class="flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="t10 text-slate-500">${escapeHtml(String(st))}</p></div>
+    <span class="t13 font-bold text-emerald-400 font-mono">${csfUsd(price)}</span></div>`;
 }
 
 // ── Inventory (experimental) — list an item for sale ──
@@ -4425,11 +4425,11 @@ function csfInvRow(it) {
   const item = it.item || it; const asset = item.asset_id || item.assetid || it.asset_id || '';
   const name = item.market_hash_name || item.full_item_name || 'Item';
   const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
-  return `<div class="csf-row flex items-center gap-3 rounded-lg bg-slate-950/50 border border-slate-800 px-3 py-2">
+  return `<div class="csf-row flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
     ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
-    <div class="min-w-0 flex-1"><p class="text-sm text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="text-2xs text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="t10 text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
     <input type="number" step="0.01" min="0.03" placeholder="price $" class="csf-price field !w-24 !py-1.5 text-right" />
-    <button data-csf="listasset" data-asset="${escapeAttr(asset)}" ${asset ? '' : 'disabled'} class="px-3 py-1.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-bold ${asset ? '' : 'opacity-40'}">List</button></div>`;
+    <button data-csf="listasset" data-asset="${escapeAttr(asset)}" ${asset ? '' : 'disabled'} class="btn btn-sm btn-primary">List</button></div>`;
 }
 
 // ── Settings ──
@@ -4438,18 +4438,18 @@ function csfRenderSettings() {
   el.csfloatBody.innerHTML = `
     <div class="max-w-lg space-y-5">
       <div>
-        <h4 class="text-sm font-bold text-slate-200 mb-1">CSFloat API key</h4>
-        <p class="text-2xs text-slate-500 mb-3">Generate a key at <span class="text-brand-light">csfloat.com/profile → Developer</span>. Stored encrypted per-account in your vault; never shown again.</p>
+        <h4 class="t14 font-bold text-slate-200 mb-1">CSFloat API key</h4>
+        <p class="t10 text-slate-500 mb-3">Generate a key at <span class="text-brand-light">csfloat.com/profile → Developer</span>. Stored encrypted per-account in your vault; never shown again.</p>
         <form id="csf-key-form" class="flex gap-2">
           <input name="apiKey" type="password" autocomplete="off" placeholder="${k.configured ? 'configured (ending …' + escapeHtml(k.tail || '') + ') — paste to replace' : 'paste your CSFloat API key'}" class="field flex-1"/>
-          <button type="submit" class="px-4 py-2.5 rounded-lg bg-brand hover:bg-brand-dark text-white text-sm font-bold">Save</button>
-          ${k.configured ? '<button type="button" data-csf="clearkey" class="px-4 py-2.5 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-sm font-bold">Clear</button>' : ''}
+          <button type="submit" class="btn btn-primary">Save</button>
+          ${k.configured ? '<button type="button" data-csf="clearkey" class="btn btn-danger">Clear</button>' : ''}
         </form>
-        <p id="csf-key-msg" class="hidden text-2xs mt-2"></p>
+        <p id="csf-key-msg" class="hidden t10 mt-2"></p>
       </div>
       <div class="surface px-4 py-3 flex items-center justify-between gap-3">
-        <div><p class="text-sm font-bold text-slate-200">Experimental features</p><p class="text-2xs text-slate-500">Buy Orders, Trades &amp; Inventory tabs + auto-accept. These use undocumented CSFloat endpoints that may change.</p></div>
-        <button data-csf="experimental" class="px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 ${CSF.experimental ? 'bg-brand text-white' : 'bg-slate-700 text-slate-300'}">${CSF.experimental ? 'ON' : 'OFF'}</button>
+        <div><p class="t14 font-bold text-slate-200">Experimental features</p><p class="t10 text-slate-500">Buy Orders, Trades &amp; Inventory tabs + auto-accept. These use undocumented CSFloat endpoints that may change.</p></div>
+        <button data-csf="experimental" class="btn btn-sm shrink-0 ${CSF.experimental ? 'btn-primary' : 'btn-secondary'}">${CSF.experimental ? 'ON' : 'OFF'}</button>
       </div>
     </div>`;
 }

@@ -622,41 +622,41 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-350 | Open CSFloat: sets `CSF.username`, resets market state, shows skeleton, parallel-fetches `/api/csfloat/config` (experimental flag) + per-account `/key`; opens Dashboard if key configured else Settings | app.js:4008–4022; index.html:823–836 | | |
-| P-351 | Close CSFloat (`closeCsFloat`) | app.js:4023 | | |
-| P-352 | Tab bar (core): Dashboard / My Listings / Market always shown; Settings always last | app.js:4179–4187 | | |
-| P-353 | Tab bar (experimental): Buy Orders / Trades / Inventory shown ONLY when `CSF.experimental` true | app.js:4180–4182 | | |
-| P-354 | Active-tab styling: active `border-brand text-white`; inactive `border-transparent text-slate-400 hover:text-slate-200` | app.js:4183–4186 | | |
-| P-355 | Tab switch gate: any non-settings tab with no key → `csfNeedKey()` empty state ("No CSFloat API key for this account" + "Open Settings" btn) | app.js:4189–4197 | | |
-| P-356 | Loading skeleton `csfSkeleton(rows)`: N pulse rows (`h-14 bg-slate-800/50 animate-pulse`) | app.js:4002 | | |
-| P-357 | Error state (per tab) `csfError(msg)`: warn icon + message + "Retry" (`data-csf="retry"` reloads current tab) | app.js:4003, 4444 | | |
-| P-358 | Empty state (per tab) `csfEmpty(icon,msg)`: icon + message | app.js:4004 | | |
-| P-359 | Icon-host allow-list `csfImg(hash)`: builds steamstatic URL or accepts full URL, then through `safeIconUrl` (anti-IP-beacon) | app.js:3997–4001 | | |
-| P-360 | Dashboard view: 3 stat cards — Balance (`csfUsd`), Active listings (count from `/listings?limit=50`), Account (username/steamid) + "Browse market" / "My listings" quick buttons | app.js:4200–4222 | 💰 | |
-| P-361 | My Listings view: rows from `/listings?limit=50` — icon, name, float (4dp), editable price input (min 0.03, placeholder current 2dp), edit-price btn, delist btn, price label (`csfUsd` emerald) | app.js:4224–4243 | 💰 | |
-| P-362 | Edit listing price `csfEditPrice`: reads `.csf-price` input, requires ≥$0.03; PATCH `/listings/:id` price=cents; toast "Price updated"; reload listings | app.js:4496–4502 | 💰 | |
-| P-363 | Delist listing `csfDelist(id)`: `ssimConfirm` danger "Remove this listing from CSFloat?" → DELETE `/listings/:id`; toast "Listing removed"; reload | app.js:4491–4495 | 💰 | |
-| P-364 | Market view search form: name, Min $, Max $, Sort select (Best deal/Lowest price/Highest price/Most recent/Lowest float/Highest float), Search btn | app.js:4245–4258 | 💰 | |
-| P-365 | Market search exec `csfDoMarketSearch(reset)`: prices ×100 → cents, limit 24, cursor paging; results grid of cards | app.js:4261–4290 | 💰 | |
-| P-366 | Market result card: icon, name, wear + float (4dp), price (`csfUsd` emerald), Buy button (data-id/price/name) | app.js:4291–4303 | 💰 | |
-| P-367 | Market "Load more": shown when `CSF.market.cursor` present; appends next page (`csfDoMarketSearch(false)`) | app.js:4289, 4446 | | |
-| P-368 | Buy from market `csfBuy(id,priceCents,name)`: `ssimConfirm` tone spend "Buy … for $X from your CSFloat balance?" → POST `/buy`; toast "Purchase sent" | app.js:4503–4508 | 💰 | |
-| P-369 | Buy Orders view (exp): create-order form (item search-as-you-type, Max $, Qty default 1, Place order) + list of active orders | app.js:4305–4324 | 💰 | |
-| P-370 | Buy-order item search `csfWireBoSearch`: debounced 300ms Steam market search (`/api/market/search?appId=730`), dropdown, click fills exact `market_hash_name`; Steam price deliberately NOT shown | app.js:4326–4357 | | |
-| P-371 | Buy-order row: name, qty, max price (`csfUsd` emerald), delete-order btn | app.js:4358–4365 | 💰 | |
-| P-372 | Place buy order `csfCreateBuyOrder(form)`: name+max_price required, price ×100, POST `/buy-orders`; toast "Buy order placed"; reload | app.js:4509–4515 | 💰 | |
-| P-373 | Cancel buy order `csfDeleteBuyOrder(id)`: `ssimConfirm` danger "Cancel this buy order?" → DELETE `/buy-orders/:id`; toast "Buy order cancelled"; reload | app.js:4516–4520 | 💰 | |
-| P-374 | Trades view (exp): auto-accept toggle card + trade rows | app.js:4368–4385 | 💰 | |
-| P-375 | Auto-accept toggle state: card copy differs when account Limited (no identity_secret → disabled/greyed); ON=brand, OFF=slate; `data-enabled` is source of truth (never button text) | app.js:4378–4381, 4484 | | |
-| P-376 | Toggle auto-accept `csfToggleAutoAccept(btn)`: PUT `/auto-accept enabled:!cur`; toast "Auto-accept enabled/disabled"; reload trades | app.js:4484–4490 | 💰 | |
-| P-377 | Trade row: name, state/status, price (`csfUsd` emerald) | app.js:4386–4393 | 💰 | |
-| P-378 | Inventory view (exp): rows from `/inventory` — icon, name, float, price input (min 0.03), List btn (disabled if no asset id); empty "No tradable CS2 items found on CSFloat." | app.js:4395–4414 | 💰 | |
-| P-379 | List asset on CSFloat `csfListAsset(btn)`: needs asset id + price ≥$0.03; `ssimConfirm` brand "Create a CSFloat listing at $X?" → POST `/listings type=buy_now`; toast "Listing created"; reload inventory | app.js:4521–4529 | 💰 | |
-| P-380 | Settings view: API-key form (password field, placeholder "configured ending …tail" when set), Save; Clear btn when configured (note stored encrypted per-account); Experimental toggle card | app.js:4416–4436 | | |
-| P-381 | Save API key `csfSaveKey`: POST/PUT `/key`; msg "Validating…"→"Key saved & validated" (or warning); auto-switch to dashboard after ~700ms | app.js:4463–4474 | 💰 | |
-| P-382 | Clear API key `csfClearKey`: `ssimConfirm` danger "Remove this account's CSFloat API key?" → DELETE `/key`; toast "CSFloat key cleared" | app.js:4475–4479 | | |
-| P-383 | Toggle experimental `csfToggleExperimental`: PUT `/api/csfloat/config experimental:!`; re-renders tabs+settings | app.js:4480–4483 | | |
-| P-384 | CSFloat money format `csfUsd(cents)` = `'$' + (cents/100).toLocaleString('en-US',{2 frac})` → `$1,234.56`; event delegation: tab clicks (`onCsfTabClick`), body clicks (`onCsfBodyClick`), body submits (`onCsfBodySubmit` key/market/bo forms) | app.js:3992, 4439–4460 | 💰 | |
+| P-350 | Open CSFloat: sets `CSF.username`, resets market state, shows skeleton, parallel-fetches `/api/csfloat/config` (experimental flag) + per-account `/key`; opens Dashboard if key configured else Settings | app.js:4008–4022; index.html:823–836 | | ✅ done · shell header→.t16, account→.t13, close→.modal-x (#csfloat-close id kept); openCsFloat fetch/state logic unchanged |
+| P-351 | Close CSFloat (`closeCsFloat`) | app.js:4023 | | ✅ done · logic unchanged |
+| P-352 | Tab bar (core): Dashboard / My Listings / Market always shown; Settings always last | app.js:4179–4187 | | ✅ done · csfRenderTabs → .chip aria-pressed (data-csf-tab kept) |
+| P-353 | Tab bar (experimental): Buy Orders / Trades / Inventory shown ONLY when `CSF.experimental` true | app.js:4180–4182 | | ✅ done · same .chip tabs; experimental gating logic unchanged |
+| P-354 | Active-tab styling: active `border-brand text-white`; inactive `border-transparent text-slate-400 hover:text-slate-200` | app.js:4183–4186 | | ✅ done · active now = .chip[aria-pressed] brand; on-state driven by aria-pressed |
+| P-355 | Tab switch gate: any non-settings tab with no key → `csfNeedKey()` empty state ("No CSFloat API key for this account" + "Open Settings" btn) | app.js:4189–4197 | | ✅ done · csfNeedKey ALREADY DS (.empty/.btn); logic unchanged |
+| P-356 | Loading skeleton `csfSkeleton(rows)`: N pulse rows (`h-14 bg-slate-800/50 animate-pulse`) | app.js:4002 | | ✅ done · already DS (shimmer) — left as-is |
+| P-357 | Error state (per tab) `csfError(msg)`: warn icon + message + "Retry" (`data-csf="retry"` reloads current tab) | app.js:4003, 4444 | | ✅ done · csfError ALREADY DS (.empty/.btn) — left as-is |
+| P-358 | Empty state (per tab) `csfEmpty(icon,msg)`: icon + message | app.js:4004 | | ✅ done · csfEmpty ALREADY DS (.empty) — left as-is |
+| P-359 | Icon-host allow-list `csfImg(hash)`: builds steamstatic URL or accepts full URL, then through `safeIconUrl` (anti-IP-beacon) | app.js:3997–4001 | | ✅ done · logic unchanged (anti-IP-beacon intact) |
+| P-360 | Dashboard view: 3 stat cards — Balance (`csfUsd`), Active listings (count from `/listings?limit=50`), Account (username/steamid) + "Browse market" / "My listings" quick buttons | app.js:4200–4222 | 💰 | ✅ done · csfStat → .stat-card/.stat-label/.stat-value; csfLoadDashboard byte-identical (csfApi UNCHANGED) |
+| P-361 | My Listings view: rows from `/listings?limit=50` — icon, name, float (4dp), editable price input (min 0.03, placeholder current 2dp), edit-price btn, delist btn, price label (`csfUsd` emerald) | app.js:4224–4243 | 💰 | ✅ done · csfListingRow → rounded-xl/t13/t10 + .btn btn-icon-sm (edit=secondary, delist=danger); .csf-row/.csf-price kept; csfLoadListings byte-identical |
+| P-362 | Edit listing price `csfEditPrice`: reads `.csf-price` input, requires ≥$0.03; PATCH `/listings/:id` price=cents; toast "Price updated"; reload listings | app.js:4496–4502 | 💰 | ✅ done · logic unchanged (csfApi PATCH UNCHANGED; reads .csf-row/.csf-price) |
+| P-363 | Delist listing `csfDelist(id)`: `ssimConfirm` danger "Remove this listing from CSFloat?" → DELETE `/listings/:id`; toast "Listing removed"; reload | app.js:4491–4495 | 💰 | ✅ done · ssimConfirm + csfApi UNCHANGED |
+| P-364 | Market view search form: name, Min $, Max $, Sort select (Best deal/Lowest price/Highest price/Most recent/Lowest float/Highest float), Search btn | app.js:4245–4258 | 💰 | ✅ done · csfRenderMarket → labels .field-label, Search → .btn btn-primary; #csf-market-form + input names + #csf-market-results kept |
+| P-365 | Market search exec `csfDoMarketSearch(reset)`: prices ×100 → cents, limit 24, cursor paging; results grid of cards | app.js:4261–4290 | 💰 | ✅ done · logic unchanged (csfApi search + cents math UNCHANGED) |
+| P-366 | Market result card: icon, name, wear + float (4dp), price (`csfUsd` emerald), Buy button (data-id/price/name) | app.js:4291–4303 | 💰 | ✅ done · csfMarketCard → t13/t10 + mono price + .btn btn-buy btn-sm; data-csf=buy/-id/-price/-name kept |
+| P-367 | Market "Load more": shown when `CSF.market.cursor` present; appends next page (`csfDoMarketSearch(false)`) | app.js:4289, 4446 | | ✅ done · csfRenderMarketResults → Load more = .btn btn-secondary btn-sm; data-csf=marketmore kept |
+| P-368 | Buy from market `csfBuy(id,priceCents,name)`: `ssimConfirm` tone spend "Buy … for $X from your CSFloat balance?" → POST `/buy`; toast "Purchase sent" | app.js:4503–4508 | 💰 | ✅ done · ssimConfirm + csfApi UNCHANGED |
+| P-369 | Buy Orders view (exp): create-order form (item search-as-you-type, Max $, Qty default 1, Place order) + list of active orders | app.js:4305–4324 | 💰 | ✅ done · csfLoadBuyOrders byte-identical (create-order form left as-is — frozen loader); rows re-skinned via csfBuyOrderRow |
+| P-370 | Buy-order item search `csfWireBoSearch`: debounced 300ms Steam market search (`/api/market/search?appId=730`), dropdown, click fills exact `market_hash_name`; Steam price deliberately NOT shown | app.js:4326–4357 | | ✅ done · logic unchanged (byte-identical) |
+| P-371 | Buy-order row: name, qty, max price (`csfUsd` emerald), delete-order btn | app.js:4358–4365 | 💰 | ✅ done · csfBuyOrderRow → rounded-xl/t13/t10 + mono price + .btn btn-icon-sm btn-danger; data-csf=delorder/-id kept |
+| P-372 | Place buy order `csfCreateBuyOrder(form)`: name+max_price required, price ×100, POST `/buy-orders`; toast "Buy order placed"; reload | app.js:4509–4515 | 💰 | ✅ done · csfApi POST UNCHANGED |
+| P-373 | Cancel buy order `csfDeleteBuyOrder(id)`: `ssimConfirm` danger "Cancel this buy order?" → DELETE `/buy-orders/:id`; toast "Buy order cancelled"; reload | app.js:4516–4520 | 💰 | ✅ done · ssimConfirm + csfApi UNCHANGED |
+| P-374 | Trades view (exp): auto-accept toggle card + trade rows | app.js:4368–4385 | 💰 | ✅ done · csfLoadTrades byte-identical (auto-accept card left as-is — frozen loader); rows re-skinned via csfTradeRow |
+| P-375 | Auto-accept toggle state: card copy differs when account Limited (no identity_secret → disabled/greyed); ON=brand, OFF=slate; `data-enabled` is source of truth (never button text) | app.js:4378–4381, 4484 | | ✅ done · logic unchanged (data-enabled source-of-truth; toggle card byte-identical in frozen loader) |
+| P-376 | Toggle auto-accept `csfToggleAutoAccept(btn)`: PUT `/auto-accept enabled:!cur`; toast "Auto-accept enabled/disabled"; reload trades | app.js:4484–4490 | 💰 | ✅ done · csfApi PUT UNCHANGED (reads data-enabled) |
+| P-377 | Trade row: name, state/status, price (`csfUsd` emerald) | app.js:4386–4393 | 💰 | ✅ done · csfTradeRow → rounded-xl/t13/t10 + mono price |
+| P-378 | Inventory view (exp): rows from `/inventory` — icon, name, float, price input (min 0.03), List btn (disabled if no asset id); empty "No tradable CS2 items found on CSFloat." | app.js:4395–4414 | 💰 | ✅ done · csfInvRow → rounded-xl/t13/t10 + .btn btn-sm btn-primary List; .csf-row/.csf-price/data-asset/disabled-conditional kept; csfLoadInventory byte-identical |
+| P-379 | List asset on CSFloat `csfListAsset(btn)`: needs asset id + price ≥$0.03; `ssimConfirm` brand "Create a CSFloat listing at $X?" → POST `/listings type=buy_now`; toast "Listing created"; reload inventory | app.js:4521–4529 | 💰 | ✅ done · ssimConfirm + csfApi UNCHANGED (reads .csf-row/.csf-price/data-asset) |
+| P-380 | Settings view: API-key form (password field, placeholder "configured ending …tail" when set), Save; Clear btn when configured (note stored encrypted per-account); Experimental toggle card | app.js:4416–4436 | | ✅ done · csfRenderSettings → headings/notes t14/t10, Save = .btn btn-primary, Clear = .btn btn-danger, experimental = .btn btn-sm (brand/secondary); #csf-key-form/apiKey/#csf-key-msg/data-csf kept + placeholder conditional byte-identical |
+| P-381 | Save API key `csfSaveKey`: POST/PUT `/key`; msg "Validating…"→"Key saved & validated" (or warning); auto-switch to dashboard after ~700ms | app.js:4463–4474 | 💰 | ✅ done · csfApi PUT UNCHANGED (csfMsg status line text-2xs→t10 only) |
+| P-382 | Clear API key `csfClearKey`: `ssimConfirm` danger "Remove this account's CSFloat API key?" → DELETE `/key`; toast "CSFloat key cleared" | app.js:4475–4479 | | ✅ done · ssimConfirm + csfApi UNCHANGED |
+| P-383 | Toggle experimental `csfToggleExperimental`: PUT `/api/csfloat/config experimental:!`; re-renders tabs+settings | app.js:4480–4483 | | ✅ done · logic unchanged |
+| P-384 | CSFloat money format `csfUsd(cents)` = `'$' + (cents/100).toLocaleString('en-US',{2 frac})` → `$1,234.56`; event delegation: tab clicks (`onCsfTabClick`), body clicks (`onCsfBodyClick`), body submits (`onCsfBodySubmit` key/market/bo forms) | app.js:3992, 4439–4460 | 💰 | ✅ done · csfUsd + all delegation byte-identical (csfMsg type scale only) |
 
 ---
 

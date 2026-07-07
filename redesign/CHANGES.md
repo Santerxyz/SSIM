@@ -567,3 +567,82 @@ Deliberate DECISIONS (reviewer awareness):
 3. **The outcome token uses `.pill pill--neutral`, not `.chip`.** `.chip` carries `cursor:pointer`
    (it is the clickable filter primitive) — these outcome tokens are non-interactive display, so the
    non-pointer `.pill` is the correct analogue (per the task's "outcomes → `.pill`").
+
+---
+
+## V16 💰 — CSFloat workspace modal (per-account marketplace) (`index.html` `#csfloat-overlay` + `app.js` csf render helpers)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin of a 💰 view — every CSFloat money handler, the
+`ssimConfirm` gates, and the per-account `csfApi` calls are byte-identical.** The static
+`#csfloat-overlay` shell was ported to the masterpiece DS to match `design_source.html:924–948`:
+header `text-lg`→`.t16`, the `#csfloat-account` mono suffix `text-sm`→`.t13`, and the close button →
+`.modal-x` (**its `id="csfloat-close"` KEPT** — the handler binds by id at `app.js:6411`, NOT the
+prototype's `data-close`; same call as V10–V14). The `#csfloat-tabs` container got `pb-3` for the
+chip row (was underline-tab spacing). The `#csfloat-body` scroll host is unchanged (JS renders into
+it).
+
+In `app.js` the standalone render helpers moved onto the DS:
+- **`csfRenderTabs`** → the tab buttons became the masterpiece `.chip` with `aria-pressed="${on}"`
+  (matching `design_source.html:931` + the V4 category-tab / V5 genv-toggle precedent), replacing the
+  legacy `border-b-2 border-brand` underline tabs. `data-csf-tab` kept verbatim; nothing reads the
+  tab className (active state is `CSF.tab` + a re-render), so the switch is purely presentational.
+- **`csfStat`** → `.stat-card` / `.stat-label` / `.stat-value` (the design's KPI card), still consuming
+  the same `(label,value,icon,color)` args from the frozen `csfLoadDashboard` call — the money-color
+  param (`text-emerald-400` for Balance) is preserved (honesty).
+- **`csfListingRow` / `csfInvRow` / `csfBuyOrderRow` / `csfTradeRow`** → the row frame `rounded-lg`→
+  `rounded-xl`, text → `.t13`/`.t10` scale, money → `font-mono` (DS tabular numerics), and the row
+  action buttons → `.btn` variants: edit-price = `btn-icon-sm btn-secondary`, delist/delete-order =
+  `btn-icon-sm btn-danger`, List = `btn-sm btn-primary`. The `.csf-row` / `.csf-price` hooks (read by
+  `csfEditPrice`/`csfListAsset` via `closest('.csf-row')`+`querySelector('.csf-price')`), every
+  `data-csf`/`data-id`/`data-asset`, and the `${asset ? '' : 'disabled'}` List-button conditional are
+  byte-identical.
+- **`csfRenderMarket`** → the search-form labels → `.field-label`, the Search submit → `.btn
+  btn-primary` (inputs were already `.field`); `#csf-market-form`, the input `name=`s
+  (market_hash_name/min/max/sort_by) and `#csf-market-results` are preserved (read by
+  `csfDoMarketSearch` via FormData).
+- **`csfRenderMarketResults`** → the "Load more" button → `.btn btn-secondary btn-sm`
+  (`data-csf="marketmore"` kept); the results grid is unchanged.
+- **`csfMarketCard`** → text → `.t13`/`.t10`, price → mono emerald, the Buy button → `.btn btn-buy
+  btn-sm` (buy = buy-color, matching design_source); `data-csf="buy"`/`data-id`/`data-price`/`data-name`
+  kept (read by `csfBuy`).
+- **`csfRenderSettings`** → the headings/notes → `.t14`/`.t10`, Save → `.btn btn-primary`, Clear →
+  `.btn btn-danger`, and the Experimental toggle → `.btn btn-sm` with `btn-primary`(ON)/`btn-secondary`
+  (OFF) driven by `CSF.experimental`; `#csf-key-form`, input `name="apiKey"`, `#csf-key-msg`,
+  `data-csf="clearkey"`/`data-csf="experimental"`, and the configured-key placeholder conditional are
+  byte-identical.
+- **`csfMsg`** (the settings status line) → the className template `text-2xs`→`.t10`; the tone colors
+  (rose=error / emerald=ok / slate=info) and the `textContent` + `classList.remove('hidden')` logic
+  are unchanged (pricing/validation honesty intact).
+
+**Already-DS helpers left as-is** (the task's note): `csfError`, `csfEmpty`, `csfSkeleton`,
+`csfNeedKey` already use `.empty`/`.empty-icon`/`.empty-title`/`.empty-sub`/`.btn` — untouched.
+
+**Every money + api handler stayed byte-identical** (none were in the edit set): `csfApi`, the
+`ssimConfirm`-gated `csfBuy` / `csfListAsset` / `csfDelist` / `csfDeleteBuyOrder` / `csfClearKey`,
+`csfEditPrice`, `csfCreateBuyOrder`, `csfSaveKey`, `csfToggleAutoAccept`, `csfToggleExperimental`, the
+`csfLoad*` async loaders (dashboard/listings/buyorders/trades/inventory), `csfDoMarketSearch`,
+`csfWireBoSearch`, `openCsFloat`/`closeCsFloat`, `csfSwitchTab`, `csfNeedKey`, `csfUsd`, and the three
+delegation entrypoints (`onCsfTabClick`/`onCsfBodyClick`/`onCsfBodySubmit`). No
+`api(`/`csfApi(`/`fetch(`/`ssimConfirm`/`addEventListener`/`setTimeout`/`state.`/`CSF.`-mutation line
+changed — **ssimConfirm + csfApi UNCHANGED** on all six 💰 paths.
+
+Deliberate DECISIONS (deviation from a blanket re-skin), for reviewer awareness:
+
+1. **The inline markup INSIDE the frozen `csfLoad*` loaders was NOT re-skinned.** The buy-order
+   create-order form (in `csfLoadBuyOrders`), the auto-accept toggle card (in `csfLoadTrades`), the
+   dashboard quick-buttons + grid (in `csfLoadDashboard`), and the inventory intro line (in
+   `csfLoadInventory`) live inside async loaders that the task lists in the byte-identical
+   NEVER-TOUCH set ("all csfLoad* … async api") and asks to confirm as *not edited*. On a 💰 view with
+   MAXIMUM CARE, the specific freeze wins over the general "re-skin the template parts" latitude, so
+   those loaders (incl. their embedded markup) are byte-identical. The re-skin is delivered through the
+   helper functions they call (`csfStat`, `csf*Row`) + the standalone render functions, so the rows,
+   stat cards, market, and settings all carry the new skin; only those few inline sub-blocks stay
+   legacy-styled (still fully functional — `bg-slate-800` etc. render fine; all `data-*` hooks intact).
+2. **Tabs adopt `.chip aria-pressed`, not the legacy underline.** `design_source.html:931` renders the
+   CSFloat tab strip as `.chip` toggles; the active state moves from a hard-coded `border-brand
+   text-white` class to `aria-pressed` (the DS `.chip[aria-pressed="true"]` brand look). No handler
+   reads the tab's class, so this is a pure form change.
+3. **Money figures gain `font-mono`.** Per the DS "flat data, tabular numerics" spec (and
+   `design_source` universally), the emerald `csfUsd` price spans across the rows/cards were given
+   `font-mono` for column alignment — presentational only; EUR/USD formatters untouched (`csfUsd` is
+   byte-identical, still `en-US` `$1,234.56`).
