@@ -476,10 +476,6 @@ export class TradeService {
   // release. (batchOfferAction releases inline per-account rather than via snapshotLive/releaseCreatedSessions,
   // mirroring the offers-read fan-out it shares its per-account structure with.)
 
-  /** True when the account currently has a live (or logging-in) session. Lets a bulk op decide
-   *  which sessions are ITS OWN to release vs. one the user already had live. */
-  isLive(username: string): boolean { return this.sessions.isLive(username); }
-
   /** Snapshot of which of `usernames` are ALREADY live — captured BEFORE a bulk op so it only
    *  ever releases sessions it itself creates (never one the user had live, e.g. mid-trade). */
   snapshotLive(usernames: string[]): Set<string> {
