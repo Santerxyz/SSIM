@@ -5,7 +5,6 @@ import { AccountVault, VAULT_READ_ERROR_PREFIX, VAULT_NEWER_VERSION_ERROR } from
 import { looksLikeOrphanedVaultInstall, normalizeMasterPassword, unlockExistingVault } from './vaultBoot';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
-import { openUiWindow } from '../appWindow';
 import { printLockScreen } from '../licensing/lockscreen';
 import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
 import { writeCrash } from '../utils/crashlog';
@@ -188,7 +187,7 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
         writeCrash('UNLOCK PORTAL RUNTIME ERROR', err);
         logger.error(`unlock portal runtime error: ${err.message}`);
       });
-      openUiWindow(`http://localhost:${bound}`);
+      // The Tauri shell opens/points the window itself on the SSIM_PORT announce (health-verified, one-shot — src-tauri/src/lib.rs); the portal never opens anything.
     }).catch((err: NodeJS.ErrnoException) => {
       printLockScreen('The unlock server failed to start.', err.message);
       logger.error(`unlock portal listen error: ${err.message}`);
