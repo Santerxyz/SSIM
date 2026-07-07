@@ -45,6 +45,20 @@ test('the listed-bucket asset-id set EQUALS the active-orders asset-id set (INV-
     'the two views derive from one model and can no longer disagree');
 });
 
+// ── H-TRD-112: assetIdsByApp is a TRUE superset — an appId-0 listing is not dropped ──
+
+test('a listing whose asset has no appid stays in listings AND its id enters the superset (key 0)', () => {
+  const p = parseMyListings({
+    total_count: 1,
+    listings: [
+      { listingid: 'L333', asset: { contextid: '2', id: '333', amount: '1' }, price: 1000, fee: 0 },
+    ],
+    assets: {},
+  });
+  assert.ok(p.listings.some(l => l.assetId === '333'), 'appId-0 listing kept in listings');
+  assert.ok(p.assetIdsByApp.get(0)?.has('333'), 'its asset id is in the dedup superset under key 0');
+});
+
 // Demonstrates WHY the old code diverged — the two historical acceptance rules,
 // replicated locally, disagree on asset "222". This guards against ever
 // reintroducing a second, stricter parser.

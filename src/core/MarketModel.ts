@@ -60,7 +60,10 @@ function iconUrlOf(desc: any): string {
 }
 
 function addId(map: Map<number, Set<string>>, appId: number, id: string): void {
-  if (!appId || !id) return;
+  // Only an id is required. An appId of 0 (missing/unparseable `asset.appid`) still
+  // lands under map key 0 so `assetIdsByApp` stays a true superset of `listings` — no
+  // caller queries app 0 (`listedAssetIdsForApp(p, 730)` etc.), so this is additive.
+  if (!id) return;
   let s = map.get(appId);
   if (!s) { s = new Set<string>(); map.set(appId, s); }
   s.add(id);
