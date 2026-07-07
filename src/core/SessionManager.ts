@@ -897,17 +897,6 @@ export class SessionManager extends EventEmitter {
     // call would run on silently-expired cookies (C16 / INV-A5).
     return !!s && s.state === SessionState.LOGGED_IN && !!s.webSession && webCookiesFresh(s.webSession.obtainedAt);
   }
-
-  /**
-   * Silently refreshes the web-session cookies for an already logged-in account
-   * WITHOUT re-running the full login flow (no Steam Guard, same open CM/proxy
-   * connection → no IP hop). Delegates to the standalone refreshWebSession().
-   */
-  async refreshWebSession(username: string): Promise<void> {
-    const session = this.sessions.get(username.toLowerCase());
-    if (!session) throw new Error(`No session for ${username}`);
-    await refreshWebSession(session);
-  }
 }
 
 // ─── Standalone helpers ─────────────────────────────────────────────────────────
