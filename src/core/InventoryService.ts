@@ -109,10 +109,12 @@ export class InventoryService {
   /** TF2 inventory cache – separate file so the CS2 records stay untouched. */
   readonly tf2Store = new InventoryStore(dataDir('inventories_tf2.json'));
   /**
-   * CS2 inventory cache from the GAME COORDINATOR (separate file so the web and GC
-   * refreshes NEVER overwrite each other). The GC record is the richer, complete
-   * one (owned + tradelocked + listed), so reads PREFER it when present and fall
-   * back to the web record otherwise – one source per account, never duplicated.
+   * CS2 FULL-refresh cache: the COMPLETE pure-web record (context 2 + context 16
+   * + market listings, one bucket per asset). Kept in a separate file so the quick
+   * ctx2-only record (`store`, written by forceRefresh/buy-verify) and this complete
+   * record never overwrite each other; CS2 reads PREFER this record and fall back to
+   * `store` otherwise. The `inventories_gc.json` filename and `source: 'gc'` are legacy
+   * markers kept for cache/dashboard compatibility – the GC stack is retired (DIRECTIVES.md #3).
    */
   readonly gcStore = new InventoryStore(dataDir('inventories_gc.json'));
   private job: RefreshJob = { running: false, total: 0, done: 0, failed: [] };
@@ -211,7 +213,9 @@ export class InventoryService {
    * Like refreshOne, but GUARANTEES a fresh fetch that starts NOW (bypasses the
    * in-flight dedup). The buy-verification before/after diff must not reuse a
    * snapshot whose underlying fetch began before the order was placed, or it would
-   * under-count fills. Newer callers still coalesce onto this fresh fetch.
+   * under-count fills. Same-key (quick-path) callers coalesce onto this fresh fetch;
+   * the CS2 full refresh uses its own `gc:` key and deliberately never coalesces with
+   * a quick ctx2 read (it must not return a ctx2-only result).
    */
   forceRefresh(username: string, game: GameId = 'cs2'): Promise<AccountInventory> {
     const key = `${game}:${username.toLowerCase()}`;
