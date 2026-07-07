@@ -231,6 +231,25 @@ test('H-ACC-057: a successful save() still logs the unchanged "refresh token per
   assert.equal(infoMsgs.includes('[dave] refresh token persisted'), true, 'the happy-path success line is unchanged');
 });
 
+// ─── H-ACC-061: prototype-key usernames ("__proto__", "constructor") are stored as ordinary entries ─────
+test('H-ACC-061: a "__proto__" username round-trips through set/get/delete (null-prototype token map)', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const s = new TokenStore(mk(undefined)); // fresh install → not degraded
+  s.set('__proto__', 'tok-p');
+  assert.equal(s.get('__proto__'), 'tok-p', 'the token is the stored string, not Object.prototype');
+  s.delete('__proto__');
+  assert.equal(s.get('__proto__'), undefined, 'deletion actually removes it (no zombie entry)');
+});
+
+test('H-ACC-061: a "constructor" username has() is false until set, and a valid file round-trips it', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const p = mk(JSON.stringify({ version: 1, tokens: { constructor: 'tok-c' } }));
+  const s = new TokenStore(p);
+  assert.equal(s.get('constructor'), 'tok-c', 'a "constructor" entry loads as its string, not a Function');
+  assert.equal(s.has('other'), false, 'has() is not a truthy prototype hit for an unset prototype key');
+  assert.equal(s.get('missing'), undefined, 'an unset lookup is undefined, not a prototype member');
+});
+
 test('S36: a fresh-install store must NOT leak tokens into a later instance (no shared EMPTY alias)', () => {
   assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
   // Instance A is a fresh install (missing file). In the buggy `{ ...EMPTY }` code its in-memory tokens

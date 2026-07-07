@@ -17,7 +17,10 @@ interface TokenFile {
 // aliased the SAME `EMPTY.tokens` object, so the first `set()` mutated the module singleton and leaked
 // that token into every later TokenStore (two live instances: SessionManager + BanService). Return a
 // brand-new object with its own empty map each time.
-const emptyFile = (): TokenFile => ({ version: 1, tokens: {} });
+// H-ACC-061: null-prototype map so a prototype-key username ("__proto__", "constructor" — both valid Steam
+// login charset) is stored/read/deleted as an ordinary entry instead of colliding with Object.prototype
+// (which made get() return a non-string and set()/delete() silently no-op).
+const emptyFile = (): TokenFile => ({ version: 1, tokens: Object.create(null) as Record<string, string> });
 
 // H-ACC-055: a millisecond-scale AV/handle lock at boot (EBUSY/EPERM/EACCES/EMFILE/ENFILE) is a TRANSIENT
 // fault, NOT corruption — routing it to the degraded latch makes the whole intact fleet-token file invisible
@@ -124,7 +127,7 @@ export class TokenStore {
     // tokens and rewrite it as v1 (B30 vault parity — AccountVault.parseAndVersionCheck does the same).
     // Returning null routes it to the .bak-or-degrade path → write-refusal protects the newer store.
     if (parsed.version !== undefined && Number(parsed.version) > 1) return null;
-    const tokens: Record<string, string> = {};
+    const tokens: Record<string, string> = Object.create(null) as Record<string, string>; // H-ACC-061: null-proto (prototype-key usernames)
     for (const [k, v] of Object.entries(parsed.tokens)) if (typeof v === 'string' && v) tokens[k] = v;
     return tokens;
   }
