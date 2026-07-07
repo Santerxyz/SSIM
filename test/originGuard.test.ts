@@ -67,3 +67,11 @@ test('regression: sanctioned LAN opt-in (HOST=0.0.0.0) same-origin POST passes',
   const v = run('0.0.0.0', { method: 'POST', headers: { host: '192.168.1.50:3000', origin: 'http://192.168.1.50:3000' } });
   assert.equal(v.next, true);
 });
+
+// ─── H-API-007: the same-origin equality lowercases both sides, so a mixed-case Host header that
+// differs only in case from the browser's (lowercased) Origin authority still matches. Before the
+// fix the raw `===` compared `http://LocalHost:3000` against `http://localhost:3000` → BAD_ORIGIN. ─
+test('mixed-case Host vs lowercase Origin same-origin POST passes', () => {
+  const v = run('127.0.0.1', { method: 'POST', headers: { host: 'LocalHost:3000', origin: 'http://localhost:3000' } });
+  assert.equal(v.next, true);
+});

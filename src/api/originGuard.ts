@@ -35,7 +35,7 @@ function deny(res: Response, code: string, msg: string): void {
 }
 
 export function sameOriginGuard(req: Request, res: Response, next: NextFunction): void {
-  const host = String(req.headers.host ?? '');
+  const host = String(req.headers.host ?? '').toLowerCase();
 
   // 1) DNS-rebinding guard (default localhost bind only).
   if (ENFORCE_LOCALHOST_HOST && !LOCAL_HOST_RE.test(host)) {
@@ -50,7 +50,8 @@ export function sameOriginGuard(req: Request, res: Response, next: NextFunction)
   // 3) State-changing requests must be same-origin.
   const origin = req.headers.origin;
   if (origin) {
-    if (origin === `http://${host}` || origin === `https://${host}`) { next(); return; }
+    const o = String(origin).toLowerCase();
+    if (o === `http://${host}` || o === `https://${host}`) { next(); return; }
     logger.warn(`[security] blocked cross-origin ${method} ${req.path} from origin ${origin}`);
     return deny(res, 'BAD_ORIGIN', 'Cross-origin request blocked.');
   }
@@ -58,7 +59,7 @@ export function sameOriginGuard(req: Request, res: Response, next: NextFunction)
   // No Origin header → fall back to Referer (same-origin requests carry one).
   const referer = req.headers.referer;
   if (referer) {
-    try { if (new URL(referer).host === host) { next(); return; } } catch { /* malformed referer */ }
+    try { if (new URL(referer).host.toLowerCase() === host) { next(); return; } } catch { /* malformed referer */ }
     logger.warn(`[security] blocked ${method} ${req.path} with foreign referer`);
     return deny(res, 'BAD_REFERER', 'Cross-origin request blocked.');
   }
