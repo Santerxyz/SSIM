@@ -5,6 +5,8 @@ import { writeJsonAtomic } from '../utils/atomicJson';
 import { dataDir } from '../utils/paths';
 import type { AccountManager } from './AccountManager';
 import type { AccountInventory, GameId } from '../types/inventory';
+import type { PricingService } from '../pricing/PricingService';
+import type { ExchangeRateService } from '../pricing/ExchangeRateService';
 
 /** Which game series a snapshot should touch. Scoping to the refreshed game stops a
  *  TF2 refresh from rewriting a recent CS2 point (and vice-versa). undefined → both
@@ -12,8 +14,6 @@ import type { AccountInventory, GameId } from '../types/inventory';
 export function snapshotGames(game?: GameId): { cs2: boolean; tf2: boolean } {
   return { cs2: game !== 'tf2', tf2: game !== 'cs2' };
 }
-import type { PricingService } from '../pricing/PricingService';
-import type { ExchangeRateService } from '../pricing/ExchangeRateService';
 
 const HISTORY_PATH = dataDir('value_history.json');
 
