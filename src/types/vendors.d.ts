@@ -26,9 +26,11 @@ declare module 'steam-totp' {
     timeOffset?: number,
   ): string;
 
-  /** Fetches the Steam-server-vs-local clock offset in seconds (QueryTime round trip). */
+  /** Calls back with the local↔Steam clock OFFSET in seconds (add to local time via time(offset)); the
+   *  third arg is the QueryTime round-trip latency in ms. NOTE: patched process-wide by
+   *  installSteamTotpTimeout (S6) to bound the raw QueryTime request. */
   export function getTimeOffset(
-    callback: (err: Error | null, offset: number, latency: number) => void,
+    callback: (err: Error | null, offset: number, latency?: number) => void,
   ): void;
 
   /** Generates a base64 confirmation key for the mobile-confirmation endpoints. */
