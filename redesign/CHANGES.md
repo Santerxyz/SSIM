@@ -230,3 +230,33 @@ chart was already on-design. Two focused refinements:
 **Pricing-honesty (S2/S13) preserved verbatim:** a partial wallet series still dashes the balance
 line (`stroke-dasharray 4 3`) and appends the "(incomplete)" legend note with its explanatory
 tooltip; the shared-money-scale math, area fill, last-point dots and point count are untouched.
+
+---
+
+## V8 💰 — Active Orders view (`app.js` `ordersShellHtml` / `cancelBtn` / `buyOrderRow` / `sellOrderRow`)  ·  2026-07-07
+
+**Net IA/flow change: NONE. Markup-only re-skin of a 💰 view — every handler, API call, funds
+path and `ssimConfirm` gate is byte-identical.** Only the four template helpers changed:
+`ordersShellHtml` (toolbar + the two sections → `.surface` / `.panel-head` / `.panel-title` /
+`.field` search / `.btn btn-sm` actions), `cancelBtn` (→ `.order-cancel btn btn-sm btn-secondary`
+with `--danger-rgb` text), and `buyOrderRow` / `sellOrderRow` (→ `.t13`/`.t10` type scale). The
+loading spinner accent moved teal→brand.
+
+**Load-bearing structure preserved (the reason this view is delicate):**
+
+- `removeOrderRow()` updates a section's count by walking `row.parentElement` (the rows-list) →
+  `.previousElementSibling` (the section header) → `querySelector('span.font-mono')`. The re-skin
+  keeps that exact shape: each `.panel-head` header holds a `span.font-mono` count and is
+  immediately followed by the rows-list `<div>` — so the untouched `removeOrderRow` still finds its
+  count span. Documented inline in `ordersShellHtml`.
+- `cancelBtn`'s inner HTML is `<i fa-xmark/><span>Cancel</span>` — it must match the string
+  `bulkCancelOrders()` hard-codes when restoring a failed cancel button; kept identical.
+- Every delegation/id hook the controllers read is intact: `#orders-search`,
+  `#orders-cancel-selected`, `#orders-sel-count`, `#orders-cancel-all`, `#orders-refresh`,
+  `.order-row`, `.order-check`, `.order-cancel`, `data-order-kind|-id|-name`,
+  `data-cancel-buy|-listing`.
+
+The amber partial-snapshot banner (`data.partial`) is unchanged — a truncated Steam/proxy fetch
+still reads visibly as "incomplete", not as "no orders" (pricing/UI honesty S2/S13). The
+`ssimConfirm` danger gates on both single-cancel (`cancelOrder`) and bulk-cancel
+(`bulkCancelOrders`) are exactly as before (invariant 3).

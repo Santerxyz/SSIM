@@ -402,27 +402,27 @@
 
 | # | Capability / behavior | Legacy ref | 💰 | Status |
 |---|---|---|---|---|
-| P-204 | `renderOrdersView(username,appId)`: fetches GET `/api/market/orders/{username}?appId=`; loading spinner "Loading active orders live from Steam…"; in-flight guard (`stillHere`); always live | app.js:2205–2229 | | |
-| P-205 | Fetch error → shell w/ rose error message in both sections + retry controls | app.js:2218–2225 | | |
-| P-206 | Orders shell: two side-by-side sections (`xl:grid-cols-2`) "Active Buy Orders" (success-green `fa-cart-arrow-down`) + "Active Sell Orders" (listed-blue `fa-tag`), header + item search `#orders-search` + "Cancel selected (N)" + "Cancel all" + "Refresh", per-section counts | app.js:2231–2254 | 💰 | |
-| P-207 | Empty rows: "No active buy orders." / "No active sell orders." | app.js:2259–2261 | | |
-| P-208 | Partial-snapshot banner (amber) when `data.partial`: "Order list may be incomplete (Steam/proxy error during fetch) — refresh to retry." | app.js:2262–2267 | | |
-| P-209 | Order icon render: 40×32 lazy `<img>` (via `safeIconUrl`), `onerror` hides; placeholder box if no `iconUrl` | app.js:2270–2274 | | |
-| P-210 | Per-order Cancel button (rose) tooltip "Cancel this order on the Steam market" | app.js:2275–2278 | 💰 | |
-| P-211 | Per-order multi-select checkbox (violet `.order-check`) | app.js:2279–2281 | | |
-| P-212 | Buy-order row: checkbox, icon, name + `#buyOrderId` (mono), price `fmtMoneyMinor(pricePerItemMinor,currency)`, qty `remaining / total` (or remaining), Cancel button (`data-cancel-buy`) | app.js:2282–2293 | 💰 | |
-| P-213 | Sell-order row: checkbox, icon, name + `#listingId` (mono), price `fmtMoneyMinor`, `qty N` (default 1), Cancel button (`data-cancel-listing`) | app.js:2294–2303 | 💰 | |
-| P-214 | Refresh button (orders view) re-runs `renderOrdersView(username,appId)`; `bindOrdersControls()` wires all controls | app.js:2305–2308 | | |
-| P-215 | Single per-row cancel wiring: listing → `/api/market/cancel-listing`; buy → `/api/market/cancel-buy-order` | app.js:2311–2314 | 💰 | |
-| P-216 | Orders search filter: filters `.order-row` by lowercased item name; hidden rows unchecked; updates sel-count | app.js:2320–2329 | | |
-| P-217 | Cancel selected: cancels only checked+visible rows | app.js:2333–2334, 2341–2344 | 💰 | |
-| P-218 | Cancel all (filtered): cancels currently-visible/filtered set (search "AK-47" then Cancel all = only those) | app.js:2335–2336, 2345–2348 | 💰 | |
-| P-219 | Selection count + disable: `orders-sel-count`; "Cancel selected" disabled when 0 checked | app.js:2349–2353 | | |
-| P-220 | Bulk-cancel confirm modal: `ssimConfirm` tone danger, title "Cancel orders", confirmLabel "Cancel N order(s)", body "Cancel N order(s) on the Steam market?" | app.js:2356–2361 | 💰 | |
-| P-221 | Bulk-cancel executes SEQUENTIALLY (anti-rate-limit); per-row spinner; on ok removes row, on fail restores btn | app.js:2362–2379 | 💰 | |
-| P-222 | Bulk-cancel result toast: `Cancelled OK[, N failed]`, type success or warn | app.js:2380 | | |
-| P-223 | Single-order cancel confirm: tone danger, "Cancel order" / body "Cancel this order on the Steam market?"; toast success "Order cancelled" / error `Cancel failed: <msg>` | app.js:2385–2397 | 💰 | |
-| P-224 | Row removal + count/empty upkeep: decrements section count span; when 0 remain shows "No active orders." | app.js:2402–2414 | | |
+| P-204 | `renderOrdersView(username,appId)`: fetches GET `/api/market/orders/{username}?appId=`; loading spinner "Loading active orders live from Steam…"; in-flight guard (`stillHere`); always live | app.js:2205–2229 | | ✅ done · app.js:2208–2232 (spinner accent→brand; fetch+stillHere guard+api unchanged) |
+| P-205 | Fetch error → shell w/ rose error message in both sections + retry controls | app.js:2218–2225 | | ✅ done · ordersShellHtml (unchanged flow; .surface shell) |
+| P-206 | Orders shell: two side-by-side sections (`xl:grid-cols-2`) "Active Buy Orders" (success-green) + "Active Sell Orders" (listed-blue), header + item search `#orders-search` + "Cancel selected (N)" + "Cancel all" + "Refresh", per-section counts | app.js:2231–2254 | 💰 | ✅ done · ordersShellHtml (.surface + .panel-head + .field + .btn btn-sm; all ids + span.font-mono count preserved for removeOrderRow) |
+| P-207 | Empty rows: "No active buy orders." / "No active sell orders." | app.js:2259–2261 | | ✅ done · ordersHtml (text unchanged) |
+| P-208 | Partial-snapshot banner (amber) when `data.partial`: "Order list may be incomplete (Steam/proxy error during fetch) — refresh to retry." | app.js:2262–2267 | | ✅ done · ordersHtml (amber banner unchanged — pricing honesty) |
+| P-209 | Order icon render: 40×32 lazy `<img>` (via `safeIconUrl`), `onerror` hides; placeholder box if no `iconUrl` | app.js:2270–2274 | | ✅ done · orderIcon (unchanged) |
+| P-210 | Per-order Cancel button tooltip "Cancel this order on the Steam market" | app.js:2275–2278 | 💰 | ✅ done · cancelBtn (.order-cancel btn btn-sm + danger color; data-cancel-* + inner string preserved) |
+| P-211 | Per-order multi-select checkbox (violet `.order-check`) | app.js:2279–2281 | | ✅ done · orderCheck (.order-check unchanged) |
+| P-212 | Buy-order row: checkbox, icon, name + `#buyOrderId` (mono), price `fmtMoneyMinor(pricePerItemMinor,currency)`, qty `remaining / total`, Cancel (`data-cancel-buy`) | app.js:2282–2293 | 💰 | ✅ done · buyOrderRow (t13/t10 type scale; data-order-*/price/qty/cancel unchanged) |
+| P-213 | Sell-order row: checkbox, icon, name + `#listingId` (mono), price `fmtMoneyMinor`, `qty N`, Cancel (`data-cancel-listing`) | app.js:2294–2303 | 💰 | ✅ done · sellOrderRow (t13/t10; hooks + fmtMoneyMinor unchanged) |
+| P-214 | Refresh button (orders view) re-runs `renderOrdersView(username,appId)`; `bindOrdersControls()` wires all controls | app.js:2305–2308 | | ✅ done · bindOrdersControls (logic unchanged) |
+| P-215 | Single per-row cancel wiring: listing → `/api/market/cancel-listing`; buy → `/api/market/cancel-buy-order` | app.js:2311–2314 | 💰 | ✅ done · bindOrdersControls (API + wiring unchanged) |
+| P-216 | Orders search filter: filters `.order-row` by lowercased item name; hidden rows unchecked; updates sel-count | app.js:2320–2329 | | ✅ done · logic unchanged |
+| P-217 | Cancel selected: cancels only checked+visible rows | app.js:2333–2334, 2341–2344 | 💰 | ✅ done · logic unchanged |
+| P-218 | Cancel all (filtered): cancels currently-visible/filtered set | app.js:2335–2336, 2345–2348 | 💰 | ✅ done · logic unchanged |
+| P-219 | Selection count + disable: `orders-sel-count`; "Cancel selected" disabled when 0 checked | app.js:2349–2353 | | ✅ done · updateOrdersSelCount (unchanged) |
+| P-220 | Bulk-cancel confirm modal: `ssimConfirm` tone danger, title "Cancel orders", confirmLabel "Cancel N order(s)" | app.js:2356–2361 | 💰 | ✅ done · bulkCancelOrders ssimConfirm gate UNCHANGED |
+| P-221 | Bulk-cancel executes SEQUENTIALLY (anti-rate-limit); per-row spinner; on ok removes row, on fail restores btn | app.js:2362–2379 | 💰 | ✅ done · bulkCancelOrders (unchanged; restore string matches cancelBtn inner) |
+| P-222 | Bulk-cancel result toast: `Cancelled OK[, N failed]`, type success or warn | app.js:2380 | | ✅ done · unchanged |
+| P-223 | Single-order cancel confirm: tone danger, "Cancel order" / body "Cancel this order on the Steam market?"; toast success/error | app.js:2385–2397 | 💰 | ✅ done · cancelOrder ssimConfirm gate + api UNCHANGED |
+| P-224 | Row removal + count/empty upkeep: decrements section count span; when 0 remain shows "No active orders." | app.js:2402–2414 | | ✅ done · removeOrderRow UNCHANGED (relies on rows-list→prev(.panel-head)→span.font-mono, preserved by ordersShellHtml) |
 
 ---
 

@@ -2210,7 +2210,7 @@ async function renderOrdersView(username, appId) {
   el.ordersWrap.classList.remove('hidden');
   el.ordersWrap.innerHTML = `
     <div class="flex items-center justify-center py-16 text-center">
-      <i class="fa-solid fa-spinner cs2-spin text-2xl text-teal-400 mr-3"></i>
+      <i class="fa-solid fa-spinner cs2-spin text-2xl text-brand mr-3"></i>
       <span class="text-slate-300">Loading active orders live from Steam…</span>
     </div>`;
   // Guard: the user may switch account/tab while this live fetch is in flight.
@@ -2231,25 +2231,30 @@ async function renderOrdersView(username, appId) {
   bindOrdersControls(username, appId);
 }
 
-/** Two-section shell (Buy / Sell) with a header + refresh button. */
+/** Two-section shell (Buy / Sell) with a header + refresh button.
+ *  STRUCTURE IS LOAD-BEARING: each section = header `.panel-head` (with a `span.font-mono`
+ *  count) immediately followed by the rows-list container. `removeOrderRow()` walks
+ *  row.parentElement (the rows-list) → previousElementSibling (the header) →
+ *  querySelector('span.font-mono') to update the count, so that shape must not change. */
 function ordersShellHtml(buyInner, sellInner, counts = {}) {
   const section = (title, icon, color, countKey, inner) => `
-    <div class="rounded-lg border border-slate-800 bg-slate-900/45 overflow-hidden">
-      <div class="px-4 py-2.5 border-b border-slate-800 flex items-center gap-2">
+    <div class="surface overflow-hidden">
+      <div class="panel-head">
         <i class="fa-solid ${icon}" style="color:${color}"></i>
-        <span class="text-xs font-bold uppercase tracking-wider text-slate-300">${title}</span>
-        <span class="ml-1 text-2xs font-mono text-slate-500">${counts[countKey] != null ? counts[countKey] : ''}</span>
+        <span class="panel-title">${title} <span class="font-mono opacity-70 text-slate-500">${counts[countKey] != null ? counts[countKey] : ''}</span></span>
       </div>
       <div class="divide-y divide-slate-800/60">${inner}</div>
     </div>`;
   return `
-    <div class="flex flex-wrap items-center gap-2 mb-4">
-      <p class="text-sm text-slate-400 mr-auto"><i class="fa-solid fa-receipt text-teal-400 mr-2"></i>Active market orders</p>
-      <input id="orders-search" type="text" placeholder="Search item…" class="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 w-44 focus:outline-none focus:ring-2 focus:ring-brand/40" />
-      <button id="orders-cancel-selected" disabled class="px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="orders-sel-count">0</span>)</span></button>
-      <button id="orders-cancel-all" class="px-3 py-1.5 rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
-      <button id="orders-refresh" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
-    </div>
+    <div class="surface mb-4"><div class="panel-head justify-between flex-wrap gap-2">
+      <div class="flex items-center gap-2"><i class="fa-solid fa-receipt text-brand"></i><span class="panel-title" style="font-size:var(--fs-13)">Active market orders</span></div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <div class="relative"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i><input id="orders-search" type="text" placeholder="Search item…" class="field pl-8 py-1.5 t12 w-48" /></div>
+        <button id="orders-cancel-selected" disabled class="btn btn-sm btn-danger"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="orders-sel-count">0</span>)</span></button>
+        <button id="orders-cancel-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
+        <button id="orders-refresh" class="btn btn-sm btn-secondary"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
+      </div>
+    </div></div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
       ${section('Active Buy Orders', 'fa-cart-arrow-down', 'rgb(var(--success-rgb))', 'buy', buyInner)}
       ${section('Active Sell Orders', 'fa-tag', 'rgb(var(--listed-rgb))', 'sell', sellInner)}
@@ -2276,8 +2281,9 @@ function orderIcon(o) {
     : '<div class="w-10 h-8 shrink-0"></div>';
 }
 function cancelBtn(attr, id) {
-  return `<button ${attr}="${escapeAttr(id)}" title="Cancel this order on the Steam market"
-    class="order-cancel shrink-0 px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1.5"><i class="fa-solid fa-xmark"></i><span>Cancel</span></button>`;
+  // .order-cancel hook preserved (bulkCancelOrders/removeOrderRow depend on it); inner is
+  // '<i fa-xmark/><span>Cancel</span>' — MUST match bulkCancelOrders' hard-coded restore string.
+  return `<button ${attr}="${escapeAttr(id)}" title="Cancel this order on the Steam market" class="order-cancel btn btn-sm btn-secondary shrink-0" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i><span>Cancel</span></button>`;
 }
 function orderCheck() {
   return '<input type="checkbox" class="order-check accent-violet-500 w-4 h-4 shrink-0" />';
@@ -2288,20 +2294,20 @@ function buyOrderRow(o) {
   return `<div class="order-row flex items-center gap-3 px-4 py-2.5" data-order-kind="buy" data-order-id="${escapeAttr(o.buyOrderId)}" data-order-name="${escapeAttr(String(o.name || '').toLowerCase())}">
     ${orderCheck()}
     ${orderIcon(o)}
-    <div class="min-w-0 flex-1"><div class="text-sm text-slate-200 truncate" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</div>
-      <div class="text-2xs text-slate-500 font-mono">#${escapeHtml(o.buyOrderId)}</div></div>
-    <div class="text-right shrink-0 mr-1"><div class="text-sm font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</div>
-      <div class="text-2xs text-slate-500">qty ${escapeHtml(qtyTxt)}</div></div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate font-semibold" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</p>
+      <p class="t10 text-slate-500 font-mono">#${escapeHtml(o.buyOrderId)}</p></div>
+    <div class="text-right shrink-0 mr-1"><p class="t13 font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</p>
+      <p class="t10 text-slate-500">qty ${escapeHtml(qtyTxt)}</p></div>
     ${cancelBtn('data-cancel-buy', o.buyOrderId)}</div>`;
 }
 function sellOrderRow(o) {
   return `<div class="order-row flex items-center gap-3 px-4 py-2.5" data-order-kind="sell" data-order-id="${escapeAttr(o.listingId)}" data-order-name="${escapeAttr(String(o.name || '').toLowerCase())}">
     ${orderCheck()}
     ${orderIcon(o)}
-    <div class="min-w-0 flex-1"><div class="text-sm text-slate-200 truncate" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</div>
-      <div class="text-2xs text-slate-500 font-mono">#${escapeHtml(o.listingId)}</div></div>
-    <div class="text-right shrink-0 mr-1"><div class="text-sm font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</div>
-      <div class="text-2xs text-slate-500">qty ${o.quantity || 1}</div></div>
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate font-semibold" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</p>
+      <p class="t10 text-slate-500 font-mono">#${escapeHtml(o.listingId)}</p></div>
+    <div class="text-right shrink-0 mr-1"><p class="t13 font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</p>
+      <p class="t10 text-slate-500">qty ${o.quantity || 1}</p></div>
     ${cancelBtn('data-cancel-listing', o.listingId)}</div>`;
 }
 
