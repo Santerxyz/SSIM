@@ -327,7 +327,7 @@ export class GcActionLayer {
     casketId: string,
     itemIds: string[],
     direction: 'deposit' | 'withdraw',
-    onProgress?: (p: { done: number; total: number; current: string; moved: number; failed: number }) => void,
+    onProgress?: (p: { done: number; total: number; current: string; moved: number; unconfirmed: number; failed: number }) => void,
     shouldCancel?: () => boolean,
   ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }>; stopped: 'completed' | 'budget' | 'cancelled' }> {
     // S16: a per-item move costs ~0.9–1.8s (verify + pacing), so the old FIXED 60s backstop falsely
@@ -373,12 +373,12 @@ export class GcActionLayer {
           else go.removeFromCasket(casketId, itemId);
         } catch (e) {
           failed.push({ itemId, error: (e as Error).message }); // threw BEFORE submit → safe, not moved
-          onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, failed: failed.length });
+          onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, unconfirmed: unconfirmed.length, failed: failed.length });
           continue;
         }
         const ok = await this.verifyMove(go, casketId, itemId, direction);
         (ok ? moved : unconfirmed).push(itemId);
-        onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, failed: failed.length });
+        onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, unconfirmed: unconfirmed.length, failed: failed.length });
         await sleep(350 + Math.floor(Math.random() * 400)); // gentle pacing between GC writes
       }
       logger.info(`[gc] ${username} ${direction}: ${moved.length} moved, ${unconfirmed.length} unconfirmed, ${failed.length} failed`);
