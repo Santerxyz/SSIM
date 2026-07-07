@@ -483,7 +483,8 @@ export function importDropZoneIntoVault(
   targetFolderId: string | null,
   selectedFiles: string[],
 ): { imported: number; skipped: number; reasons: Array<{ file: string; reason: string }> } {
-  if (!AccountVault.isEnabled() || !targetEnvId) return { imported: 0, skipped: 0, reasons: [] };
+  if (!AccountVault.isEnabled()) throw new Error('vault not unlocked');
+  if (!targetEnvId) throw new Error('targetEnvId is required');
   const allow = new Set(selectedFiles.map((f) => path.basename(String(f)))); // basename: no path traversal
   if (allow.size === 0) return { imported: 0, skipped: 0, reasons: [] };
 
@@ -540,7 +541,8 @@ export function importDropZoneIntoVault(
  * No maFile on disk is needed; the secret is built straight from the CSV row.
  */
 export function importCsvIntoVault(accounts: AccountManager, csvText: string, targetEnvId: string, targetFolderId: string | null = null): { imported: number; skipped: number; rejected: CsvRejected[] } {
-  if (!AccountVault.isEnabled() || !targetEnvId) return { imported: 0, skipped: 0, rejected: [] };
+  if (!AccountVault.isEnabled()) throw new Error('vault not unlocked');
+  if (!targetEnvId) throw new Error('targetEnvId is required');
   const { rows, rejected } = parseAccountsCsv(csvText);
   const env = targetEnvId; // STRICT: the explicitly-chosen target env — never a guessed default
   const folderId = resolveTargetFolder(accounts, env, targetFolderId);
@@ -607,7 +609,8 @@ function folderPathsFromAccountsJson(raw: string): Map<string, string[]> {
  * (secrets). Returns counts, or null if the password is wrong / the file isn't a vault.
  */
 export function importExternalVault(accounts: AccountManager, rawVaultContent: string, password: string, rawAccountsJson: string | undefined, targetEnvId: string, targetFolderId: string | null = null): { imported: number; skipped: number } | null {
-  if (!AccountVault.isEnabled() || !targetEnvId) return { imported: 0, skipped: 0 };
+  if (!AccountVault.isEnabled()) throw new Error('vault not unlocked');
+  if (!targetEnvId) throw new Error('targetEnvId is required');
   const ext = AccountVault.decryptExternalVault(rawVaultContent, password);
   if (!ext) return null; // wrong password or not an SSIM vault
   const env = targetEnvId; // STRICT: the explicitly-chosen target env — never a guessed default

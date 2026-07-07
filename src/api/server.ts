@@ -2120,7 +2120,9 @@ export function createApp(deps: ApiDeps): Express {
         // A transiently-locked accounts.txt (EBUSY/EPERM) is named, not a generic 500 — the whole
         // import aborts before any mutation, so the operator can close the file and retry.
         if ((e as { code?: string }).code === 'ACCOUNTS_TXT_LOCKED') return res.status(409).json({ error: (e as Error).message });
-        throw e;
+        // Any other import failure (e.g. a locked vault / missing env from a guard-bypassing caller)
+        // is 400 JSON, never an Express default 500 HTML page the frontend api() can't render.
+        return res.status(400).json({ error: (e as Error).message });
       }
     }
 
