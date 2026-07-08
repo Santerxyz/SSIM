@@ -197,6 +197,16 @@ fn capability_inject_js(token: &str) -> String {
     format!("window.__SSIM_CAP__='{safe}';")
 }
 
+/// Should a finished page load receive the capability token? ONLY a document served by OUR OWN
+/// backend on loopback at the announced port — never the splash (tauri asset origin), never a
+/// foreign/external page, and never before the port is known (B26/P5; S1 root fix, see setup()).
+fn should_inject_capability(url: &tauri::Url, announced_port: u16) -> bool {
+    announced_port != 0
+        && url.scheme() == "http"
+        && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
+        && url.port() == Some(announced_port)
+}
+
 /// The unauthenticated marker every SSIM server (dashboard + activation/unlock portals) serves at
 /// GET /__ssim/health. The shell requires this in the response body before it adopts a port, so it
 /// never navigates onto a DIFFERENT app that merely accepts TCP on the desired port. (BUG 2.)
@@ -645,26 +655,18 @@ fn spawn_backend(handle: tauri::AppHandle) {
                                 if let Ok(u) = url.parse() {
                                     let _ = w.navigate(u);
                                 }
-                                // Seed the token once navigated. The immediate eval can land in the
-                                // still-live splash document (pre-commit) and be discarded on navigation
-                                // — the S1b race. Re-seed a couple of times AFTER the navigation commits
-                                // so window.__SSIM_CAP__ reliably reaches the DASHBOARD document; the
-                                // dashboard persists it to sessionStorage on receipt (S1), so a single
-                                // landed eval survives every later in-webview reload for the process life.
+                                // Fast-path seed once navigated (an eval this early can land in the
+                                // dying pre-commit document and be discarded — harmless). The GUARANTEED
+                                // delivery is the main window's on_page_load hook (setup()), which
+                                // re-injects the token into EVERY finished page load of the backend
+                                // origin: the activation/unlock PORTAL documents, the dashboard the
+                                // portal later swaps in via location.replace('/'), and any reload. The
+                                // old timed re-seeds (600/1800 ms) are gone — on a vault boot they raced
+                                // the operator's Master-Password entry and always lost: the token landed
+                                // in the portal document and died with it, leaving the dashboard capless
+                                // for the whole session (the S1 field failure's true root cause).
                                 if let Some(js) = &inject {
                                     let _ = w.eval(js);
-                                    let h3 = h2.clone();
-                                    let js2 = js.clone();
-                                    tauri::async_runtime::spawn(async move {
-                                        for delay_ms in [600u64, 1800u64] {
-                                            let _ = tauri::async_runtime::spawn_blocking(move || {
-                                                std::thread::sleep(Duration::from_millis(delay_ms))
-                                            }).await;
-                                            if let Some(w2) = h3.get_webview_window("main") {
-                                                let _ = w2.eval(&js2);
-                                            }
-                                        }
-                                    });
                                 }
                                 let _ = w.show();
                                 let _ = w.set_focus();
@@ -801,6 +803,27 @@ pub fn run() {
                                 // No-op once navigated to the real app page (the ids/helper won't exist there).
                                 let _ = window.eval("window.__ssimUpd&&window.__ssimUpd('Update installed \\u2014 starting SSIM\\u2026','You\\u2019re now on the latest version.');");
                             }
+                            // B26/P5 — capability delivery that CANNOT miss (S1 root cause). The old
+                            // delivery was a navigate-time eval + timed re-seeds, which land in whatever
+                            // document is live in the first ~2 s. On a real boot that document is the
+                            // vault-unlock (or activation) PORTAL: the operator types the Master
+                            // Password far longer than any re-seed window, the portal then swaps itself
+                            // for the dashboard (location.replace('/')), and the token — never persisted
+                            // by the portal page — died with the portal document. The dashboard ran
+                            // capless for the whole session: every money/settings call 401'd until a
+                            // full restart. Re-injecting on EVERY finished page load of OUR backend
+                            // origin (portal pages, the dashboard, F5, WebView2 recovery) removes the
+                            // timing dependence entirely. Same channel as before (webview-internal eval
+                            // of the stdout-delivered token); the origin gate means no foreign document
+                            // can ever receive it.
+                            let state = window.state::<AppState>();
+                            let port = state.port.load(Ordering::SeqCst);
+                            if should_inject_capability(payload.url(), port) {
+                                let cap = state.capability.lock().unwrap().clone();
+                                if let Some(tok) = cap {
+                                    let _ = window.eval(&capability_inject_js(&tok));
+                                }
+                            }
                             let _ = window.show();
                         }
                     })
@@ -860,6 +883,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // B26/P5 (S1 root fix): the page-load capability injection targets ONLY our own backend
+    // origin — loopback + the announced port. The splash (tauri asset origin), foreign pages,
+    // other local ports, and the pre-announce phase (port 0) must never receive the token.
+    #[test]
+    fn capability_injects_only_into_backend_origin() {
+        let u = |s: &str| tauri::Url::parse(s).unwrap();
+        assert!(should_inject_capability(&u("http://127.0.0.1:3000/"), 3000), "dashboard/portal document");
+        assert!(should_inject_capability(&u("http://localhost:3000/index.html"), 3000), "localhost spelling");
+        assert!(!should_inject_capability(&u("http://127.0.0.1:3000/"), 0), "port not announced yet");
+        assert!(!should_inject_capability(&u("http://127.0.0.1:3001/"), 3000), "different local port");
+        assert!(!should_inject_capability(&u("http://tauri.localhost/splash.html"), 3000), "splash/asset origin");
+        assert!(!should_inject_capability(&u("https://example.com/"), 3000), "foreign https page");
+        assert!(!should_inject_capability(&u("http://example.com:3000/"), 3000), "foreign host on same port");
+    }
 
     // S57: the sweep removes ONLY stale `ssim-backend.exe.tmp*` fragments (a ~171 MB leftover from an
     // extraction that died before the rename), never the real backend or unrelated files.
