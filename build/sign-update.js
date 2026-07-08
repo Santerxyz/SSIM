@@ -60,7 +60,7 @@ if (!exe || !version || !url) {
   die('usage: node build/sign-update.js --exe <file> --version <semver> --url <download-url> [--key <private.pem> | env LICENSE_PRIVATE_KEY] [--out version.json]');
 }
 if (!fs.existsSync(exe)) die('exe not found: ' + exe);
-if (!/^\d+\.\d+\.\d+/.test(version)) die('version must be semver (e.g. 1.1.6)');
+if (!/^\d+\.\d+\.\d+$/.test(version)) die('version must be a 3-part numeric semver (e.g. 1.1.6) — the client compares numerically, so pre-release/build tags are silently treated as "not newer"');
 
 const keyFile = arg('key');
 const privPem = keyFile ? fs.readFileSync(keyFile, 'utf8') : (process.env.LICENSE_PRIVATE_KEY || '');
