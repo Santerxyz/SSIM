@@ -102,7 +102,8 @@ let selftestOk = false, report = '';
 try {
   execFileSync(path.join(OUT, 'SSIM.exe'), [], {
     env: { ...process.env, SSIM_SELFTEST: '1', SSIM_HOME: selftestHome },
-    timeout: 180_000, stdio: 'ignore',
+    // shared build/publish self-test budget (matches publish.js; Updater.ts SELFTEST_BUDGET_MS must stay >= this)
+    timeout: 200_000, stdio: 'ignore',
   });
   selftestOk = true; // backend self-test exited 0
 } catch (e) { report = e.message || String(e); }
