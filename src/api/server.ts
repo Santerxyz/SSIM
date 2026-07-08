@@ -1274,12 +1274,7 @@ export function createApp(deps: ApiDeps): Express {
       if (cached) return res.json(enrichInv(cached));
     }
     const inv = await inventory.refreshOne(account.username, 'tf2');
-    // A refresh refreshes the ACCOUNT, not one game (owner request 2026-07-08): ride the same
-    // live session for the CS2 leg too, so both caches carry the same wallet/timestamp and the
-    // CS2 tab never lags a TF2 refresh. Best-effort — a CS2-leg failure keeps the TF2 result.
-    try { await inventory.refreshOne(account.username, 'cs2'); }
-    catch (err) { logger.warn(`[${account.username}] CS2 leg of the TF2 single-refresh failed: ${(err as Error).message}`); }
-    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (both caches fresh)
+    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (TF2 refresh)
     res.json(enrichInv(inv));
   }));
 
@@ -1295,12 +1290,7 @@ export function createApp(deps: ApiDeps): Express {
       if (cached) return res.json(enrichInv(cached));
     }
     const inv = await inventory.refreshOne(account.username);
-    // A refresh refreshes the ACCOUNT, not one game (owner request 2026-07-08): the TF2 leg
-    // rides the same live session (one extra web read; empty answer when the account has no
-    // TF2). Best-effort — a TF2-leg failure never voids the committed CS2 result.
-    try { await inventory.refreshOne(account.username, 'tf2'); }
-    catch (err) { logger.warn(`[${account.username}] TF2 leg of the CS2 single-refresh failed: ${(err as Error).message}`); }
-    history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (both caches fresh)
+    history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (CS2 refresh)
     res.json(enrichInv(inventory.getCached(account.username) ?? inv)); // refreshOne is the full CS2 fetch; getCached returns the freshly-stored complete record
   }));
 

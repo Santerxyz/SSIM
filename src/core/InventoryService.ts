@@ -82,8 +82,7 @@ export interface RefreshJob {
   cancelling?: boolean;
   /** The run ended because it was cancelled. */
   cancelled?:  boolean;
-  /** The game TAB the job was started from (labels the run; since 2026-07-08 every bulk
-   *  refresh fetches BOTH games per account on the same login/throttle slot). */
+  /** Which game this job refreshes ('cs2' default). */
   game?:       GameId;
   total:       number;
   done:        number;
@@ -769,16 +768,16 @@ export class InventoryService {
         // concurrent post-trade refresh of the same account), set by ensureSession within the run().
         const store: { createdByCall?: boolean } = {};
         try {
-          await this.ownershipCtx.run(store, () => this.refreshBothMaybeThrottled(username, () => this.refreshCancel));
+          await this.ownershipCtx.run(store, () => this.refreshMaybeThrottled(username, game, () => this.refreshCancel));
         } catch (err) {
           // H-INV-008: a ThrottleSkippedError means the account was cancelled BEFORE any fetch started —
           // it's a skip, not a failure. Don't inflate job.failed (the finally still counts it in job.done,
           // matching today's cancelled-run accounting); log at debug.
           if ((err as { skipped?: boolean }).skipped === true) {
-            logger.debug(`[${username}] refresh skipped (cancelled before start)`);
+            logger.debug(`[${username}] ${game} refresh skipped (cancelled before start)`);
           } else {
             this.job.failed.push({ username, error: (err as Error).message });
-            logger.warn(`[${username}] refresh failed: ${(err as Error).message}`);
+            logger.warn(`[${username}] ${game} refresh failed: ${(err as Error).message}`);
           }
         } finally {
           this.job.done++;
@@ -806,10 +805,8 @@ export class InventoryService {
       logger.info(`Refresh-all memory: RSS ${mb(startRss)}→${mb(endRss)}MB · peak ${mb(peakRss)}MB over ${usernames.length} account(s)`);
     }
 
-    // Every account fetched BOTH games this pass: CS2 wrote the full-inventory (gc) cache,
-    // TF2 wrote its own — persist each batch in one atomic write.
-    this.gcStore.flush();
-    this.tf2Store.flush();
+    // CS2's per-account refresh writes the full-inventory (gc) cache; TF2 writes its own.
+    (game === 'cs2' ? this.gcStore : this.tf2Store).flush(); // persist the batch in one atomic write
     this.job.running = false;
     this.job.cancelling = false;
     this.job.cancelled = this.refreshCancel;
@@ -844,29 +841,6 @@ export class InventoryService {
     return this.isLocalIp(username)
       ? this.localIpThrottle.run(() => this.refreshOne(username, game), { skip })
       : this.refreshOne(username, game);
-  }
-
-  /**
-   * One account, BOTH games, one throttle slot (owner request 2026-07-08): the full CS2
-   * fetch plus a TF2 read on the SAME live session. The login (the expensive, rate-limited
-   * part) is already paid; the TF2 leg is one extra web inventory read — an account without
-   * TF2 answers it with a single small empty response. Fetching both at once keeps the
-   * Steam wallet identical in both caches by construction (same session, same timestamp)
-   * and keeps the TF2 tab populated without a second login pass over the fleet.
-   * A TF2-only failure never voids the already-committed CS2 result — it surfaces as a
-   * partial failure tagged "TF2:" in the job's failed list (retryable from the panel).
-   */
-  private refreshBothMaybeThrottled(username: string, skip?: () => boolean): Promise<void> {
-    const both = async (): Promise<void> => {
-      await this.refreshOne(username, 'cs2');
-      if (skip?.()) return; // "End Task" mid-account → skip the TF2 leg (CS2 is committed)
-      try {
-        await this.refreshOne(username, 'tf2');
-      } catch (err) {
-        throw new Error(`TF2: ${(err as Error).message}`);
-      }
-    };
-    return this.isLocalIp(username) ? this.localIpThrottle.run(both, { skip }) : both();
   }
 
   /**
