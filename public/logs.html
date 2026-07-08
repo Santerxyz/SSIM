@@ -45,17 +45,10 @@
     box-shadow:0 1px 0 rgba(255,255,255,.02) inset, 0 8px 24px -18px #000;
   }
   .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:13px;color:#f7f7fa;letter-spacing:.2px}
-  /* Santer diamond mark — the brand glyph, gradient purple, soft corner (no external icon). */
-  .diamond{
-    width:12px;height:12px;transform:rotate(45deg);border-radius:3px;
-    background:linear-gradient(135deg,var(--brand-l),var(--brand-d));
-    box-shadow:0 0 12px -2px rgba(147,51,234,.7);
-  }
+  /* Brand mark — the real SSIM shield (same asset as the dashboard/portals), not the old diamond glyph. */
+  .mark{width:16px;height:16px;object-fit:contain;filter:drop-shadow(0 0 8px rgba(147,51,234,.6));flex-shrink:0}
   .brand .sep{color:var(--line-strong);font-weight:500}
   .brand .name{color:var(--dim);font-weight:500;font-size:12px}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--error);box-shadow:0 0 8px currentColor;color:var(--error);flex-shrink:0}
-  .dot.ok{background:var(--ok);color:var(--ok)}
-  .status{font-size:11px;color:var(--dim);text-transform:lowercase;letter-spacing:.3px}
   .spacer{flex:1}
 
   /* ── Level filter chips (masterpiece .chip toggle language) ─────────────────── */
@@ -126,9 +119,7 @@
 </head>
 <body>
   <header>
-    <span class="brand"><span class="diamond"></span>SSIM <span class="sep">·</span> <span class="name">Live Logs</span></span>
-    <span class="dot" id="dot" title="connection"></span>
-    <span class="status" id="status">connecting…</span>
+    <span class="brand"><img class="mark" src="/assets/image-Photoroom.png" alt="">SSIM <span class="sep">·</span> <span class="name">Live Logs</span></span>
     <span class="spacer"></span>
     <span class="filters" id="filters">
       <span class="chip lv-error on" data-lv="error">error</span>
@@ -150,7 +141,6 @@
 <script>
   var logEl = document.getElementById('log');
   var emptyEl = document.getElementById('empty');
-  var dot = document.getElementById('dot'), statusEl = document.getElementById('status');
   var followBtn = document.getElementById('follow'), countEl = document.getElementById('count');
   var searchEl = document.getElementById('search');
   var MAX_ROWS = 3000;            // DOM cap → never grows unbounded
@@ -214,10 +204,9 @@
 
   function connect(){
     var es = new EventSource('/api/logs/stream');
-    es.onopen = function(){ dot.classList.add('ok'); statusEl.textContent = 'live'; };
     es.onmessage = function(ev){ try { addLine(JSON.parse(ev.data)); } catch(e){} };
-    es.onerror = function(){ dot.classList.remove('ok'); statusEl.textContent = 'reconnecting…'; };
-    // EventSource reconnects automatically (server sends retry: 3000).
+    // EventSource reconnects automatically (server sends retry: 3000); the old
+    // dot/"live" connection indicator was removed on owner request (2026-07-08).
   }
   connect();
 </script>

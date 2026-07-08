@@ -198,10 +198,6 @@
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     @keyframes cs2-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     .cs2-spin { animation: cs2-spin 0.7s linear infinite !important; }
-    /* Sidebar status light heartbeat (masterpiece ds:176-177 — the class was used but its
-       keyframes were lost in the port, leaving the green dot frozen). */
-    .pulse-dot { animation: pdot 1.8s ease-in-out infinite; }
-    @keyframes pdot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
     /* Dashboard tile entrance: gentle rise+fade, staggered per tile via --i (renderDashboard
        sets it). Applied only on the FIRST paint after the skeleton, never on re-renders. */
     .tile-in { opacity: 0; animation: tileIn .38s ease-out forwards; animation-delay: calc(var(--i, 0) * 45ms); }
@@ -217,7 +213,6 @@
        froze all of these on the operator's machine (see ssim-ui.css REDUCED MOTION note). */
     body.no-motion .skel::after { animation: none; }
     body.no-motion .fade-in { animation: none; }
-    body.no-motion .pulse-dot { animation: none; }
     body.no-motion .tile-in { animation: none; opacity: 1; }
 
     /* (Startup-splash CSS removed 2026-07-08 — owner request: no flourish after the
@@ -632,9 +627,9 @@
 
       <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
         <div class="flex items-center gap-2 t11 text-slate-500 min-w-0">
-          <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot shrink-0"></span>
           <!-- Version text is filled at runtime from the API (pkg.version -> app.js), so there is
-               exactly ONE version source and the footer can never drift. No hardcoded literal here. -->
+               exactly ONE version source and the footer can never drift. No hardcoded literal here.
+               (The green status dot that sat here was removed on owner request, 2026-07-08.) -->
           <span id="footer-status" data-no-i18n class="truncate font-mono"></span>
         </div>
         <!-- Live Logs: a REAL footer control with its own reserved space. It was a floating

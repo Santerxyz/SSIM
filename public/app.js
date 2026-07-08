@@ -42,6 +42,7 @@ const state = {
   sort: null,
   accountSort: 'default',       // sidebar account order: 'default' | 'balance-desc' | 'balance-asc'
   refreshTimer: null,
+  lastFailedUsernames: [],      // accounts that failed the last refresh (the panel's Retry re-runs exactly these)
   gcCat: 'all', // active GC category filter (all | tradable | tradelocked | listed)
   massTimer: null,
   currency: localStorage.getItem('ssim.currency') || 'EUR',  // 'EUR' | 'USD'
@@ -3562,6 +3563,15 @@ async function refreshAccount() {
       const sum = (cat) => inv.items.filter((i) => i.category === cat).reduce((n, i) => n + (i.quantity || 1), 0);
       toast(`Inventory refreshed: ${inv.totalItems} items · ${sum('tradelocked')} locked · ${sum('listed')} listed`, 'success');
     }
+    // The backend refreshed BOTH games on the same session (2026-07-08) — pull the OTHER
+    // game's now-fresh cached record too, so switching tabs shows it without another fetch
+    // and the shared wallet store carries the same refresh timestamp for both games.
+    try {
+      const other = state.game === 'tf2'
+        ? await api(`/api/inventory/${encodeURIComponent(u)}`)
+        : await api(`/api/inventory-tf2/${encodeURIComponent(u)}`);
+      if (state.game === 'tf2') storeCs2Inv(other); else storeTf2Inv(other);
+    } catch (_) { /* best-effort — the other tab lazily refetches on switch anyway */ }
     // The refresh enriched from the cache and queued the missing/stale prices for a background fill;
     // watch that fill and re-pull so the new item prices + totals appear WITHOUT a restart. (PRICE-REFRESH)
     void watchPriceFill(refreshActiveViewFromCache);
@@ -3591,11 +3601,24 @@ async function startInventoryRefresh(body) {
 }
 // ── Failed-account panel: shows WHICH account failed and WHY ─────────────────
 function showRefreshFailures(failed) {
+  state.lastFailedUsernames = failed.map((f) => f.username);
   el.refreshFailedList.innerHTML = failed.map((f) => `
     <li class="leading-snug">
       <span class="font-semibold text-slate-200">${escapeHtml(f.username)}</span>
       <span class="text-slate-400"> – ${escapeHtml(shortError(f.error))}</span>
-    </li>`).join('');
+    </li>`).join('') + `
+    <li class="pt-1.5">
+      <button id="refresh-failed-retry" type="button"
+        class="w-full px-2 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 t11 font-bold transition flex items-center justify-center gap-1.5">
+        <i class="fa-solid fa-rotate-right"></i><span>Retry ${failed.length > 1 ? `these ${failed.length} accounts` : 'this account'}</span>
+      </button>
+    </li>`;
+  // Re-run the refresh for EXACTLY the failed accounts (server validates each username).
+  // startInventoryRefresh hides this panel on start and re-shows it if any fail again.
+  $('refresh-failed-retry')?.addEventListener('click', () => {
+    const usernames = state.lastFailedUsernames || [];
+    if (usernames.length) startInventoryRefresh({ usernames, game: state.game });
+  });
   el.refreshFailed.classList.remove('hidden');
 }
 function hideRefreshFailures() {
@@ -3648,18 +3671,17 @@ function pollRefresh() {
       }
       resetPoller('refresh');
 
-      if (job.game === 'tf2') {
-        const invMap = await api('/api/inventory-tf2');
-        state.tf2Inventories = {};
-        for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
-        state.tf2Loaded = true;
-        state.tf2LoadError = null;   // H-FE-001: a successful TF2 refresh heals any prior load-error panel
-      } else {
-        const invMap = await api('/api/inventory');
-        state.inventories = {};
-        for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeCs2Inv(inv); }
-        invalidateHistory(); // a fresh curve point exists now → refetch on render
-      }
+      // Every bulk refresh now fetches BOTH games per account (one login/throttle slot,
+      // owner request 2026-07-08) — re-pull BOTH caches so whichever tab is open shows
+      // fresh items and the shared wallet has one timestamp across games.
+      const [invMap, tf2Map] = await Promise.all([api('/api/inventory'), api('/api/inventory-tf2')]);
+      state.inventories = {};
+      for (const k of Object.keys(invMap || {})) storeCs2Inv(invMap[k]);
+      state.tf2Inventories = {};
+      for (const k of Object.keys(tf2Map || {})) storeTf2Inv(tf2Map[k]);
+      state.tf2Loaded = true;
+      state.tf2LoadError = null;   // H-FE-001: a successful TF2 refresh heals any prior load-error panel
+      invalidateHistory(); // a fresh curve point exists now → refetch on render
       renderMain();
       renderSidebar(); // refresh-all may have updated wallet balances → update the sidebar
       // refresh-all enriched from the cache + queued the missing/stale prices for a background fill;
