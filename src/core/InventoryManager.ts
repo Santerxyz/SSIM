@@ -448,6 +448,27 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
         }
         // parsed but in the past → expired hold; keep scanning the other notices.
       }
+      // 1b) GLOBAL (language-INDEPENDENT) hold parsing. `owner_descriptions` come back in the
+      //     ACCOUNT'S Steam language, NOT the l=english fetch param — so the English/month-name matcher
+      //     above misses EVERY non-English farm (owner report 2026-07-08: a German note "⇆ … kann bis
+      //     12.7.2026, 14:00:00 …" showed a bare "Locked", no countdown). Two facts make a keyword-free
+      //     solution possible for ANY locale: (a) Steam prefixes every trade-protection note with the
+      //     language-independent "⇆" marker (U+21C6); (b) the expiry in these auto-generated notes is a
+      //     NUMERIC/ISO/CJK/month-name date in virtually every locale. So: treat the note as a hold when
+      //     it carries "⇆" OR the item is non-tradable, then extract the date FORMAT-agnostically — no
+      //     per-language keyword table to maintain.
+      const isHoldNote = v.includes('⇆');
+      if (isHoldNote || desc.tradable === 0) {
+        const d = extractHoldDate(v);
+        if (d && d.getTime() > Date.now()) return d; // future hold → locked, with a real countdown
+        if (isHoldNote && !d) {
+          // Definitely a hold (⇆) but no date parsed → fail SAFE: locked, date unknown (stable sentinel,
+          // re-evaluated each refresh) rather than wrongly tradable (#34 / B-5 / C22).
+          logger.warn(`trade-lock ⇆ note present but date unparseable ("${v.slice(0, 80)}") – treating item as locked (date unknown)`);
+          return new Date(TRADE_LOCK_DATE_UNKNOWN);
+        }
+        // no future date on a non-⇆ non-tradable item → fall through; the tradable=0 flag still shows "Locked".
+      }
     }
   }
 
@@ -466,6 +487,54 @@ function parseSteamDate(raw: string): Date | null {
   const cleaned = raw.replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
   const d = new Date(cleaned);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Language-INDEPENDENT trade-hold date extraction (owner request 2026-07-08: "something global").
+ * Steam localises the hold note into the account's language, so keyword parsing does not scale to
+ * ~28 locales — but the DATE itself is numeric/ISO/CJK/month-name in virtually every locale. Scan the
+ * note for every date shape Steam emits and return the EARLIEST FUTURE one (the hold expiry). Only
+ * called once a note is already known to be a hold (the "⇆" marker or a non-tradable item), so a
+ * stray date cannot false-lock a freely-tradable item.
+ *
+ * TIMEZONE: localized numeric/CJK notes carry no zone, so those instants are built in the running
+ * host's local zone (a single-operator farm's host ≈ its accounts' zone; any mismatch is at most a
+ * TZ offset on a days-long countdown — the goal is a countdown instead of a bare "Locked"). The
+ * English month-name form keeps its explicit "… GMT" (Steam states GMT there).
+ */
+export function extractHoldDate(text: string): Date | null {
+  const cand: number[] = [];
+  const push = (y: number, mo: number, d: number, hh = 0, mi = 0, ss = 0): void => {
+    if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return; // reject garbage triples
+    const t = new Date(y, mo - 1, d, hh, mi, ss).getTime();
+    if (!Number.isNaN(t)) cand.push(t);
+  };
+  const T = '(?:[\\sT,]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?)?'; // optional " 14:00:00" / "T14:00"
+  let m: RegExpExecArray | null;
+  // ISO  YYYY-MM-DD
+  const iso = new RegExp(`(\\d{4})-(\\d{1,2})-(\\d{1,2})${T}`, 'g');
+  while ((m = iso.exec(text))) push(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  // CJK  YYYY年MM月DD日  (zh / ja / ko)
+  const cjk = new RegExp(`(\\d{4})\\s*\\u5e74\\s*(\\d{1,2})\\s*\\u6708\\s*(\\d{1,2})\\s*\\u65e5${T}`, 'g');
+  while ((m = cjk.exec(text))) push(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  // Dotted  D.M.YYYY  (de / most of EU)
+  const dot = new RegExp(`\\b(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})${T}`, 'g');
+  while ((m = dot.exec(text))) push(+m[3], +m[2], +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  // Slashed  D/M/YYYY or M/D/YYYY — disambiguate by the >12 component; ambiguous → D/M (global default)
+  const sl = new RegExp(`\\b(\\d{1,2})/(\\d{1,2})/(\\d{4})${T}`, 'g');
+  while ((m = sl.exec(text))) {
+    const a = +m[1], b = +m[2], y = +m[3], hh = +(m[4] || 0), mi = +(m[5] || 0), ss = +(m[6] || 0);
+    if (a > 12 && b <= 12) push(y, b, a, hh, mi, ss);        // first >12 ⇒ it's the day → D/M
+    else if (b > 12 && a <= 12) push(y, a, b, hh, mi, ss);   // second >12 ⇒ day → M/D
+    else push(y, b, a, hh, mi, ss);                          // both ≤12 → D/M (most common worldwide)
+  }
+  // English / month-name  "Mon DD, YYYY (HH:MM:SS) GMT"  (kept explicit-GMT via parseSteamDate)
+  const mon = /(?:[A-Za-z]{3,9},\s+)?([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})(?:[^A-Za-z0-9]*(\d{1,2}:\d{2}(?::\d{2})?))?/g;
+  while ((m = mon.exec(text))) { const d = parseSteamDate(`${m[1]}${m[2] ? ' ' + m[2] : ''} GMT`); if (d) cand.push(d.getTime()); }
+
+  const now = Date.now();
+  const future = cand.filter(t => t > now).sort((a, b) => a - b);
+  return future.length ? new Date(future[0]) : null;
 }
 
 /**
