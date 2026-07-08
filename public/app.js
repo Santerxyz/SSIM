@@ -896,7 +896,7 @@ async function watchPriceFill(repull) {
   let baseline = 0;
   let s0;
   try { s0 = await api('/api/pricing/status'); if (state.repriceToken !== token) return; baseline = s0 ? (s0.fetched || 0) : 0; }
-  catch { /* status unavailable → nothing to watch */ return; }
+  catch { if (state.repriceToken === token) renderPriceFillIndicator(null); return; }
   renderPriceFillIndicator(s0); // reflect the current fill state immediately
   let lastPulled = baseline;
   let lastProcessed = 0; // S19: liveness by ANY terminal resolution, not just a successful fetch
