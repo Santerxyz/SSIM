@@ -2,11 +2,14 @@
    SSIM — Design System layer (DS-04)  ·  Phase 1 foundation
    ────────────────────────────────────────────────────────────────────────────
    The canonical primitives — buttons, fields, surfaces, the modal frame, pills,
-   empty states, toasts, skeletons — for the whole app. ADDITIVE ONLY: every
-   selector here is a NEW class that no existing element uses yet, and every new
-   --token is unreferenced by current markup, so simply linking this file changes
-   nothing visually. Surfaces migrate onto these classes surface-by-surface in
-   Phases 2–5 (each screenshot-verified), never breaking the JS↔DOM contract.
+   empty states, toasts, skeletons — for the whole app. LIVE and load-bearing:
+   linked at index.html:85 and consumed by both index.html's static markup and
+   app.js's runtime-generated markup (empty states, feature-modal shells, buttons,
+   pills …). Do NOT drop the <link> or delete a selector as "unused" — that
+   silently breaks those surfaces. Adoption is largely complete; primitives still
+   staged for a later phase carry their own note in-block (e.g. .toast — app.js
+   builds the markup, the canonical look to migrate onto in Phase 4), never
+   breaking the JS↔DOM contract.
 
    Aesthetic = "Hybrid": DATA surfaces are flat, opaque slate with hairline
    borders (crisp, dense, legible); GLASS (backdrop-blur + color-mix) is reserved

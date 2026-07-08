@@ -78,10 +78,11 @@
   <link rel="stylesheet" href="/assets/vendor/fonts.css" />
 
   <!-- DS-04: canonical design-system layer (buttons/fields/surfaces/modal frame/
-       pills/empty/toast primitives). Additive — every selector is a new class no
-       existing element uses yet, so this only adds vocabulary, changes nothing.
-       Surfaces migrate onto it in later phases. Loaded before the inline <style>
-       so page-specific rules below always win. -->
+       pills/empty/toast primitives). LIVE and load-bearing — consumed by the
+       static markup below and by app.js's runtime-generated markup; do NOT
+       remove this <link> or the empty states, modal shells, buttons and pills
+       break. Loaded before the inline <style> so page-specific rules below
+       always win. -->
   <link rel="stylesheet" href="/assets/ssim-ui.css" />
 
   <style>
