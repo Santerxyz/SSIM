@@ -131,8 +131,13 @@ function obfuscate(file) {
     selfDefending: false,
     // CRITICAL: keep require() specifiers OUT of the string array so pkg can
     // still statically trace + bundle them (e.g. node-machine-id is only pulled
-    // in by HwidService). Anything matching these stays an inline literal; the
-    // baked secrets + all other strings are still moved into the encoded array.
+    // in by HwidService). Anything matching these stays an inline literal.
+    // NOTE: relocating the OTHER strings (incl. the baked secrets) into the
+    // encoded array is best-effort/probabilistic — governed by the obfuscator's
+    // stringArrayThreshold (default ~0.75), so a baked literal MAY stay inline
+    // in config.js. That is fine: the real protection for the baked secrets is
+    // pkg's V8 bytecode compilation (see file header), and per known-limit #22
+    // the pepper is an accepted, cost-only-protected secret — not unleakable.
     reservedStrings: [
       '^os$', '^fs$', '^path$', '^crypto$', '^child_process$',
       '^fs-extra$', '^axios$', '^node-machine-id$',
