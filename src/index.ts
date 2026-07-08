@@ -192,6 +192,11 @@ async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }):
   everBound = true; // H-BOOT-001: a re-bind after this point can recover instead of hard-exiting
   if (!IS_SIDECAR_MODE) printBanner();
   logger.info(`SSIM server started on ${HOST}:${activePort} (pid ${process.pid})`);
+  // Build-identity marker (grep this to know EXACTLY which build is running — the fleet has had
+  // several exes swapped in/out during the crash hunt). Names the version, the Node runtime the
+  // backend is packaged on (the 0xC0000409 hunt turns on Node 24 vs 22), and confirms the proxy-tank
+  // resilience layer is present in THIS binary (its absence = a pre-tank build).
+  logger.info(`SSIM BUILD v${pkg.version} · Node ${process.version} · resilience=proxy-tank(breaker+failfast+tcp+sticky-release)`);
   openUiWindow(`http://localhost:${activePort}`);
   // Runtime errors AFTER a successful bind (not a bind failure) — log, don't treat as EADDRINUSE.
   srv.on('error', (err: NodeJS.ErrnoException) => {
