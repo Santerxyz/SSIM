@@ -728,29 +728,19 @@
               <i class="fa-solid fa-cart-shopping"></i><span>Buy</span>
             </button>
             <!-- Feature 3: price-source (Steam ⟷ CSFloat) + currency (USD ⟷ EUR) split control.
-                 #src-logo is an <img> whose .src app.js swaps on source change, and #src-menu /
-                 #cur-menu are the popovers app.js toggles — kept as real elements (not the seg's
-                 icon-only variant) so the JS contract stays intact. -->
+                 MASTERPIECE PARITY: each button TOGGLES directly on click (ds:1936-1937) — no
+                 dropdown popovers. The previous port kept the legacy #src-menu/#cur-menu popovers
+                 inside this overflow-hidden pill, which CLIPPED them to the pill's 40px height:
+                 the menus opened invisibly, so both buttons read as completely dead (owner report
+                 2026-07-08). #src-logo's .src is swapped by app.js on source change. -->
             <div class="flex items-stretch rounded-xl border border-slate-700 bg-slate-800 text-sm font-bold overflow-hidden">
-              <div class="relative">
-                <button id="src-btn" title="Price source" class="h-full px-3 py-2.5 hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
-                  <img id="src-logo" src="/assets/logos/steam.svg" alt="" class="w-4 h-4 shrink-0"/><span id="src-label">Steam</span><i class="fa-solid fa-chevron-down text-3xs text-slate-500"></i>
-                </button>
-                <div id="src-menu" class="hidden absolute right-0 mt-1 w-48 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl z-50 overflow-hidden py-1">
-                  <button data-src="steam" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200 flex items-center gap-2"><img src="/assets/logos/steam.svg" alt="" class="w-4 h-4"/>Steam Market</button>
-                  <button data-src="csfloat" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200 flex items-center gap-2"><img src="/assets/logos/csfloat.svg" alt="" class="w-4 h-4"/>CSFloat</button>
-                </div>
-              </div>
+              <button id="src-btn" title="Price source — click to switch" class="px-3 py-2.5 hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
+                <img id="src-logo" src="/assets/logos/steam.svg" alt="" class="w-4 h-4 shrink-0"/><span id="src-label">Steam</span><i class="fa-solid fa-arrow-right-arrow-left text-3xs text-slate-500"></i>
+              </button>
               <div class="w-px bg-slate-700"></div>
-              <div class="relative">
-                <button id="cur-btn" title="Currency" class="h-full px-3 py-2.5 hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
-                  <i class="fa-solid fa-coins text-brand-light"></i><span id="currency-label">EUR</span><i class="fa-solid fa-chevron-down text-3xs text-slate-500"></i>
-                </button>
-                <div id="cur-menu" class="hidden absolute right-0 mt-1 w-32 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl z-50 overflow-hidden py-1">
-                  <button data-cur="USD" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200">USD&nbsp;($)</button>
-                  <button data-cur="EUR" class="w-full px-3 py-2 hover:bg-slate-800 text-left text-slate-200">EUR&nbsp;(€)</button>
-                </div>
-              </div>
+              <button id="cur-btn" title="Currency — click to switch" class="px-3 py-2.5 hover:bg-slate-700 text-slate-200 transition flex items-center gap-2">
+                <i class="fa-solid fa-coins text-brand-light"></i><span id="currency-label">EUR</span><i class="fa-solid fa-arrow-right-arrow-left text-3xs text-slate-500"></i>
+              </button>
             </div>
             <!-- The single Refresh button assembles the COMPLETE inventory (owned +
                  trade-locked + listed) directly from Steam — one button, does everything. -->

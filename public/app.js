@@ -108,11 +108,9 @@ const el = {
   statWalletLabel: $('stat-wallet-label'),
   currencyLabel:   $('currency-label'),
   srcBtn:          $('src-btn'),
-  srcMenu:         $('src-menu'),
   srcLogo:         $('src-logo'),
   srcLabel:        $('src-label'),
   curBtn:          $('cur-btn'),
-  curMenu:         $('cur-menu'),
   btnLoad:      $('btn-load'),
   gcCatTabs:      $('gc-cat-tabs'),
   globalFilter: $('global-filter'),
@@ -782,14 +780,12 @@ function updateCurrencyButton() {
 }
 
 // ── Feature 3: price source (Steam ⟷ CSFloat) ──
-function closeSourceMenus() { if (el.srcMenu) el.srcMenu.classList.add('hidden'); if (el.curMenu) el.curMenu.classList.add('hidden'); }
 function updatePriceSourceButton() {
   const csf = state.priceSource === 'csfloat';
   if (el.srcLabel) el.srcLabel.textContent = csf ? 'CSFloat' : 'Steam';
   if (el.srcLogo) el.srcLogo.setAttribute('src', csf ? '/assets/logos/csfloat.svg' : '/assets/logos/steam.svg');
 }
 async function setPriceSource(src) {
-  closeSourceMenus();
   if ((src !== 'steam' && src !== 'csfloat') || src === state.priceSource) return;
   const prev = state.priceSource;
   state.priceSource = src; localStorage.setItem('ssim.priceSource', src); updatePriceSourceButton();
@@ -1531,6 +1527,18 @@ function renderAccountRow(acc, depth) {
 }
 
 function renderSidebar() {
+  // HARD CONTEXT GUARD: never paint the account tree outside an environment context.
+  // Async completions (refresh-all done, wallet updates, price-fill re-pulls) call this
+  // unconditionally; on the dashboard they repopulated the context-hidden #account-list —
+  // stale account rows showed on "All environments", clicking one wiped it (the click path
+  // re-ran this with screen='dashboard'), and the next poll brought it back (owner report).
+  // Mirrors updateSidebar()'s inEnv definition; keeps every call site safe by construction.
+  const inEnvContext = state.screen === 'inventory' && state.invMode !== 'global' && !!state.activeEnv;
+  if (!inEnvContext) {
+    el.accountList.innerHTML = '';
+    el.toggleHidden.classList.add('hidden');
+    return;
+  }
   el.accountCount.textContent = fmtCount(visibleAccounts().length);
   // A search term or quick-filter switches to a FLAT list across folders (ignoring
   // collapse) — you're looking for accounts, not browsing the tree. A balance SORT
@@ -3571,6 +3579,7 @@ async function startInventoryRefresh(body) {
   try {
     await api('/api/inventory/refresh-all', { method: 'POST', body: JSON.stringify(body) });
     el.refreshProgress.classList.remove('hidden');
+    el.refreshLabel.textContent = 'Refreshing…'; // neutral until the first poll knows the count (then: >1 → "Refreshes…")
     el.refreshBar.style.width = '0%';
     resetEndBtn(el.refreshEnd); // fresh run → re-enable the End task button
     hideRefreshFailures(); // a new run invalidates the previous failure list
@@ -3626,7 +3635,10 @@ function pollRefresh() {
       const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
       el.refreshBar.style.width = pct + '%';
       el.refreshCount.textContent = `${job.done}/${job.total}`;
-      el.refreshLabel.textContent = job.cancelling ? 'Cancelling…' : (job.running ? 'Refreshing…' : 'Done');
+      // Owner wording: one account reads "Refreshing…", a multi-account run reads "Refreshes…"
+      // (the counter next to it then reads as "3/12 refreshes done").
+      el.refreshLabel.textContent = job.cancelling ? 'Cancelling…'
+        : (job.running ? (job.total > 1 ? 'Refreshes…' : 'Refreshing…') : 'Done');
       if (job.running) {
         if (!job.cancelling && pollerStalled('refresh', job.done)) {
           toast('Refresh appears stuck (no progress) – stopping the live updater. Check the server.', 'warn');
@@ -6503,12 +6515,13 @@ function bindStaticEvents() {
     el.fbuyName.addEventListener('input', () => { clearTimeout(state.fbuySearchTimer); state.fbuySearchTimer = setTimeout(searchFbuyItems, 350); });
     el.fbuyName.addEventListener('blur', () => setTimeout(hideFbuySearch, 200));
   }
-  // Feature 3: price-source + currency split control (replaces the old single toggle)
-  if (el.srcBtn) el.srcBtn.addEventListener('click', (e) => { e.stopPropagation(); if (el.curMenu) el.curMenu.classList.add('hidden'); if (el.srcMenu) el.srcMenu.classList.toggle('hidden'); });
-  if (el.curBtn) el.curBtn.addEventListener('click', (e) => { e.stopPropagation(); if (el.srcMenu) el.srcMenu.classList.add('hidden'); if (el.curMenu) el.curMenu.classList.toggle('hidden'); });
-  if (el.srcMenu) el.srcMenu.addEventListener('click', (e) => { const b = e.target.closest('[data-src]'); if (b) setPriceSource(b.getAttribute('data-src')); });
-  if (el.curMenu) el.curMenu.addEventListener('click', (e) => { const b = e.target.closest('[data-cur]'); if (b) { setCurrency(b.getAttribute('data-cur')); closeSourceMenus(); } });
-  document.addEventListener('click', closeSourceMenus);
+  // Feature 3 (masterpiece parity, ds:1936-1937): the split control TOGGLES directly on
+  // click — src flips Steam↔CSFloat (server-validated; falls back to Steam with a toast
+  // when no CSFloat key exists), cur flips EUR↔USD. The previous popover menus rendered
+  // inside the pill's overflow-hidden box and were clipped invisible, so both buttons
+  // read as completely dead (owner report 2026-07-08).
+  if (el.srcBtn) el.srcBtn.addEventListener('click', () => setPriceSource(state.priceSource === 'csfloat' ? 'steam' : 'csfloat'));
+  if (el.curBtn) el.curBtn.addEventListener('click', () => setCurrency(state.currency === 'EUR' ? 'USD' : 'EUR'));
   el.tradeEnv.addEventListener('change', () => { void populateTradeFolders(); });
   el.tradeFolder.addEventListener('change', buildRecipientList);
   el.tradeSearch.addEventListener('input', buildRecipientList);
