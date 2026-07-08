@@ -72,16 +72,15 @@
   .bar{ width:0%; height:100%; border-radius:99px;
     background:var(--grad-brand); transition:width .3s ease; }
 
-  @media (prefers-reduced-motion:reduce){
-    /* Reduced-motion users still need a liveness cue on a slow (first-run / post-update) boot.
-       Swap the rotation for an opacity pulse (no translate/scale/rotate — within WCAG guidance)
-       and colour all four borders so the non-spinning ring reads as a full ring, not a lopsided arc. */
-    .ring{ animation:pulse 1.6s ease-in-out infinite;
-      border-top-color:rgb(var(--brand-l-rgb)); border-right-color:rgb(var(--brand-l-rgb));
-      border-bottom-color:rgb(var(--brand-rgb)); border-left-color:rgb(var(--brand-rgb)); }
-    .logo{ animation:none; }
-    .bar{ transition:none; }
-  }
+  /* Motion opt-out hook (body.no-motion) — deliberately NOT the OS prefers-reduced-motion
+     flag: Windows "animation effects: off" froze the boot splash on the operator's machine
+     (see public/assets/ssim-ui.css REDUCED MOTION note). The pulse keeps a liveness cue on
+     a slow first-run/post-update boot even with motion off. */
+  body.no-motion .ring{ animation:pulse 1.6s ease-in-out infinite;
+    border-top-color:rgb(var(--brand-l-rgb)); border-right-color:rgb(var(--brand-l-rgb));
+    border-bottom-color:rgb(var(--brand-rgb)); border-left-color:rgb(var(--brand-rgb)); }
+  body.no-motion .logo{ animation:none; }
+  body.no-motion .bar{ transition:none; }
 </style>
 </head>
 <body>

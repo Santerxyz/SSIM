@@ -4,32 +4,36 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  S68 — the floating "Live Logs" launcher used z-index:99999 in the bottom-RIGHT
-//  corner, so it rendered ABOVE every overlay (modals z-40, banners/menus z-50,
-//  toasts z-60, splash z-70) AND collided with the bottom-right toast stack /
-//  price-fill badge. It now sits bottom-LEFT with z-index < 40. Source-level
-//  regression guards: fail if a high z-index or the bottom-right anchor reappears.
+//  S68 — the "Live Logs" launcher must never obscure or collide with ANY other
+//  UI element. History: it was a floating fixed pill at bottom-RIGHT with
+//  z-index:99999 (covered toasts/modals), then moved bottom-LEFT with z<40 —
+//  but the redesigned sidebar footer (version + status light) lives in exactly
+//  that corner, so the pill covered those instead (owner report, 2026-07-08).
+//  The launcher is now a REAL sidebar-footer button (#btn-live-logs) that owns
+//  reserved layout space: a layout element cannot overlap anything by
+//  construction. These guards fail if the floating-pill pattern reappears.
 // ════════════════════════════════════════════════════════════════════════════
 
-// Match only QUOTED cssText tokens (e.g. 'z-index:30') so a value mentioned in a nearby comment can't fool
-// the guard. The launcher block is the LAST 'Live Logs' occurrence's cssText (comment + button).
-function launcherBlock(): string {
-  const html = readFileSync(join(__dirname, '..', 'public', 'index.html'), 'utf8');
-  const anchor = html.indexOf('Live Logs');
-  assert.ok(anchor >= 0, 'the Live Logs launcher block exists');
-  return html.slice(anchor, anchor + 2400);
+function indexHtml(): string {
+  return readFileSync(join(__dirname, '..', 'public', 'index.html'), 'utf8');
 }
 
-test('S68: the Live Logs launcher z-index is below the overlay layers (never obscures alerts)', () => {
-  const m = /'z-index:\s*(\d+)'/.exec(launcherBlock());
-  assert.ok(m, 'the launcher declares a z-index in its cssText');
-  const z = Number(m![1]);
-  assert.ok(z < 40, `the Live Logs launcher z-index (${z}) must be below the modal layer (z-40) so it never obscures toasts/modals/banners`);
+test('S68: the Live Logs launcher is a real footer control, not a floating overlay', () => {
+  const html = indexHtml();
+  assert.ok(html.includes('id="btn-live-logs"'), 'the sidebar footer declares the #btn-live-logs button');
+  // The launcher block (comment + wiring script) must not re-introduce a fixed-position pill.
+  const anchor = html.indexOf('Live Logs');
+  assert.ok(anchor >= 0, 'the Live Logs launcher block exists');
+  const block = html.slice(anchor, anchor + 2400);
+  assert.ok(!/position:\s*fixed/.test(block), 'the launcher is not a fixed-position floating element (it would overlap the sidebar footer / toasts)');
+  assert.ok(!/z-index/.test(block), 'the launcher needs no z-index — it occupies reserved layout space');
 });
 
-test('S68: the Live Logs launcher is anchored bottom-LEFT (off the bottom-right toast/price-fill corner)', () => {
-  const block = launcherBlock();
-  assert.ok(/'left:\s*\d+px'/.test(block), 'the launcher is positioned from the LEFT edge');
-  assert.ok(/'bottom:\s*\d+px'/.test(block), 'the launcher is anchored to the bottom');
-  assert.ok(!/'right:\s*\d+px'/.test(block), 'the launcher no longer sits in the bottom-right toast corner');
+test('S68: the launcher opens the logs window via BOTH paths (browser window.open + shell POST)', () => {
+  const html = indexHtml();
+  const anchor = html.indexOf('function openLogs');
+  assert.ok(anchor >= 0, 'the openLogs wiring exists');
+  const block = html.slice(anchor, anchor + 800);
+  assert.ok(block.includes("window.open('/logs.html'"), 'browser path: window.open of logs.html');
+  assert.ok(block.includes("fetch('/api/app/open-logs'"), 'shell path: POST /api/app/open-logs (capability-exempt, S20)');
 });

@@ -198,13 +198,27 @@
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     @keyframes cs2-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     .cs2-spin { animation: cs2-spin 0.7s linear infinite !important; }
+    /* Sidebar status light heartbeat (masterpiece ds:176-177 — the class was used but its
+       keyframes were lost in the port, leaving the green dot frozen). */
+    .pulse-dot { animation: pdot 1.8s ease-in-out infinite; }
+    @keyframes pdot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    /* Dashboard tile entrance: gentle rise+fade, staggered per tile via --i (renderDashboard
+       sets it). Applied only on the FIRST paint after the skeleton, never on re-renders. */
+    .tile-in { opacity: 0; animation: tileIn .38s ease-out forwards; animation-delay: calc(var(--i, 0) * 45ms); }
+    @keyframes tileIn { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
 
     /* FB-03: skeleton shimmer for structure-aware loading states. Static under reduced-motion (L5). */
     .skel { display: inline-block; position: relative; overflow: hidden; background: rgb(var(--slate-800) / .65); border-radius: 4px; }
     .skel::after { content: ''; position: absolute; inset: 0; transform: translateX(-100%);
       background: linear-gradient(90deg, transparent, rgb(var(--slate-700) / .6), transparent); animation: skel-shimmer 1.3s infinite; }
     @keyframes skel-shimmer { 100% { transform: translateX(100%); } }
-    @media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } .fade-in { animation: none; } }
+    /* Motion opt-out is the explicit body.no-motion class, NOT the OS flag — Windows
+       "animation effects: off" made WebView2 report prefers-reduced-motion and silently
+       froze all of these on the operator's machine (see ssim-ui.css REDUCED MOTION note). */
+    body.no-motion .skel::after { animation: none; }
+    body.no-motion .fade-in { animation: none; }
+    body.no-motion .pulse-dot { animation: none; }
+    body.no-motion .tile-in { animation: none; opacity: 1; }
 
     /* ── Startup splash: one-shot brand flourish on the unlock→dashboard transition
        (triggered in app.js init(), gated by sessionStorage so it never plays on soft
@@ -246,7 +260,7 @@
       100% { stroke-dashoffset: 0;   fill-opacity: 1; }
     }
     @keyframes ssim-splash-out { to { opacity: 0; visibility: hidden; } }
-    @media (prefers-reduced-motion: reduce) { #ssim-splash { display: none !important; } }
+    body.no-motion #ssim-splash { display: none !important; }
 
     /* Micro-interactions: every button presses down slightly, inputs glow in */
     button { transition-property: background-color, border-color, color, box-shadow, transform, opacity; transition-duration: .15s; }
@@ -566,7 +580,7 @@
       <!-- Brand lockup: SSIM shield + wordmark + full name -->
       <div class="px-5 py-5 border-b border-slate-800 flex items-center gap-3">
         <img src="/assets/image-Photoroom.png" alt="SSIM"
-             class="w-11 h-11 shrink-0 select-none" draggable="false"
+             class="w-12 h-12 shrink-0 select-none object-contain" draggable="false"
              style="filter:drop-shadow(0 0 12px rgb(147 51 234 / .5))" />
         <div class="min-w-0">
           <h1 class="font-extrabold t16 tracking-[0.18em] text-white leading-none">SSIM</h1>
@@ -680,6 +694,13 @@
                exactly ONE version source and the footer can never drift. No hardcoded literal here. -->
           <span id="footer-status" data-no-i18n class="truncate font-mono"></span>
         </div>
+        <!-- Live Logs: a REAL footer control with its own reserved space. It was a floating
+             fixed pill at bottom-left (S68), but that corner is exactly where this footer's
+             version + status light live now — the pill covered them. A layout element can
+             never overlap anything (owner requirement: must not interfere with the UI). -->
+        <button id="btn-live-logs" title="Open the live log window" class="btn btn-ghost btn-sm shrink-0">
+          <i class="fa-solid fa-terminal t11 text-brand"></i><span>Logs</span>
+        </button>
       </div>
     </aside>
 
@@ -1671,38 +1692,21 @@
       setInterval(ping, 4000);
     })();
   </script>
-  <!-- "Live Logs" launcher: a small floating button that opens the live-log window (logs.html).
-       Created by JS + fixed-position so it never touches the dashboard's own layout/components. -->
+  <!-- "Live Logs" launcher: wires the sidebar-footer button (see the footer markup). Formerly a
+       floating fixed-position pill; S68 moved it bottom-left, but the redesigned sidebar footer
+       (version + status light) now lives in that exact corner and the pill covered it. As a real
+       footer control it occupies reserved layout space and can never overlap anything. -->
   <script>
     (function () {
-      var b = document.createElement('button');
-      b.textContent = '◳  Live Logs';
-      b.title = 'Open the live log window';
-      b.style.cssText = [
-        // S68: BOTTOM-LEFT + z-index 30. Two fixes: (1) moved off the crowded bottom-RIGHT corner it used to
-        // share with the toast stack (bottom-6 right-6 z-[60]) and the price-fill badge (bottom-4 right-4),
-        // which collide on every toast / every refresh; the bottom-left corner is only used by the rare,
-        // conditional update indicator + banners. (2) z-index 30 keeps it above normal dashboard content but
-        // BELOW every overlay layer (modals z-40, banners/menus z-50, toasts z-60, splash z-70) — so it can
-        // never obscure an alert/modal/toast/capability-banner the way the old very-high value did (a
-        // conditional bottom-left element at z-40 correctly renders on top of it).
-        'position:fixed', 'left:18px', 'bottom:18px', 'z-index:30',
-        'padding:9px 14px', 'border:0', 'border-radius:999px', 'cursor:pointer',
-        'font:600 12.5px -apple-system,Segoe UI,Roboto,sans-serif', 'color:#fff',
-        'background:linear-gradient(135deg,#c084fc,#9333ea)',
-        'box-shadow:0 6px 20px rgba(147,51,234,.35)', 'opacity:.92'
-      ].join(';');
-      b.onmouseenter = function () { b.style.opacity = '1'; };
-      b.onmouseleave = function () { b.style.opacity = '.92'; };
-      b.onclick = function () {
+      function openLogs() {
         // Open the Live Logs window. In a browser this pops it directly; inside the Tauri shell
         // window.open is blocked, so we ALSO ping the backend, which signals the shell (via its
         // stdout channel) to open a native logs window. Doing both is safe — only one path opens
-        // a window per environment.
+        // a window per environment. (The endpoint is capability-exempt by design, S20.)
         try { window.open('/logs.html', 'ssim-live-logs', 'width=1040,height=660'); } catch (e) {}
         try { fetch('/api/app/open-logs', { method: 'POST' }).catch(function () {}); } catch (e) {}
-      };
-      function mount() { if (document.body) document.body.appendChild(b); }
+      }
+      function mount() { var b = document.getElementById('btn-live-logs'); if (b) b.addEventListener('click', openLogs); }
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
     })();
   </script>

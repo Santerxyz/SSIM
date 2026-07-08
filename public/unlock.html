@@ -118,8 +118,10 @@
   .spin { display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:8px;
     border:2px solid rgb(255 255 255 / .35); border-top-color:#fff; border-radius:50%;
     animation:lspin .7s linear infinite; }
-  @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration:.001ms !important; animation-iteration-count:1 !important; }
+  /* Motion opt-out hook (body.no-motion), NOT the OS flag — Windows "animation effects: off"
+     froze the unlock spinner/halo on the operator's machine (see ssim-ui.css REDUCED MOTION note). */
+  body.no-motion *, body.no-motion *::before, body.no-motion *::after {
+    animation-duration:.001ms !important; animation-iteration-count:1 !important;
   }
 </style>
 </head>

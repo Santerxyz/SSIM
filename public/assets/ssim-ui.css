@@ -220,17 +220,19 @@
 .skel-circle { border-radius: 9999px; }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   REDUCED MOTION — global safety net (A11Y). The app already disables the splash
-   + shimmer + fade; this also neutralises every transition/animation and the
-   hover-lift / press transforms for users who ask for it. Honoured app-wide.
+   REDUCED MOTION — explicit opt-out (body.no-motion), deliberately NOT keyed to
+   the OS prefers-reduced-motion flag anymore. Windows "animation effects: off"
+   made WebView2 report `reduce`, and this *-rule then froze EVERY animation and
+   transition in the packaged app (owner report 2026-07-08: "all loading
+   animations are dead"). SSIM is a single-operator dashboard whose motion is
+   part of the product — the OS flag must not silently strip it. Add class
+   "no-motion" to <body> to disable all motion app-wide.
    ────────────────────────────────────────────────────────────────────────── */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: .001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: .001ms !important;
-    scroll-behavior: auto !important;
-  }
-  .env-tile:hover { transform: none !important; }
-  .btn:active:not(:disabled), button:active:not(:disabled) { transform: none !important; }
+body.no-motion *, body.no-motion *::before, body.no-motion *::after {
+  animation-duration: .001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: .001ms !important;
+  scroll-behavior: auto !important;
 }
+body.no-motion .env-tile:hover { transform: none !important; }
+body.no-motion .btn:active:not(:disabled), body.no-motion button:active:not(:disabled) { transform: none !important; }

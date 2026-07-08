@@ -1273,7 +1273,10 @@ function formatAgo(ts) {
 function renderDashboard() {
   const envs = state.environments;
   el.envEmpty.classList.toggle('hidden', envs.length > 0);
-  el.envTiles.innerHTML = envs.map(envTile).join('');
+  // Staggered entrance ONLY on the first real paint (empty container or skeleton tiles
+  // underneath) — re-renders (proxy test, reloadAll, data refresh) must not replay it.
+  const animate = !el.envTiles.children.length || !!el.envTiles.querySelector('.skel');
+  el.envTiles.innerHTML = envs.map((e, i) => envTile(e, i, animate)).join('');
   el.envTiles.querySelectorAll('[data-env]').forEach((c) =>
     c.addEventListener('click', () => enterEnvironment(c.dataset.env)));
   el.envTiles.querySelectorAll('[data-env-edit]').forEach((b) =>
@@ -1339,15 +1342,20 @@ async function openAccountLogs(username) {
 }
 function closeLogs() { el.logsOverlay.classList.add('hidden'); }
 
-function envTile(env) {
-  const count = state.allAccounts.filter((a) => a.environmentId === env.id).length;
+function envTile(env, idx = 0, animate = false) {
+  const accs = state.allAccounts.filter((a) => a.environmentId === env.id);
+  const count = accs.length;
+  // Masterpiece parity: the tile shows the environment's VALUES (item worth / wallet /
+  // trade-locked), not just an account count. Same aggregation the master views use, so
+  // the tile can never disagree with the env-master screen. '—' until inventories are cached.
+  const agg = aggregate(accs.map((a) => a.username));
   const last = envLastUpdated(env.id);
   const proxyPill = env.hasProxy
     ? `<span class="pill pill--proxy"><i class="fa-solid fa-shield-halved"></i>Proxy</span>`
     : `<span class="pill pill--local"><i class="fa-solid fa-network-wired"></i>Local IP</span>`;
   return `
     <div data-env="${escapeAttr(env.id)}" role="button" tabindex="0"
-      class="env-tile group cursor-pointer">
+      class="env-tile group cursor-pointer${animate ? ' tile-in' : ''}" style="--i:${idx}">
       <div class="env-tile__glow"></div>
       <div class="env-tile__actions">
         <button data-env-edit="${escapeAttr(env.id)}" title="Edit environment" class="btn btn-icon-sm btn-secondary">
@@ -1367,13 +1375,17 @@ function envTile(env) {
         ${proxyPill}
       </div>
       <div class="grid grid-cols-2 gap-2">
+        <div class="env-stat"><p class="k">Item worth</p><p class="v font-mono text-brand-light" title="${agg.accountCount ? escapeAttr(fmtCents(agg.valueCents)) : ''}">${agg.accountCount ? fmtCentsCompact(agg.valueCents) : '—'}</p></div>
+        <div class="env-stat"><p class="k">Wallet</p><p class="v font-mono text-emerald-400" title="${agg.walletAccounts ? escapeAttr(fmtUsd(agg.walletUsd)) : ''}">${agg.walletAccounts ? fmtUsdCompact(agg.walletUsd) : '—'}</p></div>
+        <div class="env-stat"><p class="k">Trade-locked</p><p class="v font-mono text-amber-400">${agg.accountCount ? fmtCount(agg.lockedStacks) : '—'}</p></div>
         <div class="env-stat"><p class="k">Accounts</p><p class="v font-mono text-white">${fmtCount(count)}</p></div>
-        <div class="env-stat"><p class="k">Updated</p><p class="v font-mono text-slate-300">${last ? escapeHtml(formatAgo(last)) : 'never'}</p></div>
       </div>
-      <div class="flex items-center gap-2 mt-3">
+      <div class="flex items-center justify-between gap-2 mt-3 min-w-0">
+        <span class="t10 text-slate-600 shrink-0" title="Newest inventory refresh in this environment">
+          <i class="fa-regular fa-clock mr-1"></i>${last ? `updated ${escapeHtml(formatAgo(last))}` : 'never refreshed'}</span>
+        <span id="proxytest-${escapeAttr(env.id)}" class="text-2xs text-slate-500 truncate min-w-0 flex-1 text-right"></span>
         <button data-proxy-test="${escapeAttr(env.id)}" title="Test this environment's proxy connection" class="btn btn-ghost btn-sm shrink-0">
           <i class="fa-solid fa-tower-broadcast"></i><span>Test proxy</span></button>
-        <span id="proxytest-${escapeAttr(env.id)}" class="text-2xs text-slate-500 truncate min-w-0"></span>
       </div>
     </div>`;
 }
@@ -3492,8 +3504,13 @@ function renderDashboardSkeleton() {
       <div class="grid grid-cols-2 gap-2">
         <span class="skel block" style="height:46px;border-radius:10px"></span>
         <span class="skel block" style="height:46px;border-radius:10px"></span>
+        <span class="skel block" style="height:46px;border-radius:10px"></span>
+        <span class="skel block" style="height:46px;border-radius:10px"></span>
       </div>
-      <div class="mt-3"><span class="skel block" style="width:96px;height:28px;border-radius:.5rem"></span></div>
+      <div class="mt-3 flex items-center justify-between">
+        <span class="skel block" style="width:88px;height:10px"></span>
+        <span class="skel block" style="width:96px;height:28px;border-radius:.5rem"></span>
+      </div>
     </div>`;
   }
   el.envTiles.innerHTML = html;
@@ -6968,7 +6985,10 @@ function casketPollMove() {
 // One-shot startup splash (Feature A): the brand bloom + Santer-mark draw-in, played
 // exactly once per session on the unlock→dashboard transition, then removed — handing
 // off to the dashboard skeleton rendered underneath. Gated by sessionStorage so soft
-// reloads of the dashboard don't replay it; skipped entirely under prefers-reduced-motion.
+// reloads of the dashboard don't replay it; skipped only under the app's explicit
+// body.no-motion opt-out — NOT the OS prefers-reduced-motion flag, which Windows
+// "animation effects: off" sets and which silently suppressed the splash on the
+// operator's machine (see ssim-ui.css REDUCED MOTION note).
 // Pure CSS (see #ssim-splash in index.html); no backend.
 function playStartupSplash() {
   try {
@@ -6978,8 +6998,8 @@ function playStartupSplash() {
 
   const splash = document.getElementById('ssim-splash');
   if (!splash) return;
-  // Respect reduced motion: skip the flourish so the skeleton shows immediately.
-  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  // Explicit in-app motion opt-out: skip the flourish so the skeleton shows immediately.
+  if (document.body.classList.contains('no-motion')) return;
 
   splash.classList.remove('hidden');
   splash.classList.add('is-playing');

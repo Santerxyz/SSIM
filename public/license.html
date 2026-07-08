@@ -90,7 +90,9 @@
     .spin { display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.35);
       border-top-color:#fff; border-radius:50%; animation:lspin .7s linear infinite;
       vertical-align:-2px; margin-right:8px; }
-    @media (prefers-reduced-motion: reduce) { .spin, .logo, .logo-wrap.loading .ring { animation:none; } }
+    /* Motion opt-out hook (body.no-motion), NOT the OS flag — Windows "animation effects: off"
+       froze these on the operator's machine (see ssim-ui.css REDUCED MOTION note). */
+    body.no-motion .spin, body.no-motion .logo, body.no-motion .logo-wrap.loading .ring { animation:none; }
   </style>
 </head>
 <body>
