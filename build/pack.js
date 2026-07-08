@@ -178,8 +178,11 @@ const heapMb = Math.max(512, Number(process.env.SSIM_HEAP_MB) || 3072);
 // version-info are already in the base when pkg appends its payload — overlay stays valid).
 function runPkg() {
   console.log(`▸ packaging single-file exe via @yao-pkg/pkg (native bytecode, heap cap ${heapMb}MB)`);
-  execFileSync('npx', ['@yao-pkg/pkg', entry, '--config', 'package.json',
-    '--options', `max_old_space_size=${heapMb}`, '--output', OUT_NAME], {
+  // shell:true concatenates args into one cmd.exe command line WITHOUT quoting, so
+  // the absolute `entry` (and OUT_NAME, for symmetry) must be quoted or a repo checked
+  // out under a path with a space (C:\Users\John Doe\...) truncates the entry token.
+  execFileSync('npx', ['@yao-pkg/pkg', '"' + entry + '"', '--config', 'package.json',
+    '--options', `max_old_space_size=${heapMb}`, '--output', '"' + OUT_NAME + '"'], {
     cwd: ROOT, stdio: 'inherit', shell: true,
   });
 }
