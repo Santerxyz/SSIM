@@ -23,11 +23,24 @@ const OUT_FAVICON = path.join(ROOT, 'public', 'favicon.ico');
 
 const entries = SIZES.map((size) => {
   const file = path.join(ICON_DIR, `logo_${size}.png`);
+  const rel = path.relative(ROOT, file);
   if (!fs.existsSync(file)) {
-    console.error(`✗ missing ${path.relative(ROOT, file)} – regenerate the icon PNG set first.`);
+    console.error(`✗ missing ${rel} – regenerate the icon PNG set first.`);
     process.exit(1);
   }
-  return { size, png: fs.readFileSync(file) };
+  const png = fs.readFileSync(file);
+  // Validate the bytes match the filename: PNG signature + IHDR dimensions (width@16, height@20, big-endian).
+  if (png.length < 24 || png.readUInt32BE(0) !== 0x89504e47 || png.readUInt32BE(4) !== 0x0d0a1a0a) {
+    console.error(`✗ ${rel} is not a PNG`);
+    process.exit(1);
+  }
+  const w = png.readUInt32BE(16);
+  const h = png.readUInt32BE(20);
+  if (w !== size || h !== size) {
+    console.error(`✗ ${rel} is ${w}×${h}, expected ${size}×${size} – regenerate the icon PNG set.`);
+    process.exit(1);
+  }
+  return { size, png };
 });
 
 const HEADER_LEN = 6;
