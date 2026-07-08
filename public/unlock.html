@@ -66,6 +66,7 @@
   .logo-wrap { position:relative; width:92px; height:92px; margin:0 auto 12px; }
   .ring { position:absolute; inset:0; border-radius:50%; border:2.5px solid rgb(var(--brand-l-rgb) / .18); }
   .logo { position:absolute; inset:10px; width:72px; height:72px;
+    object-fit:contain; /* the trimmed brand mark is portrait — never stretch it square */
     filter: drop-shadow(0 0 16px rgb(var(--brand-rgb) / .5)); }
   /* Idle: pulsing purple halo glow on the shield. On submit (.loading) the ring becomes a spinning accent arc — the loader. */
   .logo-wrap.loading .ring { border-color:transparent; border-top-color: rgb(var(--brand-l-rgb));

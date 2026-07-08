@@ -6982,40 +6982,12 @@ function casketPollMove() {
   tick();
 }
 
-// One-shot startup splash (Feature A): the brand bloom + Santer-mark draw-in, played
-// exactly once per session on the unlock→dashboard transition, then removed — handing
-// off to the dashboard skeleton rendered underneath. Gated by sessionStorage so soft
-// reloads of the dashboard don't replay it; skipped only under the app's explicit
-// body.no-motion opt-out — NOT the OS prefers-reduced-motion flag, which Windows
-// "animation effects: off" sets and which silently suppressed the splash on the
-// operator's machine (see ssim-ui.css REDUCED MOTION note).
-// Pure CSS (see #ssim-splash in index.html); no backend.
-function playStartupSplash() {
-  try {
-    if (sessionStorage.getItem('ssim-splash-played')) return;  // already shown this session → no replay on soft reloads
-    sessionStorage.setItem('ssim-splash-played', '1');
-  } catch { /* storage blocked: fall through and just play once for this load */ }
-
-  const splash = document.getElementById('ssim-splash');
-  if (!splash) return;
-  // Explicit in-app motion opt-out: skip the flourish so the skeleton shows immediately.
-  if (document.body.classList.contains('no-motion')) return;
-
-  splash.classList.remove('hidden');
-  splash.classList.add('is-playing');
-
-  let removed = false;
-  const done = () => { if (removed) return; removed = true; splash.remove(); };
-  // The overlay's own fade-out (ssim-splash-out) finishes last (~1.2s); ignore the
-  // earlier animationend events bubbling up from the bloom/mark.
-  splash.addEventListener('animationend', (e) => { if (e.target === splash) done(); });
-  setTimeout(done, 1300);   // safety net if animationend never fires (e.g. animation interrupted)
-}
+// (The one-shot unlock→dashboard splash lived here; removed 2026-07-08 on owner
+//  request — the dashboard appears immediately after the Master Password.)
 
 async function init() {
   if (!(await ensureLicensed())) return;                       // no dashboard without a valid license
   document.documentElement.classList.remove('ssim-locked');    // authorized → reveal the UI
-  playStartupSplash();                                         // A: brand splash, once per unlock→dashboard transition
   bindStaticEvents();
   setupSidebarResize();
   setupStickyHeader();

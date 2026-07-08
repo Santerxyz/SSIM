@@ -220,47 +220,8 @@
     body.no-motion .pulse-dot { animation: none; }
     body.no-motion .tile-in { animation: none; opacity: 1; }
 
-    /* ── Startup splash: one-shot brand flourish on the unlock→dashboard transition
-       (triggered in app.js init(), gated by sessionStorage so it never plays on soft
-       reloads). A purple bloom swells in behind the Santer diamond mark, which strokes
-       itself in and fills, then the whole overlay fades out (≤1.2s total) to hand off
-       into the dashboard skeleton already rendered underneath. Pure CSS, brand-token
-       driven, above every overlay (toasts z-[60]). Fully static under reduced motion. ── */
-    #ssim-splash { background: rgb(var(--slate-950)); pointer-events: none; }
-    #ssim-splash.is-playing { animation: ssim-splash-out .3s ease-in .9s forwards; }
-    .ssim-splash-bloom {
-      position: absolute; top: 50%; left: 50%;
-      width: min(70vw, 520px); height: min(70vw, 520px); border-radius: 50%;
-      background: radial-gradient(circle, rgb(var(--brand-rgb) / .55) 0%, rgb(var(--brand-rgb) / .14) 38%, transparent 70%);
-      transform: translate(-50%, -50%) scale(.4); opacity: 0;
-    }
-    .is-playing .ssim-splash-bloom { animation: ssim-splash-bloom .7s ease-out forwards; }
-    .ssim-splash-mark { position: relative; filter: drop-shadow(0 0 14px rgb(var(--brand-rgb) / .55)); }
-    .ssim-splash-mark .s0 { stop-color: rgb(var(--brand-l-rgb)); }
-    .ssim-splash-mark .s1 { stop-color: rgb(var(--brand-rgb)); }
-    .ssim-splash-mark path {
-      stroke: rgb(var(--brand-l-rgb)); stroke-width: 6; stroke-linejoin: round; stroke-linecap: round;
-      stroke-dasharray: 240; stroke-dashoffset: 240; fill-opacity: 0;
-    }
-    .is-playing .ssim-splash-mark { animation: ssim-splash-pop .85s ease-out forwards; }
-    .is-playing .ssim-splash-mark path { animation: ssim-splash-draw .85s ease-in-out forwards; }
-    @keyframes ssim-splash-bloom {
-      0%   { transform: translate(-50%, -50%) scale(.4); opacity: 0; }
-      45%  { opacity: 1; }
-      100% { transform: translate(-50%, -50%) scale(1); opacity: .85; }
-    }
-    @keyframes ssim-splash-pop {
-      0%   { transform: scale(.82); opacity: .2; }
-      60%  { transform: scale(1.04); opacity: 1; }
-      100% { transform: scale(1); opacity: 1; }
-    }
-    @keyframes ssim-splash-draw {
-      0%   { stroke-dashoffset: 240; fill-opacity: 0; }
-      55%  { stroke-dashoffset: 0;   fill-opacity: 0; }
-      100% { stroke-dashoffset: 0;   fill-opacity: 1; }
-    }
-    @keyframes ssim-splash-out { to { opacity: 0; visibility: hidden; } }
-    body.no-motion #ssim-splash { display: none !important; }
+    /* (Startup-splash CSS removed 2026-07-08 — owner request: no flourish after the
+       Master Password; the dashboard appears immediately.) */
 
     /* Micro-interactions: every button presses down slightly, inputs glow in */
     button { transition-property: background-color, border-color, color, box-shadow, transform, opacity; transition-duration: .15s; }
@@ -552,26 +513,8 @@
 
 <body class="bg-slate-950 text-slate-200 font-sans antialiased h-screen overflow-hidden">
 
-  <!-- One-shot startup splash (styling: #ssim-splash above). Revealed once by
-       playStartupSplash() in app.js on the unlock→dashboard transition; `hidden` by
-       default so it never shows on soft reloads or under reduced motion. Decorative
-       only (aria-hidden + pointer-events:none) — fades out to reveal the skeleton. -->
-  <div id="ssim-splash" class="hidden fixed inset-0 z-[70] flex items-center justify-center" aria-hidden="true">
-    <div class="ssim-splash-bloom"></div>
-    <svg class="ssim-splash-mark" width="84" height="84" viewBox="0 0 100 100" fill="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="ssim-splash-grad" x1="0" y1="0" x2="1" y2="1">
-          <stop class="s0" offset="0" />
-          <stop class="s1" offset="1" />
-        </linearGradient>
-      </defs>
-      <!-- pathLength="240" normalizes the measured outline length to exactly 240 so the
-           stroke-dasharray/dashoffset draw-in (240→0) maps to a true 0→100% and CLOSES the
-           loop. The real perimeter is 4·44√2 ≈ 248.9, so the prior dasharray:240 only drew
-           ~96% — leaving a permanent gap that read as "stuck at ~98%". -->
-      <path d="M50 6 L94 50 L50 94 L6 50 Z" pathLength="240" fill="url(#ssim-splash-grad)" />
-    </svg>
-  </div>
+  <!-- (The one-shot unlock→dashboard splash overlay lived here; removed 2026-07-08 on
+       owner request — the dashboard now appears immediately after the Master Password.) -->
 
   <div class="flex h-screen">
 
@@ -580,7 +523,7 @@
       <!-- Brand lockup: SSIM shield + wordmark + full name -->
       <div class="px-5 py-5 border-b border-slate-800 flex items-center gap-3">
         <img src="/assets/image-Photoroom.png" alt="SSIM"
-             class="w-12 h-12 shrink-0 select-none object-contain" draggable="false"
+             class="w-14 h-14 shrink-0 select-none object-contain" draggable="false"
              style="filter:drop-shadow(0 0 12px rgb(147 51 234 / .5))" />
         <div class="min-w-0">
           <h1 class="font-extrabold t16 tracking-[0.18em] text-white leading-none">SSIM</h1>

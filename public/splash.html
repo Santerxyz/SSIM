@@ -54,6 +54,7 @@
        is already circular; the ring spins JUST OUTSIDE it, matching the splash sizing (ds:792-794). ── */
   .logo-wrap{ position:relative; width:128px; height:128px; margin:0 auto 26px; }
   .logo{ position:absolute; inset:14px; width:100px; height:100px; border-radius:50%;
+    object-fit:contain; /* the trimmed brand mark is portrait — never stretch it square */
     filter:drop-shadow(0 0 20px rgb(var(--brand-rgb) / .55)); animation:breathe 3s ease-in-out infinite; }
   .ring{ position:absolute; inset:0; border-radius:50%;
     border:3px solid transparent; border-top-color:rgb(var(--brand-l-rgb)); border-right-color:rgb(var(--brand-rgb));

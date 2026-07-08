@@ -49,6 +49,7 @@
     }
     @keyframes lspin { to { transform:rotate(360deg); } }
     .logo { position:absolute; inset:0; width:78px; height:78px; border-radius:50%;
+      object-fit:contain; /* the trimmed brand mark is portrait — never stretch it square */
       filter: drop-shadow(0 0 16px rgba(147,51,234,.5)); }
     .logo-wrap:not(.loading) .logo { animation: halo 2.6s ease-in-out infinite; }
     @keyframes halo {
