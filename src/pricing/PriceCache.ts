@@ -18,8 +18,8 @@ export interface PriceEntry {
 /**
  * Shared price cache keyed by market_hash_name. A single skin name has the same
  * price for every bot, so this dedups thousands of items down to a few hundred
- * unique lookups. Persisted to data/prices.json (gitignored via *.json? no –
- * explicitly, prices are non-sensitive; kept for instant warm starts).
+ * unique lookups. Persisted to data/prices.json (gitignored via the wholesale data/
+ * exclusion, not a *.json rule; the data is non-sensitive and re-fetchable — kept only for warm starts).
  */
 export class PriceCache {
   private map = new Map<string, PriceEntry>();

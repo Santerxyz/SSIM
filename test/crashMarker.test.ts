@@ -42,3 +42,10 @@ test('B1: a marker without a numeric `at` is rejected (shape guard)', () => {
   fs.writeFileSync(f, JSON.stringify({ code: 1, version: '1.3.4' })); // no `at`
   assert.equal(consumeCrashMarker(f), undefined);
 });
+
+test('B1: the shell `at: 0` clock-failure sentinel is rejected (no false 1970 banner) and consumed', () => {
+  const f = tmpFile();
+  fs.writeFileSync(f, JSON.stringify({ at: 0, code: 1 })); // lib.rs `.unwrap_or(0)` sentinel
+  assert.equal(consumeCrashMarker(f), undefined, 'at:0 must not surface a 1970-dated crash');
+  assert.ok(!fs.existsSync(f), 'the sentinel marker is dropped so it can’t re-fire every boot');
+});

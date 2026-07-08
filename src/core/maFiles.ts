@@ -42,7 +42,9 @@ export function readTextFileTolerant(filePath: string): string {
  * bearing a shared_secret). We strip ALL directory components with path.basename, so the
  * result is always mafiles/<name> — the same rule the plaintext bulk-import path uses.
  * The drop zone is flat (listDropZoneMaFiles doesn't recurse), so no legit reference is
- * broken. An empty/dot basename resolves to the dir itself and fails the existsSync below.
+ * broken. An empty/dot/dot-dot basename is mapped to a literal, contained, never-created
+ * sentinel (`__invalid__.maFile`), so no input resolves to the directory itself or above it
+ * (see the inline comment below and test/maFilePathContainment.test.ts).
  */
 export function resolveMaFilePath(maFilePath: string): string {
   const base = path.basename(String(maFilePath ?? ''));

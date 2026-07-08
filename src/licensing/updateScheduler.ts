@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger';
+import { armInterval } from '../utils/intervalGuard';
 import { IS_PACKAGED } from '../utils/paths';
 import { ProcessHealth } from '../core/ProcessHealth';
 import { Updater } from './Updater';
@@ -59,8 +60,7 @@ export function startUpdateScheduler(d: UpdateSchedulerDeps, intervalMs: number 
   deps = d;
   stopUpdateScheduler();
   if (!IS_PACKAGED) return; // dev: no periodic checks (nothing to swap)
-  timer = setInterval(() => { void periodicTick(); }, intervalMs);
-  timer.unref();
+  timer = armInterval(timer, () => { void periodicTick(); }, intervalMs);
   logger.info(`[update] periodic check scheduled every ${Math.round(intervalMs / 3_600_000)}h`);
 }
 

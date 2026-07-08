@@ -34,6 +34,7 @@ test('a capped-low range drops Battle-Scarred', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const fixtureSchema: OutputProvider = {
+  nextRarity: () => 'rarity_out',
   outputsFor: () => [{ name: 'Test Skin', minFloat: 0, maxFloat: 1 }],
   marketHashName: (skinName, wear, stattrak) => `${stattrak ? 'StatTrak™ ' : ''}${skinName} (${wear})`,
 };
@@ -56,13 +57,32 @@ test('wearForFloat throws on a non-finite float', () => {
 test('computeContract throws when one input float is non-finite', () => {
   const inputs = Array.from({ length: 10 }, () => mkInput(0.2));
   inputs[3] = mkInput(NaN);
-  assert.throws(() => computeContract(inputs, 'rarity_out', fixtureSchema, () => 100), /finite float/);
+  assert.throws(() => computeContract(inputs, fixtureSchema, () => 100), /finite float/);
 });
 
 test('computeContract accepts a set of all-finite floats', () => {
   const inputs = Array.from({ length: 10 }, () => mkInput(0.2));
-  const c = computeContract(inputs, 'rarity_out', fixtureSchema, () => 100);
+  const c = computeContract(inputs, fixtureSchema, () => 100);
   assert.ok(Math.abs(c.avgFloat - 0.2) < 1e-9);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H-TRD-079 — outputRarityId is now DERIVED inside computeContract from the
+//  provider's own nextRarity ladder (not caller-asserted), so the produced tier
+//  can no longer disagree with the outcome pool. A provider with no next tier for
+//  the inputs is a malformed set → throws (caught + skipped at the call site).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('computeContract derives outputRarityId from the provider nextRarity', () => {
+  const inputs = Array.from({ length: 10 }, () => mkInput(0.2));
+  const c = computeContract(inputs, fixtureSchema, () => 100);
+  assert.equal(c.outputRarityId, 'rarity_out'); // exactly what fixtureSchema.nextRarity returns
+});
+
+test('computeContract throws when the input rarity has no next tier', () => {
+  const inputs = Array.from({ length: 10 }, () => mkInput(0.2));
+  const terminalSchema: OutputProvider = { ...fixtureSchema, nextRarity: () => undefined };
+  assert.throws(() => computeContract(inputs, terminalSchema, () => 100), /no next rarity tier/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,6 +104,22 @@ test('wearMidpoint returns skinMin when the band is below the range', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  H-TRD-077 — the top band's midpoint clamp uses a plain Math.min(b.hi, 1, …)
+//  cap rather than a `b.hi === 1.01` sentinel coupling wearMidpoint to a magic
+//  literal in WEAR_BANDS. Defaults must stay value-identical to the old code.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('wearMidpoint caps the top band at 1 with default range', () => {
+  // Battle-Scarred band [0.45, 1.01) clamps to 1 → midpoint (0.45 + 1) / 2.
+  assert.equal(wearMidpoint('Battle-Scarred'), 0.725);
+});
+
+test('wearMidpoint on a below-1 band is unchanged with default range', () => {
+  // Factory New band [0.00, 0.07) → midpoint (0 + 0.07) / 2.
+  assert.equal(wearMidpoint('Factory New'), 0.035);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  H-TRD-080 — an input from a collection the schema can't produce outputs for is
 //  a malformed set, not a defensive skip: silently dropping it makes Σprobability
 //  < 1 and understates EV in a way indistinguishable from a pricing gap. The empty
@@ -91,6 +127,7 @@ test('wearMidpoint returns skinMin when the band is below the range', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const twoCollectionSchema = (empty: string): OutputProvider => ({
+  nextRarity: () => 'rarity_out',
   outputsFor: (collection) => (collection === empty ? [] : [{ name: 'Test Skin', minFloat: 0, maxFloat: 1 }]),
   marketHashName: (skinName, wear, stattrak) => `${stattrak ? 'StatTrak™ ' : ''}${skinName} (${wear})`,
 });
@@ -111,7 +148,7 @@ test('computeContract throws when one input collection has no outputs', () => {
     ...Array.from({ length: 5 }, () => mkInputIn('Collection B', 0.2)),
   ];
   assert.throws(
-    () => computeContract(inputs, 'rarity_out', twoCollectionSchema('Collection B'), () => 100),
+    () => computeContract(inputs, twoCollectionSchema('Collection B'), () => 100),
     /no next-rarity outputs/,
   );
 });
@@ -121,7 +158,7 @@ test('computeContract outcome probabilities sum to 1 when both collections have 
     ...Array.from({ length: 5 }, () => mkInputIn('Collection A', 0.2)),
     ...Array.from({ length: 5 }, () => mkInputIn('Collection B', 0.2)),
   ];
-  const c = computeContract(inputs, 'rarity_out', twoCollectionSchema('none'), () => 100);
+  const c = computeContract(inputs, twoCollectionSchema('none'), () => 100);
   const total = c.outcomes.reduce((s, o) => s + o.probability, 0);
   assert.ok(Math.abs(total - 1) < 1e-9);
 });

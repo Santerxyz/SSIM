@@ -54,7 +54,7 @@ export function achievableWears(minFloat: number, maxFloat: number): Wear[] {
 export function wearMidpoint(wear: Wear, skinMin = 0, skinMax = 1): number {
   const b = WEAR_BANDS.find((x) => x.wear === wear) ?? WEAR_BANDS[2];
   const lo = Math.max(b.lo, skinMin);
-  const hi = Math.min(b.hi === 1.01 ? 1 : b.hi, skinMax);
+  const hi = Math.min(b.hi, 1, skinMax);
   if (hi >= lo) return (lo + hi) / 2;
   return b.lo > skinMax ? skinMax : skinMin;
 }
@@ -109,6 +109,8 @@ export interface TuContract {
 
 /** Output-pool + naming provider (backed by Cs2SchemaService in production, a fixture in tests). */
 export interface OutputProvider {
+  /** The rarity tier a contract of `inputRarityId` produces (undefined at a terminal tier). */
+  nextRarity(inputRarityId: string): string | undefined;
   /** Next-rarity skins in `collection` above `inputRarityId` (empty when none). */
   outputsFor(collection: string, inputRarityId: string): Array<{ name: string; minFloat: number; maxFloat: number }>;
   /** Builds the market_hash_name Steam prices under (StatTrak™ prefix + wear suffix). */
@@ -119,13 +121,12 @@ export type PriceFn = (marketHashName: string) => number | null;
 
 /**
  * Computes a full trade-up contract for an exact set of 10 inputs. Throws ONLY on a malformed
- * input set (not 10, mixed rarity, mixed StatTrak, an input collection without next-rarity
- * outputs) — a pure validation error the caller guards against before ever touching real items.
- * Pricing gaps are tolerated (unpriced → 0 + flagged).
+ * input set (not 10, mixed rarity, mixed StatTrak, a terminal input rarity with no next tier, an
+ * input collection without next-rarity outputs) — a pure validation error the caller guards
+ * against before ever touching real items. Pricing gaps are tolerated (unpriced → 0 + flagged).
  */
 export function computeContract(
   inputs: TuInput[],
-  outputRarityId: string,
   schema: OutputProvider,
   price: PriceFn,
 ): TuContract {
@@ -135,6 +136,9 @@ export function computeContract(
   if (!inputs.every((i) => i.rarityId === rarityId)) throw new Error('all 10 inputs must share the same rarity');
   if (!inputs.every((i) => i.stattrak === stattrak)) throw new Error('all 10 inputs must share the same StatTrak status');
   if (!inputs.every((i) => Number.isFinite(i.float))) throw new Error('every input needs a finite float');
+
+  const outputRarityId = schema.nextRarity(rarityId);
+  if (!outputRarityId) throw new Error('inputs have no next rarity tier — not trade-up eligible');
 
   const avgFloat = inputs.reduce((s, i) => s + i.float, 0) / 10;
 

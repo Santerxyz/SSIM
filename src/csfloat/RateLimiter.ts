@@ -47,8 +47,10 @@ export class RateLimiter {
     const fire = (): void => {
       this.dispatching = false;
       if (this.active >= this.maxConcurrent || !this.hasWork()) return;
+      const next = this.take();
+      if (!next) return;      // provably unreachable given the guard above; keeps the type honest
       this.last = Date.now();
-      (this.take() as () => void)();
+      next();
       this.pump();                                             // try to fill another concurrent slot
     };
     if (wait === 0) fire(); else setTimeout(fire, wait).unref?.();

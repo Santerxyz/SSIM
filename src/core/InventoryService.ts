@@ -109,10 +109,12 @@ export class InventoryService {
   /** TF2 inventory cache – separate file so the CS2 records stay untouched. */
   readonly tf2Store = new InventoryStore(dataDir('inventories_tf2.json'));
   /**
-   * CS2 inventory cache from the GAME COORDINATOR (separate file so the web and GC
-   * refreshes NEVER overwrite each other). The GC record is the richer, complete
-   * one (owned + tradelocked + listed), so reads PREFER it when present and fall
-   * back to the web record otherwise – one source per account, never duplicated.
+   * CS2 FULL-refresh cache: the COMPLETE pure-web record (context 2 + context 16
+   * + market listings, one bucket per asset). Kept in a separate file so the quick
+   * ctx2-only record (`store`, written by forceRefresh/buy-verify) and this complete
+   * record never overwrite each other; CS2 reads PREFER this record and fall back to
+   * `store` otherwise. The `inventories_gc.json` filename and `source: 'gc'` are legacy
+   * markers kept for cache/dashboard compatibility – the GC stack is retired (DIRECTIVES.md #3).
    */
   readonly gcStore = new InventoryStore(dataDir('inventories_gc.json'));
   private job: RefreshJob = { running: false, total: 0, done: 0, failed: [] };
@@ -211,7 +213,9 @@ export class InventoryService {
    * Like refreshOne, but GUARANTEES a fresh fetch that starts NOW (bypasses the
    * in-flight dedup). The buy-verification before/after diff must not reuse a
    * snapshot whose underlying fetch began before the order was placed, or it would
-   * under-count fills. Newer callers still coalesce onto this fresh fetch.
+   * under-count fills. Same-key (quick-path) callers coalesce onto this fresh fetch;
+   * the CS2 full refresh uses its own `gc:` key and deliberately never coalesces with
+   * a quick ctx2 read (it must not return a ctx2-only result).
    */
   forceRefresh(username: string, game: GameId = 'cs2'): Promise<AccountInventory> {
     const key = `${game}:${username.toLowerCase()}`;
@@ -293,8 +297,6 @@ export class InventoryService {
   protected pause(ms: number): Promise<void> { return sleep(ms); }
 
   private async doRefreshOneViaGc(username: string): Promise<AccountInventory> {
-    const account = this.accounts.get(username);
-    if (!account) throw new Error(`Account "${username}" not found`);
     const session = await this.ensureSession(username);
 
     const steamId = String(session.steamId ?? '');
@@ -377,7 +379,6 @@ export class InventoryService {
       items:      InventoryManager.stack(ownedLockedRaw),
       totalItems: gcOwnedLockedCount,
       fetchedAt:  new Date(),
-      fromCache:  false,
       partial,
     };
     for (const it of inv.items) {
@@ -515,7 +516,6 @@ export class InventoryService {
       username,
       game:       'cs2',
       source:     'gc',
-      fromCache:  false,
       fetchedAt:  new Date(),
       items:      [...ownedLocked, ...listedBucket],
       totalItems: ownedLocked.reduce((n, i) => n + i.quantity, 0)
@@ -576,7 +576,6 @@ export class InventoryService {
       const inv: AccountInventory = {
         ...rec,
         source:     'gc',
-        fromCache:  false,
         fetchedAt:  new Date(),
         items:      [...remainingOwned, ...mergedListed],
         totalItems: remainingOwned.reduce((n, i) => n + i.quantity, 0)
@@ -590,8 +589,6 @@ export class InventoryService {
   }
 
   private async doRefreshOne(username: string, game: GameId): Promise<AccountInventory> {
-    const account = this.accounts.get(username);
-    if (!account) throw new Error(`Account "${username}" not found`);
     const session = await this.ensureSession(username);
 
     // Fetch + parse + stack, with a retry layer for TRANSIENT failures (429 /

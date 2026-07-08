@@ -196,7 +196,7 @@ export class InventoryManager {
     // the persisted inventory is PARTIAL, not authoritative — surface it LOUDLY (#12).
     // totalCount is also a Steam estimate, so a small shortfall without a cap hit is benign.
     if (hitPageCap) {
-      logger.error(`[${username}] inventory TRUNCATED at the ${MAX_INVENTORY_PAGES}-page cap (${assets.length} assets, total≈${totalCount}) – result is PARTIAL; trust the GC inventory for this account`);
+      logger.error(`[${username}] inventory TRUNCATED at the ${MAX_INVENTORY_PAGES}-page cap (${assets.length} assets, total≈${totalCount}) – result is PARTIAL (truncated flag set; the cache guard keeps the fuller record — C12)`);
     } else if (assets.length < totalCount) {
       logger.warn(`[${username}] inventory pagination incomplete: ${assets.length}/${totalCount} assets fetched`);
     }
@@ -233,7 +233,7 @@ export class InventoryManager {
     // drop and every asset still maps. A genuine orphan (asset with NO description at all) is
     // rare and DOES vanish from the count, so surface it loudly to keep the totals honest.
     if (orphans > 0) {
-      logger.warn(`parsed ${items.length} item(s) from ${assets.length} asset(s) – ${orphans} asset(s) had no matching description and were dropped (totals may under-count)`);
+      logger.warn(`[${steamId}] parsed ${items.length} item(s) from ${assets.length} asset(s) – ${orphans} asset(s) had no matching description and were dropped (totals may under-count)`);
     }
     return items;
   }
@@ -260,7 +260,6 @@ export class InventoryManager {
       // 16 (trade-received holds). For CS2 we do NOT use the cache_expiration fallback
       // (it's a description-cache TTL, not a real hold → false positives); TF2 keeps it.
       tradeLockExpiry: parseTradeLock(desc, game === 'tf2'),
-      marketRestriction: desc.market_tradable_restriction ?? desc.market_marketable_restriction ?? 0,
       quantity:        1,
       assetIds:        [asset.assetid],
       iconUrl:         IMG_BASE + (desc.icon_url_large ?? desc.icon_url),
@@ -334,7 +333,6 @@ export class InventoryManager {
       items,
       totalItems: realCount, // reflects the real number of items, not stack count
       fetchedAt:  new Date(),
-      fromCache:  false,
       partial:    !!raw.truncated, // honest flag: a page-capped read is incomplete (C12)
       reportedTotal: raw.total_inventory_count, // Steam's own total (undefined when omitted) → authoritative-empty signal (H-INV-005)
     };
@@ -402,14 +400,6 @@ function normalizeExterior(value?: string): ItemExterior | null {
 }
 
 /**
- * Resolves a trade-lock expiry from Steam's data. The AUTHORITATIVE source is the
- * per-owner "Tradable After <date>" notice (visible only on the OWNER view, which
- * is why the inventory fetch must be authenticated). `cache_expiration` is only a
- * weak fallback: on a freely-tradable item it is just a description-cache TTL
- * (minutes/hours out) and must NOT be mistaken for a trade hold – so we trust it
- * only when the item is actually non-tradable. Returns null when freely tradable.
- */
-/**
  * Deterministic sentinel expiry for a trade-lock notice whose DATE could not be
  * parsed. Constant (NOT now+7d) so that stack() identity — keyed on the ISO expiry
  * (InventoryManager.stack ~:252) — and the displayed "locked until" stay stable
@@ -418,6 +408,14 @@ function normalizeExterior(value?: string): ItemExterior | null {
  */
 export const TRADE_LOCK_DATE_UNKNOWN = new Date('2099-01-01T00:00:00.000Z');
 
+/**
+ * Resolves a trade-lock expiry from Steam's data. The AUTHORITATIVE source is the
+ * per-owner "Tradable After <date>" notice (visible only on the OWNER view, which
+ * is why the inventory fetch must be authenticated). `cache_expiration` is only a
+ * weak fallback: on a freely-tradable item it is just a description-cache TTL
+ * (minutes/hours out) and must NOT be mistaken for a trade hold – so we trust it
+ * only when the item is actually non-tradable. Returns null when freely tradable.
+ */
 export function parseTradeLock(desc: RawDescription, allowCacheExpiration = false): Date | null {
   // 1) Authoritative: the "Tradable After …" / "Tradable/Marketable After …" notice
   //    Steam puts in owner_descriptions (multi-language note: matched leniently).
@@ -441,8 +439,9 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
       if (m) {
         const parsed = parseSteamDate(`${m[1]}${m[2] ? ' ' + m[2] : ''} GMT`);
         if (parsed && parsed.getTime() > Date.now()) return parsed; // future hold → locked
-        // Notice present but its date did not parse → fail SAFE: treat as locked (a 7-day
-        // rolling placeholder, re-evaluated each refresh) rather than wrongly tradable (#34).
+        // Notice present but its date did not parse → fail SAFE: treat as locked (a constant
+        // far-future sentinel, TRADE_LOCK_DATE_UNKNOWN, re-evaluated each refresh) rather than
+        // wrongly tradable (#34).
         if (!parsed) {
           logger.warn(`trade-lock notice present but date unparseable ("${v.slice(0, 60)}") – treating item as locked (date unknown)`);
           return new Date(TRADE_LOCK_DATE_UNKNOWN); // deterministic sentinel (B-5 / C22)
@@ -474,7 +473,7 @@ function parseSteamDate(raw: string): Date | null {
  *   <img ...><img ...><br>Sticker: Crown (Foil), Titan (Holo)
  * We extract names from the "Sticker:" line and any image URLs present.
  */
-function parseStickers(desc: RawDescription): Sticker[] | undefined {
+export function parseStickers(desc: RawDescription): Sticker[] | undefined {
   const html = desc.descriptions?.find(d => /sticker/i.test(d.value))?.value;
   if (!html) return undefined;
 
@@ -485,6 +484,18 @@ function parseStickers(desc: RawDescription): Sticker[] | undefined {
   if (names.length === 0) return undefined;
 
   const imgUrls = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].map(m => m[1]);
+
+  // A real CS2 sticker name can contain commas (e.g. "Don't Worry, I'm Pro"), so the
+  // comma split over-produces fragments. The <img> count in the same fragment is the
+  // authoritative sticker count: greedily re-join the right-most fragments until the
+  // counts agree (a right-greedy merge picks one plausible grouping — it guarantees the
+  // correct count, not a perfect split when several names each carry commas).
+  if (imgUrls.length > 0 && names.length > imgUrls.length) {
+    while (names.length > imgUrls.length) {
+      const tail = names.pop()!;
+      names[names.length - 1] = `${names[names.length - 1]}, ${tail}`;
+    }
+  }
 
   return names.map((name, idx) => ({
     slot:      idx,

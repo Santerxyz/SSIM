@@ -16,11 +16,19 @@ const DEFAULT_STORE_PATH = dataDir('inventories.json');
 // effect from the first write (the constructor never evicts, so shrinking the cap can't
 // destroy disk records before the operator sees a log). Set SSIM_INV_CACHE_MAX=0 to disable,
 // or lower it to cap RAM harder.
-const MAX_RECORDS: number = (() => {
-  const raw = Number(process.env.SSIM_INV_CACHE_MAX);
-  if (raw === 0) return Infinity;                                  // explicit opt-out
-  return Number.isFinite(raw) && raw >= 100 ? raw : 2000;          // default 2000 / floor 100
-})();
+/**
+ * Parse SSIM_INV_CACHE_MAX into a resident-record cap. Only the literal string '0'
+ * opts out (→ Infinity); empty (set-but-blank), garbage, or < 1 → default 2000;
+ * values 1–99 clamp to 100. Exported for unit testing.
+ */
+export function parseInvCacheMax(raw: string | undefined): number {
+  const rawStr = (raw ?? '').trim();
+  if (rawStr === '0') return Infinity;                             // explicit opt-out (only literal 0)
+  const n = Number(rawStr);
+  if (rawStr === '' || !Number.isFinite(n) || n < 1) return 2000;  // empty/garbage/negative → default 2000
+  return Math.max(Math.floor(n), 100);                            // values 1–99 clamp to 100
+}
+const MAX_RECORDS: number = parseInvCacheMax(process.env.SSIM_INV_CACHE_MAX);
 
 /** A SYNCHRONOUS sleep for the boot-time read retries (the event loop isn't serving during
  *  the constructor). Atomics.wait blocks the thread without a busy-wait; mirrors singleInstance.ts. */
@@ -178,6 +186,12 @@ export class InventoryStore {
     return this.data.records[username.toLowerCase()];
   }
 
+  /**
+   * Ownership transfer: the store keeps `inventory` BY REFERENCE (it clones on the way OUT
+   * via get()/all(), not on the way in). Do NOT mutate the object after set() — a later edit
+   * corrupts the cache in place; re-read via get() for an independent copy (see get()'s clone
+   * note). This is the S36 aliasing class — enrich a re-fetched record, never the stored one.
+   */
   set(username: string, inventory: AccountInventory): void {
     const key = username.toLowerCase();
     const existing = this.data.records[key];
@@ -205,6 +219,7 @@ export class InventoryStore {
 
   delete(username: string): void {
     const key = username.toLowerCase();
+    if (!(key in this.data.records)) { this.lru.delete(key); return; } // no record → nothing to persist, skip the multi-MB rewrite
     delete this.data.records[key];
     this.lru.delete(key);
     this.scheduleFlush();

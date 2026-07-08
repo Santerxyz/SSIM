@@ -4,6 +4,7 @@ import fsExtra from 'fs-extra';
 import axios from 'axios';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
+import { armInterval } from '../utils/intervalGuard';
 import { dataDir } from '../utils/paths';
 import { ProcessHealth } from '../core/ProcessHealth';
 import { getUpdateOutcome, getLastExitClass } from './updateStatus';
@@ -349,10 +350,9 @@ let heartbeatTimer: NodeJS.Timeout | undefined;
 export function startHeartbeat(hwid: string): void {
   const token = readToken();
   if (!token) return;
-  heartbeatTimer = setInterval(() => {
+  heartbeatTimer = armInterval(heartbeatTimer, () => {
     void heartbeat(hwid);
-  }, HEARTBEAT_INTERVAL_MS);
-  heartbeatTimer.unref(); // never keep the process alive just for the heartbeat
+  }, HEARTBEAT_INTERVAL_MS); // armInterval unref()'s it — never keep the process alive just for the heartbeat
 }
 
 export function stopHeartbeat(): void {

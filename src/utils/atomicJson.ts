@@ -75,7 +75,8 @@ export function writeJsonAtomic(
   try {
     fsExtra.writeJsonSync(tmp, data, { spaces: opts?.spaces, mode: opts?.mode });
     // Flush the temp file's data to disk BEFORE the rename, so a hard power loss
-    // can't leave the renamed target pointing at a zero-length / partial inode.
+    // can't leave the renamed target pointing at a zero-length / partial file
+    // (a torn inode on POSIX; a partially-written entry on NTFS).
     // Best-effort: a fsync failure must never abort an otherwise-good write.
     try {
       const fd = fs.openSync(tmp, 'r+');

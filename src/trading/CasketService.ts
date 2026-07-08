@@ -94,7 +94,7 @@ export class CasketService {
     try {
       const res = await this.gc.moveCasketItems(
         username, casketId, itemIds, direction,
-        (p) => { if (!job.running) return; job.done = p.done; job.current = p.current; job.moved = p.moved; job.failed = p.failed; },
+        (p) => { if (!job.running) return; job.done = p.done; job.current = p.current; job.moved = p.moved; job.unconfirmed = p.unconfirmed; job.failed = p.failed; },
         () => job.cancelRequested === true,
       );
       job.moved = res.moved.length;

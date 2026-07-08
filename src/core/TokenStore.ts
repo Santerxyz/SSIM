@@ -17,7 +17,10 @@ interface TokenFile {
 // aliased the SAME `EMPTY.tokens` object, so the first `set()` mutated the module singleton and leaked
 // that token into every later TokenStore (two live instances: SessionManager + BanService). Return a
 // brand-new object with its own empty map each time.
-const emptyFile = (): TokenFile => ({ version: 1, tokens: {} });
+// H-ACC-061: null-prototype map so a prototype-key username ("__proto__", "constructor" — both valid Steam
+// login charset) is stored/read/deleted as an ordinary entry instead of colliding with Object.prototype
+// (which made get() return a non-string and set()/delete() silently no-op).
+const emptyFile = (): TokenFile => ({ version: 1, tokens: Object.create(null) as Record<string, string> });
 
 // H-ACC-055: a millisecond-scale AV/handle lock at boot (EBUSY/EPERM/EACCES/EMFILE/ENFILE) is a TRANSIENT
 // fault, NOT corruption — routing it to the degraded latch makes the whole intact fleet-token file invisible
@@ -54,7 +57,7 @@ export class TokenStore {
   private degraded = false;
 
   // Path is injectable so the degraded/missing/valid cases are unit-testable (the module TOKENS_PATH is
-  // the production default). Two live instances exist (SessionManager, BanService); each loads independently.
+  // the production default). SessionManager owns the single production instance; the path stays injectable for tests.
   constructor(private readonly filePath: string = TOKENS_PATH) {
     this.file = this.load();
   }
@@ -116,9 +119,25 @@ export class TokenStore {
   /** Parse the tokens map out of a loaded file object, or null when the shape is untrustworthy.
    *  #37: keep only string→non-empty-string entries; a per-entry glitch is not whole-file corruption. */
   private static readTokens(parsed: Partial<TokenFile> | null): Record<string, string> | null {
-    if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null) return null;
-    const tokens: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed.tokens)) if (typeof v === 'string' && v) tokens[k] = v;
+    // H-ACC-060: `typeof [] === 'object'`, so an array-shaped tokens map (hand-edit / foreign tool /
+    // partial restore) would otherwise slip through as a VALID empty (or index-keyed) store instead of
+    // being routed to .bak recovery — this is exactly the "wrong SHAPE" case. Reject arrays explicitly.
+    if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null || Array.isArray(parsed.tokens)) return null;
+    // H-ACC-056: refuse a FORWARD-format file (version > 1) rather than consume its entries as raw v1
+    // tokens and rewrite it as v1 (B30 vault parity — AccountVault.parseAndVersionCheck does the same).
+    // Returning null routes it to the .bak-or-degrade path → write-refusal protects the newer store.
+    if (parsed.version !== undefined && Number(parsed.version) > 1) return null;
+    const tokens: Record<string, string> = Object.create(null) as Record<string, string>; // H-ACC-061: null-proto (prototype-key usernames)
+    // H-ACC-062: the per-entry tolerance itself is deliberate (#37 — a glitched entry is not whole-file
+    // corruption), but dropping the sole credential of a token-only account SILENTLY leaves the operator with
+    // "token missing → needs re-import" and nothing in the log. Name the dropped KEYS (usernames aren't secrets)
+    // so the loss is timestamped and diagnosable. Token VALUES must never be logged.
+    const dropped: string[] = [];
+    for (const [k, v] of Object.entries(parsed.tokens)) {
+      if (typeof v === 'string' && v) tokens[k] = v;
+      else dropped.push(k);
+    }
+    if (dropped.length) logger.warn(`refresh token store: dropped ${dropped.length} malformed token entr${dropped.length === 1 ? 'y' : 'ies'} (${dropped.join(', ')}) — affected account(s) will need credential/2FA login`);
     return tokens;
   }
 
@@ -204,7 +223,10 @@ export class TokenStore {
       this.file.tokens[this.key(username)] = token; // in-memory for THIS run
       persisted = this.save();                      // false while degraded / on write failure (see save())
     }
-    logger.info(`[${username}] refresh token persisted${this.degraded && !AccountVault.isEnabled() ? ' (in-memory only – store degraded)' : ''}`);
+    // H-ACC-057: log the ACTUAL outcome — the old line logged "persisted" unconditionally, so a vault
+    // setToken throw or a plaintext save() failure both printed success right after their own warn.
+    if (persisted) logger.info(`[${username}] refresh token persisted`);
+    else logger.info(`[${username}] refresh token held in memory only (NOT persisted this attempt)`);
     return persisted;
   }
 

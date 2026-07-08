@@ -1,4 +1,4 @@
-import { spawn, execFileSync, type ChildProcess } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -143,13 +143,17 @@ export function buildIsolatedSession(input: {
 
 // ── Launch (side-effect; smoke-level — needs a real Chromium + proxy + Steam) ───
 
-function findChromium(): string | null {
+export function findChromium(): string | null {
+  const pf = process.env['ProgramFiles'] ?? 'C:/Program Files';
+  const pf86 = process.env['ProgramFiles(x86)'] ?? 'C:/Program Files (x86)';
+  const lad = process.env['LOCALAPPDATA'];
   const c = [
     process.env.SSIM_BROWSER_EXE,
-    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-    'C:/Program Files/Google/Chrome/Application/chrome.exe',
-    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    pf86 + '/Microsoft/Edge/Application/msedge.exe',
+    pf + '/Microsoft/Edge/Application/msedge.exe',
+    pf + '/Google/Chrome/Application/chrome.exe',
+    pf86 + '/Google/Chrome/Application/chrome.exe',
+    lad && lad + '/Google/Chrome/Application/chrome.exe',
   ].filter(Boolean) as string[];
   for (const p of c) { try { if (fs.existsSync(p)) return p; } catch { /* ignore */ } }
   return null;
@@ -215,14 +219,22 @@ export function startProxyRelay(
       const connect = /^CONNECT\s+(\S+)\s+HTTP\/1\.[01]/i.exec(firstLine);
 
       const upstream = net.connect(auth.port, auth.host);
+      let spliced = false;                                // true once raw streams are joined — after this an upstream 'error' is a dropped tunnel, not a handshake failure
       // Bound the CONNECT/replay handshake: a connected-but-unresponsive proxy would otherwise
       // pin both sockets (and an activeConns slot) until Chromium's own timeout gives up.
       const hsTimer = setTimeout(() => { try { client.end('HTTP/1.1 504 Gateway Timeout\r\n\r\n'); } catch { /* ignore */ } upstream.destroy(); }, opts?.handshakeTimeoutMs ?? 20_000);
       hsTimer.unref?.();
       upstream.on('error', (e) => {
         clearTimeout(hsTimer);
-        logger.warn(`[${label}] proxy relay: cannot reach upstream proxy ${auth.host}:${auth.port} — ${(e as Error).message}`);
-        try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ }
+        if (spliced) {
+          // Mid-tunnel reset (routine on flaky proxies): the upstream WAS reached, the tunnel died.
+          // Never write a plaintext 502 into what is now a raw TLS byte stream — just tear down the client.
+          logger.debug(`[${label}] proxy relay: tunnel to ${auth.host}:${auth.port} dropped — ${(e as Error).message}`);
+          client.destroy();
+        } else {
+          logger.warn(`[${label}] proxy relay: cannot reach upstream proxy ${auth.host}:${auth.port} — ${(e as Error).message}`);
+          try { client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch { /* ignore */ }
+        }
       });
       client.on('error', () => upstream.destroy());
       client.on('close', () => upstream.destroy());
@@ -250,6 +262,7 @@ export function startProxyRelay(
             if (leftover.length) client.write(leftover);   // tunneled bytes that rode in with the 200
             if (rest.length) upstream.write(rest);          // early client bytes (rare for CONNECT)
             clearTimeout(hsTimer);
+            spliced = true;
             upstream.pipe(client); client.pipe(upstream);
           };
           upstream.on('data', onUp);
@@ -263,6 +276,7 @@ export function startProxyRelay(
           upstream.write(lines.join('\r\n') + '\r\n\r\n');
           if (rest.length) upstream.write(rest);
           clearTimeout(hsTimer);
+          spliced = true;
           upstream.pipe(client); client.pipe(upstream);
         }
       });

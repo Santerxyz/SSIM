@@ -57,7 +57,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 // Concurrency scales with the batch (scaleConcurrency: 1 worker / 5 accounts, floor 5,
 // ceiling 25). Money safety is per-account (in-flight guard, ceiling, post-buy verify,
 // never-throw-after-placed) and unaffected by how many DISTINCT accounts buy at once.
-const MASS_BUY_ITEM_DELAY_MS       = 1_500; // pause between an account's buys within a worker
+const MASS_BUY_ACCOUNT_DELAY_MS    = 1_500; // pause between two consecutive accounts' orders within one worker
 
 /** Parameters for a folder-wide mass-buy. `pricePerItemMajor` is a MAJOR amount
  *  (e.g. 2.05) applied in EACH account's OWN wallet currency – a region-homogeneous
@@ -82,6 +82,8 @@ export interface MassBuyAccountResult {
   filled:             number;   // items actually received (inventory diff)
   placed:             boolean;
   spentMinor?:        number;
+  /** true = post-buy verification failed: `filled`/`spentMinor` are UNKNOWN, not zero — see BuyResult.verifyFailed */
+  verifyFailed?:      boolean;
   status: 'bought' | 'placed' | 'skipped' | 'failed' | 'refresh-failed';
   message:            string;
 }
@@ -103,7 +105,6 @@ export interface MassBuyJob {
   filled:            number;   // total items received across the folder
   skipped:           number;   // couldn't afford ≥1 / unknown wallet
   failed:            number;   // buy step threw
-  currentAccount?:   string;
   startedAt?:        string;
   finishedAt?:       string;
   results:           MassBuyAccountResult[];
@@ -450,10 +451,9 @@ export class BuyService {
         while (queue.length) {
           if (this.massCancel) break; // "End Task": stop committing money on the remaining accounts
           const u = queue.shift()!;
-          this.massJob.currentAccount = u;
           await this.massBuyOne(u, p, wallets.get(u) ?? null);
           this.massJob.processed++;
-          if (queue.length && !this.massCancel) await sleep(MASS_BUY_ITEM_DELAY_MS);
+          if (queue.length && !this.massCancel) await sleep(MASS_BUY_ACCOUNT_DELAY_MS);
         }
       };
       await Promise.all(Array.from({ length: Math.min(concurrency, p.usernames.length) }, () => worker()));
@@ -467,7 +467,6 @@ export class BuyService {
     this.massJob.cancelling = false;
     this.massJob.cancelled = this.massCancel;
     this.massJob.phase = 'done';
-    this.massJob.currentAccount = undefined;
     this.massJob.finishedAt = new Date().toISOString();
     logger.info(
       `[mass-buy] ═══ ${this.massCancel ? 'CANCELLED' : 'COMPLETE'}: ${this.massJob.marketHashName} – ${this.massJob.placed} order(s) placed / ` +
@@ -529,10 +528,11 @@ export class BuyService {
       }, { releaseSession: false }); // the mass-buy batch releases all created sessions at the end
       if (r.placed) this.massJob.placed++;
       this.massJob.filled += r.filled;
-      const spentMinor = (r.walletBefore != null && r.walletAfter != null)
+      const spentMinor = (!r.verifyFailed && r.walletBefore != null && r.walletAfter != null)
         ? Math.max(0, Math.round((r.walletBefore - r.walletAfter) * Math.pow(10, info.decimals)))
         : undefined;
       push({ ...base, plannedQty: qty, filled: r.filled, placed: r.placed, spentMinor,
+        verifyFailed: r.verifyFailed,
         status: r.filled > 0 ? 'bought' : 'placed', message: r.message });
     } catch (err) {
       this.massJob.failed++;

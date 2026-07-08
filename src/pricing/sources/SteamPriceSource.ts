@@ -10,6 +10,9 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 export class SteamPriceSource implements PriceSource {
   readonly id = 'steam' as const;
 
+  /** Steam's priceoverview needs no credential and is always reachable in principle. */
+  available(): boolean { return true; }
+
   /** Lowest_price (USD cents) from Steam's priceoverview; null if none. */
   async fetchPriceCents(name: string, appid: number): Promise<number | null> {
     const url = `https://steamcommunity.com/market/priceoverview/` +

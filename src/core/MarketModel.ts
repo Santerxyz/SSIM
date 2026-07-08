@@ -60,7 +60,10 @@ function iconUrlOf(desc: any): string {
 }
 
 function addId(map: Map<number, Set<string>>, appId: number, id: string): void {
-  if (!appId || !id) return;
+  // Only an id is required. An appId of 0 (missing/unparseable `asset.appid`) still
+  // lands under map key 0 so `assetIdsByApp` stays a true superset of `listings` — no
+  // caller queries app 0 (`listedAssetIdsForApp(p, 730)` etc.), so this is additive.
+  if (!id) return;
   let s = map.get(appId);
   if (!s) { s = new Set<string>(); map.set(appId, s); }
   s.add(id);
@@ -98,15 +101,24 @@ export function parseMyListings(d: any): ParsedMyListings {
     const fee   = Number(l?.fee)   || 0;
     const cid = Number(l?.currencyid); const currency = Number.isFinite(cid) ? Math.max(0, cid - 2000) : 0;
     addId(out.assetIdsByApp, appId, id);
+    // Coerce to string so an empty ('') or non-string (number/object from a
+    // shape-drifted payload) name falls back instead of blanking the row or
+    // lying about the declared `string` type. `??` alone (nullish) let both through.
+    const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+    // Disambiguate the metadata-less sentinel by classid, so two DIFFERENT unnamed
+    // listings do not collapse into one "Unknown" row (InventoryManager.stack keys
+    // on marketHashName). String(), not str(): classid may arrive numeric.
+    const cls = String(desc.classid ?? '');
+    const unknownName = cls ? `Unknown (${cls})` : 'Unknown';
     return {
       listingId:         l?.listingid != null ? String(l.listingid) : '',
       assetId:           id,
-      classId:           String(desc.classid ?? ''),
+      classId:           cls,
       instanceId:        String(desc.instanceid ?? ''),
       appId,
       contextId:         ctx,
-      marketHashName:    desc.market_hash_name ?? desc.name ?? 'Unknown',
-      name:              desc.name ?? desc.market_hash_name ?? 'Unknown',
+      marketHashName:    str(desc.market_hash_name) || str(desc.name) || unknownName,
+      name:              str(desc.name) || str(desc.market_hash_name) || unknownName,
       iconUrl:           iconUrlOf(desc),
       pricePerItemMinor: price + fee,
       currency,
@@ -211,7 +223,9 @@ export function bucketOf(item: BucketInput, nowMs: number = Date.now()): ItemBuc
   return 'tradable';
 }
 
-// ── Sellable / sendable guard — the ONLY gate on the sell & send paths ────────
+// ── Sellable / sendable predicate ─────────────────────────────────────────────
+// isSellable is the shared predicate on the sell & send paths; assertSellable is
+// the throwing convenience (currently used in tests only).
 
 /** True iff the item may be listed on the market or sent in a trade right now. */
 export function isSellable(item: BucketInput, nowMs: number = Date.now()): boolean {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { webCookiesFresh, ownsCreatedSession, WEB_COOKIE_MAX_AGE_MS } from '../src/core/sessionHealth';
+import { webCookiesFresh, ownsCreatedSession, WEB_COOKIE_MAX_AGE_MS, WEB_COOKIE_REFRESH_MS } from '../src/core/sessionHealth';
 
 // C16 / INV-A5 — "ready" must mean cookies are still fresh, not merely present.
 test('webCookiesFresh: fresh within the window, stale beyond it', () => {
@@ -11,6 +11,15 @@ test('webCookiesFresh: fresh within the window, stale beyond it', () => {
   assert.equal(webCookiesFresh('not-a-date', now), false);                // corrupt → not ready
   assert.equal(webCookiesFresh(new Date(now + 60_000), now), false);      // future timestamp → unmeasurable → stale
   assert.equal(webCookiesFresh(new Date(now), now), true);                // zero age stays fresh
+});
+
+// The freshness window must structurally survive one full refresh cycle (interval +
+// a complete 30s refresh attempt, WEB_SESSION_TIMEOUT_MS) — enforced, not coupled by prose.
+test('WEB_COOKIE_MAX_AGE_MS outlives one refresh cycle incl. a full 30s attempt', () => {
+  assert.ok(
+    WEB_COOKIE_MAX_AGE_MS >= WEB_COOKIE_REFRESH_MS + 2 * 30_000,
+    'freshness window must survive one refresh cycle incl. a full 30s refresh attempt',
+  );
 });
 
 // C17 / INV-A6 — a bulk op may release only a session its own call originated.

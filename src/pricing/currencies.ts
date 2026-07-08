@@ -70,10 +70,11 @@ export const STEAM_CURRENCIES: Record<number, CurrencyInfo> = {
   47: { code: 47, iso: 'RON', decimals: 2 },
 };
 
-/** Currency info for a Steam code, with a safe 2-decimal fallback. For DISPLAY only — a money path must
+/** Currency info for a Steam code; an unknown/absent code falls back to the EUR record (code 3, 2 decimals) —
+ *  the input code is discarded, not preserved. For DISPLAY only — a money path must
  *  use {@link knownCurrencyInfo} instead (see S64). */
 export function currencyInfo(code: number | undefined): CurrencyInfo {
-  return (code != null && STEAM_CURRENCIES[code]) || { code: code ?? 3, iso: 'EUR', decimals: 2 };
+  return (code != null && STEAM_CURRENCIES[code]) || { code: 3, iso: 'EUR', decimals: 2 };
 }
 
 /** Currency info for a KNOWN Steam code, or null when the code is unrecognised. MONEY paths MUST use this

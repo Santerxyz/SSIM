@@ -38,7 +38,7 @@ export function openBrowser(url: string): void {
     } else {
       launch('xdg-open', [url], { detached: true, stdio: 'ignore' });
     }
-    logger.info(`opened browser at ${url}`);
+    logger.info(`launching default browser at ${url}`);
   } catch (err) {
     // Keeps the synchronous-arg failure path (constant args → practically unreachable);
     // real spawn-launch failures arrive via the 'error' event above, not this throw.

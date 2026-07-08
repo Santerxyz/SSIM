@@ -51,10 +51,11 @@ export function shapeConfirmations(raw: unknown): ConfirmationView[] {
       id,
       type,
       typeName:  type === 2 ? 'trade' : type === 3 ? 'market' : 'other',
+      // fallbacks tolerate the raw mobileconf getlist JSON shape (headline / creator_id)
       title:     String(o.title ?? o.headline ?? 'Confirmation'),
       receiving: String(o.receiving ?? ''),
       sending:   String(o.sending ?? ''),
-      creator:   String(o.creator ?? o.creatorid ?? ''),
+      creator:   String(o.creator ?? o['creator_id'] ?? ''),
       iconUrl:   typeof o.icon === 'string' ? (o.icon as string) : '',
       timeMs,
     });

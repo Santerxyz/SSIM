@@ -4,7 +4,10 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { generateTotpCode, msUntilNextTotp } from '../src/core/LoginFlow';
 import { shapeConfirmations } from '../src/trading/confirmations';
-import { buildIsolatedSession, parseCookieStrings, startProxyRelay } from '../src/trading/cleanBrowser';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { buildIsolatedSession, findChromium, parseCookieStrings, startProxyRelay } from '../src/trading/cleanBrowser';
 
 // ── OTP: known-answer against an INDEPENDENT Steam-TOTP computation ──────────
 // (Validates the production generateTotpCode; the independent impl here is test-only.)
@@ -66,6 +69,10 @@ test('shapeConfirmations: real CConfirmation shape (ISO time / Date timestamp) o
   // Unparseable time → 0 (never NaN).
   const bad = shapeConfirmations([{ id: '8', type: 3, title: 'B', time: 'garbage' }]);
   assert.equal(bad[0].timeMs, 0, 'unparseable time → 0');
+  // Raw getlist JSON tolerance: `creator_id`/`headline` (underscore) map to creator/title.
+  const rawJson = shapeConfirmations([{ id: '9', type: 2, headline: 'H', creator_id: '777', creation_time: 1 }]);
+  assert.equal(rawJson[0].creator, '777', 'raw getlist creator_id → creator');
+  assert.equal(rawJson[0].title, 'H', 'raw getlist headline → title');
   // Give-side outflow (summary[0]) surfaces alongside the receive side — the safety-critical half.
   const both = shapeConfirmations([{ id: '7', type: 2, title: 'Trade D', sending: '1 item', receiving: 'Nothing' }]);
   assert.equal(both[0].sending, '1 item', 'sending carries the give-side summary');
@@ -263,4 +270,22 @@ test('A.4c — the relay PERSISTS across multiple browser connections (not one-s
 
 test('helpers: parseCookieStrings', () => {
   assert.deepEqual(parseCookieStrings(['a=1; Path=/', 'b=x=y', 'bad']), { a: '1', b: 'x=y' });
+});
+
+test('findChromium: resolves the browser from ProgramFiles(x86) (non-C: / OEM-drive hosts)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-pf86-'));
+  const exe = path.join(dir, 'Microsoft/Edge/Application/msedge.exe');
+  fs.mkdirSync(path.dirname(exe), { recursive: true });
+  fs.writeFileSync(exe, '');
+  const savedPf86 = process.env['ProgramFiles(x86)'];
+  const savedOverride = process.env.SSIM_BROWSER_EXE;
+  delete process.env.SSIM_BROWSER_EXE; // let the derived Edge path win
+  process.env['ProgramFiles(x86)'] = dir.replace(/\\/g, '/');
+  try {
+    assert.equal(findChromium(), dir.replace(/\\/g, '/') + '/Microsoft/Edge/Application/msedge.exe');
+  } finally {
+    if (savedPf86 === undefined) delete process.env['ProgramFiles(x86)']; else process.env['ProgramFiles(x86)'] = savedPf86;
+    if (savedOverride === undefined) delete process.env.SSIM_BROWSER_EXE; else process.env.SSIM_BROWSER_EXE = savedOverride;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

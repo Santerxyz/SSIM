@@ -2,6 +2,7 @@ import axios from 'axios';
 import fsExtra from 'fs-extra';
 import { dataDir } from '../utils/paths';
 import { writeJsonAtomic } from '../utils/atomicJson';
+import { armInterval } from '../utils/intervalGuard';
 import { logger } from '../utils/logger';
 
 const FALLBACK_USD_TO_EUR = 0.92;
@@ -11,6 +12,7 @@ const REFRESH_MS = 12 * 60 * 60 * 1000; // every 12h
 export class ExchangeRateService {
   private usdToEur = FALLBACK_USD_TO_EUR;
   private updatedAt = 0; // ms of last SUCCESSFUL fetch (0 = never → still on the hardcoded fallback)
+  private loadedReal = false; // true once a real rate is loaded/fetched — separates "no timestamp" from "on the 0.92 fallback"
   private timer?: NodeJS.Timeout;
   // S44: a failed refresh used to wait the full 12h before retrying, so a transient blip stranded the
   // fallback/stale rate for half a day. Retry in MINUTES with bounded exponential backoff; the counter
@@ -38,8 +40,9 @@ export class ExchangeRateService {
       const r = Number(p?.usdToEur);
       if (Number.isFinite(r) && r > 0) {
         this.usdToEur = r;
+        this.loadedReal = true; // a real persisted rate — NOT the 0.92 fallback, even if the timestamp is lost
         const t = Number(p?.updatedAt);
-        this.updatedAt = Number.isFinite(t) ? t : 0; // keep honest age (fallback stays true if unknown)
+        this.updatedAt = Number.isFinite(t) ? t : 0; // keep honest age (null age below if unknown)
       }
     } catch (err) {
       logger.warn(`[fx] ${this.path} unreadable, using fallback: ${(err as Error).message}`);
@@ -55,15 +58,14 @@ export class ExchangeRateService {
 
   /** Rate provenance for the UI (#70): is this the hardcoded fallback, and how stale? */
   getInfo(): { rate: number; fallback: boolean; ageMs: number | null } {
-    return { rate: this.usdToEur, fallback: this.updatedAt === 0, ageMs: this.updatedAt ? Date.now() - this.updatedAt : null };
+    return { rate: this.usdToEur, fallback: !this.loadedReal && this.updatedAt === 0, ageMs: this.updatedAt ? Math.max(0, Date.now() - this.updatedAt) : null };
   }
 
   start(): void {
     this.stopped = false; // a legitimate stop→start on a reused instance re-arms this instance
     void this.refresh();
     // Each 12h tick resets the short-retry budget so every cycle gets a fresh set of backoff attempts.
-    this.timer = setInterval(() => { this.retryAttempt = 0; void this.refresh(); }, REFRESH_MS);
-    this.timer.unref?.();
+    this.timer = armInterval(this.timer, () => { this.retryAttempt = 0; void this.refresh(); }, REFRESH_MS);
   }
 
   stop(): void {
@@ -80,6 +82,7 @@ export class ExchangeRateService {
       if (typeof rate !== 'number' || !(rate > 0)) throw new Error('no usable EUR rate in response');
       this.usdToEur = rate;
       this.updatedAt = Date.now();
+      this.loadedReal = true;
       this.persist(); // survive restarts so a cold start doesn't revert to 0.92 (C20)
       logger.info(`[fx] USD→EUR = ${rate}`);
       this.clearRetry(); // S44: a good refresh cancels any pending short-retry and resets the backoff

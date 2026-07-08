@@ -230,6 +230,16 @@ export class AccountManager {
   /** Adds a minimal org record for a brand-new vault-imported bot (NO secrets here). */
   addImportedAccount(p: { username: string; maFilePath: string; environmentId: string; folderId?: string | null; tier?: AccountTier }): void {
     if (this.rawGet(p.username)) return;
+    // Validate env/folder before the push (parity with add()): a dangling environmentId would
+    // create a record invisible in every env-scoped tree yet still counted in fleet ops. (H-ACC-016)
+    this.getEnvironmentOrThrow(p.environmentId);
+    if (p.folderId != null) {
+      const folder = this.getFolder(p.folderId);
+      if (!folder) throw new Error(`Folder "${p.folderId}" not found`);
+      if (folder.environmentId !== p.environmentId) {
+        throw new Error('Target folder belongs to a different environment');
+      }
+    }
     this.db.accounts.push({
       id: uuidv4(), username: p.username, password: '', maFilePath: p.maFilePath,
       environmentId: p.environmentId, folderId: p.folderId ?? null,
@@ -536,13 +546,15 @@ export class AccountManager {
     return true;
   }
 
+  /** Renames are not supported — every secret store keys on username. */
   update(
     username: string,
-    changes:  Partial<Omit<AccountConfig, 'id' | 'addedAt' | 'network'>>,
+    changes:  Partial<Omit<AccountConfig, 'id' | 'addedAt' | 'network' | 'username'>>,
   ): AccountConfig {
     const account = this.rawGetOrThrow(username);
     const safe = { ...changes };
-    delete (safe as { network?: unknown }).network; // never persist the computed field
+    delete (safe as { network?: unknown }).network;   // never persist the computed field
+    delete (safe as { username?: unknown }).username; // renames desync the vault key from the org record
     Object.assign(account, safe);
     this.save();
     return this.withNetwork(account);

@@ -95,10 +95,11 @@ function printUpdateBanner(from: string, to: string): void {
   );
 }
 
-/** semver-ish compare → true if `remote` is strictly newer than `local`. */
-function isNewer(remote: string, local: string): boolean {
+/** semver-ish compare → true if `remote` is strictly newer than `local`. Compares every dotted segment
+ *  (not a fixed 3), so a longer build tag like `1.3.5.1` is honoured. Exported for tests. */
+export function isNewer(remote: string, local: string): boolean {
   const r = remote.split('.').map(Number), l = local.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < Math.max(r.length, l.length); i++) {
     if ((r[i] ?? 0) > (l[i] ?? 0)) return true;
     if ((r[i] ?? 0) < (l[i] ?? 0)) return false;
   }

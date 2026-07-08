@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', 'public');
+const ROOT_PREFIX = ROOT + path.sep;
 const PORT = Number(process.argv[2] ?? 8123);
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -20,7 +21,7 @@ http.createServer((req, res) => {
   try { urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]); }
   catch { res.writeHead(400, { 'Content-Type': 'text/plain' }); res.end('bad request'); return; }
   let file = path.normalize(path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath));
-  if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
+  if (!file.startsWith(ROOT_PREFIX)) { res.writeHead(403); res.end(); return; }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('not found'); return; }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream' });

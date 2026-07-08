@@ -21,7 +21,12 @@ export interface NetworkConfig {
 export interface Environment {
   id:        string;
   name:      string;
-  /** The single global rotating proxy for this environment. Empty = local IP. */
+  /**
+   * The single global rotating proxy for this environment. Runtime: empty = local IP.
+   * ON DISK in vault mode this is blanked once the value is provably in the encrypted
+   * vault (B20) — the vault copy is authoritative; see AccountManager.envProxyFor/
+   * hydrateEnvProxies.
+   */
   proxy:     string;
   /** Optional tile accent colour for the dashboard. */
   color?:    string;
@@ -33,6 +38,12 @@ export type AccountTier = 'limited' | 'full';
 export interface AccountConfig {
   id:          string;
   username:    string;
+  /**
+   * Plaintext ONLY in plaintext mode or for a not-yet-vaulted account (non-destructive
+   * guarantee). In vault mode this is blanked to `''` on disk and in memory — the vault
+   * copy is authoritative (LoginFlow falls back with `||`, so a blank vault password
+   * never masks a recoverable plaintext one).
+   */
   password:    string;
   /**
    * Bare filename inside ./mafiles/ (the consolidated drop zone). Directory
@@ -51,7 +62,9 @@ export interface AccountConfig {
   /**
    * Optional per-account proxy override. When set it wins over the environment
    * proxy; when absent the account inherits `environment.proxy`. This is what
-   * gets persisted (not `network`).
+   * gets persisted (not `network`). In vault mode a credential-bearing `proxy`
+   * override is NOT persisted here — it is blanked at save and lives in the vault;
+   * only the non-secret `localip` form persists in accounts.json.
    */
   networkOverride?: NetworkConfig;
   /** Which environment this account belongs to (v2.0). */
@@ -74,6 +87,7 @@ export interface AccountConfig {
   /**
    * Manual Steam trade-URL override. When set it wins over the value fetched
    * live from SteamCommunity (Feature 2: auto + manual override).
+   * Write path: hand-edit of accounts.json only — no API route or UI sets this field.
    */
   tradeUrl?:   string;
   /**

@@ -60,8 +60,15 @@ export function lockHolderDisposition(alive: boolean, holderImage: string, ourIm
  *  blocks the thread without a busy-wait; a real AV/handle lock lasts seconds, so the old sleep-less retry
  *  loop (all 5 attempts in microseconds) was useless — this gives each retry a real window. */
 const LOCK_RETRY_SLEEP_MS = 300;
-function sleepSync(ms: number): void {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB blocked → skip the wait */ }
+export function sleepSync(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+  catch {
+    // SAB-absent fallback only: unreachable in the shipped runtime (Node 24 ships SharedArrayBuffer
+    // enabled). A bounded monotonic spin preserves the S59 retry window so it can never be silently
+    // voided to a zero-delay burst if the SAB assumption is ever violated.
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* spin */ }
+  }
 }
 
 const ourImageName = (): string => (process.execPath.split(/[\\/]/).pop() ?? '').toLowerCase();
@@ -69,6 +76,19 @@ function readLockPid(): number | null {
   try { const p = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10); return Number.isFinite(p) ? p : null; }
   catch { return null; }
 }
+
+/** Error codes that mean the lock file can NEVER be created HERE — a permissions/filesystem fault
+ *  (data/ read-only, access-denied, or a bad path), NOT a transient AV/handle hold. Retrying is
+ *  pointless and would hide the real cause behind the generic "could not acquire after retries"
+ *  message. (The `open` EPERM here is distinct from the liveness EPERM in isProcessAlive.) */
+const PERMANENT_LOCK_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'EISDIR', 'ENOTDIR']);
+
+/** Set when acquireInstanceLock() refuses because the lock file could not be CREATED (a filesystem/
+ *  permission fault) rather than because a genuine second instance holds it. bootstrap() reads this
+ *  so it can name the real cause instead of the "SSIM is already running" lie. undefined = the lock
+ *  is genuinely held by another instance (or an ambiguous transient exhaustion). */
+let lastLockError: string | undefined;
+export function lockRefusalDetail(): string | undefined { return lastLockError; }
 
 /**
  * Single-instance guard. Returns false when ANOTHER live SSIM already holds the lock.
@@ -84,6 +104,7 @@ export function acquireInstanceLock(): boolean {
   // ENOENT — which the fail-safe path below would misread as a lock IO error and REFUSE to
   // start, bricking every first launch. Ensure the lock's directory exists first.
   try { fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true }); } catch { /* best-effort; open() reports the real problem */ }
+  lastLockError = undefined;                       // fresh decision each acquire (default: "held", not io)
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       lockFd = fs.openSync(LOCK_FILE, 'wx');       // atomic exclusive create — EEXIST if held
@@ -93,6 +114,14 @@ export function acquireInstanceLock(): boolean {
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
+        if (code && PERMANENT_LOCK_CODES.has(code)) {
+          // Permanent cause (data/ read-only / access-denied / bad path): burning the 5 S59 retries
+          // buys nothing and would end on a generic "already running" lie. Fail fast, name the code,
+          // and stash the cause for bootstrap to surface to the operator.
+          lastLockError = `SSIM could not create its lock file (${code}) — data/ may be read-only or access-denied. See logs/ssim.log.`;
+          logger.error(`single-instance lock cannot be created (${code}): ${(e as Error).message} — check data/ writability`);
+          return false;
+        }
         logger.warn(`single-instance lock IO error (attempt ${attempt + 1}/5): ${(e as Error).message}`);
         sleepSync(LOCK_RETRY_SLEEP_MS);             // S59: give a transient AV/handle lock a real window
         continue;                                   // transient → retry, then fail safe below

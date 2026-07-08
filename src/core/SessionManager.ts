@@ -6,10 +6,37 @@ import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
-import { webCookiesFresh, ownsCreatedSession } from './sessionHealth';
+import { webCookiesFresh, ownsCreatedSession, WEB_COOKIE_REFRESH_MS } from './sessionHealth';
 import { logger } from '../utils/logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+/**
+ * Resolves an env-tunable safety cap, honestly and observably.
+ *   • unset / blank / non-numeric        → `dflt` (silent — the normal case)
+ *   • `zeroOptOut` && the literal "0"     → 0, cap DISABLED (warned; only "0", never Number('')===0)
+ *   • value ≥ `min`                       → `Math.floor(value)`
+ *   • value < `min` (a TIGHTER request)   → clamped UP to `min` (never down to the looser `dflt`), warned
+ * An operator lowering a cap below its structural floor is met at the floor, not silently
+ * replaced by the weaker default — the whole point of the finding this helper fixes.
+ */
+export function resolveCapEnv(
+  name: string,
+  raw: string | undefined,
+  min: number,
+  dflt: number,
+  zeroOptOut: boolean,
+): number {
+  if (zeroOptOut && raw?.trim() === '0') {
+    logger.warn(`${name}=0 – cap DISABLED`);
+    return 0;
+  }
+  const value = Number(raw);
+  if (raw === undefined || raw.trim() === '' || !Number.isFinite(value)) return dflt;
+  if (value >= min) return Math.floor(value);
+  logger.warn(`${name}=${raw} is below the minimum ${min} – clamped to ${min}`);
+  return min;
+}
 
 // ─── Timeouts (generous – slow residential / rotating proxies need headroom) ──
 // FAIL FAST: a dead proxy must release the queue slot in ~15s, NOT tie it up for 90s × 5.
@@ -19,7 +46,6 @@ import { logger } from '../utils/logger';
 const LOGIN_TIMEOUT_MS       = 15_000;  // proxy/CM connection hard cap (was 90s → fail fast)
 const WEB_SESSION_TIMEOUT_MS = 30_000;  // web cookies can lag behind loggedOn (post-login, not the dead-proxy path)
 const INTER_LOGIN_DELAY_MS   = 3_500;   // delay between sequential account logins
-const WEB_SESSION_REFRESH_S  = 20 * 60; // refresh web cookies every 20 min
 
 // ─── Global login concurrency cap (anti-storm) ────────────────────────────────
 // THE hard ceiling on how many NEW logins may be handshaking at once, across EVERY
@@ -32,10 +58,7 @@ const WEB_SESSION_REFRESH_S  = 20 * 60; // refresh web cookies every 20 min
 // queue (FIFO) and start as slots free. Per-account dedup (loginsInFlight) still
 // collapses duplicate logins for the SAME account and never consumes a slot.
 // Tunable via SSIM_MAX_CONCURRENT_LOGINS for ops; defaults to the documented 25 ceiling.
-const MAX_CONCURRENT_LOGINS = (() => {
-  const raw = Number(process.env.SSIM_MAX_CONCURRENT_LOGINS);
-  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 25;
-})();
+const MAX_CONCURRENT_LOGINS = resolveCapEnv('SSIM_MAX_CONCURRENT_LOGINS', process.env.SSIM_MAX_CONCURRENT_LOGINS, 1, 25, false);
 
 // ─── Hard resident-session ceiling (structural anti-storm backstop) ────────────
 // MAX_CONCURRENT_LOGINS bounds how many logins HANDSHAKE at once; it does NOT bound how many
@@ -49,11 +72,7 @@ const MAX_CONCURRENT_LOGINS = (() => {
 // live-session count past a safe socket budget. A re-login of an ALREADY-resident account is exempt
 // (it replaces, never grows). Generous default (150 » every 25-wide pool, « socket exhaustion);
 // tune via SSIM_MAX_LIVE_SESSIONS, set 0 to disable.
-const MAX_LIVE_SESSIONS = (() => {
-  const raw = Number(process.env.SSIM_MAX_LIVE_SESSIONS);
-  if (raw === 0) return 0;                                   // explicit opt-out
-  return Number.isFinite(raw) && raw >= 25 ? Math.floor(raw) : 150;
-})();
+const MAX_LIVE_SESSIONS = resolveCapEnv('SSIM_MAX_LIVE_SESSIONS', process.env.SSIM_MAX_LIVE_SESSIONS, 25, 150, true);
 
 // ─── Idle-session reaper (anti-accumulation for SINGLE-account ops) ─────────────
 // Bulk ops release the sessions they create, but SINGLE-account paths (single send /
@@ -64,10 +83,7 @@ const MAX_LIVE_SESSIONS = (() => {
 // one-shot op's leftover session is reclaimed instead of accumulating. A session in active use
 // is touched (markUsed) on every op entry, so its lastActivityAt stays fresh and it is never
 // reaped mid-use; the proactive cookie refresh is maintenance and deliberately does NOT count.
-const IDLE_SESSION_TTL_MS = (() => {
-  const raw = Number(process.env.SSIM_IDLE_SESSION_TTL_MS);
-  return Number.isFinite(raw) && raw >= 60_000 ? Math.floor(raw) : 30 * 60_000; // default 30 min
-})();
+const IDLE_SESSION_TTL_MS = resolveCapEnv('SSIM_IDLE_SESSION_TTL_MS', process.env.SSIM_IDLE_SESSION_TTL_MS, 60_000, 30 * 60_000, false); // default 30 min; always ≥ 60 000 (no opt-out)
 const REAPER_INTERVAL_MS = 5 * 60_000;
 
 // ─── Retry strategy (Problem 1: transient NoConnection / proxy failures) ──────
@@ -133,6 +149,12 @@ export class SessionManager extends EventEmitter {
   // concurrent callers share ONE login instead of destroying each other's
   // mid-handshake session. Cleared in finally when the login settles.
   private readonly loginsInFlight = new Map<string, Promise<ManagedSession>>();
+  // H-ACC-005: keys of accounts currently RE-logging-in — their prior resident session has been
+  // destroyed (freeing its slot) but a fresh one is not yet inserted. occupiedCount() counts these
+  // as occupied so a concurrent newcomer can't steal the slot, and the insertion re-check exempts
+  // them so the re-login re-occupies its OWN slot ("replaces, never grows"). Added in doLoginAccount
+  // before the destroy, cleared in its finally.
+  private readonly reloginReservations = new Set<string>();
   // S48: set by logoutAll() so an in-flight login can't insert a fresh session into a manager that has
   // already been torn down (a late success would park an unmanaged live CM session + agent). Checked in
   // loginAccount / performLogin; reset by loginAll() when a deliberate new cycle starts.
@@ -149,10 +171,10 @@ export class SessionManager extends EventEmitter {
 
   constructor() {
     super();
-    if (IDLE_SESSION_TTL_MS > 0) {
-      this.reaperTimer = setInterval(() => { void this.reapIdleSessions(); }, REAPER_INTERVAL_MS);
-      this.reaperTimer.unref?.();
-    }
+    // IDLE_SESSION_TTL_MS is always ≥ 60 000 (resolveCapEnv floors it, no opt-out), so the reaper
+    // always runs. To disable the anti-storm machinery, set SSIM_MAX_LIVE_SESSIONS=0 (the ceiling), not the TTL.
+    this.reaperTimer = setInterval(() => { void this.reapIdleSessions(); }, REAPER_INTERVAL_MS);
+    this.reaperTimer.unref?.();
   }
 
   /** Marks a session as actively USED right now (called at every genuine op entry) so the idle
@@ -205,6 +227,10 @@ export class SessionManager extends EventEmitter {
    *  on the status endpoint so the operator restores it before a mass refresh re-auths the fleet. (B2.) */
   isTokenStoreDegraded(): boolean { return this.tokenStore.isDegraded(); }
 
+  /** The stored Auth-v2 refresh token for an account (vault-aware), or undefined. Read-only accessor so
+   *  BanService decodes a SteamID from the JWT off the single production store — no second instance (H-ACC-058). */
+  getStoredRefreshToken(username: string): string | undefined { return this.tokenStore.get(username); }
+
   /** Acquire one login slot, awaiting (FIFO) if all are in use. */
   private acquireLoginSlot(): Promise<void> {
     if (this.loginSlots > 0) { this.loginSlots--; return Promise.resolve(); }
@@ -216,6 +242,18 @@ export class SessionManager extends EventEmitter {
     const next = this.loginWaiters.shift();
     if (next) next();              // hand the slot straight to the next waiter (count unchanged)
     else this.loginSlots++;        // no waiter → return it to the free pool
+  }
+
+  /**
+   * Resident population for the ceiling checks (H-ACC-005): live sessions PLUS in-flight re-login
+   * reservations whose old session was already destroyed. A reserved key that has re-inserted is
+   * counted once via `sessions` (the filter excludes it), so neither newcomers nor re-logins can
+   * overshoot the MAX_LIVE_SESSIONS budget.
+   */
+  private occupiedCount(): number {
+    let pending = 0;
+    for (const k of this.reloginReservations) if (!this.sessions.has(k)) pending++;
+    return this.sessions.size + pending;
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -251,10 +289,12 @@ export class SessionManager extends EventEmitter {
     // ── Hard resident-session ceiling ────────────────────────────────────────
     // Refuse a NEW account's login (fast, before consuming a slot) once the live-session
     // population is at the cap, so no caller can ever drive resident sockets past a safe budget.
-    // A re-login of an account that already holds a session is exempt (it replaces, never grows).
+    // A re-login of an account that already holds a session is exempt (it replaces, never grows); an
+    // in-flight re-login whose old session was already destroyed still counts against the budget via
+    // occupiedCount() (its reservation), so a newcomer can't steal the slot it will re-occupy (H-ACC-005).
     // Classified 'connection' so it bubbles as a transient, retryable per-account failure (the bulk
     // orchestrators already record it and carry on) and NEVER deletes a refresh token.
-    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.sessions.size >= MAX_LIVE_SESSIONS) {
+    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.occupiedCount() >= MAX_LIVE_SESSIONS) {
       return Promise.reject(Object.assign(
         new Error(`live-session ceiling ${MAX_LIVE_SESSIONS} reached – ${account.username} skipped (a bulk op may not be releasing sessions); retry shortly`),
         { loginErrorKind: 'connection' as LoginErrorKind, ceilingRefusal: true },
@@ -301,6 +341,20 @@ export class SessionManager extends EventEmitter {
   }
 
   private async doLoginAccount(account: AccountConfig, key: string): Promise<ManagedSession> {
+    // H-ACC-005: a re-login of an already-resident account reserves its slot BEFORE doLoginAccountInner
+    // destroys the old session, so the freed slot is held for THIS account — occupiedCount() counts the
+    // reservation (a concurrent newcomer can't take it) and the insertion re-check exempts the reserved
+    // key (the re-login re-occupies its OWN slot, "replaces, never grows"). Released once the login settles.
+    const reserved = this.sessions.has(key);
+    if (reserved) this.reloginReservations.add(key);
+    try {
+      return await this.doLoginAccountInner(account, key);
+    } finally {
+      if (reserved) this.reloginReservations.delete(key);
+    }
+  }
+
+  private async doLoginAccountInner(account: AccountConfig, key: string): Promise<ManagedSession> {
     await this.destroySession(key);
 
     // Load the maFile up front (best-effort). It carries identity_secret, which
@@ -464,7 +518,6 @@ export class SessionManager extends EventEmitter {
       httpsAgent,
       maFile,
       state:         SessionState.CONNECTING,
-      loginAttempts: 0,
       lastActivityAt: new Date(), // a fresh login counts as activity (reaper grace)
     };
 
@@ -472,10 +525,12 @@ export class SessionManager extends EventEmitter {
     // BEFORE acquireLoginSlot and the entry is inserted here, up to a full backoff later — so a
     // burst admitted while the map was momentarily small could overshoot the budget. This
     // re-check is SYNCHRONOUS with the set() below (no await between), so it is race-free: once
-    // the map is at the cap, a NEW account's insertion is refused (transient/retryable). A
-    // re-login of an already-resident account is exempt (it replaces, never grows). We must
+    // the population is at the cap, a NEW account's insertion is refused (transient/retryable). A
+    // re-login is exempt via its reservation (reloginReservations): it re-occupies the exact slot its
+    // own destroy freed (growth 0), while newcomers still see that reservation as occupied through
+    // occupiedCount() so the budget stays exact (H-ACC-005). We must
     // tear the freshly-built client down so it doesn't leak a CM/proxy socket.
-    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.sessions.size >= MAX_LIVE_SESSIONS) {
+    if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && !this.reloginReservations.has(key) && this.occupiedCount() >= MAX_LIVE_SESSIONS) {
       try { client.on('error', () => { /* discarded */ }); client.logOff(); } catch { /* noop */ }
       neutralizeSteamClient(client);
       AgentFactory.destroyIfDisposable(httpsAgent);
@@ -499,7 +554,7 @@ export class SessionManager extends EventEmitter {
     }
 
     this.sessions.set(key, session);
-    this.transition(session, SessionState.DISCONNECTED, SessionState.CONNECTING);
+    session.state = SessionState.CONNECTING;
 
     return new Promise<ManagedSession>((resolve, reject) => {
       let loginTimeoutHandle:      NodeJS.Timeout;
@@ -514,7 +569,6 @@ export class SessionManager extends EventEmitter {
         clearTimeout(loginTimeoutHandle);
         if (webSessionTimeoutHandle) clearTimeout(webSessionTimeoutHandle);
         session.state    = SessionState.ERROR;
-        session.lastError = err.message;
         this.emit('error', account.username, err);
         reject(err);
       };
@@ -581,11 +635,9 @@ export class SessionManager extends EventEmitter {
         session.state     = SessionState.LOGGED_IN;
         session.steamId   = client.steamID?.getSteamID64() ?? undefined;
         session.loggedInAt = new Date();
-        session.loginAttempts++;
 
         logger.info(`[${account.username}] Logged in  SteamID=${session.steamId}  via ${network.type}:${network.type === 'proxy' ? redactProxyCredentials(network.value) : network.value}  – awaiting web session…`);
 
-        this.transition(session, SessionState.LOGGING_IN, SessionState.LOGGED_IN);
         this.emit('loggedIn', account.username, session.steamId ?? '');
 
         // Request web cookies (fires 'webSession' shortly after)
@@ -625,7 +677,7 @@ export class SessionManager extends EventEmitter {
             void refreshWebSession(session).catch((e) =>
               logger.warn(`[${account.username}] proactive web-session refresh failed: ${(e as Error).message}`));
           }
-        }, WEB_SESSION_REFRESH_S * 1000);
+        }, WEB_COOKIE_REFRESH_MS);
         session.cookieRefreshTimer.unref?.();
       });
 
@@ -637,9 +689,7 @@ export class SessionManager extends EventEmitter {
       client.on('error', (err: Error & { eresult?: number }) => {
         logger.error(`[${account.username}] Steam error  EResult=${err.eresult ?? '?'}  msg=${err.message}`);
         if (!settled) { fail(err); return; }
-        const prev = session.state;
-        session.lastError = err.message;
-        this.transition(session, prev, SessionState.ERROR);
+        session.state = SessionState.ERROR;
         this.emit('disconnected', account.username, `fatal: ${err.message}`);
         // B43: a post-settle fatal (e.g. LoggedInElsewhere) previously left the session RESIDENT
         // in ERROR state — its TradeOfferManager kept polling every 20s on now-dead cookies
@@ -655,11 +705,9 @@ export class SessionManager extends EventEmitter {
 
       // ── disconnected ───────────────────────────────────────────────────
       client.on('disconnected', (eresult: number, msg?: string) => {
-        const prev = session.state;
         session.state = SessionState.DISCONNECTED;
         const reason = msg ?? `EResult ${eresult}`;
         logger.warn(`[${account.username}] Disconnected  reason="${reason}"`);
-        this.transition(session, prev, SessionState.DISCONNECTED);
         this.emit('disconnected', account.username, reason);
         // S11: a post-settle CM drop (proxy blip → 'disconnected', no 'error'; autoRelogin:false) used to
         // leave the session RESIDENT in DISCONNECTED — counted against MAX_LIVE_SESSIONS, holding its proxy
@@ -678,7 +726,7 @@ export class SessionManager extends EventEmitter {
 
       loginTimeoutHandle = setTimeout(() => {
         fail(new Error(`Login timeout after ${LOGIN_TIMEOUT_MS / 1000}s (${account.username})`));
-        client.logOff();
+        try { client.logOff(); } catch { /* half-built connection – attemptLogin's destroySession completes teardown */ }
       }, LOGIN_TIMEOUT_MS);
 
       const mode = logOnOptions.refreshToken ? 'refreshToken' : 'credentials';
@@ -839,11 +887,6 @@ export class SessionManager extends EventEmitter {
     logger.info(`Session destroyed: ${existing.account.username}`);
   }
 
-  private transition(session: ManagedSession, prev: SessionState, next: SessionState): void {
-    session.state = next;
-    this.emit('stateChange', session.account.username, prev, next);
-  }
-
   // ── Web-session maintenance ──────────────────────────────────────────────────
 
   /**
@@ -854,17 +897,6 @@ export class SessionManager extends EventEmitter {
     // Not just "a webSession object exists" — its cookies must still be FRESH, or a
     // call would run on silently-expired cookies (C16 / INV-A5).
     return !!s && s.state === SessionState.LOGGED_IN && !!s.webSession && webCookiesFresh(s.webSession.obtainedAt);
-  }
-
-  /**
-   * Silently refreshes the web-session cookies for an already logged-in account
-   * WITHOUT re-running the full login flow (no Steam Guard, same open CM/proxy
-   * connection → no IP hop). Delegates to the standalone refreshWebSession().
-   */
-  async refreshWebSession(username: string): Promise<void> {
-    const session = this.sessions.get(username.toLowerCase());
-    if (!session) throw new Error(`No session for ${username}`);
-    await refreshWebSession(session);
   }
 }
 

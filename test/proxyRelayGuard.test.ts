@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { startProxyRelay } from '../src/trading/cleanBrowser';
+import { liveLogBus } from '../src/utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  S65 — the clean-browser proxy relay carries the account's PROXY credentials and,
@@ -119,6 +120,38 @@ test('H-TRD-058: an upstream flooding CRLF-less garbage is bounded → client ge
     assert.equal(upstream.sockets.length, 1, 'the relay opened an upstream socket');
     assert.equal(await closedWithin(upstream.sockets[0], 1000), true, 'the upstream socket is destroyed');
   } finally { relay.close(); upstream.stop(); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  H-TRD-059 — mid-tunnel upstream reset: after the streams are spliced, an upstream
+//  'error' means the tunnel died (the proxy WAS reached), so the relay must NOT log a
+//  misleading "cannot reach upstream proxy" warn nor write a plaintext 502 into what is
+//  by then a raw TLS byte stream — it just tears the client down.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('H-TRD-059: an upstream that RSTs mid-tunnel closes the client — no "cannot reach" warn, no 502 spliced into the TLS stream', async () => {
+  // Fake upstream: complete the CONNECT handshake (200), then reset the socket mid-tunnel.
+  const upstream = await fakeUpstream((s) => {
+    s.once('data', () => {                              // the relay's CONNECT request
+      s.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      setTimeout(() => s.resetAndDestroy(), 50).unref?.(); // drop the tunnel with an RST after the splice
+    });
+  });
+  const up = { host: '127.0.0.1', port: upstream.port, username: 'u', password: 'p' };
+  const relay = await startProxyRelay(up, 'test', { handshakeTimeoutMs: 5000 });
+  const warns: string[] = [];
+  const onLine = (l: { level: string; msg: string }): void => { if (l.level === 'warn') warns.push(l.msg); };
+  liveLogBus.on('line', onLine);
+  try {
+    const c = await connect(relay.port);
+    const closed = closedWithin(c, 2000);
+    c.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
+    const resp = await readAll(c, 1500);
+    assert.match(resp, /200 Connection Established/, 'the client saw the tunnel come up');
+    assert.doesNotMatch(resp, /502 Bad Gateway/, 'no plaintext 502 was written into the spliced tunnel');
+    assert.equal(await closed, true, 'the client socket closes when the tunnel drops');
+    assert.ok(!warns.some((m) => /cannot reach upstream proxy/.test(m)), 'no misleading "cannot reach" warn for a mid-tunnel drop');
+  } finally { liveLogBus.off('line', onLine); relay.close(); upstream.stop(); }
 });
 
 // ════════════════════════════════════════════════════════════════════════════

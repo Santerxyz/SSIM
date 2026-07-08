@@ -27,7 +27,7 @@ export interface ManagedSession {
   account:       AccountConfig;
   client:        SteamUser;
   state:         SessionState;
-  /** Per-account isolated HTTPS agent (local IP bind or proxy) for web API calls */
+  /** HTTPS agent for web API calls. Proxy accounts: per-account instance. Local-IP accounts: SHARED pooled https.Agent per bind IP (AgentFactory.localIpPool) — NEVER call destroy() on it directly; all teardown must go through AgentFactory.destroyIfDisposable, which refuses to destroy shared pool members. */
   httpsAgent:    HttpAgent;
   /**
    * The loaded maFile (when available). Carries shared_secret + identity_secret,
@@ -36,11 +36,8 @@ export interface ManagedSession {
   maFile?:       MaFile;
   steamId?:      string;
   webSession?:   WebSession;
-  /** Steam wallet balance, captured from the client's 'wallet' event on login. */
+  /** Steam wallet, from steam-user's 'wallet' event. UNIT: steam-user divides the CM protobuf minor-unit balance by 100 unconditionally (components/account.js), so 'balance' is a float in MAJOR units for 2-decimal currencies (12.34 = €12.34). For 0-decimal wallet currencies the effective unit is unverified (B18). Convert to minor units ONLY via knownCurrencyInfo (S64 — unknown codes fail closed on money paths). 'currency' is the numeric ECurrencyCode. */
   wallet?:       { hasWallet: boolean; currency: number; balance: number };
-  loginAttempts: number;
-  lastError?:    string;
-  connectedAt?:  Date;
   loggedInAt?:   Date;
   /** Last time a GENUINE operation used this session (markUsed). Drives the idle-session
    *  reaper (B40): a session untouched for the TTL is logged out to free the resident slot.
@@ -63,7 +60,6 @@ export interface ManagedSession {
 // ─── Typed EventEmitter surface ────────────────────────────────────────────────
 
 export interface SessionManagerEvents {
-  stateChange:      (username: string, prev: SessionState, next: SessionState) => void;
   loggedIn:         (username: string, steamId: string) => void;
   webSession:       (username: string, session: WebSession) => void;
   error:            (username: string, err: Error) => void;

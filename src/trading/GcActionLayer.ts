@@ -136,25 +136,32 @@ export class GcActionLayer {
   opInFlight(username: string): boolean { return this.inFlight.has(username.toLowerCase()); }
 
   /**
-   * Trade-up CRAFT gate (irreversible — destroys 10 items). Resolution:
-   *   • SSIM_GC_VERIFIED = 0/false/off  → FORCE OFF — the KILL SWITCH. Set this (then relaunch) to
+   * Trade-up CRAFT gate resolution (irreversible — destroys 10 items). The single source of truth for
+   * BOTH `craftVerified()` and `status()`, so the gate decision and the reason string can never diverge:
+   *   • SSIM_GC_VERIFIED = 0/false/off  → 'kill-switch' — FORCE OFF. Set this (then relaunch) to
    *     instantly disable trade-up execution in production, no rebuild, if anything looks wrong.
-   *   • SSIM_GC_VERIFIED = 1/true/on    → FORCE ON.
-   *   • unset → ON in the shipped (packaged) release, OFF in dev. The shipped default is ON per the
-   *     owner's explicit release decision; storage stays unaffected (it has its own, flagless gate).
+   *   • SSIM_GC_VERIFIED = 1/true/on    → 'explicit-on' — FORCE ON.
+   *   • unset → 'default-on' in the shipped (packaged) release, 'default-off' in dev. The shipped default
+   *     is ON per the owner's explicit release decision; storage stays unaffected (its own, flagless gate).
    * NOTE: the mechanism has not been live-verified — the first real contract IS the test. The UI
    * warns loudly and the kill switch above is the panic button.
    */
-  private craftVerified(): boolean {
+  private craftGateResolution(): 'kill-switch' | 'explicit-on' | 'default-on' | 'default-off' {
     const v = (process.env.SSIM_GC_VERIFIED ?? '').trim().toLowerCase();
-    if (v === '0' || v === 'false' || v === 'off') return false; // kill switch (works everywhere)
-    if (v === '1' || v === 'true' || v === 'on') return true;     // explicit enable
-    return IS_PACKAGED;                                            // shipped release ON; dev OFF
+    if (v === '0' || v === 'false' || v === 'off') return 'kill-switch'; // works everywhere
+    if (v === '1' || v === 'true' || v === 'on') return 'explicit-on';   // explicit enable
+    return IS_PACKAGED ? 'default-on' : 'default-off';                   // shipped release ON; dev OFF
+  }
+
+  private craftVerified(): boolean {
+    const r = this.craftGateResolution();
+    return r === 'explicit-on' || r === 'default-on';
   }
 
   status(): GcStatus {
     const available = this.available();
     const craftEnabled = available && this.craftVerified();
+    const resolution = this.craftGateResolution();
     return {
       available,
       casketsEnabled: available,
@@ -163,7 +170,9 @@ export class GcActionLayer {
         ? 'globaloffensive is not installed (npm i globaloffensive)'
         : craftEnabled
           ? 'GC ready — storage + trade-up craft ENABLED (unverified live — test one cheap contract first; SSIM_GC_VERIFIED=0 disables)'
-          : 'GC ready — storage enabled; trade-up craft disabled (SSIM_GC_VERIFIED=0)',
+          : resolution === 'kill-switch'
+            ? 'GC ready — storage enabled; trade-up craft disabled (kill switch SSIM_GC_VERIFIED=0)'
+            : 'GC ready — storage enabled; trade-up craft disabled (dev default — set SSIM_GC_VERIFIED=1 to enable)',
     };
   }
 
@@ -318,7 +327,7 @@ export class GcActionLayer {
     casketId: string,
     itemIds: string[],
     direction: 'deposit' | 'withdraw',
-    onProgress?: (p: { done: number; total: number; current: string; moved: number; failed: number }) => void,
+    onProgress?: (p: { done: number; total: number; current: string; moved: number; unconfirmed: number; failed: number }) => void,
     shouldCancel?: () => boolean,
   ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }>; stopped: 'completed' | 'budget' | 'cancelled' }> {
     // S16: a per-item move costs ~0.9–1.8s (verify + pacing), so the old FIXED 60s backstop falsely
@@ -364,12 +373,12 @@ export class GcActionLayer {
           else go.removeFromCasket(casketId, itemId);
         } catch (e) {
           failed.push({ itemId, error: (e as Error).message }); // threw BEFORE submit → safe, not moved
-          onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, failed: failed.length });
+          onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, unconfirmed: unconfirmed.length, failed: failed.length });
           continue;
         }
         const ok = await this.verifyMove(go, casketId, itemId, direction);
         (ok ? moved : unconfirmed).push(itemId);
-        onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, failed: failed.length });
+        onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, unconfirmed: unconfirmed.length, failed: failed.length });
         await sleep(350 + Math.floor(Math.random() * 400)); // gentle pacing between GC writes
       }
       logger.info(`[gc] ${username} ${direction}: ${moved.length} moved, ${unconfirmed.length} unconfirmed, ${failed.length} failed`);

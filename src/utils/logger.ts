@@ -2,11 +2,12 @@ import path from 'path';
 import winston from 'winston';
 import Transport from 'winston-transport';
 import { EventEmitter } from 'events';
-import fsExtra from 'fs-extra';
 import { logsDir, IS_SIDECAR_MODE } from './paths';
 
+// `logs/` is created earlier by bootflags.ts (the canonical first import, index.ts:1)
+// before this module loads, so no ensureDir is needed here; winston's File transport
+// also creates its target directory if it were ever somehow missing.
 const LOG_DIR = logsDir();
-fsExtra.ensureDirSync(LOG_DIR);
 
 /** Primary human-readable log file – trades, errors, starts, everything. */
 export const LOG_FILE = path.join(LOG_DIR, 'ssim.log');

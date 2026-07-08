@@ -26,11 +26,11 @@ declare module 'steam-totp' {
     timeOffset?: number,
   ): string;
 
-  /**
-   * Returns the number of seconds until the current TOTP code expires.
-   */
+  /** Calls back with the local↔Steam clock OFFSET in seconds (add to local time via time(offset)); the
+   *  third arg is the QueryTime round-trip latency in ms. NOTE: patched process-wide by
+   *  installSteamTotpTimeout (S6) to bound the raw QueryTime request. */
   export function getTimeOffset(
-    callback: (err: Error | null, offset: number, latency: number) => void,
+    callback: (err: Error | null, offset: number, latency?: number) => void,
   ): void;
 
   /** Generates a base64 confirmation key for the mobile-confirmation endpoints. */
@@ -40,7 +40,7 @@ declare module 'steam-totp' {
     tag:            string,
   ): string;
 
-  /** Current Steam server time (unix seconds), adjusted by an optional offset. */
+  /** Current LOCAL unix time (seconds) plus timeOffset. Pass the offset from getTimeOffset to obtain Steam-server-aligned time for getConfirmationKey. */
   export function time(timeOffset?: number): number;
 }
 
@@ -199,7 +199,7 @@ declare module 'steam-tradeoffer-manager' {
     on(event: 'receivedOfferChanged', listener: (offer: TradeOffer, oldState: number) => void): this;
     on(event: string, listener: (...args: unknown[]) => void): this;
 
-    static ETradeOfferState: Record<string, number>;
+    static ETradeOfferState: Record<string, number | string>;
     static EOfferFilter:     Record<string, number>;
     static ETradeStatus:     Record<string, number>;
   }

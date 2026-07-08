@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import http from 'http';
 import { runUnlockPortal } from '../src/core/unlockPortal';
+import { AccountVault } from '../src/core/AccountVault';
 import { boundUiPort, _resetForTest } from '../src/utils/serverPort';
 import { vaultDir } from '../src/utils/paths';
 
@@ -90,6 +91,51 @@ test('H-ACC-066: first-run create with a MATCHING confirm succeeds (200 created)
   assert.equal(r.json.ok, true);
   assert.equal(r.json.created, true, 'a new vault was created');
   assert.equal(fs.existsSync(vaultDir('vault.enc')), true, 'vault.enc written');
+});
+
+// ─── H-ACC-068: a NEWER-vault refusal is not a password attempt ──────────────────
+// When vault.enc was written by a NEWER SSIM, unlockOrCreate throws VAULT_NEWER_VERSION.
+// The portal must surface "Update SSIM first" (not the raw all-caps token) and must NOT
+// increment `failed` — a version mismatch can never be cured by retyping the password, so
+// it must not arm the escalating brute-force delay against the next real attempt.
+test('H-ACC-068: a NEWER-vault error returns "Update SSIM first" and does NOT arm the brute-force delay', async () => {
+  cleanVaultDir();
+  // Seed a real existing vault so the portal takes the unlock (not create) path.
+  {
+    const { port, done } = await startPortal();
+    await post(port, { password: 'secret', confirm: 'secret' });
+    await done;
+  }
+  assert.equal(fs.existsSync(vaultDir('vault.enc')), true, 'seeded vault exists');
+
+  const realUnlock = AccountVault.unlockOrCreate.bind(AccountVault);
+  (AccountVault as unknown as { unlockOrCreate: unknown }).unlockOrCreate = () => {
+    throw new Error('VAULT_NEWER_VERSION');
+  };
+  const { port, done } = await startPortal();
+  try {
+    const r = await post(port, { password: 'secret' });
+    assert.equal(r.status, 400, 'newer-vault → 400');
+    assert.match(r.json.error, /Update SSIM first/, 'update-first guidance surfaced, not the raw token');
+    assert.doesNotMatch(r.json.error, /VAULT_NEWER_VERSION/, 'the bare all-caps token is not shown to the operator');
+
+    // A follow-up WRONG_PASSWORD attempt must not be pre-delayed: the version refusal left
+    // `failed` at 0, so no sleep is armed (before the fix, `failed` would be 1 → a 400ms sleep).
+    (AccountVault as unknown as { unlockOrCreate: unknown }).unlockOrCreate = () => {
+      throw new Error('WRONG_PASSWORD');
+    };
+    const t1 = Date.now();
+    const r2 = await post(port, { password: 'nope' });
+    const elapsed = Date.now() - t1;
+    assert.equal(r2.status, 400, 'wrong password → 400');
+    assert.match(r2.json.error, /Incorrect Master Password/, 'wrong-password text surfaced');
+    assert.ok(elapsed < 300, `no pre-attempt throttle delay after a version refusal (elapsed ${elapsed}ms)`);
+  } finally {
+    // Restore the real method and close the temp server deterministically with a valid unlock.
+    (AccountVault as unknown as { unlockOrCreate: typeof realUnlock }).unlockOrCreate = realUnlock;
+    await post(port, { password: 'secret' });
+    await done;
+  }
 });
 
 test('H-ACC-066: unlocking an EXISTING vault ignores confirm (unchanged unlock behavior)', async () => {

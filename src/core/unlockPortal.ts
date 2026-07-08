@@ -1,13 +1,13 @@
 import fs from 'fs';
 import http from 'http';
 import express from 'express';
-import { AccountVault, VAULT_READ_ERROR_PREFIX } from './AccountVault';
+import { AccountVault, VAULT_READ_ERROR_PREFIX, VAULT_NEWER_VERSION_ERROR } from './AccountVault';
 import { looksLikeOrphanedVaultInstall, normalizeMasterPassword, unlockExistingVault } from './vaultBoot';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
-import { openUiWindow } from '../appWindow';
 import { printLockScreen } from '../licensing/lockscreen';
 import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
+import { writeCrash } from '../utils/crashlog';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  unlockPortal.ts — the APP-WINDOW equivalent of the CLI Master-Password prompt.
@@ -143,8 +143,15 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
           server.close(() => resolve());
         }, 800);
       } catch (e) {
-        failed++;
         const raw = (e as Error).message;
+        // H-ACC-068 / B30: vault.enc was written by a NEWER SSIM (VAULT_VERSION mismatch) — this is NOT a
+        // password attempt, so refuse it WITHOUT incrementing `failed` (never arm the brute-force delay for
+        // a condition no retyped password can cure) and tell the operator to update SSIM, not to retype.
+        if (raw === VAULT_NEWER_VERSION_ERROR) {
+          logger.warn('[vault] unlock refused: vault.enc was written by a NEWER SSIM');
+          return res.status(400).json({ ok: false, error: 'This vault was created by a NEWER SSIM version. Update SSIM first — do not recreate the vault.' });
+        }
+        failed++;
         // A VAULT_READ_ERROR:* is a TRANSIENT fs error (vault.enc locked by antivirus / mid-restore),
         // not a bad password — tell the operator to retry rather than surfacing the raw code (H-ACC-037).
         const msg = raw === 'WRONG_PASSWORD' ? 'Incorrect Master Password.'
@@ -171,7 +178,16 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
     const server = http.createServer(app);
     listenAndAnnounce(server, host, port).then((bound) => {
       logger.info(`vault unlock portal listening on ${host}:${bound}`);
-      openUiWindow(`http://localhost:${bound}`);
+      // Runtime errors AFTER a successful bind (accept-time EMFILE/ENFILE under fd exhaustion,
+      // handle-level failures): honor serverPort.ts's caller contract — the portal installs its
+      // own runtime 'error' handler once listening, so a socket-layer event is filed as an
+      // UNLOCK PORTAL RUNTIME ERROR, not misclassified as an UNCAUGHT EXCEPTION. Mirrors the
+      // full-app counterpart in index.ts. (H-ACC-069.)
+      server.on('error', (err: NodeJS.ErrnoException) => {
+        writeCrash('UNLOCK PORTAL RUNTIME ERROR', err);
+        logger.error(`unlock portal runtime error: ${err.message}`);
+      });
+      // The Tauri shell opens/points the window itself on the SSIM_PORT announce (health-verified, one-shot — src-tauri/src/lib.rs); the portal never opens anything.
     }).catch((err: NodeJS.ErrnoException) => {
       printLockScreen('The unlock server failed to start.', err.message);
       logger.error(`unlock portal listen error: ${err.message}`);

@@ -20,7 +20,8 @@ const BACKOFF_BASE_MS = 500; // exponential backoff between cascade tries (500 �
 export type SellStrategy = 'lowest' | 'undercut' | 'custom';
 
 export interface SellInfo {
-  /** Lowest current sell-listing price (buyer-facing EUR cents) or null. */
+  /** Lowest current sell-listing price (buyer-facing EUR cents) or null. MAY be
+   *  median-derived when no live lowest ask existed — see `basis` for provenance. */
   lowestCents:   number | null;
   /** Median sell price (buyer-facing EUR cents) or null. */
   medianCents:   number | null;
@@ -31,6 +32,9 @@ export interface SellInfo {
    *  (all tries threw: 429 storm, proxy reset, 5xx, or a throttled `success:false`)
    *  and must NOT be cached as "no price" for the run (S2 class). */
   authoritative: boolean;
+  /** Provenance of `lowestCents`: `'lowest'` = a real live lowest ask; `'median'` =
+   *  the median was substituted because no lowest ask existed; `null` = no price. */
+  basis:         'lowest' | 'median' | null;
 }
 
 /** A per-account HTTPS agent (proxy / local-IP bound) used to route a price
@@ -39,9 +43,6 @@ export interface PriceFetchOpts {
   /** Route the request through this agent (bot proxy) – avoids Steam's per-IP
    *  rate limit on the shared local IP, the #1 cause of "no price". */
   httpsAgent?: unknown;
-  /** The bot's web-session cookies – required for the listings/render fallback,
-   *  which Steam serves as an HTML login wall to anonymous requests. */
-  cookies?: string[];
   /** Wall-clock budget (ms) for the WHOLE getSellInfo cascade. When set, the loop
    *  stops before a try it can't finish inside the budget, caps each try's axios
    *  timeout to the remaining time, and skips a backoff that would cross the
@@ -100,6 +101,11 @@ export class MarketPricing {
     // (viaPriceOverview throws on any non-200 or success!==true). Track it so an
     // exhausted-with-no-price result is still authoritative if any try was answered.
     let sawAuthoritative = false;
+    // H-PRC-003: name the egress route honestly. A proxy agent yields a FRESH exit IP
+    // per try; agentless calls (no username, or trader resolution failed → priceCtxFor
+    // returns {}) all egress from the SHARED local IP, so only the UA rotates. The log
+    // must not assert IP rotation that isn't happening — that masks the degraded case.
+    const route = opts?.httpsAgent ? 'fresh proxy IP + different UA' : 'SHARED local IP (no agent) + different UA';
     for (let i = 0; i < methods.length; i++) {
       const n = i + 1;
       const m = methods[i];
@@ -112,13 +118,20 @@ export class MarketPricing {
       // (b) Cap this try's axios timeout to the time left in the budget.
       const timeout = Math.min(m.stepTimeout, deadline - Date.now());
       const ts = Date.now();
-      plog(`[Try ${n}/3] "${short}" → trying ${m.label}…`);
+      plog(`[Try ${n}/3] "${short}" → trying ${m.label} [${opts?.httpsAgent ? 'proxy' : 'shared IP'}]…`);
       try {
         const info = await this.viaPriceOverview(name, opts, m.ua, timeout, m.allowMedian);
         sawAuthoritative = true;
         if (info.lowestCents != null) {
           plog(`[Try ${n}/3] ✓ hit via ${m.label}: ${(info.lowestCents / 100).toFixed(2)}€ ` +
-               `(method ${Date.now() - ts}ms, total ${Date.now() - t0}ms)`);
+               `(basis ${info.basis}, method ${Date.now() - ts}ms, total ${Date.now() - t0}ms)`);
+          return info;
+        }
+        // H-PRC-004: an allowMedian try that authoritatively returns NEITHER a lowest ask
+        // NOR a median cannot be read any more permissively by a later try — return the
+        // all-null (authoritative) result now instead of burning try 3 + its backoff.
+        if (m.allowMedian && info.medianCents == null) {
+          plog(`[Try ${n}/3] authoritative empty — no listings and no median; stopping cascade (total ${Date.now() - t0}ms)`, 'warn');
           return info;
         }
         plog(`[Try ${n}/3] ✗ ${m.label}: no price in response (${Date.now() - ts}ms)`, 'warn');
@@ -132,12 +145,12 @@ export class MarketPricing {
           plog(`[Try ${n}/3] budget exhausted for "${short}" – skipping backoff (total ${Date.now() - t0}ms)`, 'warn');
           break;
         }
-        plog(`[Try ${n}/3] → Backoff ${backoff}ms (fresh IP + different UA), then fallback ${n + 1}…`, 'warn');
+        plog(`[Try ${n}/3] → Backoff ${backoff}ms (${route}), then fallback ${n + 1}…`, 'warn');
         await sleep(backoff);
       }
     }
     plog(`✗ All methods exhausted for "${short}" – no price (total ${Date.now() - t0}ms)`, 'warn');
-    return { lowestCents: null, medianCents: null, volume: null, authoritative: sawAuthoritative };
+    return { lowestCents: null, medianCents: null, volume: null, authoritative: sawAuthoritative, basis: null };
   }
 
   /**
@@ -162,11 +175,15 @@ export class MarketPricing {
     if (!r.data || r.data.success !== true) throw new Error(`success=${r.data?.success}`);
     const lowest = parseEurCents(r.data.lowest_price);
     const median = parseEurCents(r.data.median_price);
+    const lowestCents = lowest ?? (allowMedian ? median : null);
     return {
-      lowestCents:   lowest ?? (allowMedian ? median : null),
+      lowestCents,
       medianCents:   median,
       volume:        parseVolume(r.data.volume),
       authoritative: true, // reached only on a 200 + success===true response
+      // H-PRC-004: provenance of lowestCents — a real lowest ask, or the median
+      // substituted for it (line above) when no lowest ask existed, else no price.
+      basis:         lowest != null ? 'lowest' : (lowestCents != null ? 'median' : null),
     };
   }
 

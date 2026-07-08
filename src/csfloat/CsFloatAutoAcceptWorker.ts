@@ -1,5 +1,6 @@
 import { scaleConcurrency } from '../utils/concurrency';
 import { logger } from '../utils/logger';
+import { armInterval } from '../utils/intervalGuard';
 import { AppSettings } from '../core/AppSettings';
 import { canConfirm } from '../core/accountCapability';
 import { identitySecretPresence } from '../core/LoginFlow';
@@ -44,8 +45,7 @@ export class CsFloatAutoAcceptWorker {
     if (this.timer) return;
     this.stopped = false;
     const tick = (): void => { void this.runOnce(); };
-    this.timer = setInterval(tick, POLL_INTERVAL_MS);
-    this.timer.unref?.();
+    this.timer = armInterval(this.timer, tick, POLL_INTERVAL_MS);
     this.bootTimer = setTimeout(tick, 5_000); // first pass shortly after boot (non-blocking)
     this.bootTimer.unref?.();
     logger.info('[csfloat-auto-accept] worker started (polls enabled Full accounts every 45s)');
@@ -86,7 +86,11 @@ export class CsFloatAutoAcceptWorker {
 
   private async deliverFor(username: string): Promise<void> {
     const acc = this.accounts.get(username);
-    if (!acc) return;
+    // H-FLT-003: re-check enabled on the live re-fetch, not just null. runOnce() filters on
+    // a.enabled at pass start (:71), but a 500-account pass at 45s cadence spans many seconds —
+    // an operator disabling this account mid-pass must stop its queued delivery this pass, matching
+    // the re-validate-on-live-state pattern the tier/hasKey guards below already follow.
+    if (!acc || !acc.enabled) return;
     // INV-A1 / C5 (H-ACC-083): gate on the REAL "can confirm" capability (the maFile's
     // identity_secret, resolved vault THEN disk like login does), not the raw tier label — a
     // full/absent-tier account whose maFile lacks an identity_secret would otherwise send a real

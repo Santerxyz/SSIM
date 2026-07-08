@@ -31,6 +31,11 @@ const CONFIRM_BACKOFF_MS = 18_000;                  // pause between confirmatio
  * non-EUR wallet (never convert-and-guess); an UNKNOWN wallet keeps the EUR common
  * path (a non-EUR wallet is reported by the login 'wallet' event, so the dangerous
  * case is knowable — proceeding-on-unknown never underprices a wallet we've seen).
+ * THIRD STATE: a never-funded account reports currency 0 (ECurrencyCode.Invalid) — a
+ * present-but-invalid wallet, distinct from `undefined` (never observed). It is ALSO
+ * blocked fail-closed here (0 !== EUR): the currency a first funding would mint is
+ * unknowable, so the sell guard names it honestly ("no Steam wallet … add funds once")
+ * rather than reporting a phantom foreign wallet.
  */
 export function sellWalletBlocked(walletCurrency: number | undefined): boolean {
   return walletCurrency != null && walletCurrency !== EUR_CURRENCY;
@@ -103,7 +108,10 @@ export interface MassSellJob {
   blocked:     Array<{ username: string; assetId: string; error: string }>;
   /** Live progress for the UI so the operator isn't staring at a blank bar. */
   currentBot?: string;
-  phase?:      'preflight' | 'pricing' | 'listing' | 'confirming' | 'done';
+  /** Every bot currently inside processBot (H-TRD-020) — lets the UI list the workers
+   *  actually in flight instead of the single last-touched `currentBot` flapping past. */
+  activeBots?: string[];
+  phase?:      'preflight' | 'listing' | 'confirming' | 'done';
   startedAt?:  string;
   finishedAt?: string;
 }
@@ -129,6 +137,9 @@ export class MarketService {
   private confirmBackoff = CONFIRM_BACKOFF_MS;
   /** Co-operative cancel flag for the live mass-sell (set by cancelSell()). */
   private cancelRequested = false;
+  /** H-TRD-020: bots currently executing processBot, mirrored into job.activeBots for the UI.
+   *  Lazily created on first use (see trackBotActive). */
+  private activeBotSet?: Set<string>;
 
   constructor(
     private readonly trades: TradeService,
@@ -196,13 +207,13 @@ export class MarketService {
     await trader.cancelBuyOrder(buyOrderId);
   }
 
-  /** Resolves a bot's price-fetch context (proxy agent + session cookies) so
-   *  price checks egress via its IP and the render fallback is authenticated. */
-  private async priceCtxFor(username?: string): Promise<{ httpsAgent?: unknown; cookies?: string[] }> {
+  /** Resolves a bot's price-fetch context (proxy agent) so price checks egress
+   *  via its IP. */
+  private async priceCtxFor(username?: string): Promise<{ httpsAgent?: unknown }> {
     if (!username) return {};
     try {
       const trader = await this.trades.getTrader(username);
-      return { httpsAgent: trader.httpsAgent, cookies: trader.cookies };
+      return { httpsAgent: trader.httpsAgent };
     } catch (err) {
       logger.warn(`[market-price] could not resolve price context for ${username}: ${(err as Error).message}`);
       return {};
@@ -328,12 +339,12 @@ export class MarketService {
     const wasLiveBefore = this.trades.snapshotLive(groups.map((g) => g.username));
 
     // Fixed custom price → no lookups; otherwise getSellInfo's internal 3-method
-    // cascade (via the bot proxy + cookies) resolves the price. Cached per name.
+    // cascade (via the bot proxy) resolves the price. Cached per name.
     // S2 (in-run): a null net is cached (and short-circuits every same-name item) ONLY
     // when Steam actually answered (`info.authoritative`). A transport-failure null
     // (all cascade tries threw) is NOT cached and surfaces as `transport:true` so the
     // caller defers the item instead of failing it and poisoning the rest of the run.
-    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }): Promise<{ net: number | null; transport: boolean }> => {
+    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown }): Promise<{ net: number | null; transport: boolean }> => {
       if (customNet != null) return { net: customNet, transport: false };
       if (netCache.has(name)) return { net: netCache.get(name)!, transport: false };
       const info = await this.pricing.getSellInfo(name, ctx);
@@ -381,6 +392,8 @@ export class MarketService {
     this.job.cancelled = this.cancelRequested;
     this.job.phase = 'done';
     this.job.currentBot = undefined;
+    this.activeBotSet?.clear();
+    this.job.activeBots = [];
     this.job.finishedAt = new Date().toISOString();
     logger.info(
       `[mass-sell] ═══ ${this.cancelRequested ? 'CANCELLED' : 'COMPLETE'}: ${this.job.listed} listed / ${this.job.confirmed} confirmed / ` +
@@ -428,15 +441,24 @@ export class MarketService {
     return recoveredIds.size;
   }
 
+  /** H-TRD-020: add/remove a bot from the in-flight set and mirror it into job.activeBots, so the
+   *  status UI can name every worker currently listing instead of one flapping last-touched bot. */
+  private trackBotActive(user: string, active: boolean): void {
+    const set = (this.activeBotSet ??= new Set<string>());
+    if (active) set.add(user); else set.delete(user);
+    this.job.activeBots = [...set];
+  }
+
   private async processBot(
     group: MassSellGroup,
-    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookies?: string[] }) => Promise<{ net: number | null; transport: boolean }>,
+    resolveNet: (name: string, ctx: { httpsAgent?: unknown }) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
   ): Promise<void> {
     const user = group.username;
     const N = group.items.length;
     this.job.currentBot = user;
     this.job.phase = 'preflight';
+    this.trackBotActive(user, true);
 
     // ── Rule 1: pre-flight ────────────────────────────────────────────────────
     let trader;
@@ -448,6 +470,7 @@ export class MarketService {
     } catch (err) {
       logger.warn(`[mass-sell] ${user}: login/connection failed (${(err as Error).message}) – ${N} item(s) deferred`);
       this.deferAll(group, group.items, `Login/connection failed: ${(err as Error).message}`);
+      this.trackBotActive(user, false);
       return;
     }
 
@@ -457,11 +480,22 @@ export class MarketService {
     // wouldn't help). An unknown wallet keeps the EUR path (see sellWalletBlocked).
     if (sellWalletBlocked(trader.walletCurrency)) {
       const wc = trader.walletCurrency;
-      logger.error(`[mass-sell] ${user}: wallet currency ${wc} is not EUR (${EUR_CURRENCY}) – prices are EUR-denominated; listing would underprice ~99%. BLOCKING this bot to protect real money.`);
+      // Currency 0 (ECurrencyCode.Invalid) = NO wallet yet on this account (a fresh,
+      // never-funded bot), not a known foreign wallet — name that third state and its
+      // remedy instead of reporting a phantom "currency 0 is not EUR / ~99% underprice".
+      const noWalletMsg = `no Steam wallet on this account – its currency is unknowable until first funds; blocked to protect pricing (add funds once to establish an EUR wallet)`;
+      const logMsg = wc === 0
+        ? noWalletMsg
+        : `wallet currency ${wc} is not EUR (${EUR_CURRENCY}) – prices are EUR-denominated; listing would underprice ~99%. BLOCKING this bot to protect real money.`;
+      const rowMsg = wc === 0
+        ? noWalletMsg
+        : `wallet currency ${wc} is not EUR – EUR-only pricing; not listed (would underprice ~99%)`;
+      logger.error(`[mass-sell] ${user}: ${logMsg}`);
       for (const item of group.items) {
-        this.job.blocked.push({ username: user, assetId: item.assetId, error: `wallet currency ${wc} is not EUR – EUR-only pricing; not listed (would underprice ~99%)` });
+        this.job.blocked.push({ username: user, assetId: item.assetId, error: rowMsg });
         this.job.done++;
       }
+      this.trackBotActive(user, false);
       return;
     }
 
@@ -471,6 +505,7 @@ export class MarketService {
     } catch (err) {
       logger.warn(`[mass-sell] ${user}: pre-flight connectivity check failed (${(err as Error).message}) – ${N} item(s) deferred`);
       this.deferAll(group, group.items, `No Steam connection (pre-flight): ${(err as Error).message}`);
+      this.trackBotActive(user, false);
       return;
     }
     logger.info(`[mass-sell] ${user}: pre-flight OK (${listedSet.size} existing listing(s)) – listing ${N} item(s)…`);
@@ -531,7 +566,7 @@ export class MarketService {
         continue;
       }
 
-      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookies: trader.cookies });
+      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent });
       if (net == null && transport) {
         // S2 (in-run): the price lookup failed at the transport layer (429 storm, proxy
         // reset, 5xx) — Steam never answered, so this is NOT "no price". Defer the item
@@ -648,6 +683,7 @@ export class MarketService {
     // and best-effort. The next reconciled refresh verifies it against the live listings set.
     const nowListed = group.items.filter(it => listedSet.has(it.assetId)).map(it => it.assetId);
     if (nowListed.length) this.inventory?.markListed(user, nowListed);
+    this.trackBotActive(user, false);
   }
 
   /**

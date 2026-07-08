@@ -48,7 +48,6 @@ export interface SkinDef {
   collection:  string;   // canonical (first) collection name; '' if none
   minFloat:    number;
   maxFloat:    number;
-  hasStatTrak: boolean;
 }
 
 /**
@@ -120,7 +119,8 @@ export class Cs2SchemaService {
       if (r.status !== 200 || !Array.isArray(r.data)) throw new Error(`CS2 schema fetch failed (HTTP ${r.status})`);
       this.index(r.data as unknown[]);
       if (this.byBaseName.size < MIN_SCHEMA_SKINS) throw new Error(`CS2 schema unusable (${this.byBaseName.size} skins parsed)`);
-      try { writeJsonAtomic(SCHEMA_FILE, r.data, { spaces: 0 }); } catch { /* cache is best-effort */ }
+      try { writeJsonAtomic(SCHEMA_FILE, r.data, { spaces: 0 }); }
+      catch (e) { logger.warn(`[schema] could not cache cs2-skins.json: ${(e as Error).message} — schema will be re-fetched next run`); }
       this.loaded = true;
       logger.info(`[schema] loaded ${this.byBaseName.size} skins across ${this.byCollectionRarity.size} collections`);
     } catch (e) {
@@ -159,7 +159,6 @@ export class Cs2SchemaService {
         name, rarityId, collection,
         minFloat: numOr(s?.min_float, 0),
         maxFloat: numOr(s?.max_float, 1),
-        hasStatTrak: !!s?.stattrak,
       };
       const key = name.toLowerCase();
       if (!this.byBaseName.has(key)) this.byBaseName.set(key, def); // first wins (stable)

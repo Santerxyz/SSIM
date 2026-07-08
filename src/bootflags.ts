@@ -47,7 +47,7 @@ process.noDeprecation = true;
 // vendor-callback throw" policy. JS throws stay handled by index.ts (+ crashlog).
 try {
   const report = (process as unknown as {
-    report?: { directory: string; reportOnFatalError: boolean; reportOnUncaughtException: boolean };
+    report?: { directory: string; reportOnFatalError: boolean; reportOnUncaughtException: boolean; excludeEnv: boolean };
   }).report;
   if (report) {
     const dir = logsDir();
@@ -55,6 +55,7 @@ try {
     report.directory = dir;
     report.reportOnFatalError = true;        // OOM + native fatals → JSON report
     report.reportOnUncaughtException = false; // keep index.ts's survive-and-log behaviour
+    report.excludeEnv = true;                // excludeEnv keeps SSIM_VAULT_PASSWORD (and any future secret env) out of the shipped report; the forensic payload is stacks+handles, not env
   }
 } catch { /* best-effort: diagnostics must never block boot */ }
 

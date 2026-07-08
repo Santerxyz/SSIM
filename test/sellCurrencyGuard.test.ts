@@ -16,9 +16,9 @@ test('sellWalletBlocked: only a KNOWN non-EUR wallet is blocked', () => {
 });
 
 // processBot must BLOCK (never list) every item of a known-non-EUR-wallet bot.
-async function runProcessBot(walletCurrency: number | undefined): Promise<{ blocked: number; listed: number; sold: number }> {
+async function runProcessBot(walletCurrency: number | undefined): Promise<{ blocked: number; listed: number; sold: number; error?: string }> {
   const svc = Object.create(MarketService.prototype) as MarketService;
-  const job = { listed: 0, done: 0, blocked: [] as unknown[], deferred: [] as unknown[], failed: [] as unknown[] };
+  const job = { listed: 0, done: 0, blocked: [] as { error: string }[], deferred: [] as unknown[], failed: [] as unknown[] };
   let soldCalls = 0;
 
   const trader = {
@@ -47,7 +47,7 @@ async function runProcessBot(walletCurrency: number | undefined): Promise<{ bloc
   await (svc as unknown as { processBot: (g: unknown, r: unknown, d: number) => Promise<void> })
     .processBot(group, resolveNet, 0);
 
-  return { blocked: job.blocked.length, listed: job.listed, sold: soldCalls };
+  return { blocked: job.blocked.length, listed: job.listed, sold: soldCalls, error: job.blocked[0]?.error };
 }
 
 test('processBot: a known non-EUR wallet BLOCKS all items and NEVER calls sellOnMarket', async () => {
@@ -55,6 +55,14 @@ test('processBot: a known non-EUR wallet BLOCKS all items and NEVER calls sellOn
   assert.equal(r.sold, 0, 'no item may be listed on a non-EUR wallet (real-money protection)');
   assert.equal(r.blocked, 2, 'both items blocked with a clear reason');
   assert.equal(r.listed, 0);
+});
+
+test('processBot: a walletless account (currency 0) BLOCKS all items with an honest "no Steam wallet" reason', async () => {
+  const r = await runProcessBot(0); // ECurrencyCode.Invalid — never-funded bot
+  assert.equal(r.sold, 0, 'no item may be listed when there is no wallet (real-money protection)');
+  assert.equal(r.blocked, 2, 'both items blocked');
+  assert.equal(r.listed, 0);
+  assert.match(r.error ?? '', /no Steam wallet/, 'names the walletless state, not a phantom "currency 0"');
 });
 
 test('processBot: an EUR wallet proceeds to the listing path (guard does not over-block)', async () => {

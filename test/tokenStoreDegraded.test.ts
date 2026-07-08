@@ -6,6 +6,8 @@ import path from 'node:path';
 import fsExtra from 'fs-extra';
 import { TokenStore } from '../src/core/TokenStore';
 import { AccountVault } from '../src/core/AccountVault';
+import { logger } from '../src/utils/logger';
+import * as atomicJson from '../src/utils/atomicJson';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  B2 — a PRESENT-but-corrupt refresh_tokens.json must mark the store DEGRADED
@@ -106,6 +108,31 @@ test('H-ACC-059: missing main with a corrupt .bak → DEGRADED', () => {
   assert.equal(new TokenStore(p).isDegraded(), true, 'no valid backup to recover → degrade, do not fresh-start');
 });
 
+// ─── H-ACC-056: a FORWARD-format token file (version > 1) is refused, not consumed/rewritten as v1 ─────
+test('H-ACC-056: a newer-version file (no .bak) → DEGRADED, entries not consumed, file left untouched', () => {
+  const contents = JSON.stringify({ version: 2, tokens: { a: 'x' } });
+  const p = mk(contents);
+  const s = new TokenStore(p);
+  assert.equal(s.isDegraded(), true, 'a forward-format file must degrade, not be read as v1');
+  assert.equal(s.get('a'), undefined, 'its entries are NOT consumed as raw v1 tokens');
+  s.set('a', 'y'); // must NOT persist while degraded
+  assert.equal(fs.readFileSync(p, 'utf8'), contents, 'the newer file is left byte-for-byte untouched (no v1 rewrite)');
+});
+
+// ─── H-ACC-060: an ARRAY-shaped tokens map is the "wrong SHAPE" case, NOT authoritative emptiness ─────
+test('H-ACC-060: array-shaped tokens with a VALID .bak recovers from the backup (not loaded as empty)', () => {
+  const p = mk(JSON.stringify({ version: 1, tokens: [] })); // typeof [] === 'object' — must NOT pass as valid
+  fs.writeFileSync(`${p}.bak`, JSON.stringify({ version: 1, tokens: { alice: 'tok-a' } }));
+  const s = new TokenStore(p);
+  assert.equal(s.isDegraded(), false, 'a valid .bak means the store is NOT degraded');
+  assert.equal(s.get('alice'), 'tok-a', 'tokens recovered from the backup, not coerced to empty');
+});
+
+test('H-ACC-060: array-shaped tokens with NO .bak → DEGRADED (not silently loaded as an empty store)', () => {
+  const p = mk(JSON.stringify({ version: 1, tokens: [] }));
+  assert.equal(new TokenStore(p).isDegraded(), true, 'an array-shaped tokens map must degrade, not reset to empty');
+});
+
 test('S24: a throwing vault setToken does NOT escape TokenStore.set (no uncaughtException burst)', () => {
   const s = new TokenStore(mk(undefined)); // fresh install → not degraded
   const origEnabled = AccountVault.isEnabled;
@@ -169,6 +196,82 @@ test('H-ACC-055: an ENOENT from the existsSync→read TOCTOU window loads fresh 
   } finally {
     (fsExtra as unknown as { readJsonSync: typeof orig }).readJsonSync = orig;
   }
+});
+
+// ─── H-ACC-057: the set() outcome log must tell the truth on the persistence-failure paths ──────
+test('H-ACC-057: a failed plaintext save() logs "NOT persisted", never a bare "refresh token persisted"', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const s = new TokenStore(mk(undefined)); // fresh install → not degraded
+  const infoMsgs: string[] = [];
+  const origInfo = logger.info;
+  const origWrite = atomicJson.writeJsonAtomic;
+  try {
+    (logger as unknown as { info: (m: unknown) => unknown }).info = (m: unknown) => { infoMsgs.push(String(m)); return logger; };
+    (atomicJson as unknown as { writeJsonAtomic: () => void }).writeJsonAtomic = () => { throw new Error('ENOSPC: disk full'); };
+    assert.equal(s.set('a', 't'), false, 'a write failure reports NOT persisted from set()');
+  } finally {
+    (logger as unknown as { info: typeof origInfo }).info = origInfo;
+    (atomicJson as unknown as { writeJsonAtomic: typeof origWrite }).writeJsonAtomic = origWrite;
+  }
+  assert.equal(infoMsgs.some(m => m.includes('NOT persisted this attempt')), true, 'the honest in-memory-only line is logged');
+  assert.equal(infoMsgs.some(m => m.includes('refresh token persisted')), false, 'the misleading success line is NOT logged on a failed save');
+});
+
+test('H-ACC-057: a successful save() still logs the unchanged "refresh token persisted" success line', () => {
+  const p = mk(JSON.stringify({ version: 1, tokens: {} }));
+  const s = new TokenStore(p);
+  const infoMsgs: string[] = [];
+  const origInfo = logger.info;
+  try {
+    (logger as unknown as { info: (m: unknown) => unknown }).info = (m: unknown) => { infoMsgs.push(String(m)); return logger; };
+    assert.equal(s.set('dave', 'tok-d'), true, 'a healthy store persists');
+  } finally {
+    (logger as unknown as { info: typeof origInfo }).info = origInfo;
+  }
+  assert.equal(infoMsgs.includes('[dave] refresh token persisted'), true, 'the happy-path success line is unchanged');
+});
+
+// ─── H-ACC-061: prototype-key usernames ("__proto__", "constructor") are stored as ordinary entries ─────
+test('H-ACC-061: a "__proto__" username round-trips through set/get/delete (null-prototype token map)', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const s = new TokenStore(mk(undefined)); // fresh install → not degraded
+  s.set('__proto__', 'tok-p');
+  assert.equal(s.get('__proto__'), 'tok-p', 'the token is the stored string, not Object.prototype');
+  s.delete('__proto__');
+  assert.equal(s.get('__proto__'), undefined, 'deletion actually removes it (no zombie entry)');
+});
+
+test('H-ACC-061: a "constructor" username has() is false until set, and a valid file round-trips it', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const p = mk(JSON.stringify({ version: 1, tokens: { constructor: 'tok-c' } }));
+  const s = new TokenStore(p);
+  assert.equal(s.get('constructor'), 'tok-c', 'a "constructor" entry loads as its string, not a Function');
+  assert.equal(s.has('other'), false, 'has() is not a truthy prototype hit for an unset prototype key');
+  assert.equal(s.get('missing'), undefined, 'an unset lookup is undefined, not a prototype member');
+});
+
+// ─── H-ACC-062: malformed per-entry tokens are dropped WITH a single diagnostic warn (keys, never values) ─────
+test('H-ACC-062: non-string/empty entries are dropped and a single warn names the dropped keys', () => {
+  assert.equal(AccountVault.isEnabled(), false, 'this test is plaintext-mode');
+  const p = mk(JSON.stringify({ version: 1, tokens: { alice: 'tok', bob: 42, carol: '' } }));
+  const warnMsgs: string[] = [];
+  const origWarn = logger.warn;
+  let s: TokenStore;
+  try {
+    (logger as unknown as { warn: (m: unknown) => unknown }).warn = (m: unknown) => { warnMsgs.push(String(m)); return logger; };
+    s = new TokenStore(p);
+  } finally {
+    (logger as unknown as { warn: typeof origWarn }).warn = origWarn;
+  }
+  assert.equal(s.isDegraded(), false, 'a per-entry glitch is tolerated (#37), not whole-file corruption');
+  assert.equal(s.get('alice'), 'tok', 'the valid entry survives');
+  assert.equal(s.get('bob'), undefined, 'a non-string value is dropped');
+  assert.equal(s.get('carol'), undefined, 'an empty-string value is dropped');
+  const dropWarns = warnMsgs.filter(m => m.includes('dropped') && m.includes('malformed token'));
+  assert.equal(dropWarns.length, 1, 'exactly one drop-warn line is emitted');
+  assert.equal(dropWarns[0].includes('bob'), true, 'the dropped key "bob" is named');
+  assert.equal(dropWarns[0].includes('carol'), true, 'the dropped key "carol" is named');
+  assert.equal(dropWarns[0].includes('42'), false, 'the dropped VALUE is never logged');
 });
 
 test('S36: a fresh-install store must NOT leak tokens into a later instance (no shared EMPTY alias)', () => {

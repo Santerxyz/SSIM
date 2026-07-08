@@ -246,7 +246,7 @@ export class TradeUpService {
     const warnings: string[] = [];
 
     const inv = await this.inventory.forceRefresh(username, 'cs2'); // fresh snapshot, like the buy path
-    const inputs = this.buildEligibleInputs(inv.items ?? []);
+    const inputs = this.buildEligibleInputs(inv.items);
     if (inputs.length < 10) {
       warnings.push('Not enough trade-up-eligible skins (need at least 10 of one rarity + StatTrak status).');
       return { username, candidates: [], warnings, realFloats: false, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount() };
@@ -280,6 +280,12 @@ export class TradeUpService {
     const price = this.priceFn();
     const candidates: TradeUpCandidate[] = [];
     const seen = new Set<string>();
+    // H-TRD-071: a computeContract throw means a schema/grouping regression (grouping guarantees
+    // same rarity+StatTrak, so this is only reachable via a schema mismatch). Count the skips so a
+    // regression that breaks EVERY set surfaces as a distinct warning instead of the ordinary
+    // "no profitable trade-ups" empty state (failed ≠ empty).
+    let skippedSets = 0;
+    let firstSkipError = '';
 
     // Group by (rarity tier, StatTrak).
     const groups = new Map<string, TuInput[]>();
@@ -312,11 +318,23 @@ export class TradeUpService {
         if (seen.has(key)) continue;
         seen.add(key);
         let contract: TuContract;
-        try { contract = computeContract(set, outputRarity, this.schema, price); }
-        catch (e) { logger.debug(`[tradeup] skipped a set: ${(e as Error).message}`); continue; }
+        try { contract = computeContract(set, this.schema, price); }
+        catch (e) {
+          skippedSets++;
+          if (!firstSkipError) firstSkipError = (e as Error).message;
+          logger.debug(`[tradeup] skipped a set: ${(e as Error).message}`);
+          continue;
+        }
         if (contract.profitCents <= minProfit) continue;
         candidates.push(this.decorate(contract, key));
       }
+    }
+
+    // H-TRD-071: if any set failed the exact math, say so — a full-blown regression would otherwise
+    // read as "nothing profitable". One warn carries the first captured cause for the operator.
+    if (skippedSets > 0) {
+      warnings.push(`${skippedSets} candidate set(s) could not be evaluated (schema mismatch) — results may be incomplete.`);
+      logger.warn(`[tradeup] ${username}: ${skippedSets} candidate set(s) failed computeContract (schema mismatch); first error: ${firstSkipError}`);
     }
 
     // H-TRD-072: rank fully-priced first, profit second, so the MAX_CANDIDATES slice
@@ -324,8 +342,27 @@ export class TradeUpService {
     candidates.sort((a, b) => (Number(b.fullyPriced) - Number(a.fullyPriced)) || (b.profitCents - a.profitCents));
     const top = candidates.slice(0, MAX_CANDIDATES);
 
-    if (top.some((c) => !c.fullyPriced)) {
+    // H-TRD-073: the price cache is tri-state (PricingService.priceCents: undefined = not fetched yet
+    // → a re-click can fill it; null = FRESH authoritative "no market price", cached 24h per S2 → a
+    // re-click never changes it; number = priced). The old single warning told the user to "click again
+    // in a moment" for BOTH gap kinds, so a candidate whose only gap is an authoritative no-price
+    // outcome looked perpetually loading. Partition the not-fully-priced candidates' involved names and
+    // warn per real cause. (computeContract's null-in = unpriced math contract stays untouched.)
+    let anyLoading = false;
+    let anyNoPrice = false;
+    for (const c of top) {
+      if (c.fullyPriced) continue;
+      for (const mhn of [...c.inputs.map((i) => i.marketHashName), ...c.outcomes.map((o) => o.marketHashName)]) {
+        const p = this.pricing.priceCents(mhn, CS2_APPID);
+        if (p === undefined) anyLoading = true;
+        else if (p === null) anyNoPrice = true;
+      }
+    }
+    if (anyLoading) {
       warnings.push('Some prices are still loading — EV/profit shown are estimates; click again in a moment for accurate figures.');
+    }
+    if (anyNoPrice) {
+      warnings.push('Some items have no current market price — their EV contribution is 0 (not loading; re-clicking will not change this).');
     }
     warnings.push(realFloats
       ? 'Input floats are the REAL per-item GC floats — output wears + EV are accurate (subject to live market prices).'
@@ -336,7 +373,7 @@ export class TradeUpService {
   }
 
   /** Expands inventory stacks into individual trade-up-eligible input items (≤10 per stack). */
-  private buildEligibleInputs(items: Array<{ marketHashName: string; quantity?: number; assetIds?: string[]; price?: number | null; category?: string; tradeLockExpiry?: Date | string | null; tradable?: boolean }>): TuInput[] {
+  private buildEligibleInputs(items: Array<{ marketHashName: string; quantity?: number; assetIds: string[]; price?: number | null; category?: string; tradeLockExpiry?: Date | string | null; tradable?: boolean }>): TuInput[] {
     const out: TuInput[] = [];
     for (const it of items) {
       if (it.category === 'listed') continue;                       // on the market, not in inventory
@@ -349,8 +386,7 @@ export class TradeUpService {
       if (!def || !this.schema.isEligibleInput(def)) continue;
       const float = wearMidpoint(parsed.wear, def.minFloat, def.maxFloat); // estimate (exact float unknown on web)
       const priceCents = this.pricing.priceCents(it.marketHashName, CS2_APPID);
-      const assetIds = Array.isArray(it.assetIds) && it.assetIds.length ? it.assetIds : [undefined];
-      const n = Math.min(assetIds.length, it.quantity ?? assetIds.length, MAX_PER_STACK);
+      const n = Math.min(it.assetIds.length, it.quantity ?? it.assetIds.length, MAX_PER_STACK);
       for (let i = 0; i < n; i++) {
         out.push({
           marketHashName: it.marketHashName,
@@ -360,7 +396,7 @@ export class TradeUpService {
           stattrak: parsed.stattrak,
           float,
           priceCents: priceCents ?? null,
-          assetId: assetIds[i],
+          assetId: it.assetIds[i],
         });
       }
     }

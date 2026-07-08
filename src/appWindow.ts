@@ -6,7 +6,7 @@ import { IS_PACKAGED } from './utils/paths';
 //
 //  In a PACKAGED run SSIM shows itself: the Tauri desktop shell owns the window (sidecar
 //  mode), and a headless deployment has no window by design — so this is a no-op there.
-//  Only a DEV run (ts-node / `node dist`) pops the operator's default browser at the URL.
+//  A DEV run delegates to openBrowser(), which itself opens the tab ONLY when SSIM_OPEN_BROWSER=1 (a plain `npm run dev` opens nothing by design — see openBrowser.ts).
 //  (The old chromeless Edge "--app" window + its page-heartbeat were retired once the Tauri
 //  shell reached parity — see git history / appAlive.ts removal.)
 // ════════════════════════════════════════════════════════════════════════════
@@ -14,5 +14,5 @@ import { IS_PACKAGED } from './utils/paths';
 /** The single entry point boot code uses to surface the UI (see file header). */
 export function openUiWindow(url: string): void {
   if (IS_PACKAGED) return; // packaged: the Tauri shell (or headless) handles the window
-  openBrowser(url);        // dev: pop the operator's default browser at the dashboard
+  openBrowser(url); // dev: opens the tab only if SSIM_OPEN_BROWSER=1 (opt-in); otherwise a no-op
 }

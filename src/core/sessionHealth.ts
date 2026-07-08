@@ -6,13 +6,18 @@
 //  cookie-age check. Pure (no imports) so it is unit-testable in isolation.
 // ════════════════════════════════════════════════════════════════════════════
 
+/** The proactive web-cookie refresh interval — refresh web cookies every 20 min. */
+export const WEB_COOKIE_REFRESH_MS = 20 * 60 * 1000;
+
 /**
- * How long web cookies are considered fresh after they were obtained. Comfortably
- * above the 20-min proactive refresh interval, so a HEALTHY session (refreshed every
- * 20 min) always passes; only a session whose refresh has stalled this long is flagged
- * not-ready, so the next access re-establishes it rather than using stale cookies.
+ * How long web cookies are considered fresh after they were obtained. Derived as 1.5×
+ * the proactive refresh interval (WEB_COOKIE_REFRESH_MS) so the margin is structural,
+ * not a coincidental literal: it stays comfortably above the interval, so a HEALTHY
+ * session (refreshed every 20 min) always passes; only a session whose refresh has
+ * stalled this long is flagged not-ready, so the next access re-establishes it rather
+ * than using stale cookies.
  */
-export const WEB_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
+export const WEB_COOKIE_MAX_AGE_MS = WEB_COOKIE_REFRESH_MS * 1.5;
 
 /**
  * Does THIS login call own the session it produces (i.e. may a bulk op later release

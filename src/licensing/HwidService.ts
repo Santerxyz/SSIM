@@ -18,7 +18,7 @@ export function readPinnedHwid(): string | undefined {
     return /^[0-9a-f]{64}$/.test(s) ? s : undefined;
   } catch { return undefined; }
 }
-/** Persist the pinned hwid (best-effort, mode 600). */
+/** Persist the pinned hwid (best-effort; mode 600 is POSIX-only and a no-op on Windows — the pin is a derived HWID hash, not a secret, see config.ts #22). */
 export function writePinnedHwid(hwid: string): void {
   try { fs.mkdirSync(dataDir(), { recursive: true }); fs.writeFileSync(dataDir(HWID_PIN_FILE), hwid, { mode: 0o600 }); }
   catch (err) { logger.warn(`could not pin hwid: ${(err as Error).message}`); }

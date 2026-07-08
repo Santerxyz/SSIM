@@ -16,7 +16,7 @@ import { ProcessHealth } from '../core/ProcessHealth';
 import { MoneyOpJournal } from '../core/MoneyOpJournal';
 import { AccountVault, VAULT_NEWER_VERSION_ERROR } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
-import { loadMaFileFromDisk } from '../core/maFiles';
+import { loadMaFileFromDisk, readCredentialsFile } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
 import { loadMaFile, generateTotpCode, msUntilNextTotp, identitySecretPresence } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
@@ -190,10 +190,10 @@ export function createApp(deps: ApiDeps): Express {
       return inv;
     }
     if (t > Date.now()) {
-      const iso = new Date(t).toISOString();
+      const until = new Date(t);
       for (const it of inv.items) {
         const cur = it.tradeLockExpiry ? new Date(it.tradeLockExpiry) : null;
-        if (!cur || t > cur.getTime()) it.tradeLockExpiry = iso as unknown as Date;
+        if (!cur || t > cur.getTime()) it.tradeLockExpiry = until;
       }
     }
     return inv;
@@ -248,9 +248,10 @@ export function createApp(deps: ApiDeps): Express {
     };
     next();
   });
-  // SECURITY: same-origin / anti-CSRF + DNS-rebind guard (see originGuard.ts). Mounted FIRST
-  // so it covers the page load and every /api route: a malicious web page the operator visits
-  // cannot drive state-changing money calls (trade/buy/sell) against the localhost API.
+  // SECURITY: same-origin / anti-CSRF + DNS-rebind guard (see originGuard.ts). Mounted before all
+  // routes (after the body-parse and error-redaction middleware) so it covers the page load and
+  // every /api route: a malicious web page the operator visits cannot drive state-changing money
+  // calls (trade/buy/sell) against the localhost API.
   app.use(sameOriginGuard);
   // SECURITY (B26/P5): the capability-token guard authenticates the dashboard to the
   // backend so a random LOCAL process cannot drive money/vault ops even by forging Origin.
@@ -1277,14 +1278,6 @@ export function createApp(deps: ApiDeps): Express {
     res.json(enrichInv(inv));
   }));
 
-  app.post('/api/inventory-tf2/:username/refresh', asyncHandler(async (req, res) => {
-    const account = accounts.get(req.params.username);
-    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
-    const inv = await inventory.refreshOne(account.username, 'tf2');
-    history.snapshotAll('single-refresh', 'tf2'); // one curve point per refresh (TF2 refresh)
-    res.json(enrichInv(inv));
-  }));
-
   // GET returns the cached inventory INSTANTLY (even if stale). ?refresh=1 forces
   // a live refetch.
   app.get('/api/inventory/:username', asyncHandler(async (req, res) => {
@@ -1296,14 +1289,6 @@ export function createApp(deps: ApiDeps): Express {
       const cached = inventory.getCached(account.username);
       if (cached) return res.json(enrichInv(cached));
     }
-    const inv = await inventory.refreshOne(account.username);
-    history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (CS2 refresh)
-    res.json(enrichInv(inventory.getCached(account.username) ?? inv)); // refreshOne is the full CS2 fetch; getCached returns the freshly-stored complete record
-  }));
-
-  app.post('/api/inventory/:username/refresh', asyncHandler(async (req, res) => {
-    const account = accounts.get(req.params.username);
-    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
     const inv = await inventory.refreshOne(account.username);
     history.snapshotAll('single-refresh', 'cs2'); // one curve point per refresh (CS2 refresh)
     res.json(enrichInv(inventory.getCached(account.username) ?? inv)); // refreshOne is the full CS2 fetch; getCached returns the freshly-stored complete record
@@ -1973,11 +1958,6 @@ export function createApp(deps: ApiDeps): Express {
   //  explicitly selected + started. See FEATURES_REPORT.md.
   // ════════════════════════════════════════════════════════════════════════
 
-  // GC + schema readiness, for the modal to show whether execution is enabled.
-  app.get('/api/tradeup/status', (_req: Request, res: Response) => {
-    res.json({ ...tradeup.gcStatus(), schemaLoaded: cs2Schema.isLoaded(), schemaSkins: cs2Schema.skinCount() });
-  });
-
   // POST /api/tradeup/candidates { username } — live-refresh + compute every positive-profit trade-up.
   app.post('/api/tradeup/candidates', asyncHandler(async (req, res) => {
     const username = typeof req.body?.username === 'string' ? req.body.username : '';
@@ -2008,8 +1988,6 @@ export function createApp(deps: ApiDeps): Express {
   //  Feature 2 – Storage Unit (Casket) Management (single account only)
   //  List/read are read-only (need only the GC library); MOVES are gated like trade-ups.
   // ════════════════════════════════════════════════════════════════════════
-
-  app.get('/api/casket/status', (_req: Request, res: Response) => res.json(casket.status()));
 
   app.get('/api/casket/:username/list', asyncHandler(async (req, res) => {
     if (!accounts.get(req.params.username)) return res.status(404).json({ error: 'account not found' });
@@ -2120,7 +2098,9 @@ export function createApp(deps: ApiDeps): Express {
         // A transiently-locked accounts.txt (EBUSY/EPERM) is named, not a generic 500 — the whole
         // import aborts before any mutation, so the operator can close the file and retry.
         if ((e as { code?: string }).code === 'ACCOUNTS_TXT_LOCKED') return res.status(409).json({ error: (e as Error).message });
-        throw e;
+        // Any other import failure (e.g. a locked vault / missing env from a guard-bypassing caller)
+        // is 400 JSON, never an Express default 500 HTML page the frontend api() can't render.
+        return res.status(400).json({ error: (e as Error).message });
       }
     }
 
@@ -2259,23 +2239,6 @@ export function createApp(deps: ApiDeps): Express {
 // ════════════════════════════════════════════════════════════════════════════
 //  Bulk-import helpers
 // ════════════════════════════════════════════════════════════════════════════
-
-/** Parses mafiles/accounts.txt → Map<lowercaseUsername, password>. */
-function readCredentialsFile(): Map<string, string> {
-  const map = new Map<string, string>();
-  const file = path.join(MAFILES_DIR, 'accounts.txt');
-  if (!fs.existsSync(file)) return map;
-  for (const raw of fs.readFileSync(file, 'utf-8').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const idx = line.indexOf(':');
-    if (idx === -1) continue;
-    const user = line.slice(0, idx).trim();
-    const pass = line.slice(idx + 1); // passwords may legitimately contain ':'
-    if (user) map.set(user.toLowerCase(), pass);
-  }
-  return map;
-}
 
 interface UnlinkedMaFile { file: string; accountName: string; hasPassword: boolean; }
 

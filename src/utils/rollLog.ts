@@ -1,8 +1,10 @@
 import fs from 'fs';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  rollLog — a bounded, dependency-free cap for the SYNCHRONOUS last-words sinks
-//  (stderr-trace.log, crash-log.txt, exit-trace.log). winston's own files are
+//  rollLog — a bounded, dependency-free cap for the two LOW-frequency SYNCHRONOUS
+//  last-words sinks (crash-log.txt, exit-trace.log). The hot stderr-trace.log sink
+//  rolls itself with an in-process byte counter in bootflags.ts (see the hot-sink
+//  note below); it shares only SINK_MAX_BYTES from here. winston's own files are
 //  already size-capped by winston; these raw fs.appendFileSync sinks were not, so
 //  a spewing vendor library or a long-lived install could grow them without bound
 //  (S47). Rolls the file to `.1` (overwriting any prior roll — one generation of

@@ -40,6 +40,11 @@ test('delivered-store: a MISSING file (fresh install) is NOT degraded', () => {
   assert.equal(s.isDegraded(), false);
 });
 
+test('delivered-store: an unknown/newer version → degraded (must fail safe, not load as v1)', () => {
+  const s = new CsFloatDeliveredStore(tmpStore(JSON.stringify({ version: 2, ids: ['t1'] })));
+  assert.equal(s.isDegraded(), true, 'a newer/unknown on-disk format must degrade, not be silently reinterpreted as v1');
+});
+
 test('delivered-store: a valid file loads its ids and is not degraded', () => {
   const s = new CsFloatDeliveredStore(tmpStore(JSON.stringify({ version: 1, ids: ['t1', 't2'] })));
   assert.equal(s.isDegraded(), false);

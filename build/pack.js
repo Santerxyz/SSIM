@@ -25,6 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -95,6 +96,22 @@ for (const sentinel of ['DEV_PEPPER_replace_at_build_time', 'license.example.com
     process.exit(1);
   }
 }
+// The sentinel scan only catches KNOWN placeholder strings; it does not prove the baked key is a
+// real Ed25519 SPKI key. A mis-typed / truncated / wrong-curve LICENSE_PUBLIC_KEY passes the scan
+// yet at runtime rejects EVERY license token AND every update manifest (config.ts's LICENSE_PUBLIC_KEY
+// verifies both — see DIRECTIVES §5) → a field brick behind a green build log. Parse it here so the
+// build fails LOUDLY instead. The env value is baked verbatim (bakeResults above all landed) and is
+// \n-escaped (see header); normalise to real newlines the way config.ts does before parsing.
+try {
+  const pubKey = crypto.createPublicKey(process.env.LICENSE_PUBLIC_KEY.replace(/\\n/g, '\n'));
+  if (pubKey.asymmetricKeyType !== 'ed25519') {
+    console.error(`✗ baked public key is not a valid Ed25519 key (got ${pubKey.asymmetricKeyType}) — aborting.`);
+    process.exit(1);
+  }
+} catch (e) {
+  console.error(`✗ baked public key is not a valid Ed25519 key — aborting: ${e.message}`);
+  process.exit(1);
+}
 
 // 4. Obfuscate the sensitive surface (licensing + entry). Keep it scoped – we do
 //    NOT obfuscate the whole tree (slows boot, breaks some vendor reflection).
@@ -114,8 +131,13 @@ function obfuscate(file) {
     selfDefending: false,
     // CRITICAL: keep require() specifiers OUT of the string array so pkg can
     // still statically trace + bundle them (e.g. node-machine-id is only pulled
-    // in by HwidService). Anything matching these stays an inline literal; the
-    // baked secrets + all other strings are still moved into the encoded array.
+    // in by HwidService). Anything matching these stays an inline literal.
+    // NOTE: relocating the OTHER strings (incl. the baked secrets) into the
+    // encoded array is best-effort/probabilistic — governed by the obfuscator's
+    // stringArrayThreshold (default ~0.75), so a baked literal MAY stay inline
+    // in config.js. That is fine: the real protection for the baked secrets is
+    // pkg's V8 bytecode compilation (see file header), and per known-limit #22
+    // the pepper is an accepted, cost-only-protected secret — not unleakable.
     reservedStrings: [
       '^os$', '^fs$', '^path$', '^crypto$', '^child_process$',
       '^fs-extra$', '^axios$', '^node-machine-id$',
@@ -131,8 +153,13 @@ console.log('▸ obfuscating licensing surface');
   .filter(fs.existsSync)
   .forEach(obfuscate);
 
-// 5. Regenerate the icon set: public/favicon.ico (dashboard + license page) AND
-//    the multi-resolution build/icon.ico we burn into ssim.exe in step 7.
+// 5. Regenerate the icon set via make-ico.js: it refreshes public/favicon.ico
+//    (the dashboard + license-page favicon, which IS consumed) AND build/icon.ico.
+//    NOTE: build/icon.ico is currently an unconsumed by-product — pkg can't set an
+//    exe icon (step 7 keeps Node's icon, patching only the Task-Manager NAME), so
+//    ssim.exe / ssim-backend.exe are NOT branded here; and the Tauri shell reads
+//    src-tauri/icons/icon.ico (a separate file no build step syncs from build/) per
+//    tauri.conf.json — so nothing burns build/icon.ico into any exe.
 console.log('▸ regenerating icon set (public/favicon.ico + build/icon.ico)');
 execFileSync('node', [path.join(__dirname, 'make-ico.js')], { cwd: ROOT, stdio: 'inherit' });
 
@@ -151,8 +178,11 @@ const heapMb = Math.max(512, Number(process.env.SSIM_HEAP_MB) || 3072);
 // version-info are already in the base when pkg appends its payload — overlay stays valid).
 function runPkg() {
   console.log(`▸ packaging single-file exe via @yao-pkg/pkg (native bytecode, heap cap ${heapMb}MB)`);
-  execFileSync('npx', ['@yao-pkg/pkg', entry, '--config', 'package.json',
-    '--options', `max_old_space_size=${heapMb}`, '--output', OUT_NAME], {
+  // shell:true concatenates args into one cmd.exe command line WITHOUT quoting, so
+  // the absolute `entry` (and OUT_NAME, for symmetry) must be quoted or a repo checked
+  // out under a path with a space (C:\Users\John Doe\...) truncates the entry token.
+  execFileSync('npx', ['@yao-pkg/pkg', '"' + entry + '"', '--config', 'package.json',
+    '--options', `max_old_space_size=${heapMb}`, '--output', '"' + OUT_NAME + '"'], {
     cwd: ROOT, stdio: 'inherit', shell: true,
   });
 }
