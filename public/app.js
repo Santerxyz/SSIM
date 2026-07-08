@@ -3572,6 +3572,15 @@ async function refreshAccount() {
       const sum = (cat) => inv.items.filter((i) => i.category === cat).reduce((n, i) => n + (i.quantity || 1), 0);
       toast(`Inventory refreshed: ${inv.totalItems} items · ${sum('tradelocked')} locked · ${sum('listed')} listed`, 'success');
     }
+    // The backend refreshed BOTH games on the same session — pull the OTHER game's now-fresh cached
+    // record too, so switching tabs shows it without another fetch and the shared wallet carries the
+    // same refresh timestamp for both games.
+    try {
+      const other = state.game === 'tf2'
+        ? await api(`/api/inventory/${encodeURIComponent(u)}`)
+        : await api(`/api/inventory-tf2/${encodeURIComponent(u)}`);
+      if (state.game === 'tf2') storeCs2Inv(other); else storeTf2Inv(other);
+    } catch (_) { /* best-effort — the other tab lazily refetches on switch anyway */ }
     // The refresh enriched from the cache and queued the missing/stale prices for a background fill;
     // watch that fill and re-pull so the new item prices + totals appear WITHOUT a restart. (PRICE-REFRESH)
     void watchPriceFill(refreshActiveViewFromCache);
@@ -3671,18 +3680,16 @@ function pollRefresh() {
       }
       resetPoller('refresh');
 
-      if (job.game === 'tf2') {
-        const invMap = await api('/api/inventory-tf2');
-        state.tf2Inventories = {};
-        for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeTf2Inv(inv); }
-        state.tf2Loaded = true;
-        state.tf2LoadError = null;   // H-FE-001: a successful TF2 refresh heals any prior load-error panel
-      } else {
-        const invMap = await api('/api/inventory');
-        state.inventories = {};
-        for (const k of Object.keys(invMap || {})) { const inv = invMap[k]; storeCs2Inv(inv); }
-        invalidateHistory(); // a fresh curve point exists now → refetch on render
-      }
+      // Every bulk refresh fetches BOTH games per account (one login/throttle slot) — re-pull BOTH
+      // caches so whichever tab is open shows fresh items and the shared wallet has one timestamp.
+      const [invMap, tf2Map] = await Promise.all([api('/api/inventory'), api('/api/inventory-tf2')]);
+      state.inventories = {};
+      for (const k of Object.keys(invMap || {})) storeCs2Inv(invMap[k]);
+      state.tf2Inventories = {};
+      for (const k of Object.keys(tf2Map || {})) storeTf2Inv(tf2Map[k]);
+      state.tf2Loaded = true;
+      state.tf2LoadError = null;   // H-FE-001: a successful TF2 refresh heals any prior load-error panel
+      invalidateHistory(); // a fresh curve point exists now → refetch on render
       renderMain();
       renderSidebar(); // refresh-all may have updated wallet balances → update the sidebar
       // refresh-all enriched from the cache + queued the missing/stale prices for a background fill;
