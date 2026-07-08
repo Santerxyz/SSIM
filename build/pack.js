@@ -148,8 +148,13 @@ console.log('▸ obfuscating licensing surface');
   .filter(fs.existsSync)
   .forEach(obfuscate);
 
-// 5. Regenerate the icon set: public/favicon.ico (dashboard + license page) AND
-//    the multi-resolution build/icon.ico we burn into ssim.exe in step 7.
+// 5. Regenerate the icon set via make-ico.js: it refreshes public/favicon.ico
+//    (the dashboard + license-page favicon, which IS consumed) AND build/icon.ico.
+//    NOTE: build/icon.ico is currently an unconsumed by-product — pkg can't set an
+//    exe icon (step 7 keeps Node's icon, patching only the Task-Manager NAME), so
+//    ssim.exe / ssim-backend.exe are NOT branded here; and the Tauri shell reads
+//    src-tauri/icons/icon.ico (a separate file no build step syncs from build/) per
+//    tauri.conf.json — so nothing burns build/icon.ico into any exe.
 console.log('▸ regenerating icon set (public/favicon.ico + build/icon.ico)');
 execFileSync('node', [path.join(__dirname, 'make-ico.js')], { cwd: ROOT, stdio: 'inherit' });
 
