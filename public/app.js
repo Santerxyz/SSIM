@@ -1865,8 +1865,8 @@ function renderHistoryChart(points) {
     const d = new Date(t);
     const sameDay = new Date(t0).toDateString() === new Date(t1).toDateString();
     return sameDay
-      ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
-      : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+      ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString(undefined, { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   };
   const tMid = t0 + tSpan / 2;
 
