@@ -1505,14 +1505,6 @@
   <div id="toast-stack" class="fixed bottom-6 right-6 z-[60] flex flex-col gap-2 items-end pointer-events-none max-w-[90vw]" aria-live="polite" aria-atomic="false"></div>
 
   <script src="/app.js"></script>
-  <!-- Keep-alive ping (legacy Edge-window heartbeat; the Tauri shell now owns shutdown). -->
-  <script>
-    (function () {
-      function ping() { try { fetch('/api/app/ping').catch(function () {}); } catch (e) {} }
-      ping();
-      setInterval(ping, 4000);
-    })();
-  </script>
   <!-- "Live Logs" launcher: a small floating button that opens the live-log window (logs.html).
        Created by JS + fixed-position so it never touches the dashboard's own layout/components. -->
   <script>
