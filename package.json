@@ -63,8 +63,7 @@
       "node_modules/qrcode/**/*",
       "node_modules/@doctormckay/**/*",
       "node_modules/lzma/**/*",
-      "node_modules/**/*.pem",
-      "node_modules/**/*.proto"
+      "node_modules/**/*.pem"
     ],
     "outputPath": "."
   }
