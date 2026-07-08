@@ -139,8 +139,8 @@ fn write_crash_marker(version: &str, code: Option<i32>, signal: Option<i32>, log
 
 /// B1 (optional): if SSIM_CRASH_WEBHOOK is set, POST a minimal crash notice so an UNATTENDED operator
 /// machine can phone home instead of silently sitting on a crash screen (BACKEND_RELIABILITY.md F2). OFF
-/// by default. Fired via the built-in curl.exe (Win10+/11 — no new crate); the body is written to a temp
-/// file so the log tail is never shell-escaped. Detached + best-effort: a webhook failure never blocks
+/// by default. Fired via the built-in curl.exe (Win10+/11 — no new crate); the body is passed on curl's
+/// stdin (`@-`) so the log tail is never shell-escaped. Detached + best-effort: a webhook failure never blocks
 /// the crash UI, and this NEVER respawns anything — it only notifies (owner directive).
 fn maybe_post_crash_webhook(version: &str, code: Option<i32>, log_tail: &str) {
     let url = match std::env::var("SSIM_CRASH_WEBHOOK") {
@@ -158,15 +158,19 @@ fn maybe_post_crash_webhook(version: &str, code: Option<i32>, log_tail: &str) {
         code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
     );
     let body = serde_json::json!({ "content": content }).to_string();
-    let tmp = std::env::temp_dir().join(format!("ssim-crash-webhook-{}.json", std::process::id()));
-    if std::fs::write(&tmp, body).is_err() {
-        return;
-    }
-    let _ = std::process::Command::new("curl")
-        .args(["-s", "-m", "10", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary"])
-        .arg(format!("@{}", tmp.display()))
+    // Stream the body to curl's stdin (`@-`) instead of a temp file: no leaked JSON in %TEMP%, no
+    // write/read race, and the log tail is still never on the argv (so it is never shell-escaped).
+    let spawn = std::process::Command::new("curl")
+        .args(["-s", "-m", "10", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@-"])
         .arg(&url)
+        .stdin(std::process::Stdio::piped())
         .spawn();
+    if let Ok(mut child) = spawn {
+        if let Some(mut sin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = sin.write_all(body.as_bytes());
+        }
+    }
     log_shell("posted crash webhook (SSIM_CRASH_WEBHOOK set)");
 }
 
