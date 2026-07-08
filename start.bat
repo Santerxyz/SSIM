@@ -46,7 +46,7 @@ REM     dynamic port). No taskkill here - it would kill an unrelated app on 3000
 
 echo.
 echo   License server : %LICENSE_API_URL%
-echo   Web UI         : http://localhost:3000
+echo   Web UI         : http://%HOST%:%PORT%  ^(if %PORT% is busy the app picks the next free port^)
 echo.
 
 REM --- Run the server as a clean monitor in this window -----------------------
