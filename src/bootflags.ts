@@ -78,6 +78,15 @@ try {
   // counter is seeded from the current on-disk size so a pre-existing large file still rolls.
   let written = 0;
   try { written = fs.statSync(stderrTrace).size; } catch { /* no file yet */ }
+  // TANK fix #9: write through a HELD open fd (fs.writeSync) instead of fs.appendFileSync. The tee stays
+  // SYNCHRONOUS — that is the whole point, so a native fatal's dying last-words are on disk BEFORE the
+  // process aborts (an async sink would lose exactly the 0xC0000409 last-words we need). But appendFileSync
+  // does an open()+write()+close() syscall on EVERY stderr line; under the vendor "socket hang up" spew a
+  // reset storm produces, that per-line syscall churn stalls the event loop and DELAYS the very socket-close
+  // callbacks whose teardown race feeds the fast-fail. A persistent O_APPEND fd + writeSync keeps the
+  // death-capture guarantee while removing the per-line open/close amplifier.
+  let fd = -1;
+  try { fd = fs.openSync(stderrTrace, 'a'); } catch { /* fall back to append-per-write below */ }
   (process.stderr as unknown as { write: (...a: unknown[]) => boolean }).write = (
     chunk: unknown,
     ...rest: unknown[]
@@ -88,14 +97,19 @@ try {
         : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       const out = mask(s);
       if (written > SINK_MAX_BYTES) {
-        let rolled = false;
-        try { fs.renameSync(stderrTrace, stderrTrace + '.1'); rolled = true; }
-        catch { /* file locked / rename raced — leave counter high so we retry next write */ }
-        if (rolled) written = 0;
+        try {
+          if (fd >= 0) { fs.closeSync(fd); fd = -1; }
+          fs.renameSync(stderrTrace, stderrTrace + '.1');
+          written = 0;
+        } catch { /* file locked / rename raced — leave counter high so we retry next write */ }
+        try { if (fd < 0) fd = fs.openSync(stderrTrace, 'a'); } catch { /* reopen deferred to next write */ }
       }
-      fs.appendFileSync(stderrTrace, out);
+      if (fd >= 0) fs.writeSync(fd, out);           // held fd, O_APPEND — no per-line open/close
+      else fs.appendFileSync(stderrTrace, out);     // fd unavailable → degrade to the original path
       written += Buffer.byteLength(out);
-    } catch { /* never break stderr */ }
+    } catch {
+      try { if (fd < 0) fd = fs.openSync(stderrTrace, 'a'); } catch { /* never break stderr */ }
+    }
     return orig(chunk, ...rest);
   };
 } catch { /* best-effort: a diagnostic must never block boot */ }

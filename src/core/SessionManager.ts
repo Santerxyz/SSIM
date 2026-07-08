@@ -3,6 +3,7 @@ import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
 import { SessionState, type ManagedSession, type WebSession, type SessionManagerEvents } from '../types/session';
 import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
+import { proxyHealth, proxyKey, isResetClass } from '../network/ProxyHealth';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
@@ -70,9 +71,13 @@ const MAX_CONCURRENT_LOGINS = resolveCapEnv('SSIM_MAX_CONCURRENT_LOGINS', proces
 // that makes the whole class structurally impossible: once this many sessions are resident, a NEW
 // account's login is REFUSED (fast, retryable) rather than queued — so no caller can ever drive the
 // live-session count past a safe socket budget. A re-login of an ALREADY-resident account is exempt
-// (it replaces, never grows). Generous default (150 » every 25-wide pool, « socket exhaustion);
+// (it replaces, never grows).
+// Default 90: the field 0xC0000409 native fast-fail struck at ~115 resident sessions, so the old
+// 150 ceiling sat ABOVE the danger point and never engaged before the crash. 90 keeps a wide margin
+// over every 25-wide pool while capping the resident pile-up UNDER the empirical danger point, so a
+// storm that outpaces session release is refused (fast, retryable) before it reaches the crash zone.
 // tune via SSIM_MAX_LIVE_SESSIONS, set 0 to disable.
-const MAX_LIVE_SESSIONS = resolveCapEnv('SSIM_MAX_LIVE_SESSIONS', process.env.SSIM_MAX_LIVE_SESSIONS, 25, 150, true);
+const MAX_LIVE_SESSIONS = resolveCapEnv('SSIM_MAX_LIVE_SESSIONS', process.env.SSIM_MAX_LIVE_SESSIONS, 25, 90, true);
 
 // ─── Idle-session reaper (anti-accumulation for SINGLE-account ops) ─────────────
 // Bulk ops release the sessions they create, but SINGLE-account paths (single send /
@@ -99,6 +104,12 @@ const REAPER_INTERVAL_MS = 5 * 60_000;
 const MAX_CONNECTION_ATTEMPTS = 5;
 const BACKOFF_BASE_MS         = 4_000;
 const BACKOFF_MAX_MS          = 45_000;
+
+// steam-user's EConnectionProtocol.TCP (runtime value 1) — the .d.ts does not expose the enum, so
+// read it defensively with a literal fallback. Forcing TCP removes the wss-TLS-over-proxy CM path
+// (a native-teardown-race primitive under the reset storm); see the client construction below.
+const CM_PROTOCOL_TCP: number =
+  (SteamUser as unknown as { EConnectionProtocol?: { TCP?: number } }).EConnectionProtocol?.TCP ?? 1;
 
 // ─── Token-invalidation criteria (Problem 2: don't nuke tokens on flaky proxies) ──
 // A refresh token is a valuable, restart-proof credential. It is deleted ONLY when
@@ -413,6 +424,10 @@ export class SessionManager extends EventEmitter {
     pathLabel:    'token' | 'credential',
   ): Promise<ManagedSession> {
     let lastErr: LoginError = Object.assign(new Error('login not attempted'), { loginErrorKind: 'connection' as LoginErrorKind });
+    // TANK: feed each login handshake outcome to the per-proxy breaker so a reset-storming
+    // provider trips OPEN and bulk dials on it back off (recording is global + harmless; only the
+    // BULK refresh dispatch CONSULTS the breaker — money ops never defer). Proxyless → null → no-op.
+    const pkey = account.network?.type === 'proxy' ? proxyKey(account.network.value) : null;
 
     for (let attempt = 1; attempt <= MAX_CONNECTION_ATTEMPTS; attempt++) {
       try {
@@ -422,11 +437,15 @@ export class SessionManager extends EventEmitter {
         // race against the 15s login timeout. Attempt 1 keeps the just-built code; the token
         // path ({ refreshToken }) carries no maFile and is untouched.
         if (attempt > 1 && pathLabel === 'credential' && maFile) restampTotp(logOnOptions, maFile);
-        return await this.performLogin(account, logOnOptions, maFile);
+        const ok = await this.performLogin(account, logOnOptions, maFile);
+        proxyHealth.record(pkey, 'ok');
+        return ok;
       } catch (err) {
         lastErr = err as LoginError;
         const kind = classifyLoginError(lastErr);
         lastErr.loginErrorKind = kind;
+        // Only a reset-class transport failure trips the breaker; auth/ceiling/config do not.
+        if (!lastErr.ceilingRefusal) proxyHealth.record(pkey, kind === 'connection' && isResetClass(lastErr) ? 'reset' : 'fail');
 
         // S49: a resident-ceiling insertion refusal (B46) — and an S48 shutdown abort — must NOT be retried
         // in-slot. Retrying holds a login slot through ~60s of backoff and rebuilds/tears down a client each
@@ -452,7 +471,12 @@ export class SessionManager extends EventEmitter {
         // Connection failure → discard the dead client, back off, retry.
         await this.destroySession(account.username.toLowerCase());
         if (attempt < MAX_CONNECTION_ATTEMPTS) {
-          const backoff = Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 1), BACKOFF_MAX_MS);
+          // Full-jitter backoff: without jitter, a fleet's worth of accounts failing the same
+          // storming proxy in the same tick retry in LOCKSTEP, concentrating maximal simultaneous
+          // TLS create/destroy churn on that provider — the exact concentrated teardown surface the
+          // native fast-fail lives in. Jitter to [50%, 100%] of the exponential ceiling de-syncs the herd.
+          const ceil = Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 1), BACKOFF_MAX_MS);
+          const backoff = Math.round(ceil * (0.5 + Math.random() * 0.5));
           logger.warn(`[${account.username}] ${pathLabel} login attempt ${attempt}/${MAX_CONNECTION_ATTEMPTS} failed (connection: ${lastErr.message}) – retrying in ${Math.round(backoff / 1000)}s`);
           await sleep(backoff);
         }
@@ -504,8 +528,14 @@ export class SessionManager extends EventEmitter {
     const { steamUserOptions, httpsAgent } = AgentFactory.create(network);
 
     // ── Create a fresh, isolated SteamUser instance ────────────────────────
+    // protocol: TCP (not the default Auto). Under an httpProxy, Auto leaves ~half of CM connections
+    // running over wss-TLS-through-the-proxy (a tls.connect({socket}) over the CONNECT tunnel — a
+    // native-teardown-race primitive that the flaky-proxy RESET storm can trip into the 0xC0000409
+    // fast-fail). Raw-TCP CM uses Valve's own crypto (no TLSWrap over the proxy socket), removing that
+    // primitive on the CM side and determinising teardown. The web fetch path is unaffected.
     const client = new SteamUser({
       ...steamUserOptions,
+      protocol:         CM_PROTOCOL_TCP,
       dataDirectory:    null,   // we persist the refresh token ourselves (TokenStore)
       autoRelogin:      false,  // we handle reconnection ourselves
       singleSentryfile: false,

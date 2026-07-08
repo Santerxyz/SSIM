@@ -6,6 +6,7 @@ import { bucketOf } from './MarketModel';
 import type { SessionManager } from './SessionManager';
 import type { AccountManager } from './AccountManager';
 import { LocalIpThrottle } from '../network/LocalIpThrottle';
+import { proxyHealth, proxyKey } from '../network/ProxyHealth';
 import { SessionState, type ManagedSession } from '../types/session';
 import type { AccountInventory, CS2Item, GameId } from '../types/inventory';
 import { logger } from '../utils/logger';
@@ -271,6 +272,12 @@ export class InventoryService {
         // back to the full window as that credit ages out. Never a duplicate fresh 35s.
         if (rateLimited && throttle?.lastRateLimitWaitEndedAt !== undefined) {
           pause = Math.max(0, Math.min(pause, Date.now() - throttle.lastRateLimitWaitEndedAt));
+        } else if (!rateLimited) {
+          // TANK: full-jitter the TRANSIENT (reset-class) backoff so a fleet's worth of proxied
+          // accounts failing the same storming proxy in the same tick don't retry in lockstep and
+          // reconcentrate the TLS create/destroy churn. Decorrelated to [50%,100%]. NOT applied to the
+          // RATELIMIT branch — that must never drop below Steam's per-IP 429 window (H-XCT-003 intact).
+          pause = Math.round(pause * (0.5 + Math.random() * 0.5));
         }
         logger.warn(
           `[${username}] ${label} attempt ${attempt + 1}/${REFRESH_RETRIES + 1} failed ` +
@@ -764,6 +771,18 @@ export class InventoryService {
       while (queue.length > 0) {
         if (this.refreshCancel) break; // "End Task": stop pulling new accounts; in-flight fetch finishes
         const username = queue.shift()!;
+        // TANK (bulk-scoped): if this account's proxy is currently reset-storming, DEFER it instead of
+        // firing another handshake into the storm — the churn that feeds the 0xC0000409 native fast-fail.
+        // Money-safe by construction: a deferred account is NOT dialed, so its cached inventory/balance is
+        // untouched (never coerced to empty/0) and it is surfaced in job.failed as retryable. Only the BULK
+        // refresh consults the breaker; user-initiated single-account/ money ops never defer. Proxyless→null.
+        const acct = this.accounts.get(username);
+        const pkey = acct?.network?.type === 'proxy' ? proxyKey(acct.network.value) : null;
+        if (pkey && !proxyHealth.shouldAllow(pkey)) {
+          this.job.failed.push({ username, error: `proxy ${pkey} is backing off after a reset storm — refresh deferred (retry shortly)` });
+          this.job.done++;
+          continue;
+        }
         // S25: ownership is scoped to THIS account-refresh via a per-invocation store (isolated from a
         // concurrent post-trade refresh of the same account), set by ensureSession within the run().
         const store: { createdByCall?: boolean } = {};

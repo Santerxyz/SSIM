@@ -83,6 +83,20 @@ const RETIRE_POLL_MS = 1_000;
  */
 export const RETIRE_FORCE_AFTER_MS = 120_000;
 
+/**
+ * Fail-fast deadline for the proxy CONNECT + TLS-upgrade phase. agent-base@6 arms this timer
+ * around its `callback` (the whole connect/handshake), so a proxy that accepts the TCP CONNECT
+ * but then STALLS (the half-open case the field storm produces) is destroyed and surfaced as
+ * ETIMEDOUT through the normal error path — instead of hanging forever (follow-redirects' own
+ * wall-clock timer only arms on the 'socket' event, which never fires on a stalled CONNECT, so
+ * without this the fetch pins a worker slot and leaves a half-open socket to pile up toward the
+ * ~115-resident native-crash danger point). Jittered per-agent so a fleet of simultaneously-stalled
+ * CONNECTs does not fire one synchronized teardown burst exactly `timeout` ms later. (TANK fix #2)
+ */
+function proxyConnectTimeoutMs(): number {
+  return Math.round(15_000 * (0.85 + Math.random() * 0.3)); // ~12.75s–17.25s
+}
+
 export class AgentFactory {
   /**
    * Process-lifetime cache of local-IP keepAlive agents, keyed by bound localAddress
@@ -242,7 +256,7 @@ export class AgentFactory {
       logger.warn('[network] SOCKS proxy → CM/GC tunneled over WebSocket via socksProxy (host IP not exposed). HTTP/HTTPS proxies remain the primary, best-tested CM-tunneling path.');
       return {
         httpsAgent:       parsed
-          ? new SocksProxyAgent({ protocol: `${parsed.scheme}:`, hostname: parsed.host, port: Number(parsed.port), userId: rawUser, password: rawPass })
+          ? new SocksProxyAgent({ protocol: `${parsed.scheme}:`, hostname: parsed.host, port: Number(parsed.port), userId: rawUser, password: rawPass, timeout: proxyConnectTimeoutMs() })
           : new SocksProxyAgent(proxyUrl),
         steamUserOptions: { socksProxy: parsed && rawUser !== undefined
           ? `${parsed.scheme}://${rawUser}:${rawPass ?? ''}@${parsed.host}:${parsed.port}`
@@ -257,7 +271,7 @@ export class AgentFactory {
     // which is already normalized → double).
     return {
       httpsAgent:       parsed && rawUser !== undefined
-        ? new HttpsProxyAgent({ protocol: `${parsed.scheme}:`, host: parsed.host, port: Number(parsed.port), auth: `${rawUser}:${rawPass ?? ''}` })
+        ? new HttpsProxyAgent({ protocol: `${parsed.scheme}:`, host: parsed.host, port: Number(parsed.port), auth: `${rawUser}:${rawPass ?? ''}`, timeout: proxyConnectTimeoutMs() })
         : new HttpsProxyAgent(proxyUrl),
       steamUserOptions: { httpProxy: parsed && rawUser !== undefined
         ? `${parsed.scheme}://${encodeURIComponent(rawUser)}:${encodeURIComponent(rawPass ?? '')}@${parsed.host}:${parsed.port}`
