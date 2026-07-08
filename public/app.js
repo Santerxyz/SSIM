@@ -3244,8 +3244,14 @@ function qtyBadge(q) {
 function valueCell(item) {
   if (item.price === undefined) return '<span class="text-slate-600" title="Price loading…">…</span>';
   if (item.price === null)      return '<span class="text-slate-600" title="no market price">—</span>';
-  const unit = item.quantity > 1 ? ` <span class="text-3xs text-slate-600">(${fmtCents(item.price)}/ea.)</span>` : '';
-  return `<span class="text-slate-200 font-mono">${fmtCents(stackValueCents(item))}</span>${unit}`;
+  // The stack value is the primary figure — render it as its OWN right-aligned block so every
+  // row's value lines up in a clean column under the VALUE header. The per-unit price sits BELOW
+  // it (also right-aligned, monospace) instead of trailing inline, which used to push the main
+  // values out of alignment by the varying width of the "(…/ea.)" suffix. (owner report 2026-07-08)
+  const unit = item.quantity > 1
+    ? `<span class="block text-3xs text-slate-600 font-mono leading-tight mt-0.5">${fmtCents(item.price)}/ea.</span>`
+    : '';
+  return `<span class="block text-slate-200 font-mono">${fmtCents(stackValueCents(item))}</span>${unit}`;
 }
 function rarityBadge(item, color) {
   return `<span class="text-xs px-2 py-0.5 rounded-full font-medium" style="color:${color}; background:${color}1a; border:1px solid ${color}40">${escapeHtml(item.rarity)}</span>`;
@@ -3298,7 +3304,10 @@ function statusCell(item) {
 function thSort(label, key, extra = '') {
   const active = state.sort && state.sort.key === key;
   const arrow = active ? (state.sort.dir === 'asc' ? '▲' : '▼') : '';
-  return `<th data-sort="${key}" class="cursor-pointer select-none hover:text-slate-200 transition ${extra}">${label}<span class="ml-1 text-brand">${arrow}</span></th>`;
+  // The arrow lives in a FIXED-WIDTH slot that is always present (empty when unsorted), so
+  // toggling asc/desc/none never shifts the column label — the header no longer "moves on its
+  // own" when you change the sort direction. (owner report 2026-07-08)
+  return `<th data-sort="${key}" class="cursor-pointer select-none hover:text-slate-200 transition ${extra}">${label}<span class="inline-block w-2.5 ml-1 text-center text-brand">${arrow}</span></th>`;
 }
 function thPlain(label, extra = '') { return `<th class="${extra}">${label}</th>`; }
 function thCheck() { return `<th class="w-8"><input type="checkbox" id="select-all" title="Select all tradable" class="accent-violet-500 w-4 h-4 cursor-pointer align-middle" /></th>`; }
