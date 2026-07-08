@@ -550,10 +550,13 @@ export class InventoryService {
    * assets already in the listed bucket (or not found owned) are skipped. Best-effort: any
    * failure is swallowed so it can never break the mass-sell.
    */
-  markListed(username: string, assetIds: string[]): void {
+  markListed(username: string, assetIds: string[], game: GameId = 'cs2'): void {
     try {
       if (!assetIds.length) return;
-      const rec = this.gcStore.get(username);
+      // Write into the SAME cache the game's reads come from: CS2's complete record lives in gcStore,
+      // TF2's in tf2Store. Using the wrong store would leave sold TF2 items stuck under "Owned".
+      const store = game === 'cs2' ? this.gcStore : this.tf2Store;
+      const rec = store.get(username);
       if (!rec) return; // no cache yet → the next refresh will populate it correctly
 
       const toList = new Set(assetIds.map(String));
@@ -583,13 +586,13 @@ export class InventoryService {
 
       const inv: AccountInventory = {
         ...rec,
-        source:     'gc',
+        source:     rec.source, // preserve the record's own source (CS2 'gc' / TF2 web) — game-agnostic
         fetchedAt:  new Date(),
         items:      [...remainingOwned, ...mergedListed],
         totalItems: remainingOwned.reduce((n, i) => n + i.quantity, 0)
                   + mergedListed.reduce((n, i) => n + (i.quantity || 0), 0),
       };
-      this.gcStore.set(username, inv);
+      store.set(username, inv);
       logger.info(`[${username}] optimistic cache update: moved ${newlyListed.length} item(s) Owned→Listed after mass-sell`);
     } catch (err) {
       logger.warn(`[${username}] optimistic post-sell cache update failed (next refresh will reconcile): ${(err as Error).message}`);

@@ -302,7 +302,7 @@ export class AccountTrader {
    * is dead — and (b) to detect "phantom" listings Steam silently created after
    * a timeout. Throws on any network/HTTP failure so callers can react.
    */
-  async getListedAssetIds(): Promise<Set<string>> {
+  async getListedAssetIds(appId: number): Promise<Set<string>> {
     const cookies = this.session.webSession?.cookies ?? [];
     const acc = emptyParsed();
     const PAGE = 100;
@@ -345,7 +345,9 @@ export class AccountTrader {
       if (Number.isFinite(total) && start + PAGE >= total) break;       // covered all
       if (fetchedListings < PAGE) break;                                // last partial page
     }
-    return listedAssetIdsForApp(acc, CS2_APPID);
+    // App-FILTERED (never merged): assetIds are unique only within an app+context, so a CS2 and a
+    // TF2 asset can share an id — filtering to `appId` keeps the already-listed/phantom check honest.
+    return listedAssetIdsForApp(acc, appId);
   }
 
   // ── New feature: Active Orders (fetch + cancel sell listings & buy orders) ──
@@ -744,16 +746,19 @@ export class AccountTrader {
    * wallet currency. Goes through the account's OWN cookies + isolated agent.
    * The listing still needs a mobile confirmation (see confirmMarketListings()).
    */
-  async sellOnMarket(assetId: string, netCents: number): Promise<SellOnMarketResult> {
+  async sellOnMarket(assetId: string, netCents: number, appId: number, contextId: string = CS2_CONTEXTID): Promise<SellOnMarketResult> {
     const cookies = this.session.webSession?.cookies ?? [];
     const sessionid = extractCookie(cookies, 'sessionid');
     if (!sessionid) throw new Error(`[${this.username}] no sessionid cookie – cannot list`);
     if (!Number.isFinite(netCents) || netCents < 1) throw new Error('invalid net price');
+    // appId is REQUIRED (no CS2 default) so a caller can never silently list a TF2 item under 730 —
+    // that would either be rejected or, worse, mislist. 730 (CS2) and 440 (TF2) are the only valid apps.
+    if (appId !== CS2_APPID && appId !== 440) throw new Error(`sellOnMarket: appId must be 730 (CS2) or 440 (TF2), got ${appId}`);
 
     const form = new URLSearchParams({
       sessionid,
-      appid:     String(CS2_APPID),
-      contextid: CS2_CONTEXTID,
+      appid:     String(appId),
+      contextid: contextId,
       assetid:   assetId,
       amount:    '1',
       price:     String(Math.round(netCents)),

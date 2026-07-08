@@ -3435,10 +3435,10 @@ function updateSelectionBar() {
   const n = selectedCount();
   if (n === 0) { hideSelectionBar(); return; }
   el.selectionBar.classList.remove('hidden'); el.selectionBar.classList.add('flex');
-  // SEND works for both games (app-agnostic). Market SELL stays CS2-only (Steam's
-  // market/sellitem path is appid 730), so hide the Sell button in the TF2 view rather than
-  // offer an action that would fail. (Bug 1.)
-  if (el.btnSellSel) el.btnSellSel.classList.toggle('hidden', state.game === 'tf2');
+  // SEND and market SELL both work for CS2 AND TF2 now: the sell modal pins the active game's appId
+  // (730/440) and threads it through pricing + market/sellitem + already-listed detection, so a TF2
+  // listing goes to the TF2 market at TF2 prices. (Bug 2 — TF2 selling enabled 2026-07-08.)
+  if (el.btnSellSel) el.btnSellSel.classList.remove('hidden');
   const unit = aggMode()
     ? `${new Set(selectedItemRefs().map((r) => r.username)).size} Bot(s)`
     : `${Object.keys(state.selection).length} Stack(s)`;
@@ -5337,6 +5337,9 @@ function openSellModal() {
   const items = selectedSellItems();
   if (items.length === 0) { toast('No items selected', 'warn'); return; }
   state.sellItems = items;
+  // PIN the game at modal-open (730 CS2 / 440 TF2). preview/retry/submit read THIS, never live
+  // state.game — so a tab switch while the modal is open can't quote one game and list another.
+  state.sellAppId = currentAppId();
   const bots = new Set(items.map((i) => i.username)).size;
   el.sellSummary.textContent = `${items.length} Item(s)`;
   el.sellFrom.textContent = aggMode()
@@ -5357,7 +5360,7 @@ async function previewSell() {
   if (!items.length) return;
   const strategy = sellStrategy();
   const names = [...new Set(items.map((i) => i.marketHashName))];
-  const body = { names, strategy, username: items[0] && items[0].username };
+  const body = { names, strategy, username: items[0] && items[0].username, appId: state.sellAppId };
   if (strategy === 'custom') {
     const cents = customSellCents();
     if (cents == null) { toast('Please enter a valid custom price (€)', 'warn'); return; }
@@ -5378,7 +5381,7 @@ async function previewSell() {
 /** Re-queries the live price for ONE item only (Hotfix B – fast straggler fix). */
 async function retryOnePrice(name, btn) {
   const strategy = sellStrategy();
-  const body = { names: [name], strategy, username: (state.sellItems[0] || {}).username };
+  const body = { names: [name], strategy, username: (state.sellItems[0] || {}).username, appId: state.sellAppId };
   if (strategy === 'custom') { const c = customSellCents(); if (c == null) return; body.customCents = c; }
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i>'; }
   try {
@@ -5455,7 +5458,7 @@ async function submitSell(ev) {
   const items = state.sellItems || [];
   if (!items.length) return;
   const strategy = sellStrategy();
-  const body = { items, strategy };
+  const body = { items, strategy, appId: state.sellAppId };
   if (strategy === 'custom') {
     const cents = customSellCents();
     if (cents == null) { toast('Please enter a valid custom price (€)', 'warn'); return; }

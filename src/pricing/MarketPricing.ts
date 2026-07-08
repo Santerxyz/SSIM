@@ -50,6 +50,10 @@ export interface PriceFetchOpts {
    *  120s client abort under a throttle storm (H-PRC-002). Unset = unbounded (the
    *  background mass-sell path is unchanged). */
   budgetMs?: number;
+  /** Steam app the item belongs to — 730 (CS2, default) or 440 (TF2). Selects which market the
+   *  sell price is read from so a TF2 item is NEVER priced off the CS2 market. Steam serves both
+   *  games' prices in EUR at currency=3, so the EUR-wallet guard stays valid for both. */
+  appid?: number;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -163,8 +167,10 @@ export class MarketPricing {
   private async viaPriceOverview(
     name: string, opts: PriceFetchOpts | undefined, ua: string, timeout: number, allowMedian: boolean,
   ): Promise<SellInfo> {
+    // appid selects the market: 730 CS2 (default) or 440 TF2 (via opts.appid). currency stays EUR(3)
+    // for BOTH — Steam serves TF2 prices in EUR at currency=3, keeping the EUR-wallet guard valid.
     const url = `https://steamcommunity.com/market/priceoverview/` +
-      `?country=${COUNTRY}&currency=${EUR_CURRENCY}&appid=${APPID_CS2}&market_hash_name=${encodeURIComponent(name)}`;
+      `?country=${COUNTRY}&currency=${EUR_CURRENCY}&appid=${opts?.appid ?? APPID_CS2}&market_hash_name=${encodeURIComponent(name)}`;
     const r = await axios.get(url, {
       timeout,
       validateStatus: () => true,

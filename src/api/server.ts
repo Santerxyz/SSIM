@@ -1634,9 +1634,15 @@ export function createApp(deps: ApiDeps): Express {
   // Price preview for the sell modal.
   // Body: { names: string[], strategy, customCents?, username? }
   app.post('/api/market/preview', asyncHandler(async (req, res) => {
-    const { names, strategy, customCents, username } = req.body ?? {};
+    const { names, strategy, customCents, username, appId } = req.body ?? {};
     if (!Array.isArray(names) || !names.every(n => typeof n === 'string')) {
       return res.status(400).json({ error: 'names must be a string array' });
+    }
+    // appId selects the market for pricing (730 CS2 default / 440 TF2). Whitelist it — an out-of-band
+    // value must never reach the price cascade. Default 730 keeps a pre-TF2 client on CS2.
+    const previewAppId = appId == null ? 730 : Number(appId);
+    if (previewAppId !== 730 && previewAppId !== 440) {
+      return res.status(400).json({ error: 'appId must be 730 (CS2) or 440 (TF2)' });
     }
     // H-TRD-022: sanity bound — a real selection is far below 500; refuse an absurd list
     // rather than launch a tens-of-minutes cascade for one interactive request.
@@ -1658,18 +1664,26 @@ export function createApp(deps: ApiDeps): Express {
       customCents: custom ?? undefined,
       username: typeof username === 'string' ? username : undefined,
       shouldStop: () => clientGone || res.writableEnded || req.destroyed,
+      appId: previewAppId,
     }));
   }));
 
   // Body: { items: [{username, assetId, marketHashName}], strategy, customCents?, concurrency?, itemDelayMs? }
   app.post('/api/market/sell', (req: Request, res: Response) => {
-    const { items, strategy, customCents, concurrency, itemDelayMs } = req.body ?? {};
+    const { items, strategy, customCents, concurrency, itemDelayMs, appId } = req.body ?? {};
     if (!Array.isArray(items) || items.length === 0
       || !items.every(i => i && typeof i.username === 'string' && typeof i.assetId === 'string' && typeof i.marketHashName === 'string')) {
       return res.status(400).json({ error: 'items must be a non-empty array of { username, assetId, marketHashName }' });
     }
     if (!VALID_STRATEGIES.includes(strategy)) {
       return res.status(400).json({ error: `strategy must be one of ${VALID_STRATEGIES.join(', ')}` });
+    }
+    // appId is the load-bearing guard feeding the real-money market/sellitem POST — whitelist it to
+    // 730 (CS2) / 440 (TF2); default 730 when absent (a pre-TF2 client only ever sold CS2). One request
+    // = one game (the frontend sends the active tab); the endpoint stamps this appId on every group.
+    const sellAppId = appId == null ? 730 : Number(appId);
+    if (sellAppId !== 730 && sellAppId !== 440) {
+      return res.status(400).json({ error: 'appId must be 730 (CS2) or 440 (TF2)' });
     }
     const custom = readCustomCents(customCents);
     if (strategy === 'custom' && custom == null) {
@@ -1682,7 +1696,7 @@ export function createApp(deps: ApiDeps): Express {
     for (const it of items as Array<{ username: string; assetId: string; marketHashName: string }>) {
       if (!accounts.get(it.username)) { if (!unknown.includes(it.username)) unknown.push(it.username); continue; }
       const key = it.username.toLowerCase();
-      const g = groupMap.get(key) ?? { username: it.username, items: [] };
+      const g = groupMap.get(key) ?? { username: it.username, appId: sellAppId, items: [] };
       g.items.push({ assetId: it.assetId, marketHashName: it.marketHashName });
       groupMap.set(key, g);
     }

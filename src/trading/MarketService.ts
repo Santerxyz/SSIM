@@ -7,6 +7,13 @@ import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
 import { logger } from '../utils/logger';
 import { classifyNetworkError } from '../utils/errorClass';
+import type { GameId } from '../types/inventory';
+
+// The two Steam apps SSIM sells on; both use market context id 2. A mass-sell run/group carries the
+// appId so pricing, the market/sellitem POST, and already-listed detection all target the SAME game.
+const CS2_APPID = 730;
+const TF2_APPID = 440;
+const gameForApp = (appId: number): GameId => (appId === TF2_APPID ? 'tf2' : 'cs2');
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
 // ceiling 25). Per-bot anti-spam pacing (item/bot delays) still applies inside each worker.
@@ -79,6 +86,9 @@ function isGone(err: unknown): boolean {
 /** One bot's slice of a mass-sell: its selected assets + their market names. */
 export interface MassSellGroup {
   username: string;
+  /** Steam app of THIS group's items — 730 (CS2) or 440 (TF2). Missing ⇒ 730 (backward-compat;
+   *  a pre-TF2 client only ever sold CS2). One group = one game (the API stamps a single appId). */
+  appId?:   number;
   items:    Array<{ assetId: string; marketHashName: string }>;
 }
 
@@ -169,8 +179,8 @@ export class MarketService {
    * A malformed disk-cached record (non-array `items`) throws here exactly as the old
    * per-item `inv.items.find(...)` did — H-TRD-024 contains that throw as one `failed` row.
    */
-  private buildUnsellableIndex(username: string): Set<string> | undefined {
-    const inv = this.inventory?.getCached(username);
+  private buildUnsellableIndex(username: string, game: GameId = 'cs2'): Set<string> | undefined {
+    const inv = this.inventory?.getCached(username, game);
     if (!inv) return undefined;
     const unsellable = new Set<string>();
     inv.items.forEach(stack => {
@@ -229,7 +239,7 @@ export class MarketService {
   async preview(
     names: string[],
     strategy: SellStrategy,
-    opts?: { customCents?: number; username?: string; shouldStop?: () => boolean },
+    opts?: { customCents?: number; username?: string; shouldStop?: () => boolean; appId?: number },
   ): Promise<Record<string, { netCents: number | null; buyerCents: number | null }>> {
     const out: Record<string, { netCents: number | null; buyerCents: number | null }> = {};
 
@@ -263,7 +273,8 @@ export class MarketService {
         if (Date.now() - previewStart >= PREVIEW_BUDGET_MS) { budgetTripped = true; return; }
         const name = unique[idx++];
         // getSellInfo runs its own 3-method cascade internally – one call suffices.
-        const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS });
+        // appId selects the market so a TF2 preview is priced off the TF2 market, never CS2.
+        const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS, appid: opts?.appId ?? CS2_APPID });
         const buyer = targetBuyerCents(info, strategy);
         out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
       }
@@ -344,13 +355,16 @@ export class MarketService {
     // when Steam actually answered (`info.authoritative`). A transport-failure null
     // (all cascade tries threw) is NOT cached and surfaces as `transport:true` so the
     // caller defers the item instead of failing it and poisoning the rest of the run.
-    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown }): Promise<{ net: number | null; transport: boolean }> => {
+    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown }, appId: number): Promise<{ net: number | null; transport: boolean }> => {
       if (customNet != null) return { net: customNet, transport: false };
-      if (netCache.has(name)) return { net: netCache.get(name)!, transport: false };
-      const info = await this.pricing.getSellInfo(name, ctx);
+      // Cache key includes appId: a same-named item can exist in both games at DIFFERENT prices,
+      // so a CS2 price must never be reused for a TF2 item (or vice versa).
+      const key = `${appId}:${name}`;
+      if (netCache.has(key)) return { net: netCache.get(key)!, transport: false };
+      const info = await this.pricing.getSellInfo(name, { ...ctx, appid: appId });
       const buyer = targetBuyerCents(info, strategy);
       const net = buyer != null ? sellerNetFromBuyer(buyer) : null;
-      if (net != null || info.authoritative) netCache.set(name, net);
+      if (net != null || info.authoritative) netCache.set(key, net);
       return { net, transport: net == null && !info.authoritative };
     };
 
@@ -451,11 +465,16 @@ export class MarketService {
 
   private async processBot(
     group: MassSellGroup,
-    resolveNet: (name: string, ctx: { httpsAgent?: unknown }) => Promise<{ net: number | null; transport: boolean }>,
+    resolveNet: (name: string, ctx: { httpsAgent?: unknown }, appId: number) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
   ): Promise<void> {
     const user = group.username;
     const N = group.items.length;
+    // The game for THIS bot's items — all of one group share it. Threaded into pricing, the
+    // market/sellitem POST, already-listed detection, and the trade-lock cache read so a TF2 sell
+    // never touches the CS2 market/context (money-safety). Missing appId ⇒ 730 (backward-compat).
+    const appId: number = group.appId ?? CS2_APPID;
+    const game: GameId = gameForApp(appId);
     this.job.currentBot = user;
     this.job.phase = 'preflight';
     this.trackBotActive(user, true);
@@ -501,7 +520,7 @@ export class MarketService {
 
     let listedSet: Set<string>;
     try {
-      listedSet = await this.preflightProbe(trader);
+      listedSet = await this.preflightProbe(trader, appId);
     } catch (err) {
       logger.warn(`[mass-sell] ${user}: pre-flight connectivity check failed (${(err as Error).message}) – ${N} item(s) deferred`);
       this.deferAll(group, group.items, `No Steam connection (pre-flight): ${(err as Error).message}`);
@@ -558,7 +577,7 @@ export class MarketService {
       // Pre-list guard (INV-B2 / INV-D1 / C3): never list a trade-locked or non-tradable
       // asset. A locked item must never become an active sell listing. The index is built
       // once (H-TRD-021) on the first item that reaches this guard.
-      if (!unsellableBuilt) { unsellable = this.buildUnsellableIndex(user); unsellableBuilt = true; }
+      if (!unsellableBuilt) { unsellable = this.buildUnsellableIndex(user, game); unsellableBuilt = true; }
       if (unsellable?.has(String(item.assetId))) {
         this.job.blocked.push({ username: user, assetId: item.assetId, error: 'trade-locked or not tradable' });
         this.job.done++;
@@ -566,7 +585,7 @@ export class MarketService {
         continue;
       }
 
-      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent });
+      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent }, appId);
       if (net == null && transport) {
         // S2 (in-run): the price lookup failed at the transport layer (429 storm, proxy
         // reset, 5xx) — Steam never answered, so this is NOT "no price". Defer the item
@@ -604,7 +623,7 @@ export class MarketService {
         logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} busy in another money op → skipped`);
         continue;
       }
-      const outcome = await this.listWithRetry(trader, item.assetId, net, listedSet)
+      const outcome = await this.listWithRetry(trader, item.assetId, net, listedSet, appId)
         .finally(() => MoneyOps.release(mk));
       this.job.done++;
       if (outcome === 'listed')      { this.job.listed++; listedForBot++; pendingForBot++;
@@ -669,7 +688,7 @@ export class MarketService {
     // listings set. Any item we marked failed that is in fact listed → recover.
     if (failedHere.size > 0) {
       try {
-        const finalListed = await trader.getListedAssetIds();
+        const finalListed = await trader.getListedAssetIds(appId);
         const recovered = this.reconcilePhantoms(user, failedHere, finalListed);
         if (recovered > 0) logger.info(`[mass-sell] ${user}: reconciled ${recovered} phantom listing(s) ← were marked failed`);
       } catch { /* reconciliation is best-effort */ }
@@ -682,7 +701,7 @@ export class MarketService {
     // the bot's pre-existing listings + everything created this run; markListed is idempotent
     // and best-effort. The next reconciled refresh verifies it against the live listings set.
     const nowListed = group.items.filter(it => listedSet.has(it.assetId)).map(it => it.assetId);
-    if (nowListed.length) this.inventory?.markListed(user, nowListed);
+    if (nowListed.length) this.inventory?.markListed(user, nowListed, game);
     this.trackBotActive(user, false);
   }
 
@@ -727,11 +746,11 @@ export class MarketService {
   /** Rule 1: connectivity pre-flight – probes getListedAssetIds with a couple
    *  of retries so a brief hiccup doesn't defer a whole bot. Returns the live
    *  set of already-listed asset ids; throws only when truly unreachable. */
-  private async preflightProbe(trader: { getListedAssetIds(): Promise<Set<string>> }): Promise<Set<string>> {
+  private async preflightProbe(trader: { getListedAssetIds(appId: number): Promise<Set<string>> }, appId: number): Promise<Set<string>> {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= PREFLIGHT_RETRIES; attempt++) {
       try {
-        return await trader.getListedAssetIds();
+        return await trader.getListedAssetIds(appId);
       } catch (err) {
         lastErr = err;
         if (attempt < PREFLIGHT_RETRIES) await sleep(this.preflightBackoff);
@@ -749,15 +768,16 @@ export class MarketService {
    *   { error }  – a genuine, non-recoverable failure
    */
   private async listWithRetry(
-    trader: { sellOnMarket(a: string, n: number): Promise<unknown>; getListedAssetIds(): Promise<Set<string>>; ready: boolean; sessionState: string; username: string },
+    trader: { sellOnMarket(a: string, n: number, appId: number, contextId?: string): Promise<unknown>; getListedAssetIds(appId: number): Promise<Set<string>>; ready: boolean; sessionState: string; username: string },
     assetId: string,
     net: number,
     listedSet: Set<string>,
+    appId: number,
   ): Promise<'listed' | 'phantom' | 'deferred' | 'gone' | { error: string }> {
     let lastErr = '';
     for (let attempt = 0; attempt <= MAX_SELL_RETRIES; attempt++) {
       try {
-        await trader.sellOnMarket(assetId, net);
+        await trader.sellOnMarket(assetId, net, appId);
         listedSet.add(assetId);
         return 'listed';
       } catch (err) {
@@ -778,7 +798,7 @@ export class MarketService {
 
         // Rule 3: did Steam create the listing despite this error? (phantom probe)
         try {
-          const nowListed = await trader.getListedAssetIds();
+          const nowListed = await trader.getListedAssetIds(appId);
           if (nowListed.has(assetId)) {
             listedSet.add(assetId);
             logger.info(`[mass-sell] ${trader.username} ${assetId}: phantom-listed despite "${lastErr}" → recovered`);
