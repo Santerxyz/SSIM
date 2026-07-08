@@ -9,7 +9,7 @@
 //  + an EMPTY data/ + mafiles/ skeleton + READ ME FIRST.txt + START.txt.
 //
 //  SAFETY (the whole point): the stage is built from an EXPLICIT ALLOW-LIST — only
-//  the two exes and the generated text/skeletons are ever copied, so the dev's real
+//  the single SSIM.exe and the generated text/skeletons are ever copied, so the dev's real
 //  data/, Vault/, mafiles/, secrets, logs, license can NEVER reach the ZIP. After
 //  zipping it also SCANS every entry against secret patterns and FAILS LOUDLY on any
 //  hit. The dev folder is never zipped in place.
