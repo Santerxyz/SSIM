@@ -52,8 +52,10 @@
 
   /* ── Logo + orbiting loader ring (portal-logo-wrap.loading + portal-halo, ds:387-391). The badge
        is already circular; the ring spins JUST OUTSIDE it, matching the splash sizing (ds:792-794). ── */
-  .logo-wrap{ position:relative; width:128px; height:128px; margin:0 auto 26px; }
-  .logo{ position:absolute; inset:14px; width:100px; height:100px; border-radius:50%;
+  /* Sized to MATCH the unlock portal's badge (92px wrap / 72px shield) — the owner's
+     reference for "perfectly big"; the old 128/100 read oversized on the boot splash. */
+  .logo-wrap{ position:relative; width:92px; height:92px; margin:0 auto 26px; }
+  .logo{ position:absolute; inset:10px; width:72px; height:72px; border-radius:50%;
     object-fit:contain; /* the trimmed brand mark is portrait — never stretch it square */
     filter:drop-shadow(0 0 20px rgb(var(--brand-rgb) / .55)); animation:breathe 3s ease-in-out infinite; }
   .ring{ position:absolute; inset:0; border-radius:50%;
