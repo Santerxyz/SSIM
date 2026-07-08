@@ -688,12 +688,18 @@ export class InventoryService {
     const store = this.ownershipCtx.getStore();
     const existing = this.sessions.getSession(username);
     if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession) {
-      if (store) store.createdByCall = false; // reused a live session — not ours to release
+      // Reused a live session — not ours to release. STICKY: never downgrade a `true` a PRIOR
+      // ensureSession call in THIS same refresh already set. The both-games refresh calls ensureSession
+      // twice per account (CS2 creates the session → true; the TF2 leg then reuses it): a plain
+      // `= false` here clobbered the CS2 leg's ownership, so the finally never released the session and
+      // the whole fleet piled up to the live-session ceiling ("released 0" → mass ceiling refusals).
+      if (store && store.createdByCall === undefined) store.createdByCall = false;
       this.sessions.markUsed(username);        // genuine use → keep it out of the idle reaper (B40)
       return existing;
     }
     const { session, createdByCall } = await this.sessions.loginAccountOwned(account);
-    if (store) store.createdByCall = createdByCall;
+    // OR-in: this refresh owns the session if EITHER a prior leg created it OR this login did.
+    if (store) store.createdByCall = store.createdByCall === true || createdByCall;
     this.sessions.markUsed(username);
     return session;
   }
