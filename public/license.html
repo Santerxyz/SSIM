@@ -81,7 +81,7 @@
       // as typed. Server keys are uppercase-only (Crockford-base32) and looked up
       // case-sensitively, so upcase the read value to match what the user sees.
       const value = key.value.trim().toUpperCase();
-      if (!value) { setMsg('err', 'Please enter your license key.'); return; }
+      if (!value) { setText('err', 'Please enter your license key.'); return; }
       btn.disabled = true;
       setMsg('info', '<span class="spin"></span> Checking license…');
       try {
@@ -117,16 +117,17 @@
           };
           setTimeout(waitForApp, 1200);
         } else {
-          setMsg('err', '✗ ' + (d.error || 'Activation failed.'));
+          setText('err', '✗ ' + (d.error || 'Activation failed.'));
           btn.disabled = false;
         }
       } catch (err) {
-        setMsg('err', '✗ Server unreachable.');
+        setText('err', '✗ Server unreachable.');
         btn.disabled = false;
       }
     });
 
     function setMsg(kind, html) { msg.className = 'msg ' + kind; msg.innerHTML = html; }
+    function setText(kind, text) { msg.className = 'msg ' + kind; msg.textContent = text; }
   </script>
 </body>
 </html>
