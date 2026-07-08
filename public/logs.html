@@ -65,11 +65,11 @@
     <button class="act" id="clear">Clear</button>
     <span class="count" id="count">0</span>
   </header>
-  <div id="log"><div class="empty" id="empty">Waiting for log activity…</div></div>
+  <div id="log"></div>
 
 <script>
   var logEl = document.getElementById('log');
-  var emptyEl = document.getElementById('empty');
+  var emptyEl = null;
   var dot = document.getElementById('dot'), statusEl = document.getElementById('status');
   var followBtn = document.getElementById('follow'), countEl = document.getElementById('count');
   var searchEl = document.getElementById('search');
@@ -88,6 +88,11 @@
   function refreshCount(){
     var shown = logEl.querySelectorAll('.row:not(.hidden)').length;
     countEl.textContent = shown + (shown !== total ? ' / ' + total : '') + ' lines';
+  }
+  function showEmpty(){
+    emptyEl = document.createElement('div'); emptyEl.className = 'empty'; emptyEl.id = 'empty';
+    emptyEl.textContent = 'Waiting for log activity…';
+    logEl.appendChild(emptyEl);
   }
   function addLine(line){
     if (emptyEl){ emptyEl.remove(); emptyEl = null; }
@@ -125,7 +130,7 @@
   });
   searchEl.addEventListener('input', function(){ search = searchEl.value.trim().toLowerCase(); reapply(); });
   followBtn.addEventListener('click', function(){ follow = !follow; followBtn.classList.toggle('on', follow); if (follow) logEl.scrollTop = logEl.scrollHeight; });
-  document.getElementById('clear').addEventListener('click', function(){ logEl.innerHTML=''; total=0; refreshCount(); });
+  document.getElementById('clear').addEventListener('click', function(){ logEl.innerHTML=''; total=0; showEmpty(); refreshCount(); });
   // pause follow when the user scrolls up; resume when back at the bottom
   logEl.addEventListener('scroll', function(){
     var atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
@@ -139,6 +144,7 @@
     es.onerror = function(){ dot.classList.remove('ok'); statusEl.textContent = 'reconnecting…'; };
     // EventSource reconnects automatically (server sends retry: 3000).
   }
+  showEmpty();
   connect();
 </script>
 </body>
