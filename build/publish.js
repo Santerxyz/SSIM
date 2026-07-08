@@ -64,7 +64,7 @@ const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 
-// Load secrets.local.bat (`set "K=V"` lines) into env — same loader make-tauri.js uses.
+// Load secrets.local.bat (`set "K=V"` lines) into env. NOTE: unlike make-tauri.js (bat overwrites env), here an EXISTING env var wins — the bat only fills gaps.
 const secretsBat = path.join(ROOT, 'secrets.local.bat');
 if (fs.existsSync(secretsBat)) {
   for (const line of fs.readFileSync(secretsBat, 'utf8').split(/\r?\n/)) {
