@@ -1215,6 +1215,40 @@ body.no-motion .env-tile:hover{ transform:none !important; }
   </div>
 </div>
 
+<!-- ════════════════ LIVE LOGS — global backend stream (opened by the bottom-left launcher) ════════════════ -->
+<div id="livelogs-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+  <div class="w-full max-w-3xl max-h-[85vh] flex flex-col bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
+    <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between shrink-0">
+      <h3 class="t16 font-bold text-white flex items-center gap-2">
+        <i class="fa-solid fa-terminal text-brand"></i>Live Logs
+        <span class="inline-flex items-center gap-1.5 t11 font-mono font-normal text-slate-500 ml-1">
+          <span class="w-1.5 h-1.5 rounded-full" style="background:rgb(var(--success-rgb)); box-shadow:0 0 8px rgb(var(--success-rgb))"></span>all accounts · streaming
+        </span>
+      </h3>
+      <div class="flex items-center gap-1.5">
+        <button class="t11 font-semibold px-2.5 py-1 rounded-lg" style="color:rgb(var(--brand-l-rgb)); background:rgb(var(--brand-rgb) / .14)">All</button>
+        <button class="t11 font-semibold px-2.5 py-1 rounded-lg text-slate-500 hover:text-slate-300 transition">Warn</button>
+        <button class="t11 font-semibold px-2.5 py-1 rounded-lg text-slate-500 hover:text-slate-300 transition">Error</button>
+        <button class="modal-x ml-1" title="Pause stream"><i class="fa-solid fa-pause t11"></i></button>
+        <button data-close aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
+      </div>
+    </div>
+    <div class="px-6 py-4 overflow-y-auto t12 font-mono space-y-1 grow">
+      <p class="text-slate-500">10:47:31 <span class="text-slate-600">[stormbot_017]</span> <span class="text-slate-300">Inventory refreshed · 214 items · 12 trade-locked</span></p>
+      <p class="text-slate-500">10:47:33 <span class="text-slate-600">[de_farm_04]</span> <span class="text-emerald-400">Listed AWP | Asiimov (FT) for 78,20 €</span></p>
+      <p class="text-slate-500">10:47:34 <span class="text-slate-600">[de_farm_11]</span> <span class="text-slate-300">Logged in via proxy 149.88.x.x (Germany)</span></p>
+      <p class="text-slate-500">10:47:36 <span class="text-slate-600">[stormbot_022]</span> <span class="text-amber-400">warn: wallet FX fallback (EUR→USD cached rate)</span></p>
+      <p class="text-slate-500">10:47:39 <span class="text-slate-600">[nl_key_02]</span> <span class="text-emerald-400">Buy order filled · Mann Co. Key ×1 @ 2,02 €</span></p>
+      <p class="text-slate-500">10:47:41 <span class="text-slate-600">[de_farm_04]</span> <span class="text-rose-400">error: trade offer 8823… declined by partner</span></p>
+      <p class="text-slate-500">10:47:44 <span class="text-slate-600">[stormbot_017]</span> <span class="text-slate-300">Price fill complete · 214/214 · 1,8 s</span></p>
+    </div>
+    <div class="px-6 py-2.5 border-t border-slate-800 shrink-0 t11 text-slate-500 flex items-center justify-between">
+      <span>Live backend log · newest at bottom</span>
+      <span class="font-mono">buffer 2 000 lines</span>
+    </div>
+  </div>
+</div>
+
 <!-- ════════════════ TRADE OFFERS (sent / received) ════════════════ -->
 <div id="offers-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
   <div class="w-full max-w-[1400px] h-[90vh] flex flex-col bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in">
@@ -1337,7 +1371,18 @@ body.no-motion .env-tile:hover{ transform:none !important; }
 </div>
 <!--MODALSEND-->
 
-<!-- toast stack -->
+<!-- ════════════════ LIVE LOGS launcher — ambient, BOTTOM-LEFT (S68 layering law) ════════════════
+     Bottom-LEFT so it never shares the toast corner (toasts live bottom-RIGHT), so no notification
+     ever stacks above OR below it. z-index 20 keeps it ABOVE the dashboard but BELOW every overlay
+     (ban 30, modals 40, confirm 55, toasts 60, portals 80) — so it can never occlude an
+     alert/toast/modal. Opens #livelogs-overlay via the shared data-modal handler. -->
+<button id="livelogs-launcher" data-modal="livelogs" title="Open the live backend log stream"
+  class="fixed bottom-4 left-4 flex items-center gap-2 px-3.5 py-2 rounded-full t12 font-semibold text-white transition hover:brightness-110"
+  style="z-index:20; background:var(--grad-brand); box-shadow:0 6px 20px rgb(var(--brand-rgb) / .35);">
+  <i class="fa-solid fa-terminal t11"></i>Live Logs
+</button>
+
+<!-- toast stack (bottom-RIGHT — deliberately the opposite corner from the Live Logs launcher) -->
 <div id="toast-stack" class="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 items-end"></div>
 
 <script>

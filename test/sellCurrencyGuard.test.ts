@@ -34,8 +34,10 @@ async function runProcessBot(walletCurrency: number | undefined): Promise<{ bloc
   Object.assign(svc, {
     trades: { ensureWebSession: async () => trader },
     job,
-    // stub the parts a listing item would reach so a NON-blocked run wouldn't touch Steam here
-    preflightProbe: async () => new Set<string>(),
+    // stub the parts a listing item would reach so a NON-blocked run wouldn't touch Steam here.
+    // preflightProbe now yields the already-listed set AND the subset still awaiting a 2FA confirm
+    // (one market/mylistings read, both answers) — see H-TRD-029.
+    preflightProbe: async () => ({ listed: new Set<string>(), unconfirmed: new Set<string>() }),
     isAssetSellable: () => true,
   });
 

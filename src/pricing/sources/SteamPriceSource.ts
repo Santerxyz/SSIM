@@ -1,8 +1,8 @@
 import axios from 'axios';
-import type { PriceSource } from './PriceSource';
+import type { PriceSource, PriceRoute } from './PriceSource';
 import { parseSteamMoney } from '../currencies';
 
-// Steam Community market priceoverview — USD base; the existing, default source.
+// Steam Community market priceoverview — USD base; the default source.
 const STEAM_CURRENCY_USD = 1;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
           '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -10,17 +10,29 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 export class SteamPriceSource implements PriceSource {
   readonly id = 'steam' as const;
 
-  /** Steam's priceoverview needs no credential and is always reachable in principle. */
+  /** Steam's priceoverview is reachable in principle; PricingService supplies the identity. */
   available(): boolean { return true; }
 
-  /** Lowest_price (USD cents) from Steam's priceoverview; null if none. */
-  async fetchPriceCents(name: string, appid: number): Promise<number | null> {
+  /**
+   * Lowest_price (USD cents) from Steam's priceoverview; null if none.
+   *
+   * The 2026-07-10 fix: when `route.cookieHeader` is present the request is AUTHENTICATED as a
+   * logged-in account (drawing that account's per-session budget instead of the anonymous per-IP
+   * budget the shared rotating pool leaves exhausted), and egresses through `route.agent` — the
+   * exit that cookie was issued to. `proxy:false` stops axios double-routing via env proxies.
+   * An anonymous call (no cookieHeader) is still possible for the money-path/dev paths, but the
+   * background fill no longer issues one — it defers until an identity is web-ready.
+   */
+  async fetchPriceCents(name: string, appid: number, route?: PriceRoute): Promise<number | null> {
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?appid=${appid}&currency=${STEAM_CURRENCY_USD}&market_hash_name=${encodeURIComponent(name)}`;
+    const headers: Record<string, string> = { 'User-Agent': UA, Accept: 'application/json' };
+    if (route?.cookieHeader) headers.Cookie = route.cookieHeader;
     const resp = await axios.get(url, {
       timeout: 12_000,
-      headers: { 'User-Agent': UA, Accept: 'application/json' },
+      headers,
       validateStatus: () => true,
+      ...(route?.agent ? { httpsAgent: route.agent, proxy: false as const } : {}),
     });
     if (resp.status === 429) throw new Error('RATE_LIMIT');
     // A non-200 (5xx/403/…) or Steam-level failure (missing body / success !== true) is NOT an

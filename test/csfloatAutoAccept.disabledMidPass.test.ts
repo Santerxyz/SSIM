@@ -19,12 +19,18 @@ function freshDeliveredPath(): string {
 
 const PENDING_TRADE = { id: 'trade-A', buyer_id: '76561199012345678', item: { asset_id: '123456789' } };
 
+/** AccountManager.withNetwork attaches a RESOLVED network to every account it hands out — a proxy, or
+ *  this localip sentinel for a legitimate host-IP account. `undefined` ONLY ever means pool-lost, which
+ *  deliverFor refuses (it would leak the host IP), so a mock must carry one to reach the delivery path.
+ *  The DISABLED account below carries one too: the mid-pass disable must be the only reason it skips. */
+const RESOLVED_NETWORK = { type: 'localip', value: '0.0.0.0' };
+
 const deliverFor = (w: CsFloatAutoAcceptWorker, u: string): Promise<void> =>
   (w as unknown as { deliverFor: (u: string) => Promise<void> }).deliverFor(u);
 
 test('H-FLT-003: an account disabled between the filter and deliverFor is not delivered', async () => {
   let sendCalls = 0;
-  const acc = { username: 'bot', enabled: true, tier: 'full' };
+  const acc = { username: 'bot', enabled: true, tier: 'full', network: RESOLVED_NETWORK };
   const accounts = { get: (_u: string) => acc };
   const trades = { sendTrade: async () => { sendCalls++; return { status: 'sent', offerId: 'x' }; } };
   const csfloat = { hasKey: () => true, trades: async () => ({ trades: [PENDING_TRADE] }) };
@@ -41,7 +47,7 @@ test('H-FLT-003: an account disabled between the filter and deliverFor is not de
 
 test('H-FLT-003: a still-enabled account is delivered as before', async () => {
   let sendCalls = 0;
-  const acc = { username: 'bot', enabled: true, tier: 'full' };
+  const acc = { username: 'bot', enabled: true, tier: 'full', network: RESOLVED_NETWORK };
   const accounts = { get: (_u: string) => acc };
   const trades = { sendTrade: async () => { sendCalls++; return { status: 'sent', offerId: 'x' }; } };
   const csfloat = { hasKey: () => true, trades: async () => ({ trades: [PENDING_TRADE] }) };

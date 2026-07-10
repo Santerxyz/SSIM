@@ -20,6 +20,31 @@ export class CsFloatPriceSource implements PriceSource {
    *  Uses the side-effect-free hasAnyKey() probe, not the client factory pricingClient(). */
   available(): boolean { return this.csfloat.hasAnyKey(); }
 
+  /**
+   * Bulk warm: the WHOLE CS2 catalog's lowest buy-now ask in ONE request (2026-07-10 fix), so the fill
+   * hydrates ~500 names at once instead of hundreds of per-name searches on Steam's exhausted anonymous
+   * budget. Returns validated {name, cents} rows; PricingService writes them into its csfloat-namespaced
+   * cache. Throws on a transient failure (429/transport/shape) so the caller logs it and falls back to
+   * per-name — never silently returns an empty catalog as authoritative.
+   */
+  async bulkPriceList(): Promise<Array<{ name: string; cents: number }>> {
+    const client = this.csfloat.pricingClient();
+    if (!client) return [];                    // no key at call time → nothing to warm (per-name path also no-ops)
+    let rows: unknown;
+    try { rows = await client.priceList(); }
+    catch (e) { if ((e as CsFloatError).status === 429) throw new Error('RATE_LIMIT'); throw e; }
+    if (!Array.isArray(rows)) throw new Error('FETCH_FAILED_SHAPE');
+    const out: Array<{ name: string; cents: number }> = [];
+    for (const r of rows) {
+      const row = r as { market_hash_name?: unknown; min_price?: unknown };
+      if (typeof row?.market_hash_name !== 'string' || !row.market_hash_name) continue;
+      const p = row.min_price;
+      if (typeof p !== 'number' || !Number.isFinite(p) || p < 0) continue; // skip a bad/absent price, don't poison
+      out.push({ name: row.market_hash_name, cents: Math.round(p) });
+    }
+    return out;
+  }
+
   async fetchPriceCents(name: string, appid: number): Promise<number | null> {
     if (appid !== APPID_CS2) return null;             // CSFloat covers CS2 only
     const client = this.csfloat.pricingClient();

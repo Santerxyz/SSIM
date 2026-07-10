@@ -3,16 +3,18 @@ import fsExtra from 'fs-extra';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   AccountConfig, AccountTier, AccountsDatabase, NetworkConfig,
-  Environment, Folder, TreeNode, AccountTree,
+  Environment, Folder, ProxyRule, ProxyScope, ProxyRuleKind, TreeNode, AccountTree,
 } from '../types/account';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { vaultDir } from '../utils/paths';
 import { AccountVault } from './AccountVault';
+import { resolveViaRules, validPool, resolveExplain, type ResolveCtx, type ResolveOutcome } from './ProxyRuleEngine';
+import { normalizeProxy } from '../network/AgentFactory';
 import { loadMaFileFromDisk, resolveMaFilePath } from './maFiles';
 
 const DB_PATH    = vaultDir('accounts.json');
-const DB_VERSION = 4; // v2 folders[]; v3 environments[]; v4 portable maFilePath (bare filename in ./mafiles)
+const DB_VERSION = 5; // v2 folders[]; v3 environments[]; v4 portable maFilePath; v5 proxyRules[] + proxyRulesAuthoritative
 
 /**
  * Directory names that historically held maFiles. Absolute paths into any of
@@ -30,6 +32,9 @@ const LEGACY_MAFILE_DIRS = new Set(['mafiles', 'mafiles_unlinked']);
 
 export class AccountManager {
   private db: AccountsDatabase;
+  /** Per-account proxy rotation counter (usernameLower → cursor). In-memory; the engine seeds it
+   *  deterministically from fnv1a(username), so a restart re-seeds without persistence. */
+  private readonly proxyCursor = new Map<string, number>();
 
   constructor() {
     this.db = this.load();
@@ -68,6 +73,17 @@ export class AccountManager {
     // recovery machinery (try .bak → quarantine → loud failure) as a torn write.
     if (!AccountManager.isValidDbShape(db)) {
       db = this.recoverFromBak(new Error('accounts.json is missing its `accounts` array or a numeric `version`'));
+    }
+    // A NEWER SSIM wrote this file (the single-file auto-updater rolled us back, or two builds share
+    // a data dir). An older build cannot understand v5 proxy rules — if it migrated/blanked against
+    // them it could silently resolve the whole fleet to the operator's host IP. REFUSE loudly rather
+    // than mis-resolve (mirrors the vault's newer-version gate, B30). The operator updates to continue.
+    if (db.version > DB_VERSION) {
+      throw new Error(
+        `accounts.json is version ${db.version} but this SSIM build supports up to v${DB_VERSION}. ` +
+        `It was written by a NEWER SSIM — running an older build against it could silently mis-resolve ` +
+        `proxies and leak the host IP. Update SSIM to continue.`,
+      );
     }
     return this.migrate(db);
   }
@@ -126,6 +142,8 @@ export class AccountManager {
    *            `network` from disk.
    *   v3 → v4: maFiles consolidated into ./mafiles – absolute maFilePaths into
    *            the legacy dirs become bare filenames (portable across machines).
+   *   v4 → v5: add proxyRules[] + proxyRulesAuthoritative (STRUCTURAL only here — the synthesis +
+   *            equivalence proof + cutover run later in migrateProxyRules(), once the vault is ready).
    */
   private migrate(db: AccountsDatabase): AccountsDatabase {
     let changed = false;
@@ -173,6 +191,15 @@ export class AccountManager {
       changed = true;
     }
 
+    if (db.version < 5) {
+      // STRUCTURAL only. The real synthesis + equivalence proof + cutover run in migrateProxyRules()
+      // (after the vault→org heal + env-proxy hydration are ready). Here we just ensure the fields
+      // exist so the resolver's `proxyRulesAuthoritative` gate is well-defined.
+      if (!Array.isArray(db.proxyRules)) db.proxyRules = [];
+      if (typeof db.proxyRulesAuthoritative !== 'boolean') db.proxyRulesAuthoritative = false;
+      changed = true;
+    }
+
     if (db.version < DB_VERSION) { db.version = DB_VERSION; changed = true; }
 
     if (changed) {
@@ -204,7 +231,14 @@ export class AccountManager {
           environments: this.db.environments.map(e =>
             (e.proxy && e.proxy.trim() && AccountVault.getEnvProxy(e.id) === e.proxy.trim())
               ? { ...e, proxy: '' }
-              : e) }
+              : e),
+          // Proxy-rule pools carry credentials too — blank the plaintext copy ONLY when the SAME
+          // pool is provably in the vault (non-destructive: a not-yet-vaulted pool keeps its
+          // recoverable plaintext). hydrateRuleProxies refills it in memory at boot. Mirrors env. B20.
+          proxyRules: (this.db.proxyRules ?? []).map(r =>
+            (r.kind === 'pool' && r.proxies.length && AccountManager.sameProxyList(AccountVault.getRuleProxies(r.id), r.proxies))
+              ? { ...r, proxies: [] }
+              : r) }
       : this.db;
     // Backup policy (B34): a .bak protects the whole fleet's org structure (env/folder/tier/
     // steamId/tradeUrl) from a bad write or hand-edit. In plaintext mode we always back up. In
@@ -318,10 +352,11 @@ export class AccountManager {
 
   // ── Network resolution (computed, never persisted) ───────────────────────────
 
-  /** Resolves an account's effective network: per-account override → environment proxy →
-   *  local IP. In VAULT MODE the credential-bearing proxy override comes from the vault
-   *  (encrypted); a non-secret local-IP bind may still live in accounts.json. */
-  resolveNetwork(account: AccountConfig): NetworkConfig {
+  /** LEGACY pre-cutover resolver: per-account override → environment proxy → local IP (vault-aware).
+   *  Used ONLY while `proxyRulesAuthoritative` is false (via resolveOutcome) and by the migration
+   *  equivalence proof. The AUTHORITATIVE entry points are resolveOutcome / networkForLogin (the rule
+   *  engine). Private — nothing outside AccountManager reads the legacy chain directly (T2). */
+  private legacyResolveNetwork(account: AccountConfig): NetworkConfig {
     if (AccountVault.isEnabled()) {
       // A full VaultAccount's proxy, else a token-only account's per-account proxy (B42).
       const vaultProxy = AccountVault.getAccount(account.username)?.proxy?.trim()
@@ -339,6 +374,46 @@ export class AccountManager {
     const env = this.getEnvironment(account.environmentId);
     const proxy = env?.proxy?.trim();
     return proxy ? { type: 'proxy', value: proxy } : { type: 'localip', value: '0.0.0.0' };
+  }
+
+  /** Dispatch: the rule engine when authoritative, else the legacy chain above. `atLogin=false`
+   *  (peek) for reads/display; `atLogin=true` (advance the rotation cursor) only at login. */
+  private resolveOutcome(account: AccountConfig, atLogin: boolean): ResolveOutcome {
+    if (this.db.proxyRulesAuthoritative) return resolveViaRules(account, this.ruleCtx(atLogin));
+    return { kind: 'network', network: this.legacyResolveNetwork(account) };
+  }
+
+  /** Build an engine ResolveCtx. `precompute` builds the per-rule valid-pool + target-Set maps ONCE
+   *  (T3) — pass it only for a FULL-FLEET sweep (snapshotEffective / resolutionPreview / the proof),
+   *  where a single ctx is reused across every account; per-account reads pass it false so the engine
+   *  falls back to the cheap single-rule path and no per-read precompute is wasted. */
+  private ruleCtx(atLogin: boolean, precompute = false): ResolveCtx {
+    const rules = this.db.proxyRules ?? [];
+    const ctx: ResolveCtx = {
+      rules,
+      folders: { get: (id: string) => this.getFolder(id) },
+      atLogin,
+      cursor:  this.proxyCursor,
+    };
+    if (precompute) {
+      ctx.validPools = new Map(rules.map(r => [r.id, r.kind === 'pool' ? validPool(r.proxies) : []]));
+      ctx.targetSets = new Map(rules.map(r => [r.id, new Set(r.targets)]));
+    }
+    return ctx;
+  }
+
+  /** Login-time network resolution — ADVANCES the rotation cursor (call once per login).
+   *  `undefined` ⇒ the winning pool rule hydrated EMPTY (crash between vault+disk writes, or
+   *  accounts.json moved to a machine without the vault) ⇒ the caller MUST refuse the login rather
+   *  than fall to the host IP. SessionManager wires this via setLoginNetworkResolver. */
+  networkForLogin(account: AccountConfig): NetworkConfig | undefined {
+    const out = this.resolveOutcome(account, true);
+    if (out.kind === 'network') return out.network;
+    logger.error(
+      `[proxy-rules] ${account.username}: winning rule ${out.ruleId} has a vaulted pool but it ` +
+      `hydrated EMPTY — refusing login (never fall to the host IP). Restore the vault / re-run migration.`,
+    );
+    return undefined;
   }
 
   /** The effective env proxy for the edit dialog / check-proxy: vault value in vault mode,
@@ -361,9 +436,459 @@ export class AccountManager {
     }
   }
 
-  /** Returns a copy of the account with the resolved `network` attached. */
+  /** Returns a copy of the account with the resolved `network` attached. A `pool-lost` outcome
+   *  attaches NO network → SessionManager fail-closes any login built from this copy (defence in
+   *  depth beside networkForLogin). */
   private withNetwork(account: AccountConfig): AccountConfig {
-    return { ...account, network: this.resolveNetwork(account) };
+    const out = this.resolveOutcome(account, false);
+    return { ...account, network: out.kind === 'network' ? out.network : undefined };
+  }
+
+  // ── Proxy-rules migration / hydration (v5) ───────────────────────────────────
+
+  /** Fills each rule's in-memory pool from the vault (vault mode) — UNION disk ∪ vault so a stale
+   *  vault subset can never drop a disk-resident member. Runs at boot BEFORE any login can occur
+   *  (index.ts, right after migrateAccountsIntoVault). Idempotent. Mirrors hydrateEnvProxies. */
+  hydrateRuleProxies(): void {
+    if (!AccountVault.isEnabled()) return;
+    let reVaulted = 0;
+    for (const rule of this.db.proxyRules ?? []) {
+      if (rule.kind !== 'pool') continue;
+      const vaulted = AccountVault.getRuleProxies(rule.id);
+      if (!vaulted || !vaulted.length) continue;
+      if (!rule.proxies || rule.proxies.length === 0) {
+        rule.proxies = [...vaulted];                          // disk blanked → refill from the vault
+      } else {
+        const seen = new Set(rule.proxies);                  // disk holds a pool → UNION (never lose a member)
+        for (const p of vaulted) if (!seen.has(p)) { rule.proxies.push(p); seen.add(p); }
+      }
+      // F9: on external file skew (a hand-copied vault.enc/accounts.json from different points) the
+      // union differs from BOTH the vault copy and the blanked disk copy. Re-vault the union NOW so
+      // save() can re-blank the disk — otherwise `sameProxyList` can never match a superset and the
+      // credential union is re-written PLAINTEXT into accounts.json/.bak on every subsequent save.
+      if (!AccountManager.sameProxyList(vaulted, rule.proxies)) {
+        AccountVault.setRuleProxies(rule.id, rule.proxies);   // OVERWRITE (import would skip the present key)
+        reVaulted++;
+      }
+    }
+    if (reVaulted > 0) {
+      // Transition write: purge the (plaintext-union) .bak FIRST, then save(backup:false) so the
+      // pre-blank plaintext disk copy is never snapshotted (verbatim the enterVaultMode sequence).
+      const bak = `${DB_PATH}.bak`;
+      try { if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); }
+      catch (e) { logger.warn(`[proxy-rules] could not purge accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
+      this.save({ backup: false });
+      logger.info(`[proxy-rules] re-vaulted ${reVaulted} rule pool(s) after disk∪vault skew — disk copies re-blanked.`);
+    }
+  }
+
+  /**
+   * Synthesize proxy rules from the legacy env/account proxy config and, IF every account's egress
+   * is provably unchanged under them, make the rules AUTHORITATIVE. ADDITIVE: legacy proxy fields are
+   * NEVER blanked (a rolled-back older build still resolves the old egress). Idempotent + re-runnable
+   * every boot until it cuts over. MUST run after the vault→org heal + hydrateEnvProxies +
+   * hydrateRuleProxies (index.ts, right after migrateAccountsIntoVault).
+   */
+  migrateProxyRules(): void {
+    if (this.db.proxyRulesAuthoritative) return; // already cut over
+
+    // 1) Synthesize once (re-run boots reuse the existing synthesized set + its vaulted pools).
+    if (!this.db.proxyRules || this.db.proxyRules.length === 0) {
+      this.db.proxyRules = this.synthesizeRules();
+      if (AccountVault.isEnabled()) {
+        // Vault the pools NOW so no plaintext pool ever hits disk (the env proxies they mirror are
+        // already blanked+vaulted — a plaintext pool copy would re-leak them). Transition write:
+        // purge the .bak first, then save({backup:false}) so a pre-blank plaintext main can't be
+        // copied into accounts.json.bak (verbatim the enterVaultMode sequence).
+        let moved = 0;
+        for (const r of this.db.proxyRules) {
+          if (r.kind === 'pool' && r.proxies.length && AccountVault.importRuleProxies(r.id, r.proxies)) moved++;
+        }
+        if (moved > 0) AccountVault.save();
+        const bak = `${DB_PATH}.bak`;
+        try { if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); }
+        catch (e) { logger.warn(`[proxy-rules] could not purge accounts.json.bak (${(e as Error).message}) — will retry next boot`); }
+        this.save({ backup: false });
+      } else {
+        this.save(); // plaintext mode: the pool sits plaintext alongside the (equally plaintext) legacy fields
+      }
+    }
+
+    // 2) Prove equivalence over the UNION of org + vault + token + account-proxy usernames.
+    const ctx = this.ruleCtx(false, true); // peek + precompute (full-fleet sweep) — never advance the cursor
+    const mismatches: string[] = [];
+    for (const username of this.migrationAccountUnion()) {
+      const account = this.rawGet(username);
+      if (!account) continue; // the heal ran first, so this is only a defensive skip
+      const oldNet  = this.legacyResolveNetwork(account);      // legacy (authoritative still false)
+      const outcome = resolveViaRules(account, ctx);
+      if (outcome.kind !== 'network' || !AccountManager.sameEgress(oldNet, outcome.network)) {
+        mismatches.push(username);
+      }
+    }
+
+    if (mismatches.length > 0) {
+      logger.warn(
+        `[proxy-rules] NOT cutting over: ${mismatches.length} account(s) resolve differently under rules ` +
+        `(${mismatches.slice(0, 5).join(', ')}${mismatches.length > 5 ? '…' : ''}). Legacy proxy config stays ` +
+        `authoritative; will retry next boot.`,
+      );
+      return; // rules synthesized + vaulted, but NOT live — re-attempt next boot
+    }
+
+    // 3) Cut over. Legacy fields are intentionally LEFT populated (downgrade-rollback insurance).
+    this.db.proxyRulesAuthoritative = true;
+    this.save();
+    logger.info(`[proxy-rules] cut over to ${this.db.proxyRules.length} rule(s) — every account's egress verified unchanged.`);
+  }
+
+  private synthesizeRules(): ProxyRule[] {
+    const rules: ProxyRule[] = [];
+    const now = new Date().toISOString();
+    let priority = 0;
+
+    // ENV rules: group environments by their EFFECTIVE proxy (vault-aware). Empty proxy = local IP =
+    // no rule (the no-match default already resolves to local IP, matching today).
+    const envByProxy = new Map<string, string[]>(); // normalized proxy → env ids
+    for (const env of this.db.environments) {
+      const eff = this.envProxyFor(env.id);
+      if (!eff) continue;
+      const norm = normalizeProxy(eff);
+      const list = envByProxy.get(norm) ?? [];
+      list.push(env.id);
+      envByProxy.set(norm, list);
+    }
+    for (const [norm, envIds] of envByProxy) {
+      rules.push({ id: uuidv4(), scope: 'environment', targets: envIds, kind: 'pool', proxies: [norm], priority: priority++, enabled: true, createdAt: now });
+    }
+
+    // ACCOUNT rules: per-account overrides. Proxy overrides (grouped by value) get LOWER priority
+    // indices so they outrank a co-account forced-local, reproducing resolveNetwork's proxy-before-
+    // localip order; forced-local overrides collect into one 'local' rule. Monotonic priorities → no
+    // two synthesized rules ever tie on (tier, depth, priority).
+    const acctByProxy = new Map<string, string[]>(); // normalized proxy → usernames(lower)
+    const forcedLocal: string[] = [];
+    for (const username of this.migrationAccountUnion()) {
+      const acct = this.rawGet(username);
+      if (!acct) continue;
+      const ov = this.accountOverrideProxy(acct);
+      if (ov) {
+        const norm = normalizeProxy(ov);
+        const list = acctByProxy.get(norm) ?? [];
+        list.push(username.toLowerCase());
+        acctByProxy.set(norm, list);
+      } else if (acct.networkOverride?.type === 'localip') {
+        forcedLocal.push(username.toLowerCase());
+      }
+    }
+    for (const [norm, users] of acctByProxy) {
+      rules.push({ id: uuidv4(), scope: 'account', targets: users, kind: 'pool', proxies: [norm], priority: priority++, enabled: true, createdAt: now });
+    }
+    if (forcedLocal.length) {
+      rules.push({ id: uuidv4(), scope: 'account', targets: forcedLocal, kind: 'local', proxies: [], priority: priority++, enabled: true, createdAt: now });
+    }
+    return rules;
+  }
+
+  /** The per-account proxy override the legacy resolver would use (vault-aware), or undefined. */
+  private accountOverrideProxy(account: AccountConfig): string | undefined {
+    if (AccountVault.isEnabled()) {
+      return AccountVault.getAccount(account.username)?.proxy?.trim() ?? AccountVault.getAccountProxy(account.username);
+    }
+    return account.networkOverride?.type === 'proxy' ? account.networkOverride.value.trim() : undefined;
+  }
+
+  /** Union of every username that could carry an egress: org records + vault full/token records +
+   *  B42 per-account proxy keys. Prevents a token-only account's proxy being missed by synthesis. */
+  private migrationAccountUnion(): string[] {
+    const set = new Set<string>();
+    for (const a of this.db.accounts) set.add(a.username.toLowerCase());
+    if (AccountVault.isEnabled()) {
+      for (const u of AccountVault.listAccountUsernames())      set.add(u);
+      for (const u of AccountVault.listTokenUsernames())        set.add(u);
+      for (const u of AccountVault.listAccountProxyUsernames()) set.add(u);
+    }
+    return [...set];
+  }
+
+  /** Read-only snapshot of the proxy rules (in-memory pools; caller MUST redact before display). */
+  getProxyRules(): ProxyRule[] {
+    return (this.db.proxyRules ?? []).map(r => ({ ...r, targets: [...r.targets], proxies: [...r.proxies] }));
+  }
+
+  isProxyRulesAuthoritative(): boolean { return !!this.db.proxyRulesAuthoritative; }
+
+  /** Force the current rules live — the operator explicitly activates after reviewing the resolution
+   *  preview, when the automatic equivalence proof did not cut over (or after hand-editing rules).
+   *  Vaults every pool + sets the authoritative flag. Changes take effect on each account's NEXT
+   *  login/refresh (lazy — no live session is disturbed). */
+  activateProxyRules(): string[] {
+    const before = this.snapshotEffective(); // straddle the flag flip → the legacy→rules egress delta (F5)
+    if (AccountVault.isEnabled()) {
+      let moved = 0; // T5: import each pool, then ONE vault re-encrypt (was one save PER rule)
+      for (const r of this.db.proxyRules ?? []) {
+        if (r.kind === 'pool' && r.proxies.length && AccountVault.importRuleProxies(r.id, r.proxies)) moved++;
+      }
+      if (moved > 0) AccountVault.save();
+    }
+    this.db.proxyRulesAuthoritative = true;
+    this.save();
+    return this.affectedSince(before); // F5: the route eagerly invalidates the CSFloat client for exactly these
+  }
+
+  /** F3: when rules are AUTHORITATIVE, ensure each given account is pinned by an account-scope rule to
+   *  its dedicated proxy (or forced local IP) — otherwise an account imported/created AFTER cutover has
+   *  its `networkOverride`/vault proxy ignored by the engine and rides a broader rule (or the host IP).
+   *  Groups by distinct proxy value (mirrors synthesizeRules): find-or-create one account-scope pool
+   *  rule per proxy + one shared `kind:'local'` rule for forced-local. Legacy fields are still written
+   *  by the caller (constraint 4). No-op pre-cutover (the legacy chain still resolves). */
+  ensureAccountProxyRules(entries: Array<{ username: string; proxy?: string; forcedLocal?: boolean }>): void {
+    if (!this.db.proxyRulesAuthoritative) return;
+    if (!this.db.proxyRules) this.db.proxyRules = [];
+    const byProxy = new Map<string, string[]>(); // normalized proxy → usernames(lower)
+    const forcedLocal: string[] = [];
+    for (const e of entries) {
+      const u = e.username.toLowerCase();
+      const p = (e.proxy ?? '').trim();
+      if (p) {
+        const norm = normalizeProxy(p);
+        const list = byProxy.get(norm) ?? [];
+        if (!list.includes(u)) list.push(u);
+        byProxy.set(norm, list);
+      } else if (e.forcedLocal) {
+        if (!forcedLocal.includes(u)) forcedLocal.push(u);
+      }
+    }
+    let changed = false;
+    const addTargets = (rule: ProxyRule, users: string[]): void => { for (const u of users) if (!rule.targets.includes(u)) rule.targets.push(u); };
+    for (const [norm, users] of byProxy) {
+      let rule = this.db.proxyRules.find(r => r.scope === 'account' && r.kind === 'pool' && r.proxies.length === 1 && r.proxies[0] === norm);
+      if (rule) { addTargets(rule, users); }
+      else {
+        rule = { id: uuidv4(), scope: 'account', targets: [...users], kind: 'pool', proxies: [norm], priority: this.db.proxyRules.length, enabled: true, createdAt: new Date().toISOString() };
+        this.db.proxyRules.push(rule);
+      }
+      if (AccountVault.isEnabled()) AccountVault.importRuleProxies(rule.id, rule.proxies);
+      changed = true;
+    }
+    if (forcedLocal.length) {
+      let rule = this.db.proxyRules.find(r => r.scope === 'account' && r.kind === 'local');
+      if (rule) { addTargets(rule, forcedLocal); }
+      else {
+        rule = { id: uuidv4(), scope: 'account', targets: [...forcedLocal], kind: 'local', proxies: [], priority: this.db.proxyRules.length, enabled: true, createdAt: new Date().toISOString() };
+        this.db.proxyRules.push(rule);
+      }
+      changed = true;
+    }
+    if (changed) {
+      if (AccountVault.isEnabled()) AccountVault.save(); // batch the vault imports (T5-style)
+      this.reindexProxyRules();
+      this.save();
+    }
+  }
+
+  /** All folders (flat), for the proxy-rules target pickers / resolution preview. */
+  getAllFolders(): Folder[] { return this.db.folders.map(f => ({ ...f })); }
+
+  /** "Who gets what" — the effective resolution for every account under the CURRENT rules (evaluated
+   *  regardless of the authoritative flag, so it can be reviewed BEFORE activation). The caller MUST
+   *  redact each network.value before display. */
+  resolutionPreview(): Array<{
+    username: string; environmentId: string; folderId: string | null;
+    network: NetworkConfig | null; ruleId: string | null; ruleName: string | null;
+    scope: string | null; conflicts: string[]; poolLost: boolean;
+  }> {
+    const ruleById = new Map((this.db.proxyRules ?? []).map(r => [r.id, r]));
+    const ctx = this.ruleCtx(false, true); // one precomputed ctx for the full-fleet sweep (T3)
+    return this.db.accounts.map(a => {
+      const ex = resolveExplain(a, ctx);
+      const rule = ex.ruleId ? ruleById.get(ex.ruleId) : undefined;
+      return {
+        username: a.username, environmentId: a.environmentId, folderId: a.folderId ?? null,
+        network: ex.network, ruleId: ex.ruleId, ruleName: rule?.name ?? null,
+        scope: ex.scope, conflicts: ex.overlaps, poolLost: ex.poolLost,
+      };
+    });
+  }
+
+  /** Distinct proxy egress values across the fleet's EFFECTIVE resolution (rules when
+   *  authoritative, else the legacy chain). Peek only — never advances a rotation cursor.
+   *  For read-only, session-less fan-out work (the pricing fill) that should ride the fleet's
+   *  proxies instead of hammering Steam from the host IP. Local-IP/pool-lost outcomes are
+   *  excluded; order is stable (first-seen). */
+  distinctEgressProxies(): string[] {
+    const out = new Set<string>();
+    const ctx = this.db.proxyRulesAuthoritative ? this.ruleCtx(false, true) : null;
+    for (const a of this.db.accounts) {
+      const o = ctx ? resolveViaRules(a, ctx) : { kind: 'network' as const, network: this.legacyResolveNetwork(a) };
+      if (o.kind === 'network' && o.network?.type === 'proxy' && o.network.value?.trim()) out.add(o.network.value.trim());
+    }
+    return [...out];
+  }
+
+  // ── Proxy-rule CRUD (v5) ─────────────────────────────────────────────────────
+  // Each mutation returns the usernames whose EFFECTIVE egress changed, so the route can eagerly
+  // csfloat.invalidateClient them (a lazy Steam session but an eager CSFloat client — otherwise the
+  // marketplace client keeps egressing over the retired IP). When rules aren't authoritative the
+  // resolver still uses the legacy chain, so `affected` is naturally empty (dormant edits).
+
+  private snapshotEffective(): Map<string, string> {
+    const m = new Map<string, string>();
+    // T3: build ONE precomputed ctx for the whole-fleet sweep (the mutation hot path resolves every
+    // account twice) instead of per-account. Peek only — never advances a rotation cursor.
+    const ctx = this.db.proxyRulesAuthoritative ? this.ruleCtx(false, true) : null;
+    for (const a of this.db.accounts) {
+      const out = ctx ? resolveViaRules(a, ctx) : { kind: 'network' as const, network: this.legacyResolveNetwork(a) };
+      m.set(a.username.toLowerCase(), out.kind === 'network' ? JSON.stringify(out.network) : 'POOL_LOST');
+    }
+    return m;
+  }
+
+  private affectedSince(before: Map<string, string>): string[] {
+    const after = this.snapshotEffective();
+    const changed: string[] = [];
+    for (const [u, val] of after) if (before.get(u) !== val) changed.push(u);
+    return changed;
+  }
+
+  /** Priority IS the array index — reassign a dense unique rank after every mutation so two rules
+   *  can never tie on (tier, depth, priority). */
+  private reindexProxyRules(): void {
+    (this.db.proxyRules ?? []).forEach((r, i) => { r.priority = i; });
+  }
+
+  private static readonly SCOPES: readonly ProxyScope[]    = ['global', 'environment', 'folder', 'account'];
+  private static readonly KINDS:  readonly ProxyRuleKind[] = ['pool', 'local'];
+  /** F10: reject an unknown scope/kind at the MANAGER (the API), not just the route — an unvalidated
+   *  `scope:'Account'` skips every target check + the lowercasing, persists, and never matches. */
+  private static assertScope(s: unknown): ProxyScope {
+    if (typeof s === 'string' && (AccountManager.SCOPES as readonly string[]).includes(s)) return s as ProxyScope;
+    throw new Error(`Invalid rule scope "${String(s)}" (expected global|environment|folder|account)`);
+  }
+  private static assertKind(k: unknown): ProxyRuleKind {
+    if (typeof k === 'string' && (AccountManager.KINDS as readonly string[]).includes(k)) return k as ProxyRuleKind;
+    throw new Error(`Invalid rule kind "${String(k)}" (expected pool|local)`);
+  }
+
+  private validateRuleTargets(scope: ProxyScope, targets: string[]): string[] {
+    if (scope === 'global') return [];
+    const clean = [...new Set((targets ?? []).map(t => (t ?? '').trim()).filter(Boolean))];
+    for (const t of clean) {
+      if (scope === 'environment' && !this.getEnvironment(t)) throw new Error(`Environment "${t}" not found`);
+      if (scope === 'folder'      && !this.getFolder(t))      throw new Error(`Folder "${t}" not found`);
+      if (scope === 'account'     && !this.rawGet(t))         throw new Error(`Account "${t}" not found`);
+    }
+    return scope === 'account' ? clean.map(t => t.toLowerCase()) : clean;
+  }
+
+  addProxyRule(input: {
+    name?: string; scope: ProxyScope; targets: string[]; kind: ProxyRuleKind;
+    proxies?: string[]; pinPerAccount?: boolean; enabled?: boolean;
+  }): { rule: ProxyRule; affected: string[] } {
+    if (!this.db.proxyRules) this.db.proxyRules = [];
+    // Validate EVERYTHING before touching state (F6 no-partial-writes / F10 enums / F7 empty pool).
+    const scope = AccountManager.assertScope(input.scope);
+    const kind  = AccountManager.assertKind(input.kind);
+    const targets = this.validateRuleTargets(scope, input.targets ?? []);
+    const pool = kind === 'local' ? [] : validPool(input.proxies ?? []);
+    if (kind === 'pool' && pool.length === 0) {
+      throw new Error(`${(input.proxies ?? []).length ? `0 of ${(input.proxies ?? []).length} proxies are valid` : 'a proxy pool needs at least one valid proxy'} — rule not saved`);
+    }
+    const before = this.snapshotEffective();
+    const rule: ProxyRule = {
+      id: uuidv4(),
+      name: input.name?.trim() || undefined,
+      scope, targets, kind, proxies: pool,
+      pinPerAccount: input.pinPerAccount || undefined,
+      priority: this.db.proxyRules.length,
+      enabled: input.enabled ?? true,
+      createdAt: new Date().toISOString(),
+    };
+    this.db.proxyRules.push(rule);
+    this.reindexProxyRules();
+    if (AccountVault.isEnabled() && pool.length) AccountVault.setRuleProxies(rule.id, pool);
+    this.save();
+    return { rule, affected: this.affectedSince(before) };
+  }
+
+  updateProxyRule(id: string, patch: {
+    name?: string | null; scope?: ProxyScope; targets?: string[]; kind?: ProxyRuleKind;
+    proxies?: string[]; pinPerAccount?: boolean; enabled?: boolean;
+  }): { rule: ProxyRule; affected: string[] } {
+    const rule = (this.db.proxyRules ?? []).find(r => r.id === id);
+    if (!rule) throw new Error(`Proxy rule "${id}" not found`);
+    // F6: compute + VALIDATE everything into locals; assign onto the live rule only after EVERY check
+    // passes, so a failing PATCH never leaves memory diverged from disk.
+    const nextScope = patch.scope !== undefined ? AccountManager.assertScope(patch.scope) : rule.scope; // F10
+    const nextKind  = patch.kind  !== undefined ? AccountManager.assertKind(patch.kind)   : rule.kind;   // F10
+    const nextTargets = (patch.targets !== undefined || patch.scope !== undefined)
+      ? this.validateRuleTargets(nextScope, patch.targets ?? rule.targets)
+      : rule.targets;
+    let nextPool: string[] = rule.proxies;
+    let vaultAction: 'set' | 'delete' | 'none' = 'none';
+    if (nextKind === 'local') {
+      nextPool = [];
+      vaultAction = 'delete';
+    } else if (patch.proxies !== undefined) {
+      nextPool = validPool(patch.proxies);
+      if (nextPool.length === 0) { // F2/F7: never let a pool rule transition to an empty pool via the API
+        throw new Error(`0 of ${(patch.proxies ?? []).length} proxies are valid — rule not saved`);
+      }
+      vaultAction = 'set';
+    } else if (nextKind === 'pool' && rule.kind === 'local') {
+      throw new Error('switching to a proxy pool requires at least one valid proxy — rule not saved'); // F2/F7
+    }
+    const nextName = patch.name !== undefined
+      ? ((typeof patch.name === 'string' && patch.name.trim()) ? patch.name.trim() : undefined)
+      : rule.name;
+    const nextPin = patch.pinPerAccount !== undefined ? (patch.pinPerAccount || undefined) : rule.pinPerAccount;
+    const nextEnabled = patch.enabled !== undefined ? patch.enabled : rule.enabled;
+    // All checks passed — mutate + persist.
+    const before = this.snapshotEffective();
+    rule.name = nextName; rule.scope = nextScope; rule.targets = nextTargets;
+    rule.kind = nextKind; rule.proxies = nextPool; rule.pinPerAccount = nextPin; rule.enabled = nextEnabled;
+    if (AccountVault.isEnabled()) {
+      if (vaultAction === 'set') AccountVault.setRuleProxies(rule.id, nextPool);
+      else if (vaultAction === 'delete') AccountVault.deleteRuleProxies(rule.id);
+    }
+    this.save();
+    return { rule, affected: this.affectedSince(before) };
+  }
+
+  deleteProxyRule(id: string): { affected: string[] } {
+    const rules = this.db.proxyRules ?? [];
+    const idx = rules.findIndex(r => r.id === id);
+    if (idx < 0) throw new Error(`Proxy rule "${id}" not found`);
+    const before = this.snapshotEffective();
+    rules.splice(idx, 1);
+    this.reindexProxyRules();
+    if (AccountVault.isEnabled()) AccountVault.deleteRuleProxies(id);
+    this.save();
+    return { affected: this.affectedSince(before) };
+  }
+
+  reorderProxyRules(orderedIds: string[]): { affected: string[] } {
+    const rules = this.db.proxyRules ?? [];
+    const before = this.snapshotEffective();
+    const byId = new Map(rules.map(r => [r.id, r]));
+    const next: ProxyRule[] = [];
+    for (const id of orderedIds) { const r = byId.get(id); if (r) { next.push(r); byId.delete(id); } }
+    for (const r of byId.values()) next.push(r); // append any not mentioned (safety)
+    this.db.proxyRules = next;
+    this.reindexProxyRules();
+    this.save();
+    return { affected: this.affectedSince(before) };
+  }
+
+  private static sameEgress(a: NetworkConfig, b: NetworkConfig): boolean {
+    if (a.type !== b.type) return false;
+    return a.type === 'proxy' ? normalizeProxy(a.value) === normalizeProxy(b.value) : a.value === b.value;
+  }
+
+  private static sameProxyList(a: string[] | undefined, b: string[] | undefined): boolean {
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
   }
 
   // ── Environments ─────────────────────────────────────────────────────────────

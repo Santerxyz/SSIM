@@ -36,18 +36,20 @@ export interface CS2Item {
   /** null  →  no trade lock */
   tradeLockExpiry: Date | null;
   /**
-   * Strict dashboard bucket:
+   * Strict dashboard bucket — see `bucketOf` (core/MarketModel.ts), the single classifier:
    *   'listed'      – currently on sale on the Steam Community Market (NOT in the
    *                   inventory itself; sourced from the market-listings endpoint)
-   *   'tradelocked' – in the inventory but held (tradeLockExpiry in the future)
+   *   'tradelocked' – in the inventory but TEMPORARILY held (tradeLockExpiry in the future)
+   *   'untradable'  – in the inventory and PERMANENTLY not tradable (Storage Unit, coin,
+   *                   badge, music kit, untradable crate). No unlock date, nothing to wait for.
    *   'tradable'    – in the inventory and freely tradable right now
    * Persisted with the record. At read time, `tagCategories` (server.ts) re-derives the
-   * tradelocked/tradable split from the FINAL lock state (after the manual-protection
-   * overlay) for `source='gc'` records; 'listed' is sticky — it is market-sourced at
-   * refresh time and trusted from the cache (including the carry-forward when a listings
-   * fetch fails).
+   * non-listed split from the FINAL lock state (after the manual-protection overlay) for
+   * `source='gc'` records; 'listed' is sticky — it is market-sourced at refresh time and
+   * trusted from the cache (including the carry-forward when a listings fetch fails).
+   * An older cache tagged 'tradelocked' for an inert item self-heals on the next serve.
    */
-  category?: 'listed' | 'tradelocked' | 'tradable';
+  category?: 'listed' | 'tradelocked' | 'untradable' | 'tradable';
   /**
    * For a 'listed' item only: false ⇒ the listing is still awaiting mobile (2FA)
    * confirmation on Steam (it came from pending_listings / listings_to_confirm). Lets

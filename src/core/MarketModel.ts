@@ -198,9 +198,24 @@ export function listedAssetIdsForApp(p: ParsedMyListings, appId: number): Set<st
   return p.assetIdsByApp.get(appId) ?? new Set<string>();
 }
 
+/**
+ * The subset of this app's listed assets STILL AWAITING a mobile 2FA confirmation — Steam's
+ * `pending_listings` / `listings_to_confirm`, which parseMyListings already tags `confirmed: false`.
+ *
+ * A mass-sell re-run must confirm exactly these, and nothing else. Gating the confirm phase on "any
+ * pre-existing listing" instead spends a `mobileconf/getlist` on every re-run over already-ACTIVE
+ * listings — requests charged against Steam's per-IP budget for no possible effect, which is how a
+ * rate-limited window became a 4×-retried HTTP 429 storm. (2026-07-10)
+ */
+export function unconfirmedListedAssetIdsForApp(p: ParsedMyListings, appId: number): Set<string> {
+  const out = new Set<string>();
+  for (const l of p.listings) if (!l.confirmed && l.appId === appId) out.add(l.assetId);
+  return out;
+}
+
 // ── Bucket classifier — the ONLY place an owned item's bucket is decided ──────
 
-export type ItemBucket = 'listed' | 'tradelocked' | 'tradable';
+export type ItemBucket = 'listed' | 'tradelocked' | 'untradable' | 'tradable';
 
 export interface BucketInput {
   category?:        string | null;
@@ -209,17 +224,30 @@ export interface BucketInput {
 }
 
 /**
- * Decide an item's dashboard bucket from BOTH its trade-lock expiry AND its raw
- * `tradable` flag. A non-tradable item (for ANY reason — held, untradable type,
- * unparsed hold) is never reported as freely "tradable". A pre-set 'listed'
- * category (membership-derived elsewhere) passes through untouched.
+ * THE item-state classifier. Four states, because an item can be un-sellable for four different reasons
+ * and the operator needs to tell them apart:
+ *
+ *   listed      — on the Steam Community Market right now
+ *   tradelocked — TEMPORARILY held; there is an unlock date (or a hold we detected but could not date)
+ *   untradable  — PERMANENTLY not tradable: a Storage Unit, a 5 Year Veteran Coin, a Music Kit, a badge,
+ *                 an untradable crate. No date, no countdown, nothing to wait for.
+ *   tradable    — free to trade
+ *
+ * This used to collapse `untradable` into `tradelocked` ("untradable-for-any-reason ≠ tradable"), which is
+ * fail-closed but a lie: the UI then showed a Storage Unit as "Locked", implying a countdown that will
+ * never arrive. Fail-closed is preserved — `untradable` is still not `tradable` — but it is now NAMED.
+ *
+ * BRANCH ORDER IS LOAD-BEARING. Every hold, real or merely detected, carries a future expiry by the time
+ * it reaches here: `parseTradeLock` routes an undatable hold to the far-future TRADE_LOCK_DATE_UNKNOWN
+ * sentinel, and `applyManualLock` (server.ts) stamps a real future Date before `tagCategories` runs. So the
+ * `expiry > now` test MUST precede the `untradable` test, or a held item would be mislabelled inert.
  */
 export function bucketOf(item: BucketInput, nowMs: number = Date.now()): ItemBucket {
   if (item.category === 'listed') return 'listed';
   const exp = item.tradeLockExpiry ? new Date(item.tradeLockExpiry).getTime() : 0;
   if (Number.isNaN(exp)) return 'tradelocked'; // unparseable lock date ⇒ fail closed
   if (exp && exp > nowMs) return 'tradelocked';
-  if (item.tradable !== true) return 'tradelocked'; // untradable-for-any-reason ≠ tradable
+  if (item.tradable !== true) return 'untradable'; // permanently untradable — no date, no countdown
   return 'tradable';
 }
 

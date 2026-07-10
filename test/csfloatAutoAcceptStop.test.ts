@@ -22,8 +22,13 @@ after(() => {
   conc.scaleConcurrency = REAL.conc;
 });
 
+/** AccountManager.withNetwork attaches a RESOLVED network to every account it hands out — a proxy, or
+ *  this localip sentinel for a legitimate host-IP account. `undefined` ONLY ever means pool-lost, which
+ *  deliverFor refuses (it would leak the host IP), so a mock must carry one to reach the delivery path. */
+const RESOLVED_NETWORK = { type: 'localip', value: '0.0.0.0' };
+
 function makeWorker(): CsFloatAutoAcceptWorker {
-  const mgr = { get: (u: string) => ({ username: u, enabled: true, tier: 'full' }) };
+  const mgr = { get: (u: string) => ({ username: u, enabled: true, tier: 'full', network: RESOLVED_NETWORK }) };
   return new CsFloatAutoAcceptWorker(mgr as never, {} as never, {} as never);
 }
 
@@ -84,7 +89,7 @@ test('H-FLT-011: deliverFor stops after the first non-persisted delivery (no sec
   const tradeSvc = {
     sendTrade: async () => { sends++; return { status: 'sent', offerId: `o${sends}` }; },
   };
-  const mgr = { get: (u: string) => ({ username: u, enabled: true, tier: 'full' }) };
+  const mgr = { get: (u: string) => ({ username: u, enabled: true, tier: 'full', network: RESOLVED_NETWORK }) };
   const w = new CsFloatAutoAcceptWorker(mgr as never, tradeSvc as never, csfloat as never);
   // Stub the durable store: add() returns FALSE (record not durable) so the pass must stop after one send.
   (w as unknown as { delivered: unknown }).delivered = {

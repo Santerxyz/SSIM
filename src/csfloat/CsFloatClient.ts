@@ -66,6 +66,13 @@ export interface CreateBuyOrderBody {
   quantity:          number;
 }
 
+/** One row of the bulk /listings/price-list catalog. `min_price` is the lowest buy-now ask in cents. */
+export interface PriceListRow {
+  market_hash_name: string;
+  quantity?:        number;
+  min_price?:       number;   // cents
+}
+
 type Dict = Record<string, unknown>;
 
 export class CsFloatClient {
@@ -103,6 +110,12 @@ export class CsFloatClient {
   // ── DOCUMENTED endpoints (stable) ───────────────────────────────────────────
   searchListings(params: ListingSearchParams = {}): Promise<{ data: Dict[]; cursor?: string }> {
     return this.req({ method: 'GET', url: '/listings', params });
+  }
+  /** Bulk lowest buy-now ask for the WHOLE CS2 catalog in ONE request (min_price in cents).
+   *  Undocumented but live-verified 2026-07-10; the pricing fill uses it to warm every CS2 name at
+   *  once instead of hundreds of per-name searches. Shares the key's limiter + 429 backoff like any req. */
+  priceList(): Promise<PriceListRow[]> {
+    return this.req({ method: 'GET', url: '/listings/price-list' });
   }
   getListing(id: string): Promise<Dict> {
     return this.req({ method: 'GET', url: `/listings/${encodeURIComponent(id)}` });

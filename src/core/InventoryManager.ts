@@ -420,6 +420,11 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
   // 1) Authoritative: the "Tradable After …" / "Tradable/Marketable After …" notice
   //    Steam puts in owner_descriptions (multi-language note: matched leniently).
   const pools = [desc.owner_descriptions, desc.descriptions];
+  // The fail-safe sentinel is DEFERRED, never returned from inside the loop. An item carries SEVERAL
+  // notes, and a dateless one may sit before the one that holds the real expiry (Steam lists the
+  // market-listing note first). Returning early on the first dateless note abandoned the scan — the
+  // countdown was then replaced by "date unknown" purely because of note ORDER. (2026-07-10)
+  let unreadableHold = '';
   for (const pool of pools) {
     if (!pool) continue;
     for (const entry of pool) {
@@ -439,37 +444,41 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
       if (m) {
         const parsed = parseSteamDate(`${m[1]}${m[2] ? ' ' + m[2] : ''} GMT`);
         if (parsed && parsed.getTime() > Date.now()) return parsed; // future hold → locked
-        // Notice present but its date did not parse → fail SAFE: treat as locked (a constant
-        // far-future sentinel, TRADE_LOCK_DATE_UNKNOWN, re-evaluated each refresh) rather than
-        // wrongly tradable (#34).
-        if (!parsed) {
-          logger.warn(`trade-lock notice present but date unparseable ("${v.slice(0, 60)}") – treating item as locked (date unknown)`);
-          return new Date(TRADE_LOCK_DATE_UNKNOWN); // deterministic sentinel (B-5 / C22)
-        }
+        // Notice present but its date did not parse → fail SAFE (#34): remember it, keep scanning.
+        if (!parsed && !unreadableHold) unreadableHold = v;
         // parsed but in the past → expired hold; keep scanning the other notices.
       }
       // 1b) GLOBAL (language-INDEPENDENT) hold parsing. `owner_descriptions` come back in the
       //     ACCOUNT'S Steam language, NOT the l=english fetch param — so the English/month-name matcher
       //     above misses EVERY non-English farm (owner report 2026-07-08: a German note "⇆ … kann bis
       //     12.7.2026, 14:00:00 …" showed a bare "Locked", no countdown). Two facts make a keyword-free
-      //     solution possible for ANY locale: (a) Steam prefixes every trade-protection note with the
+      //     solution possible for ANY locale: (a) Steam prefixes trade-protection notes with the
       //     language-independent "⇆" marker (U+21C6); (b) the expiry in these auto-generated notes is a
-      //     NUMERIC/ISO/CJK/month-name date in virtually every locale. So: treat the note as a hold when
-      //     it carries "⇆" OR the item is non-tradable, then extract the date FORMAT-agnostically — no
-      //     per-language keyword table to maintain.
-      const isHoldNote = v.includes('⇆');
-      if (isHoldNote || desc.tradable === 0) {
+      //     NUMERIC/ISO/CJK/month-name date in virtually every locale. So: treat the note as a candidate
+      //     hold when it carries "⇆" OR the item is non-tradable, then extract the date FORMAT-agnostically.
+      const hasMarker = v.includes('⇆');
+      if (hasMarker || desc.tradable === 0) {
         const d = extractHoldDate(v);
         if (d && d.getTime() > Date.now()) return d; // future hold → locked, with a real countdown
-        if (isHoldNote && !d) {
-          // Definitely a hold (⇆) but no date parsed → fail SAFE: locked, date unknown (stable sentinel,
-          // re-evaluated each refresh) rather than wrongly tradable (#34 / B-5 / C22).
-          logger.warn(`trade-lock ⇆ note present but date unparseable ("${v.slice(0, 80)}") – treating item as locked (date unknown)`);
-          return new Date(TRADE_LOCK_DATE_UNKNOWN);
-        }
-        // no future date on a non-⇆ non-tradable item → fall through; the tradable=0 flag still shows "Locked".
+        // "⇆" alone does NOT prove a trade hold. Steam stamps the SAME marker on the market-listing
+        // note — "⇆ This item is listed on the Steam Community Market and cannot be consumed or
+        // modified." — which carries no date and is not a hold at all. Treating it as one turned every
+        // listed item into "Locked (date unknown)" (741 hits in one live log) and, worse, made a listed
+        // item that IS trade-held lose its countdown, because this branch returned before the note with
+        // the real date was reached. A genuine hold ALWAYS says WHEN: it contains a date (digits, after
+        // digit/bidi normalization) or an explicit "after/until" phrasing. A marker note that states no
+        // "when" cannot be a hold, so it contributes no lock date — `desc.tradable` still drives the
+        // plain "Locked" badge, and isSellable() independently requires `tradable === true`. (2026-07-10)
+        // `desc.tradable === 1` keeps the old fail-closed behaviour for the one case where dropping the
+        // sentinel could newly matter: a marker note on an item Steam still calls tradable is
+        // self-contradictory, so we keep locking it rather than let isSellable() wave it through.
+        if (hasMarker && !d && !unreadableHold && (statesAWhen(v) || desc.tradable === 1)) unreadableHold = v;
       }
     }
+  }
+  if (unreadableHold) {
+    logger.warn(`trade-lock notice present but date unparseable ("${unreadableHold.slice(0, 80)}") – treating item as locked (date unknown)`);
+    return new Date(TRADE_LOCK_DATE_UNKNOWN); // deterministic sentinel (B-5 / C22)
   }
 
   // 2) Fallback: cache_expiration, but ONLY when the item is genuinely non-tradable
@@ -481,6 +490,24 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
   return null;
 }
 
+/**
+ * Does this note say WHEN a hold expires? A genuine trade-hold note always does — that is its entire
+ * purpose: Steam auto-generates it with the expiry embedded, as a date in the account's locale (digits,
+ * possibly Arabic-Indic) or, in English, behind an explicit "after"/"until". Steam's OTHER "⇆"-marked
+ * note — "⇆ This item is listed on the Steam Community Market and cannot be consumed or modified." —
+ * names no moment, in any language.
+ *
+ * So this is the language-independent test for "is a dateless ⇆ note actually a hold we must fail closed
+ * on (#34), or not a hold at all?". Getting it wrong in the permissive direction cannot make a held item
+ * look tradable: `desc.tradable` still drives the "Locked" badge and isSellable() requires
+ * `tradable === true` before any money path touches the item.
+ */
+function statesAWhen(v: string): boolean {
+  const n = normalizeDigitsAndBidi(v);
+  if (/\d/.test(n)) return true;    // any digit ⇒ it names a moment (year / day / clock time)
+  return /\b(?:tradable|marketable|protected)\b[^\n]*\b(?:after|until)\b/i.test(n);
+}
+
 /** Parses "Dec 25, 2025 (07:00:00) GMT" → Date. */
 function parseSteamDate(raw: string): Date | null {
   // Normalize "(07:00:00)" → "07:00:00" so Date can parse it
@@ -489,22 +516,86 @@ function parseSteamDate(raw: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+// ── Locale plumbing for extractHoldDate ────────────────────────────────────────
+
+/**
+ * Arabic-Indic (٠-٩) and Extended/Persian (۰-۹) digits → ASCII, and strip the invisible
+ * bidi-control marks (LRM/RLM/ALM/embedding/isolate) Arabic/Hebrew text embeds between
+ * tokens — they sit INSIDE date strings and break `\b`/adjacency in every regex below.
+ */
+function normalizeDigitsAndBidi(s: string): string {
+  return s
+    .replace(/[٠-٩]/g, (c) => String(c.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (c) => String(c.charCodeAt(0) - 0x06f0))
+    .replace(/[‎‏؜‪-‮⁦-⁩]/g, '');
+}
+
+/**
+ * Month-word → month-number map for EVERY Steam storefront locale, built from the ICU data
+ * Node already ships (full-icu) — no hand-written keyword table (the 8254d12 regression was
+ * exactly a hand-coverage gap: worded months in non-Latin scripts — Arabic "يوليو", Russian
+ * genitive "июля", Greek "Ιουλίου" — parsed by nothing). `formatToParts` with day+month+year
+ * yields the IN-CONTEXT (genitive where the language inflects) form, i.e. the exact token
+ * Steam's localized note contains. Tokens that mean different months in different locales
+ * (or connector words) are dropped as ambiguous — a lookup miss just means "not a month",
+ * so ambiguity degrades to the old behavior, never to a wrong date.
+ */
+const STEAM_INTL_LOCALES = [
+  'ar', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'es-419', 'fi', 'fr', 'hu', 'id', 'it',
+  'ja', 'ko', 'nl', 'nb', 'pl', 'pt', 'pt-BR', 'ro', 'ru', 'sv', 'th', 'tr', 'uk', 'vi',
+  'zh-CN', 'zh-TW',
+];
+let MONTH_WORDS: Map<string, number> | null = null;
+function monthWordKey(word: string): string { return word.toLowerCase().replace(/\.$/, ''); }
+function monthWords(): Map<string, number> {
+  if (MONTH_WORDS) return MONTH_WORDS;
+  const map = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  for (const loc of STEAM_INTL_LOCALES) {
+    for (const width of ['long', 'short'] as const) {
+      let fmt: Intl.DateTimeFormat;
+      try {
+        fmt = new Intl.DateTimeFormat(loc, { day: 'numeric', month: width, year: 'numeric', calendar: 'gregory' });
+      } catch { continue; } // unknown locale on a slim ICU build → skip; others still cover
+      for (let mo = 1; mo <= 12; mo++) {
+        const word = fmt.formatToParts(new Date(Date.UTC(2026, mo - 1, 15))).find((p) => p.type === 'month')?.value;
+        if (!word || /\d/.test(word)) continue; // numeric-month locales (vi "tháng 7") have no word to map
+        const k = monthWordKey(normalizeDigitsAndBidi(word));
+        if (!k) continue;
+        const prev = map.get(k);
+        if (prev !== undefined && prev !== mo) { ambiguous.add(k); continue; }
+        map.set(k, mo);
+      }
+    }
+  }
+  for (const k of ambiguous) map.delete(k);
+  MONTH_WORDS = map;
+  return map;
+}
+
+/** Thai storefront years can be Buddhist Era (2569 = 2026 CE); map the BE range for 2000-2100 CE. */
+function normalizeYear(y: number): number { return y >= 2543 && y <= 2643 ? y - 543 : y; }
+
 /**
  * Language-INDEPENDENT trade-hold date extraction (owner request 2026-07-08: "something global").
  * Steam localises the hold note into the account's language, so keyword parsing does not scale to
- * ~28 locales — but the DATE itself is numeric/ISO/CJK/month-name in virtually every locale. Scan the
- * note for every date shape Steam emits and return the EARLIEST FUTURE one (the hold expiry). Only
- * called once a note is already known to be a hold (the "⇆" marker or a non-tradable item), so a
- * stray date cannot false-lock a freely-tradable item.
+ * ~28 locales. Scan the note for every date shape Steam emits — numeric (any component order),
+ * CJK/Hangul, and worded-month in ANY Steam locale via the ICU-built month map — and return the
+ * EARLIEST FUTURE one (the hold expiry). Only called once a note is already known to be a hold
+ * (the "⇆" marker or a non-tradable item), so a stray date cannot false-lock a tradable item.
+ * A note that STILL doesn't parse falls back to the caller's locked-date-unknown sentinel — that
+ * fail-safe is correct; the frontend renders the sentinel as "date unknown", never as a countdown.
  *
  * TIMEZONE: localized numeric/CJK notes carry no zone, so those instants are built in the running
  * host's local zone (a single-operator farm's host ≈ its accounts' zone; any mismatch is at most a
  * TZ offset on a days-long countdown — the goal is a countdown instead of a bare "Locked"). The
  * English month-name form keeps its explicit "… GMT" (Steam states GMT there).
  */
-export function extractHoldDate(text: string): Date | null {
+export function extractHoldDate(rawText: string): Date | null {
+  const text = normalizeDigitsAndBidi(rawText);
   const cand: number[] = [];
-  const push = (y: number, mo: number, d: number, hh = 0, mi = 0, ss = 0): void => {
+  const push = (yRaw: number, mo: number, d: number, hh = 0, mi = 0, ss = 0): void => {
+    const y = normalizeYear(yRaw);
     if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return; // reject garbage triples
     const t = new Date(y, mo - 1, d, hh, mi, ss).getTime();
     if (!Number.isNaN(t)) cand.push(t);
@@ -514,8 +605,11 @@ export function extractHoldDate(text: string): Date | null {
   // ISO  YYYY-MM-DD
   const iso = new RegExp(`(\\d{4})-(\\d{1,2})-(\\d{1,2})${T}`, 'g');
   while ((m = iso.exec(text))) push(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
-  // CJK  YYYY年MM月DD日  (zh / ja / ko)
-  const cjk = new RegExp(`(\\d{4})\\s*\\u5e74\\s*(\\d{1,2})\\s*\\u6708\\s*(\\d{1,2})\\s*\\u65e5${T}`, 'g');
+  // Year-first numeric  YYYY/M/D · YYYY.M.D  (ja/zh "2026/07/16", hu "2026. 07. 16.")
+  const yf = new RegExp(`(\\d{4})\\s*[./]\\s*(\\d{1,2})\\s*[./]\\s*(\\d{1,2})${T}`, 'g');
+  while ((m = yf.exec(text))) push(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  // CJK  YYYY年MM月DD日 (zh/ja) and Hangul  YYYY년 MM월 DD일 (ko)
+  const cjk = new RegExp(`(\\d{4})\\s*[\\u5e74\\ub144]\\s*(\\d{1,2})\\s*[\\u6708\\uc6d4]\\s*(\\d{1,2})\\s*[\\u65e5\\uc77c]${T}`, 'g');
   while ((m = cjk.exec(text))) push(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
   // Dotted  D.M.YYYY  (de / most of EU)
   const dot = new RegExp(`\\b(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})${T}`, 'g');
@@ -527,6 +621,28 @@ export function extractHoldDate(text: string): Date | null {
     if (a > 12 && b <= 12) push(y, b, a, hh, mi, ss);        // first >12 ⇒ it's the day → D/M
     else if (b > 12 && a <= 12) push(y, a, b, hh, mi, ss);   // second >12 ⇒ day → M/D
     else push(y, b, a, hh, mi, ss);                          // both ≤12 → D/M (most common worldwide)
+  }
+  // Vietnamese numeric-word month  "16 tháng 7, 2026"
+  const vi = new RegExp(`(\\d{1,2})\\s+th[áa]ng\\s+(\\d{1,2})\\s*,?\\s*(\\d{4})${T}`, 'gi');
+  while ((m = vi.exec(text))) push(+m[3], +m[2], +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  // Worded month, ANY Steam locale (ICU map): "16 Ιουλίου 2026" / "16 يوليو 2026" / "16 июля 2026 г."
+  // Day-first ("16 de julio de 2026") and month-first ("July 16, 2026") shapes; the month-word
+  // lookup is the gate, so an unknown word simply doesn't match — no false positives.
+  const dayFirst = new RegExp(`(\\d{1,2})\\.?(?:\\s+de|\\s+of)?\\s+([\\p{L}\\p{M}]{2,20})\\.?(?:\\s+de|\\s+of)?\\s+(\\d{4})${T}`, 'gu');
+  while ((m = dayFirst.exec(text))) {
+    const mo = monthWords().get(monthWordKey(m[2]));
+    if (mo) push(+m[3], mo, +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  }
+  const monthFirst = new RegExp(`([\\p{L}\\p{M}]{2,20})\\.?\\s+(\\d{1,2})\\s*[,،]?\\s*(\\d{4})${T}`, 'gu');
+  while ((m = monthFirst.exec(text))) {
+    const mo = monthWords().get(monthWordKey(m[1]));
+    if (mo) push(+m[3], mo, +m[2], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  }
+  // Year-first worded (hu "2026. július 16.")
+  const yearFirstWord = new RegExp(`(\\d{4})\\.?\\s+([\\p{L}\\p{M}]{2,20})\\.?\\s+(\\d{1,2})${T}`, 'gu');
+  while ((m = yearFirstWord.exec(text))) {
+    const mo = monthWords().get(monthWordKey(m[2]));
+    if (mo) push(+m[1], mo, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
   }
   // English / month-name  "Mon DD, YYYY (HH:MM:SS) GMT"  (kept explicit-GMT via parseSteamDate)
   const mon = /(?:[A-Za-z]{3,9},\s+)?([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})(?:[^A-Za-z0-9]*(\d{1,2}:\d{2}(?::\d{2})?))?/g;

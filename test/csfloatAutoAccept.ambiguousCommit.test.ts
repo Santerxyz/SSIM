@@ -24,6 +24,11 @@ function freshDeliveredPath(): string {
 
 const PENDING_TRADE = { id: 'trade-A', buyer_id: '76561199012345678', item: { asset_id: '123456789' } };
 
+/** AccountManager.withNetwork attaches a RESOLVED network to every account it hands out — a proxy, or
+ *  this localip sentinel for a legitimate host-IP account. `undefined` ONLY ever means pool-lost, which
+ *  deliverFor refuses (it would leak the host IP), so a mock must carry one to reach the delivery path. */
+const RESOLVED_NETWORK = { type: 'localip', value: '0.0.0.0' };
+
 /** Build a worker whose deps return a single pending trade with a valid delivery target,
  *  and whose delivered store lives on a fresh temp path (non-degraded, isolated). */
 function makeWorker(sendTrade: () => Promise<never>): {
@@ -32,7 +37,7 @@ function makeWorker(sendTrade: () => Promise<never>): {
   sendCalls: () => number;
 } {
   let sendCalls = 0;
-  const accounts = { get: (u: string) => ({ username: u, enabled: true, tier: 'full' }) };
+  const accounts = { get: (u: string) => ({ username: u, enabled: true, tier: 'full', network: RESOLVED_NETWORK }) };
   const trades = {
     sendTrade: async () => { sendCalls++; return sendTrade(); },
   };

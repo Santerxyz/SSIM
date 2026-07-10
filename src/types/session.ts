@@ -66,4 +66,9 @@ export interface SessionManagerEvents {
   disconnected:     (username: string, reason: string) => void;
   /** A session was torn down (logout/re-login) – release per-session resources. */
   sessionDestroyed: (username: string) => void;
+  /** Steam delivered a wallet balance: once shortly after login, and again on every balance CHANGE
+   *  (ClientWalletInfoUpdate) for as long as the session stays resident. A money read-back awaits this
+   *  rather than reading `session.wallet` straight after login — the login promise resolves on
+   *  'webSession', which can beat it (W4_40). */
+  wallet:           (username: string, wallet: ManagedSession['wallet']) => void;
 }

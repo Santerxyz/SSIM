@@ -67,16 +67,22 @@ test('S2: a soft error-miss expires in minutes; an authoritative no-price lasts 
     inject(svc, 'FreshSoft', { cents: null, fetchedAt: isoAgo(2 * MIN), soft: true });
     assert.equal(svc.priceCents('FreshSoft', 730), null);
 
-    // Real prices keep the 24h TTL: 23h fresh, 25h stale.
-    inject(svc, 'Recent', { cents: 5000, fetchedAt: isoAgo(23 * HOUR) });
+    // Real prices keep the ~24h TTL, minus a deterministic per-name jitter of 0..4h (breaks a fill
+    // cohort's TTL cliff). Assert OUTSIDE the jitter band so it holds for any key: ≤20h always fresh,
+    // >24h always stale.
+    inject(svc, 'Recent', { cents: 5000, fetchedAt: isoAgo(19 * HOUR) });
     assert.equal(svc.priceCents('Recent', 730), 5000);
     inject(svc, 'Stale', { cents: 5000, fetchedAt: isoAgo(25 * HOUR) });
     assert.equal(svc.priceCents('Stale', 730), undefined);
   } finally { svc.shutdown(); }
 });
 
+// A background Steam fill now rides an authenticated identity; a fill with none DEFERS (never anonymous).
+// These white-box tests supply one fake identity so the Steam lane actually runs.
+const fakeIdentity = () => [{ username: 'pricer', cookieHeader: 'steamLoginSecure=deadbeef', agent: undefined as any }];
+
 test('S19: PricingService.processed counts an ERROR-resolved name (not just successes)', async () => {
-  const svc = new PricingService();
+  const svc = new PricingService(undefined, fakeIdentity);
   // Inject a source that always throws → the name resolves via the error path (advances `processed`,
   // NOT `fetched`). We check right after it resolves, before the ~3.5s inter-fetch sleep.
   (svc as any).steamSource = { id: 'steam', fetchPriceCents: async () => { throw new Error('FETCH_FAILED_500'); } };
@@ -103,7 +109,7 @@ test('S2: the PriceCache soft flag only attaches to a null miss (a real price is
 });
 
 test('S13: a processed job de-queues its ENQUEUE key even after the effective source flips mid-fill', async () => {
-  const svc = new PricingService();
+  const svc = new PricingService(undefined, fakeIdentity);
   try {
     (svc as any).steamSource = { id: 'steam', fetchPriceCents: async () => 100 };
     // A Steam job is queued; then the effective source flips to csfloat (a runtime CSFloat-key change).

@@ -12,31 +12,32 @@ const SteamTotp = createRequire(__filename)('steam-totp') as {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  H-TRD-007 — batch confirmation times must NOT drift +1s per item ahead of
-//  server time. The old `SteamTotp.time(off) + idx` signed the Nth accept N seconds
-//  in the future ON TOP of the fresh base that already advances with the wall clock,
-//  so a 200-500-listing mass-sell tail was signed 200-500s ahead and risked key
-//  rejection once outside Steam's tolerance. The fix signs each accept with
-//  `max(SteamTotp.time(off), prevT + 1)` — strictly unique + increasing, but bounded
-//  to ≤1s beyond real server time for any batch size.
+//  H-TRD-007 — the PER-ITEM fallback's confirmation times must NOT drift +1s per
+//  item ahead of server time. Since 2026-07-10 the happy path is a single
+//  `multiajaxop` (one time, no drift possible); this bound matters for the per-item
+//  FALLBACK the code takes when the batch fails. The old `SteamTotp.time(off) + idx`
+//  signed the Nth accept N seconds in the future; the fix signs each with
+//  `max(SteamTotp.time(off), prevT + 1)` — unique + increasing, bounded to ≤1s beyond
+//  real server time for any batch size.
 //
 //  The loops are driven directly (Object.create) with a stubbed SteamTotp.time that
-//  advances 1s per call (worst case: 1 real second elapses per accept) and a stub
-//  community.getConfirmations that returns N fake confirmations whose respond()
-//  captures the signed time.
+//  advances 1s per call and a stub community whose batch respondToConfirmation FAILS
+//  (forcing the per-item fallback under test) and whose per-conf respond() captures
+//  the signed time.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CONF_TYPE_MARKET_LISTING = 3;
 
 interface Captured { signed: number; timeNow: number }
 
-/** Build a trader whose community.getConfirmations returns `count` fake confirmations,
- *  each capturing the time it is signed with (and the stub clock value at that moment). */
+/** Build a trader whose per-item respond captures its signed time, and whose BATCH respondToConfirmation
+ *  fails (non-rate-limit) so confirmMarketListings/respondToConfirmations take the per-item fallback path. */
 function traderWithConfirmations(count: number, type: number): { trader: any; captured: Captured[] } {
   const captured: Captured[] = [];
   const confs = Array.from({ length: count }, (_, i) => ({
     id: `id${i}`,
     creator: `c${i}`,
+    key: `nonce${i}`,
     type,
     respond(t: number, _key: unknown, _accept: boolean, cb: (err: Error | null) => void) {
       captured.push({ signed: t, timeNow: clock });
@@ -47,11 +48,17 @@ function traderWithConfirmations(count: number, type: number): { trader: any; ca
     getConfirmations(_time: number, _key: unknown, cb: (err: Error | null, confs: any[]) => void) {
       cb(null, confs);
     },
+    // Force the all-or-nothing batch to fail (non-rate-limit) → code falls back to the per-item path.
+    respondToConfirmation(_cid: unknown, _ck: unknown, _t: number, _k: unknown, _accept: boolean, cb: (err: Error | null) => void) {
+      cb(new Error('force per-item fallback'));
+    },
   };
   const trader: any = Object.create(AccountTrader.prototype);
   Object.defineProperty(trader, 'username', { value: 'botA' });
   (trader as any).session = { maFile: { identity_secret: 'secret' } };
   (trader as any).community = community;
+  // Fake gate: hand back the stub confs directly (this test exercises respond-time logic, not the fetch).
+  (trader as any).confGate = { get: async () => ({ off: 0, confs }), invalidate() { /* noop */ } };
   return { trader, captured };
 }
 
@@ -90,7 +97,7 @@ function assertBounded(captured: Captured[], n: number): void {
   }
 }
 
-test('H-TRD-007: confirmMarketListings signs 300 accepts unique+increasing and ≤ server time + 1', async () => {
+test('H-TRD-007: confirmMarketListings per-item fallback signs 300 accepts unique+increasing and ≤ server time + 1', async () => {
   installStub();
   try {
     const { trader, captured } = traderWithConfirmations(300, CONF_TYPE_MARKET_LISTING);
@@ -103,7 +110,7 @@ test('H-TRD-007: confirmMarketListings signs 300 accepts unique+increasing and �
   }
 });
 
-test('H-TRD-007: respondToConfirmations (all=true) signs 300 responses unique+increasing and ≤ server time + 1', async () => {
+test('H-TRD-007: respondToConfirmations (all=true) per-item fallback signs 300 unique+increasing and ≤ server time + 1', async () => {
   installStub();
   try {
     // type here is irrelevant — all=true actions every pending confirmation (SDA "confirm all").

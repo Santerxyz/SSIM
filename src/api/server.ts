@@ -5,6 +5,14 @@ import axios from 'axios';
 
 import { AccountManager } from '../core/AccountManager';
 import { SessionManager } from '../core/SessionManager';
+import { StoreService } from '../store/StoreService';   // W3_30: store.steampowered.com client (W3_31/W4 dependents)
+import { WalletRedeemJournal } from '../core/WalletRedeemJournal';   // W3_31: money-in dedup
+import { normalizeCode, codeHash, codeMasked } from '../store/walletCode';   // W3_31: bearer-secret helpers
+import { BatchJobService, JobRegistry } from '../core/BatchJobService';   // W3_32: batch engine
+import { DistributeService } from '../trading/DistributeService';   // W3_33: item distribution
+import { PaysafeService, PAYSAFE_AUTO_POLL_MS, PAYSAFE_MIN_MINOR, PAYSAFE_MAX_MINOR } from '../store/PaysafeService';   // W4_40: paysafecard top-up (Track B, flag-gated)
+import { walletEurMinor, assertSteamHttpsUrl } from '../store/StoreService';      // W4_40: EUR-native wallet + URL guard
+import { generateBilling } from '../trading/AccountTrader';                       // W4_40: random billing (shared with market buy)
 import { AccountImportService } from '../core/AccountImportService';
 import { CsFloatService } from '../csfloat/CsFloatService';
 import { CsFloatAutoAcceptWorker } from '../csfloat/CsFloatAutoAcceptWorker';
@@ -33,15 +41,20 @@ import { CasketService } from '../trading/CasketService';
 import { GcActionLayer } from '../trading/GcActionLayer';
 import { cs2Schema } from '../core/Cs2SchemaService';
 import type { SellStrategy } from '../pricing/MarketPricing';
-import { AgentFactory, normalizeProxy, redactProxyCredentials } from '../network/AgentFactory';
+import { sellerNetFromBuyer } from '../pricing/MarketPricing';   // W1_12: per-item net for the Dashboard summary
+import { AgentFactory, normalizeProxy, parseProxy, redactProxyCredentials } from '../network/AgentFactory';
 export { redactProxyCredentials } from '../network/AgentFactory';
+import { proxyHealth, proxyKey } from '../network/ProxyHealth';
+import { loadPersisted as loadCmProtocolPersisted } from '../network/CmProtocol';
 import { PricingService } from '../pricing/PricingService';
 import { currencyInfo } from '../pricing/currencies';
 import { ExchangeRateService } from '../pricing/ExchangeRateService';
 
-import type { AccountConfig, NetworkConfig, Environment } from '../types/account';
+import type { AccountConfig, NetworkConfig, Environment, ProxyRule } from '../types/account';
 import type { AccountInventory } from '../types/inventory';
 import { logger, LOG_FILE, redactSecrets, recentLogLines, liveLogBus, type LiveLogLine } from '../utils/logger';
+import { classifyNetworkError } from '../utils/errorClass';   // 429 vs 5xx on the confirmations routes
+import { bucketOf } from '../core/MarketModel';                  // the ONE item-state classifier
 import { maFilesDir, publicDir, IS_SIDECAR_MODE } from '../utils/paths';
 import { sameOriginGuard } from './originGuard';
 import { capabilityGuard, injectCapabilityIntoHtml } from './capability';
@@ -72,6 +85,41 @@ const warnedBadProtectedUntil = new Set<string>();
 //   • Mobile confirmation approval: accounts/<user>/confirmations/respond (finalizes trades).
 export const MONEY_OP_ROUTE = /^\/api\/(?:(?:trade\/(?:send|mass-send|offer-action|offers-batch)|market\/(?:buy|sell|cancel-listing|cancel-buy-order|folder-buy)|tradeup\/execute|casket\/move)(?:\/|$)|(?:csfloat\/[^/]+\/(?:buy|listings|buy-orders)|accounts\/[^/]+\/confirmations\/respond)$)/i;
 
+// ── W2_20 (Accounts module): owned-games / profile / free-license types + helpers ──
+// NOTE: these routes need a LIVE Steam session; their runtime behavior is verified on a
+// real account (joint acceptance test), not in CI. steam-user under-types the app/license
+// methods, so a local shim keeps the routes type-safe without `any` leaks on the hot path.
+interface OwnedGame { appId: number; name: string; playtimeMinutes: number; iconUrl?: string }
+interface SteamUserApps {
+  steamID?: { toString(): string } | null;
+  licenses?: Array<{ package_id: number }>;
+  getUserOwnedApps(steamID: unknown, options?: { includeAppInfo?: boolean; includePlayedFreeGames?: boolean }):
+    Promise<{ app_count: number; apps: Array<{ appid: number; name?: string; playtime_forever?: number; img_icon_url?: string }> }>;
+  getProductInfo(apps: number[], packages: number[], inclTokens?: boolean):
+    Promise<{ apps: Record<string, { appinfo?: { common?: { name?: string; type?: string } } }>; packages: Record<string, { packageinfo?: { appids?: number[] } }> }>;
+  requestFreeLicense(appIDs: number[]): Promise<{ grantedPackageIds: number[]; grantedAppIds: number[] }>;
+}
+interface CommunityProfileApi {
+  editProfile(settings: Record<string, unknown>, cb: (err: Error | null) => void): void;
+  profileSettings(settings: Record<string, unknown>, cb: (err: Error | null) => void): void;
+  uploadAvatar(image: string, format: string | undefined, cb: (err: Error | null, url: string) => void): void;
+}
+interface ProfileEditBody { name?: string; realName?: string; summary?: string; avatar?: string; privacy?: Record<string, unknown> }
+
+/** Map a {profile,inventory,gameDetails,…: 'public'|'friends'|'private'|1|2|3} body to the
+ *  steamcommunity profileSettings keys with PrivacyState ints (Private:1, FriendsOnly:2, Public:3). */
+function mapPrivacy(input: Record<string, unknown>): Record<string, number> {
+  const STATE: Record<string, number> = { private: 1, friendsonly: 2, friends: 2, public: 3 };
+  const toState = (v: unknown): number | undefined =>
+    (typeof v === 'number' && v >= 1 && v <= 3) ? v
+      : (typeof v === 'string' ? STATE[v.toLowerCase()] : undefined);
+  const out: Record<string, number> = {};
+  for (const k of ['profile', 'comments', 'inventory', 'inventoryGifts', 'gameDetails', 'playtime', 'friendsList']) {
+    const s = toState(input[k]); if (s !== undefined) out[k] = s;
+  }
+  return out;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  Dependency wiring
 // ════════════════════════════════════════════════════════════════════════════
@@ -84,6 +132,7 @@ export interface ApiDeps {
   buy:       BuyService;
   bans:      BanService;
   inventory: InventoryService;
+  store:     StoreService;
   pricing:   PricingService;
   exchange:  ExchangeRateService;
   history:   ValueHistoryService;
@@ -93,13 +142,57 @@ export interface ApiDeps {
   accountImport: AccountImportService;
   csfloat:       CsFloatService;
   csfloatWorker: CsFloatAutoAcceptWorker;
+  /** W4_40. Owns a background credit-poll timer + in-memory run state, so teardown must shut it down
+   *  (like csfloatWorker) — otherwise a re-license discards the server while the poll keeps firing. */
+  paysafe:       PaysafeService;
+}
+
+/** Shared egress probe for the two proxy-test routes (T4): ipify egress + best-effort ip-api geo
+ *  through a throwaway agent, redacted + logged. The single-use agent is destroyed in `finally`. */
+async function checkEgress(network: NetworkConfig, label: string): Promise<Record<string, unknown>> {
+  const { httpsAgent } = AgentFactory.create(network, { pooled: false });
+  const started = Date.now();
+  try {
+    const resp = await axios.get('https://api.ipify.org?format=json', { httpsAgent, proxy: false, timeout: 10_000, validateStatus: () => true });
+    const latencyMs = Date.now() - started;
+    const ip = resp.data && typeof resp.data.ip === 'string' ? resp.data.ip : null;
+    if (resp.status !== 200 || !ip) {
+      logger.warn(`[proxy-check] ${label}: HTTP ${resp.status} (${latencyMs} ms)`);
+      return { ok: false, mode: network.type, latencyMs, error: `HTTP ${resp.status}` };
+    }
+    let country: string | null = null, countryCode: string | null = null;
+    try {
+      const geo = await axios.get(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode`, { proxy: false, timeout: 6_000, validateStatus: () => true });
+      if (geo.status === 200 && geo.data && geo.data.status === 'success') {
+        country     = typeof geo.data.country === 'string' ? geo.data.country : null;
+        countryCode = typeof geo.data.countryCode === 'string' ? geo.data.countryCode : null;
+      }
+    } catch { /* geo is optional – never fail the check over it */ }
+    logger.info(`[proxy-check] ${label}: OK ${ip}${countryCode ? ` (${countryCode})` : ''} (${latencyMs} ms, ${network.type})`);
+    return { ok: true, mode: network.type, ip, country, countryCode, latencyMs };
+  } catch (err) {
+    const latencyMs = Date.now() - started;
+    const message = redactSecrets((err as Error).message); // a proxied failure embeds user:pass creds
+    logger.warn(`[proxy-check] ${label}: FAILED ${message} (${latencyMs} ms)`);
+    return { ok: false, mode: network.type, latencyMs, error: message };
+  } finally {
+    try { (httpsAgent as { destroy?: () => void }).destroy?.(); } catch { /* noop */ }
+  }
 }
 
 /** Creates the core services and wires their lifecycle events into the logger. */
 export function createDeps(): ApiDeps {
+  // Seed the CM-protocol learning from disk BEFORE any login, so a known-CONNECT-blocked provider is
+  // not re-demoted (two failed logins) every run; stale entries (>24h) re-probe TCP. (owner 2026-07-10.)
+  loadCmProtocolPersisted();
   const accounts  = new AccountManager();
   const sessions  = new SessionManager();
+  // Per-login proxy resolution: SessionManager re-resolves each account's egress AT login (advancing
+  // the rotation cursor) and fail-closes if the winning rule's pool is lost. When proxy rules aren't
+  // authoritative this returns the same legacy value as before — fully backward compatible.
+  sessions.setLoginNetworkResolver((a) => accounts.networkForLogin(a));
   const inventory = new InventoryService(sessions, accounts);
+  const store     = new StoreService(sessions, accounts);   // W3_30: store-domain client (no routes here; W3_31 adds them)
   // One shared money-op journal (B4): a crash mid buy/send can't be double-fired by a user retry after
   // restart. Shared so buy and send op-hashes live in one file.
   const moneyJournal = new MoneyOpJournal();
@@ -114,7 +207,18 @@ export function createDeps(): ApiDeps {
   // Feature 2 "CSFloat": per-account marketplace control. Built BEFORE pricing so the
   // CSFloat price source (Feature 3) can reuse it.
   const csfloat   = new CsFloatService(accounts);
-  const pricing   = new PricingService(csfloat);
+  // IDENTITY-BUDGETED PRICING (2026-07-10 root-cause fix). Steam meters ANONYMOUS market/priceoverview
+  // per EXIT IP, and the fleet's shared rotating residential pool arrives PRE-EXHAUSTED for that endpoint
+  // (other tenants spent it), so a cold anonymous request 429s while authenticated traffic on the SAME
+  // proxies sails through. The fix: the fill rides real LOGGED-IN identities — each Steam lane sends an
+  // account's steamLoginSecure cookie over that account's own egress agent, drawing that account's
+  // per-session budget. With no session web-ready yet it DEFERS (never anonymous) and `kick()` restarts it
+  // once a session logs in. (The old proxy-string provider + 60-80s per-name retry + foreground gate are
+  // gone — see RATELIMIT_ROOT_CAUSE_fable5.md.)
+  const PRICE_IDENTITY_LANES = 3;
+  const pricing   = new PricingService(csfloat, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES));
+  // Restart a deferred Steam fill the moment an authenticated session becomes web-ready.
+  sessions.on('webSession', () => pricing.kick());
   const exchange  = new ExchangeRateService();
   // Shared GC action layer (trade-up + casket execution; gated behind SSIM_GC_VERIFIED).
   const gc        = new GcActionLayer(sessions);
@@ -149,7 +253,85 @@ export function createDeps(): ApiDeps {
   const csfloatWorker = new CsFloatAutoAcceptWorker(accounts, trades, csfloat);
   csfloatWorker.start();
 
-  return { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, gc, tradeup, casket, accountImport, csfloat, csfloatWorker };
+  // ── W4_40 — paysafecard top-up (Track B): SEQUENTIAL, human-in-the-loop, browser-driven.
+  //    SSIM opens each account's addfunds checkout pre-authenticated + reconciles by wallet READ-BACK.
+  //    The PIN is entered ON THE PAGE (never in SSIM); SSIM only sequences accounts + verifies credits.
+  //    EUR-ONLY (owner 2026-07-10). ON by default; only SSIM_PAYSAFE_EXPERIMENTAL=0 hard-disables it.
+  //    Built HERE (not in createApp) because it owns a background timer + run state that teardown must stop.
+  const paysafeEnabled = (): boolean => process.env.SSIM_PAYSAFE_EXPERIMENTAL !== '0';
+  // Steam sessions THIS feature logged in. Released once the run moves past the account, so a long batch
+  // cannot walk the fleet into the resident-session ceiling. A session another operation already owned is
+  // never added here, and therefore never torn down under it.
+  const paysafeOwned = new Set<string>();
+  const randomEmailLocal = (): string => { let s = ''; while (s.length < 12) s += Math.random().toString(36).slice(2); return s.slice(0, 12); };
+
+  /** The account's wallet in EURO-CENTS. NO FX anywhere on this path: baseline and read-back are the same
+   *  native unit, so a moving exchange rate cannot manufacture a phantom credit. A non-EUR wallet reads as
+   *  null → classify() says 'unconfirmed', never a guessed credit.
+   *  `allowLogin:false` reads the RESIDENT session — Steam pushes ClientWalletInfoUpdate to it on every
+   *  balance change, so the credit lands here with no login at all. `allowLogin:true` forces one fresh
+   *  login as a periodic staleness backstop, and awaits the wallet event rather than racing it (the login
+   *  promise resolves on 'webSession', which can beat 'wallet'). */
+  const paysafeWalletMinor = async (username: string, allowLogin: boolean): Promise<number | null> => {
+    const account = accounts.get(username);
+    if (!account) return null;
+    if (!allowLogin) {
+      if (!sessions.isLive(username)) return null;
+      // This poll IS a genuine use of the session — mark it, or the idle reaper may retire the very session
+      // the cheap read depends on. (The forced-login backstop would recover, but the design shouldn't rely
+      // on luck.)
+      sessions.markUsed(username);
+      return walletEurMinor(sessions.getSession(username)?.wallet) ?? null;
+    }
+    try {
+      // Ownership MUST come from loginAccountOwned, not from an isLive() probe: loginAccount dedups an
+      // in-flight login, and a login another operation started is not yet in `sessions`, so isLive() would
+      // read false, we'd join THEIR login, claim the session as ours, and releaseAccount would later log it
+      // out from under them. loginAccountOwned decides `createdByCall` synchronously, before any await.
+      const { createdByCall } = await sessions.loginAccountOwned(account);
+      if (createdByCall) paysafeOwned.add(username.toLowerCase());
+      return walletEurMinor(await sessions.awaitWallet(username)) ?? null;
+    } catch { return null; }
+  };
+
+  const paysafe = new PaysafeService({
+    enabled: paysafeEnabled,
+    // HEADLESS-INIT (owner 2026-07-10): SSIM does the Steam side over HTTP (amount + paysafecard + random
+    // billing → the externallink URL), then opens the clean browser DIRECTLY on the paysafecard page. No
+    // Steam window, no DOM driving. The init NEVER moves money (the charge happens only when the operator
+    // finishes on paysafecard) and fails closed — a throw means 'error', no browser, and so no charge.
+    openCheckout: async (username, checkout) => {
+      const account = accounts.get(username);
+      if (!account) throw Object.assign(new Error(`Account "${username}" not found`), { status: 404 });
+      const init = await store.initPaysafeCheckout(username, {
+        amountMinor: checkout.amountMinor,
+        billing: { ...generateBilling(), email: `${randomEmailLocal()}@gmail.com` },
+      });
+      // initPaysafeCheckout keeps the session alive for the credit poll; note the ownership so we release it.
+      if (init.sessionOwned) paysafeOwned.add(username.toLowerCase());
+      // Defence in depth: never drive the browser to a URL read out of a JSON field. (cleanBrowser pins the
+      // cookies to the Steam domains, so this cannot leak them — but it can still open an arbitrary page
+      // through the account's proxy.)
+      assertSteamHttpsUrl(init.externalUrl, 'paysafecard checkout');
+      // Open the paysafecard page (Steam's externallink 302s to it) with the account's captured cookies
+      // + resolved proxy — so the return→finalize happens in an authenticated, correctly-egressing window.
+      const spec = buildIsolatedSession({ username: account.username, cookieStrings: init.cookies, network: init.network ?? account.network, landingUrl: init.externalUrl });
+      if (account.network?.type === 'proxy' && !spec.proxyServer) {
+        throw Object.assign(new Error("could not resolve this account's proxy — refusing to open (would leak the host IP)"), { status: 400 });
+      }
+      const r = await launchIsolatedBrowser(spec);
+      return { warnings: [...spec.warnings, ...init.warnings], proxy: r.proxyUsed, walletMinor: init.walletMinor };
+    },
+    readWalletMinor: (username, opts) => paysafeWalletMinor(username, opts.allowLogin),
+    releaseAccount: async (username) => {
+      const key = username.toLowerCase();
+      if (!paysafeOwned.delete(key)) return;   // not ours → never tear down another operation's session
+      try { if (sessions.isLive(key)) await sessions.logoutAccount(key); }
+      catch (e) { logger.warn(`[paysafe] ${username}: session release failed: ${(e as Error).message}`); }
+    },
+  }, () => Date.now(), PAYSAFE_AUTO_POLL_MS);   // enable the background credit poll (auto-advance)
+
+  return { accounts, sessions, trades, market, buy, bans, inventory, store, pricing, exchange, history, gc, tradeup, casket, accountImport, csfloat, csfloatWorker, paysafe };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -157,7 +339,7 @@ export function createDeps(): ApiDeps {
 // ════════════════════════════════════════════════════════════════════════════
 
 export function createApp(deps: ApiDeps): Express {
-  const { accounts, sessions, trades, market, buy, bans, inventory, pricing, exchange, history, tradeup, casket, accountImport, csfloat } = deps;
+  const { accounts, sessions, trades, market, buy, bans, inventory, store, pricing, exchange, history, tradeup, casket, accountImport, csfloat, paysafe } = deps;
   const app = express();
 
   const VALID_STRATEGIES: SellStrategy[] = ['lowest', 'undercut', 'custom'];
@@ -204,14 +386,16 @@ export function createApp(deps: ApiDeps): Express {
    * (after the manual-protection overlay), so a manual lock correctly flips an
    * item into 'tradelocked'. 'listed' is sticky (market-sourced, never in-inv).
    * Only meaningful for GC-sourced inventories (the web view doesn't categorise).
+   *
+   * Delegates to `bucketOf` — the ONE classifier (it short-circuits 'listed' itself). This used to
+   * hand-roll the split as `locked ? 'tradelocked' : 'tradable'`, which tagged every PERMANENTLY
+   * untradable item (Storage Unit, Veteran Coin, badge, music kit) as 'tradable' — the exact opposite
+   * of what bucketOf decided at refresh time. Two disagreeing classifiers is how a Storage Unit came to
+   * sit under the "Owned Items" chip while its status cell read "Locked". (2026-07-10)
    */
   const tagCategories = (inv: AccountInventory): void => {
     const now = Date.now();
-    for (const it of inv.items) {
-      if (it.category === 'listed') continue;
-      const locked = it.tradeLockExpiry ? new Date(it.tradeLockExpiry).getTime() > now : false;
-      it.category = locked ? 'tradelocked' : 'tradable';
-    }
+    for (const it of inv.items) it.category = bucketOf(it, now);
   };
 
   /** Enriches an inventory with cached prices + manual protection; queues misses. */
@@ -222,6 +406,17 @@ export function createApp(deps: ApiDeps): Express {
     if (inv.source === 'gc') tagCategories(inv);
     return inv;
   };
+
+  // W3_33 distribute is constructed HERE (not in createDeps) so its cache reads flow through the
+  // SAME enrichInv the GET /api/inventory route uses — price, manual-lock, and category tagging.
+  // Bug (2026-07-09): built in createDeps against the raw InventoryService, whose getCached returns
+  // UN-enriched clones (price is a read-time enrichment, never persisted), so planDistribute's
+  // `it.price == null` guard skipped every item → empty pool → "nothing to distribute" (button greyed
+  // out as "not possible"). getCached already returns a fresh clone, so enrichInv mutates a throwaway.
+  const distribute = new DistributeService({
+    inventory: { getCached: (u, g) => { const inv = inventory.getCached(u, g); return inv ? enrichInv(inv) : undefined; } },
+    trades,
+  });
 
   // ── Security hardening ─────────────────────────────────────────────────────
   // NO CORS layer: the dashboard is served same-origin from this very server, so no
@@ -393,6 +588,11 @@ export function createApp(deps: ApiDeps): Express {
     if (typeof name !== 'string' || name.trim() === '') {
       return res.status(400).json({ error: 'name is required' });
     }
+    // F8: post-cutover, the env proxy field is retired — a supplied proxy is a legacy write the engine
+    // ignores. Reject loudly rather than 201 a false success. (Pre-cutover: unchanged.)
+    if (typeof proxy === 'string' && proxy.trim() && accounts.isProxyRulesAuthoritative()) {
+      return res.status(400).json({ error: 'proxies are managed in the Proxies module — add an environment-scoped rule there' });
+    }
     try {
       const env = accounts.createEnvironment(name, typeof proxy === 'string' && proxy.trim() ? normalizeProxy(proxy) : '', color);
       res.status(201).json(sanitizeEnvironment(env));
@@ -406,6 +606,11 @@ export function createApp(deps: ApiDeps): Express {
       return res.status(404).json({ error: `Environment "${req.params.id}" not found` });
     }
     const { name, proxy, color } = req.body ?? {};
+    // F8: post-cutover the env proxy is managed as an env-scope rule — reject any proxy edit (set OR
+    // clear) rather than persist a legacy write the resolver ignores. Name/colour edits still work.
+    if (proxy !== undefined && accounts.isProxyRulesAuthoritative()) {
+      return res.status(400).json({ error: 'proxies are managed in the Proxies module — add/edit an environment-scoped rule there' });
+    }
     try {
       const env = accounts.updateEnvironment(req.params.id, { name, proxy: typeof proxy === 'string' && proxy.trim() ? normalizeProxy(proxy) : proxy, color });
       // A changed environment proxy changes every inheriting account's egress → drop their CSFloat
@@ -465,54 +670,146 @@ export function createApp(deps: ApiDeps): Express {
     const network: NetworkConfig = proxy
       ? { type: 'proxy', value: proxy }
       : { type: 'localip', value: '0.0.0.0' };
-    // pooled:false → a throwaway agent this handler can safely .destroy() in `finally`
-    // without tearing down the shared local-IP keepAlive pool that live sessions use.
-    const { httpsAgent } = AgentFactory.create(network, { pooled: false });
+    return res.json(await checkEgress(network, env.name)); // T4: shared probe (logged + redacted)
+  }));
 
-    const started = Date.now();
+  // ════════════════════════════════════════════════════════════════════════
+  //  Proxy rules (v5) — declarative proxy assignment (most-specific match wins)
+  // ════════════════════════════════════════════════════════════════════════
+  // Every proxy VALUE that leaves the server is credential-redacted (redactProxyCredentials keeps the
+  // non-secret host:port, so the UI can still dedupe / warn). Raw values are exposed ONLY by the
+  // narrow per-rule /reveal pre-fill. Mutations eagerly rebuild the CSFloat client for any account
+  // whose egress changed. Auto capability+CSRF-guarded like every /api/* mutation.
+
+  const sanitizeProxyRule = (rule: ProxyRule): Record<string, unknown> => ({
+    ...rule,
+    proxies:    rule.proxies.map(p => redactProxyCredentials(p)),
+    proxyCount: rule.proxies.length,
+  });
+
+  app.get('/api/proxies/rules', (_req: Request, res: Response) => {
+    res.json({ rules: accounts.getProxyRules().map(sanitizeProxyRule), authoritative: accounts.isProxyRulesAuthoritative() });
+  });
+
+  // Un-redacted pool for the edit dialog pre-fill (owner-only, capability-guarded — same trust model
+  // as GET /api/environments/:id/proxy). Narrow: a single rule, never the fleet-wide list.
+  app.get('/api/proxies/rules/:id/reveal', (req: Request, res: Response) => {
+    const rule = accounts.getProxyRules().find(r => r.id === req.params.id);
+    if (!rule) return res.status(404).json({ error: 'Proxy rule not found' });
+    res.json({ id: rule.id, proxies: rule.proxies });
+  });
+
+  // Parse/normalize/dedupe a pasted proxy list WITHOUT storing anything — drives the add/edit modal's
+  // valid / invalid / duplicate hints. Returns redacted (never raw) normalized values + host:port key.
+  app.post('/api/proxies/validate', (req: Request, res: Response) => {
+    const list: unknown[] = Array.isArray(req.body?.proxies) ? req.body.proxies : [];
+    const seen = new Set<string>();
+    const results = list.map((raw) => {
+      const s = typeof raw === 'string' ? raw.trim() : '';
+      if (!s) return { input: String(raw ?? ''), valid: false, reason: 'empty' };
+      const parsed = parseProxy(s);
+      if (!parsed) return { input: s, valid: false, reason: 'unparseable' };
+      const norm = normalizeProxy(s);
+      const key = norm.toLowerCase();
+      const dup = seen.has(key);
+      seen.add(key);
+      return { input: s, valid: true, dup, key: `${parsed.host}:${parsed.port}`, redacted: redactProxyCredentials(norm) };
+    });
+    res.json({ results });
+  });
+
+  app.post('/api/proxies/rules', (req: Request, res: Response) => {
     try {
-      const resp = await axios.get('https://api.ipify.org?format=json', {
-        httpsAgent,
-        proxy: false,           // never use env-var proxy – only our per-env agent
-        timeout: 10_000,
-        validateStatus: () => true,
-      });
-      const latencyMs = Date.now() - started;
-      const ip = resp.data && typeof resp.data.ip === 'string' ? resp.data.ip : null;
+      const { name, scope, targets, kind, proxies, pinPerAccount, enabled } = req.body ?? {};
+      const { rule, affected } = accounts.addProxyRule({ name, scope, targets: targets ?? [], kind: kind ?? 'pool', proxies, pinPerAccount, enabled });
+      for (const u of affected) csfloat.invalidateClient(u);
+      res.status(201).json(sanitizeProxyRule(rule));
+    } catch (err) { res.status(400).json({ error: (err as Error).message }); }
+  });
 
-      if (resp.status !== 200 || !ip) {
-        logger.warn(`[proxy-check] ${env.name}: HTTP ${resp.status} (${latencyMs} ms)`);
-        return res.json({ ok: false, mode: network.type, latencyMs, error: `HTTP ${resp.status}` });
-      }
-      // Geo-locate the egress IP (best-effort, DIRECT – an IP's geo is the same
-      // regardless of route, so this need not traverse the proxy). Free, key-less.
-      let country: string | null = null, countryCode: string | null = null;
-      try {
-        const geo = await axios.get(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode`, {
-          proxy: false,
-          timeout: 6_000,
-          validateStatus: () => true,
-        });
-        if (geo.status === 200 && geo.data && geo.data.status === 'success') {
-          country     = typeof geo.data.country === 'string' ? geo.data.country : null;
-          countryCode = typeof geo.data.countryCode === 'string' ? geo.data.countryCode : null;
-        }
-      } catch { /* geo is optional – never fail the proxy check over it */ }
-      logger.info(`[proxy-check] ${env.name}: OK ${ip}${countryCode ? ` (${countryCode})` : ''} (${latencyMs} ms, ${network.type})`);
-      return res.json({ ok: true, mode: network.type, ip, country, countryCode, latencyMs });
-    } catch (err) {
-      const latencyMs = Date.now() - started;
-      // Redact: a proxied-request failure embeds the proxy URL incl. user:pass creds.
-      const message = redactSecrets((err as Error).message);
-      logger.warn(`[proxy-check] ${env.name}: FAILED ${message} (${latencyMs} ms)`);
-      return res.json({ ok: false, mode: network.type, latencyMs, error: message });
-    } finally {
-      // This per-request agent is single-use. The localip branch builds a
-      // keepAlive https.Agent whose idle socket would otherwise linger and slowly
-      // accumulate across repeated health-check polls. Long-lived per-session
-      // agents are created in SessionManager and never pass through here.
-      try { (httpsAgent as { destroy?: () => void }).destroy?.(); } catch { /* noop */ }
+  app.patch('/api/proxies/rules/:id', (req: Request, res: Response) => {
+    try {
+      const { rule, affected } = accounts.updateProxyRule(req.params.id, req.body ?? {});
+      for (const u of affected) csfloat.invalidateClient(u);
+      res.json(sanitizeProxyRule(rule));
+    } catch (err) { res.status(400).json({ error: (err as Error).message }); }
+  });
+
+  app.delete('/api/proxies/rules/:id', (req: Request, res: Response) => {
+    try {
+      const { affected } = accounts.deleteProxyRule(req.params.id);
+      for (const u of affected) csfloat.invalidateClient(u);
+      res.json({ ok: true });
+    } catch (err) { res.status(400).json({ error: (err as Error).message }); }
+  });
+
+  app.post('/api/proxies/rules/reorder', (req: Request, res: Response) => {
+    try {
+      const order: string[] = Array.isArray(req.body?.order) ? req.body.order : [];
+      const { affected } = accounts.reorderProxyRules(order);
+      for (const u of affected) csfloat.invalidateClient(u);
+      res.json({ ok: true });
+    } catch (err) { res.status(400).json({ error: (err as Error).message }); }
+  });
+
+  // Make the current rules live (operator activates after reviewing the preview, when the automatic
+  // equivalence proof did not cut over). Lazy: accounts pick it up on their next login/refresh.
+  app.post('/api/proxies/activate', (_req: Request, res: Response) => {
+    // F5: the flag flip is the one mutation GUARANTEED to change egress (legacy→rules). Invalidate the
+    // CSFloat client for exactly the accounts whose effective proxy changed, like every other mutation.
+    const affected = accounts.activateProxyRules();
+    for (const u of affected) csfloat.invalidateClient(u);
+    res.json({ ok: true, authoritative: true, invalidated: affected.length });
+  });
+
+  // Everything the rule editor's scope/target pickers (and the resolution preview) need, in one call.
+  app.get('/api/proxies/targets', (_req: Request, res: Response) => {
+    res.json({
+      environments: accounts.getEnvironments().map(e => ({ id: e.id, name: e.name })),
+      folders:      accounts.getAllFolders().map(f => ({ id: f.id, name: f.name, environmentId: f.environmentId, parentId: f.parentId })),
+      accounts:     accounts.getAll().map(a => ({ username: a.username, environmentId: a.environmentId, folderId: a.folderId ?? null })),
+    });
+  });
+
+  // "Who gets what" — the effective resolution for every account under the current rules (credential-
+  // redacted). Evaluated regardless of the authoritative flag so it can be reviewed before activation.
+  app.get('/api/proxies/resolution', (_req: Request, res: Response) => {
+    const rows = accounts.resolutionPreview().map(r => ({
+      username: r.username, environmentId: r.environmentId, folderId: r.folderId,
+      ruleId: r.ruleId, ruleName: r.ruleName, scope: r.scope, conflicts: r.conflicts, poolLost: r.poolLost,
+      network: r.network ? { type: r.network.type, value: redactProxyCredentials(r.network.value) } : null,
+    }));
+    res.json({ rows, authoritative: accounts.isProxyRulesAuthoritative() });
+  });
+
+  // Coverage: accounts on local IP (no proxy rule), per-proxy account counts + tank health
+  // (host:port only — never a credential), and any pool-lost accounts (refused-login corruption state).
+  app.get('/api/proxies/coverage', (_req: Request, res: Response) => {
+    const preview = accounts.resolutionPreview();
+    const health = new Map(proxyHealth.snapshot().map(s => [s.key, s]));
+    const localIp: string[] = [];
+    const poolLost: string[] = [];
+    const perProxy = new Map<string, { key: string; count: number; usernames: string[] }>();
+    for (const r of preview) {
+      if (r.poolLost) { poolLost.push(r.username); continue; }
+      if (!r.network || r.network.type === 'localip') { localIp.push(r.username); continue; }
+      const key = proxyKey(r.network.value);
+      if (!key) { localIp.push(r.username); continue; }
+      const e = perProxy.get(key) ?? { key, count: 0, usernames: [] };
+      e.count++; e.usernames.push(r.username); perProxy.set(key, e);
     }
+    const proxies = [...perProxy.values()].map(e => {
+      const h = health.get(e.key);
+      return { key: e.key, count: e.count, usernames: e.usernames, state: h ? h.state : 'closed', consecutiveResets: h ? h.consecutiveResets : 0, tracked: !!h };
+    });
+    res.json({ localIp, poolLost, proxies, authoritative: accounts.isProxyRulesAuthoritative() });
+  });
+
+  // Test a single proxy string end-to-end (reuses the env check-proxy path: ipify egress + ip-api geo).
+  app.post('/api/proxies/check', asyncHandler(async (req: Request, res: Response) => {
+    const raw = typeof req.body?.proxy === 'string' ? req.body.proxy.trim() : '';
+    const network: NetworkConfig = raw ? { type: 'proxy', value: normalizeProxy(raw) } : { type: 'localip', value: '0.0.0.0' };
+    return res.json(await checkEgress(network, 'rule-test')); // T4: shared probe (logged + redacted)
   }));
 
   // ════════════════════════════════════════════════════════════════════════
@@ -563,7 +860,13 @@ export function createApp(deps: ApiDeps): Express {
           throw e;
         }
       }
-      res.status(201).json(sanitizeAccount(account));
+      // F3: post-cutover, a per-account proxy at create time must become an account-scope RULE, else
+      // the resolver ignores the networkOverride/vault proxy and the new bot rides a broader rule or the
+      // host IP. No-op pre-cutover (legacy fields still resolve); legacy fields are also written above.
+      if (typeof proxy === 'string' && proxy.trim()) {
+        accounts.ensureAccountProxyRules([{ username: username.trim(), proxy: proxy.trim() }]);
+      }
+      res.status(201).json(sanitizeAccount(accounts.get(username.trim()) ?? account));
     } catch (err) {
       res.status(409).json({ error: (err as Error).message });
     }
@@ -678,6 +981,26 @@ export function createApp(deps: ApiDeps): Express {
   }));
 
   // Live pending mobile confirmations for ONE account (reuses AccountTrader.listConfirmations).
+  // Steam's mobileconf 429 surfaces as a MESSAGE ("HTTP error 429") / err.code — never as `err.status` —
+  // so the generic csErr mapper misses it and every rate-limit was reported as a 502 "gateway" failure.
+  // A rate-limit is neither our fault nor permanent: say 429, say how long, and let the UI wait it out.
+  const CONF_RETRY_AFTER_S = 60;
+  const confErr = (res: Response, e: unknown, what: string): void => {
+    if (classifyNetworkError(e).rateLimited) {
+      // The MobileConfGate attaches the EXACT escalated remaining wait (it doubles per consecutive 429),
+      // so the panel counts down the real window instead of a hardcoded 60s that re-probed on the boundary.
+      const secs = Math.max(5, Math.round(Number((e as { retryAfterSeconds?: number }).retryAfterSeconds) || CONF_RETRY_AFTER_S));
+      res.setHeader('Retry-After', String(secs));
+      res.status(429).json({
+        error: `Steam has temporarily limited how often this account's confirmations can be checked. It clears once the account is left alone — checking too often keeps it active.`,
+        retryAfterSeconds: secs,
+        rateLimited: true,
+      });
+      return;
+    }
+    res.status(502).json({ error: `${what}: ${(e as Error).message}` });
+  };
+
   app.get('/api/accounts/:username/confirmations', asyncHandler(async (req, res) => {
     const account = accounts.get(req.params.username);
     if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
@@ -685,7 +1008,7 @@ export function createApp(deps: ApiDeps): Express {
       const trader = await trades.ensureWebSession(account.username);
       res.json({ confirmations: await trader.listConfirmations() });
     } catch (e) {
-      res.status(502).json({ error: `could not load confirmations: ${(e as Error).message}` });
+      confErr(res, e, 'could not load confirmations');
     }
   }));
 
@@ -702,11 +1025,276 @@ export function createApp(deps: ApiDeps): Express {
       const trader = await trades.ensureWebSession(account.username);
       res.json(await trader.respondToConfirmations(ids, accept, all));
     } catch (e) {
-      res.status(502).json({ error: `confirmation action failed: ${(e as Error).message}` });
+      confErr(res, e, 'confirmation action failed');
     }
   }));
 
   // Open ONE account in an isolated, proxied, ephemeral browser (its own session only).
+  // ════════════════════════════════════════════════════════════════════════
+  //  W2_20 — Accounts module: owned games, profile, free-on-demand licenses.
+  //  NOT money ops (excluded from MONEY_OP_ROUTE). games/free-license need a
+  //  LOGGED-IN CM session (login slot, cap 25 — loginAccount is reuse-first via
+  //  its in-flight dedup + existing-session ceiling exemption). profile uses the
+  //  web (community) session. ⚠ Live Steam behavior = joint acceptance test.
+  // ════════════════════════════════════════════════════════════════════════
+  const gamesCache = new Map<string, { username: string; count: number; games: OwnedGame[]; scannedAt: string }>();
+  const ensureCmSession = (account: AccountConfig) => sessions.loginAccount(account);
+
+  // Fallback owned-games source: licenses → package appids → product-info names (games only).
+  const ownedGamesViaLicenses = async (client: SteamUserApps): Promise<OwnedGame[]> => {
+    const packageIds = (client.licenses ?? []).map((l) => l.package_id).filter(Number.isInteger);
+    if (packageIds.length === 0) return [];
+    const pkgInfo = await client.getProductInfo([], packageIds, true);
+    const appIds = new Set<number>();
+    for (const pid of Object.keys(pkgInfo.packages ?? {})) {
+      for (const a of pkgInfo.packages[pid]?.packageinfo?.appids ?? []) appIds.add(Number(a));
+    }
+    if (appIds.size === 0) return [];
+    const appInfo = await client.getProductInfo([...appIds], [], true);
+    const games: OwnedGame[] = [];
+    for (const id of Object.keys(appInfo.apps ?? {})) {
+      const common = appInfo.apps[id]?.appinfo?.common;
+      if (common && (common.type === undefined || String(common.type).toLowerCase() === 'game')) {
+        games.push({ appId: Number(id), name: common.name ?? String(id), playtimeMinutes: 0 });
+      }
+    }
+    return games;
+  };
+
+  // Owned games — SHARED helper (the route AND the batch scan-games job call this). Primary
+  // getUserOwnedApps (names + playtime), licenses fallback. Cached per account.
+  const scanGamesOne = async (username: string, refresh: boolean) => {
+    const account = accounts.get(username);
+    if (!account) throw Object.assign(new Error(`Account "${username}" not found`), { status: 404 });
+    if (!refresh && gamesCache.has(account.username)) return gamesCache.get(account.username)!;
+    const session = await ensureCmSession(account);
+    sessions.markUsed(account.username);
+    const client = session.client as unknown as SteamUserApps;
+    const sid = client.steamID;
+    if (!sid) throw new Error('session is not fully logged in (no steamID) — try again shortly');
+    let games: OwnedGame[] = [];
+    try {
+      const owned = await client.getUserOwnedApps(sid, { includeAppInfo: true, includePlayedFreeGames: true });
+      games = (owned.apps ?? []).map((a) => ({ appId: a.appid, name: a.name ?? String(a.appid), playtimeMinutes: a.playtime_forever ?? 0, iconUrl: a.img_icon_url }));
+    } catch (e) {
+      games = await ownedGamesViaLicenses(client);      // no-band-aid: only if the primary threw
+      if (games.length === 0) throw new Error(`owned-games scan failed: ${(e as Error).message}`);
+    }
+    games.sort((a, b) => a.name.localeCompare(b.name));
+    const payload = { username: account.username, count: games.length, games, scannedAt: new Date().toISOString() };
+    gamesCache.set(account.username, payload);
+    return payload;
+  };
+  app.get('/api/steam/:username/games', asyncHandler(async (req, res) => {
+    try { res.json(await scanGamesOne(req.params.username, req.query.refresh === '1' || req.query.refresh === 'true')); }
+    catch (e) { res.status((e as { status?: number }).status ?? 502).json({ error: (e as Error).message }); }
+  }));
+
+  // Add free-on-demand licenses (CM) — SHARED helper (route + batch add-free-game job).
+  const freeLicenseOne = async (username: string, appIds: number[]) => {
+    const account = accounts.get(username);
+    if (!account) throw Object.assign(new Error(`Account "${username}" not found`), { status: 404 });
+    if (!appIds.length) throw Object.assign(new Error('appIds[] required (integers)'), { status: 400 });
+    const session = await ensureCmSession(account);
+    sessions.markUsed(account.username);
+    const client = session.client as unknown as SteamUserApps;
+    const { grantedPackageIds, grantedAppIds } = await client.requestFreeLicense(appIds);
+    gamesCache.delete(account.username);
+    return { requested: appIds, grantedAppIds, grantedPackageIds };
+  };
+  app.post('/api/steam/:username/free-license', asyncHandler(async (req, res) => {
+    const appIds: number[] = Array.isArray(req.body?.appIds) ? req.body.appIds.map(Number).filter(Number.isInteger) : [];
+    try { res.json(await freeLicenseOne(req.params.username, appIds)); }
+    catch (e) { res.status((e as { status?: number }).status ?? 502).json({ error: `free-license request failed: ${(e as Error).message}`, requested: appIds }); }
+  }));
+
+  // Read profile (best-effort). Steam exposes no public "get profile" API; a full current-profile
+  // read means scraping the authenticated edit page (fragile, live-only — deferred). For now pre-fill
+  // the editor with the known persona; the POST below does the authoritative write.
+  app.get('/api/steam/:username/profile', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    res.json({ name: account.displayName ?? account.username, realName: null, summary: null, avatarUrl: null, privacy: null, partial: true });
+  }));
+
+  // Edit profile (web/community session) — SHARED helper (route + batch edit-profile job).
+  const editProfileOne = async (username: string, b: ProfileEditBody) => {
+    const account = accounts.get(username);
+    if (!account) throw Object.assign(new Error(`Account "${username}" not found`), { status: 404 });
+    const trader = await trades.ensureWebSession(account.username);
+    const community = trader.community as unknown as CommunityProfileApi;
+    const updated: Record<string, string> = {};
+    const edit: Record<string, unknown> = {};
+    if (typeof b.name === 'string') edit.name = b.name.slice(0, 64);
+    if (typeof b.realName === 'string') edit.realName = b.realName.slice(0, 64);
+    if (typeof b.summary === 'string') edit.summary = b.summary.slice(0, 1000);
+    if (Object.keys(edit).length) { await new Promise<void>((resolve, reject) => community.editProfile(edit, (err) => (err ? reject(err) : resolve()))); updated.info = 'ok'; }
+    if (b.privacy && typeof b.privacy === 'object') { await new Promise<void>((resolve, reject) => community.profileSettings(mapPrivacy(b.privacy!), (err) => (err ? reject(err) : resolve()))); updated.privacy = 'ok'; }
+    if (typeof b.avatar === 'string' && b.avatar) { updated.avatar = await new Promise<string>((resolve, reject) => community.uploadAvatar(b.avatar!, undefined, (err, url) => (err ? reject(err) : resolve(url)))); }
+    return { username: account.username, updated };
+  };
+  app.post('/api/steam/:username/profile', asyncHandler(async (req, res) => {
+    try { res.json(await editProfileOne(req.params.username, (req.body ?? {}) as ProfileEditBody)); }
+    catch (e) { res.status((e as { status?: number }).status ?? 502).json({ error: `profile update failed: ${(e as Error).message}` }); }
+  }));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  W3_31 — Add funds (Steam wallet codes, money-safe) + promo free-licenses.
+  //  Wallet-code redeem is a money-in commit with a BEARER secret: a crash mid-redeem
+  //  must never double-submit, and the raw code must never be logged/returned. The
+  //  WalletRedeemJournal (own file, keyed by sha256(code)) closes the double-submit gap;
+  //  the code is hashed/masked everywhere and scrubbed by redactSecrets. ⚠ Live test needed.
+  // ════════════════════════════════════════════════════════════════════════
+  const walletJournal = new WalletRedeemJournal();
+
+  // SHARED helper (route + batch redeem-codes job) — the full money-safety journal spine lives here so
+  // both callers get identical double-submit protection. Classified result; never throws.
+  const redeemOne = async (username: string, code: string, force: boolean): Promise<{ httpStatus: number; status: string; codeMasked: string; detail: string }> => {
+    const key = codeHash(code);
+    const masked = codeMasked(code);
+    const lingering = walletJournal.consultRefusal(key, { force });   // S15: crash-interrupted → refuse until verified
+    if (lingering) return { httpStatus: 409, status: 'needs-verify', codeMasked: masked, detail: 'A prior redeem of this code was interrupted — verify the balance on Steam, then retry with force.' };
+    walletJournal.begin(key, 'wallet-redeem');
+    try {
+      const result = await store.redeemWalletCode(username, code);      // never logs the raw code
+      if (result.ambiguous) { walletJournal.record(key, 'wallet-redeem', 'placed', 'ambiguous transport'); return { httpStatus: 502, status: 'ambiguous', codeMasked: masked, detail: 'Outcome unknown — verify the balance on Steam. No auto-retry.' }; }
+      walletJournal.resolve(key);
+      return { httpStatus: 200, status: result.success ? 'redeemed' : 'rejected', codeMasked: masked, detail: result.detail };
+    } catch (e) {
+      if ((e as Error).name === 'StoreAmbiguousError') { walletJournal.record(key, 'wallet-redeem', 'placed', 'commit ambiguous'); return { httpStatus: 502, status: 'ambiguous', codeMasked: masked, detail: 'Outcome unknown — verify the balance on Steam. No auto-retry.' }; }
+      walletJournal.resolve(key);
+      return { httpStatus: 502, status: 'rejected', codeMasked: masked, detail: (e as Error).message };
+    }
+  };
+  app.post('/api/steam/:username/redeem', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    const code = typeof req.body?.code === 'string' ? req.body.code : '';
+    if (!normalizeCode(code)) return res.status(400).json({ error: 'code required' });
+    const r = await redeemOne(account.username, code, req.body?.force === true);
+    res.status(r.httpStatus).json({ status: r.status, codeMasked: r.codeMasked, newBalance: null, detail: r.detail });
+  }));
+
+  // ── W4_40 — paysafecard top-up (Track B): SEQUENTIAL, human-in-the-loop, browser-driven.
+  //    SSIM opens each account's addfunds checkout pre-authenticated + reconciles by wallet READ-BACK.
+  //    The PIN is entered ON THE PAGE (never in SSIM); SSIM only sequences accounts + verifies credits.
+  //    ON by default (owner 2026-07-09) — the visible "TEST" badge IS the flag; only =0 hard-disables. ──
+  const paysafeErr = (res: Response, e: unknown) => res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
+  /** paysafecard is EUR-only, so `amountMinor` IS euro-cents end-to-end — the tier value Steam printed, the
+   *  amount we post to the cart, and the credit threshold. Bounded here (the boundary) as well as in
+   *  PaysafeService, so a hand-rolled request cannot open a €50 000 checkout. */
+  const paysafeAmountOf = (body: Record<string, unknown> | undefined): number => {
+    const amountMinor = Number(body?.amountMinor);
+    if (!Number.isSafeInteger(amountMinor)) throw Object.assign(new Error('pick an amount'), { status: 400 });
+    if (amountMinor < PAYSAFE_MIN_MINOR) throw Object.assign(new Error(`the minimum top-up is ${(PAYSAFE_MIN_MINOR / 100).toFixed(2)} €`), { status: 400 });
+    if (amountMinor > PAYSAFE_MAX_MINOR) throw Object.assign(new Error(`the maximum top-up is ${(PAYSAFE_MAX_MINOR / 100).toFixed(2)} €`), { status: 400 });
+    return amountMinor;
+  };
+  // The amount tiers Steam offers this account (for the UI dropdown) — real values, no free-text guessing.
+  // Also reports `supported`: a non-EUR wallet cannot be topped up, and the UI must say so up front.
+  app.get('/api/steam/:username/paysafe/tiers', asyncHandler(async (req, res) => {
+    if (!accounts.get(req.params.username)) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    try { res.json(await store.getAddfundsTiers(req.params.username)); } catch (e) { paysafeErr(res, e); }
+  }));
+  // Single account (wallet card): open its checkout, then verify.
+  app.post('/api/steam/:username/paysafe/open', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    try { res.json(await paysafe.openOne(account.username, paysafeAmountOf(req.body))); } catch (e) { paysafeErr(res, e); }
+  }));
+  app.post('/api/steam/paysafe/verify', asyncHandler(async (_req, res) => {
+    try { res.json(await paysafe.verifyOne()); } catch (e) { paysafeErr(res, e); }
+  }));
+  // Batch (sequential): start over a scope, advance (verify current → open next), stop, poll.
+  app.post('/api/steam/paysafe/batch/start', asyncHandler(async (req, res) => {
+    const raw: unknown[] = Array.isArray(req.body?.usernames) ? req.body.usernames : [];
+    // A money op NEVER silently drops accounts the operator selected — refuse the whole run instead.
+    const unknown = raw.filter((u) => typeof u !== 'string' || !accounts.get(u));
+    if (unknown.length) return res.status(400).json({ error: `unknown account(s): ${unknown.slice(0, 5).map(String).join(', ')}` });
+    try { res.json(await paysafe.startBatch(raw as string[], paysafeAmountOf(req.body))); } catch (e) { paysafeErr(res, e); }
+  }));
+  app.post('/api/steam/paysafe/batch/advance', asyncHandler(async (req, res) => {
+    try { res.json(await paysafe.advance({ skip: req.body?.skip === true })); } catch (e) { paysafeErr(res, e); }
+  }));
+  app.post('/api/steam/paysafe/batch/stop', asyncHandler(async (_req, res) => {
+    try { res.json(await paysafe.stop() ?? { running: false }); } catch (e) { paysafeErr(res, e); }
+  }));
+  app.get('/api/steam/paysafe/status', (_req: Request, res: Response) => res.json(paysafe.status() ?? { running: false }));
+  // Frontend capability probe: the paysafecard actions show ONLY when enabled.
+  app.get('/api/steam/paysafe/config', (_req: Request, res: Response) => res.json({ enabled: process.env.SSIM_PAYSAFE_EXPERIMENTAL !== '0' }));
+
+  app.post('/api/steam/:username/promo-license', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    const subId = Number(req.body?.subId);
+    if (!Number.isInteger(subId) || subId <= 0) return res.status(400).json({ error: 'subId (integer) required' });
+    try {
+      const r = await store.addFreeLicense(account.username, subId);
+      res.json({ subId, status: r.status, detail: r.detail });
+    } catch (e) {
+      res.status(502).json({ error: `promo-license failed: ${(e as Error).message}`, subId });
+    }
+  }));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  W3_32 — Batch Jobs engine: scope → job → run w/ progress + history. The engine
+  //  is a router — each adapter calls an EXISTING fan-out service, inheriting caps +
+  //  money-safety. Refresh + bans ship enabled; money/per-account jobs greyed until wired.
+  // ════════════════════════════════════════════════════════════════════════
+  // Batch registry — pruned to LEAN 2026-07-09 (owner). Batch = redeem-codes (bulk wallet codes) +
+  // the dedicated Distribute button (in the scope panel, NOT a registry tile). REMOVED: refresh-inventory,
+  // check-bans, scan-games, add-free-game, edit-profile, promo-license, mass-buy (covered by Inventories →
+  // Mass Buy), and the disabled distribute/mass-sell/offers-batch placeholder tiles. Shared backend helpers
+  // are intentionally KEPT — their single-account routes and other UIs still call them.
+  const batchRegistry = new JobRegistry()
+    .add({ jobType: 'redeem-codes', label: 'Redeem Steam wallet codes', group: 'money', moneySafe: true, enabled: true, experimental: true, paramSchema: [{ key: 'codes', label: 'Codes (one per line)', type: 'multiline', required: true, help: 'Matched 1:1 to the selected accounts, in order' }],
+      adapter: async ({ params, runInternal }) => { const codes = String(params.codes || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean); runInternal(async (u, i) => { const code = codes[i]; if (!code) throw new Error('no code for this account (need one code per line, in order)'); const r = await redeemOne(u, code, false); if (r.status !== 'redeemed') throw new Error(`${r.status}: ${r.detail}`); }); return { source: { kind: 'internal' } }; } });
+  // NOTE: paysafecard is NOT a BatchJobService fan-out job — it is human-in-the-loop (a browser handoff
+  // per account). It ships as a CLIENT-ROUTED sequential job (like Distribute) via /api/steam/paysafe/*.
+  const batch = new BatchJobService(accounts, batchRegistry);
+  app.get('/api/batch/registry', (_req: Request, res: Response) => res.json(batch.registryView()));
+  // Scope tree for the Batch micro-selection picker: environments + folders + accounts, so the
+  // operator can select any granularity (whole env / a folder / single or multi accounts). Batch-owned
+  // (mirrors /api/proxies/targets) so the two modules stay decoupled. No secrets — ids/names only.
+  app.get('/api/batch/targets', (_req: Request, res: Response) => {
+    res.json({
+      environments: accounts.getEnvironments().map((e) => ({ id: e.id, name: e.name })),
+      folders:      accounts.getAllFolders().map((f) => ({ id: f.id, name: f.name, environmentId: f.environmentId, parentId: f.parentId })),
+      accounts:     accounts.getAll().map((a) => ({ username: a.username, environmentId: a.environmentId, folderId: a.folderId ?? null })),
+    });
+  });
+  app.get('/api/batch/status', (_req: Request, res: Response) => res.json(batch.status()));
+  app.get('/api/batch/history', (_req: Request, res: Response) => res.json(batch.history()));
+  app.post('/api/batch/cancel', (_req: Request, res: Response) => res.json(batch.cancel()));
+  app.post('/api/batch/run', asyncHandler(async (req, res) => {
+    try {
+      res.json(await batch.run({ jobType: req.body?.jobType, scope: req.body?.scope, params: req.body?.params, game: req.body?.game }));
+    } catch (e) {
+      res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
+    }
+  }));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  W3_33 — Distribute Items: pack a source pool (cache-only) → serial trade-send a
+  //  NET amount to each target. preview() is pure (no network); start() runs serially
+  //  through trades.sendTrade (self-journaled). ⚠ Live trade behavior = joint test.
+  // ════════════════════════════════════════════════════════════════════════
+  const distReq = (body: Record<string, unknown>) => {
+    const pick = (v: unknown) => Array.isArray(v) ? v.filter((u: unknown): u is string => typeof u === 'string' && !!accounts.get(u)) : [];
+    const sources = pick(body?.sources), targets = pick(body?.targets);
+    const amountNetCents = Number(body?.amountNetCents);
+    if (!sources.length) throw Object.assign(new Error('no known source accounts'), { status: 400 });
+    if (!targets.length) throw Object.assign(new Error('no known target accounts'), { status: 400 });
+    if (!Number.isFinite(amountNetCents) || amountNetCents <= 0) throw Object.assign(new Error('amountNetCents must be > 0'), { status: 400 });
+    // Default MULTI (owner 2026-07-09): targets fill from several sources; 'underfill' is the opt-out.
+    return { sources, targets, amountNetCents, game: (body?.game === 'tf2' ? 'tf2' : 'cs2') as 'cs2' | 'tf2', minItemNetCents: Number(body?.minItemNetCents) || 0, policy: (body?.policy === 'underfill' ? 'underfill' : 'multi') as 'multi' | 'underfill', message: typeof body?.message === 'string' ? body.message : undefined };
+  };
+  const distErr = (res: Response, e: unknown) => res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
+  app.post('/api/inventory/distribute/preview', (req: Request, res: Response) => { try { res.json(distribute.preview(distReq(req.body ?? {}))); } catch (e) { distErr(res, e); } });
+  app.post('/api/inventory/distribute', (req: Request, res: Response) => { try { res.json(distribute.start(distReq(req.body ?? {}))); } catch (e) { distErr(res, e); } });
+  app.get('/api/inventory/distribute/status', (_req: Request, res: Response) => res.json(distribute.status()));
+  app.post('/api/inventory/distribute/cancel', (_req: Request, res: Response) => res.json(distribute.cancel()));
+
   app.post('/api/accounts/:username/open-browser', asyncHandler(async (req, res) => {
     const account = accounts.get(req.params.username);
     if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
@@ -928,6 +1516,15 @@ export function createApp(deps: ApiDeps): Express {
     if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
 
     const { displayName, proxy, password, maFilePath } = req.body ?? {};
+
+    // F8: post-cutover, per-account proxy is managed as an account-scope rule. Reject a proxy edit
+    // BEFORE touching any state or dropping the session (a forced re-login on a non-pinned pool rule
+    // would otherwise ROTATE the exit IP — a false "it worked"). Non-proxy edits still work when proxy
+    // is absent. Pre-cutover: unchanged. (Constraint 4: the legacy fields on disk are left untouched.)
+    if (proxy !== undefined && accounts.isProxyRulesAuthoritative()) {
+      return res.status(400).json({ error: 'proxies are managed in the Proxies module — add/edit an account-scoped rule there' });
+    }
+
     const changes: Partial<AccountConfig> = {};
 
     if (typeof displayName === 'string') changes.displayName = displayName.trim() || undefined;
@@ -1069,21 +1666,6 @@ export function createApp(deps: ApiDeps): Express {
     res.json({ ok: true });
   }));
 
-  // ── Soft-hide / unhide (session keeps running) ─────────────────────────────
-  app.post('/api/accounts/:username/hide', (req: Request, res: Response) => {
-    const account = accounts.get(req.params.username);
-    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
-    accounts.update(account.username, { hidden: true });
-    res.json(sanitizeAccount(accounts.get(account.username)!));
-  });
-
-  app.post('/api/accounts/:username/unhide', (req: Request, res: Response) => {
-    const account = accounts.get(req.params.username);
-    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
-    accounts.update(account.username, { hidden: false });
-    res.json(sanitizeAccount(accounts.get(account.username)!));
-  });
-
   // ── POST /api/accounts/:username/move  { folderId, environmentId? } ────────
   app.post('/api/accounts/:username/move', (req: Request, res: Response) => {
     const account = accounts.get(req.params.username);
@@ -1183,6 +1765,209 @@ export function createApp(deps: ApiDeps): Express {
     }
     if (missing.length) pricing.ensureFilled(missing);
     res.json(all);
+  });
+
+  // ── Dashboard (W1_12): fleet summary + combined value graph — read-only, no login ──
+  // Aggregates the CACHED per-account values SERVER-side (scales to 500+; the frontend never
+  // loops accounts). Mirrors the GET /api/inventory enrich→lock→tag pipeline so prices/categories
+  // are current, then sums gross/net/count/locked per game. Wallet is counted ONCE per account
+  // across the cs2∪tf2 union (wallet is game-independent). Tri-state honest: never-refreshed
+  // accounts + absent/unconvertible wallets are EXCLUDED from sums and counted separately.
+  app.get('/api/dashboard/summary', (_req: Request, res: Response) => {
+    const usdToEur = exchange.getUsdToEur();
+    const walletUsdCents = (w?: { currency: number; balance: number }): number | null => {
+      if (!w || typeof w.balance !== 'number') return null;         // absent → unknown (excluded)
+      if (w.currency === 1) return Math.round(w.balance * 100);     // USD
+      if (w.currency === 3) return Math.round((w.balance / usdToEur) * 100); // EUR via live rate
+      return null;                                                  // other → unconvertible (excluded)
+    };
+
+    // Prep a whole-cache map exactly like GET /api/inventory: enrich sets item.price + queues fills,
+    // manual-lock overlay, then re-derive tradelocked/tradable for gc records.
+    const prep = (all: Record<string, AccountInventory>): Record<string, AccountInventory> => {
+      const missing: Array<{ name: string; appid: number }> = [];
+      for (const key of Object.keys(all)) {
+        missing.push(...pricing.enrich(all[key]));
+        applyManualLock(all[key]);
+        if (all[key].source === 'gc') tagCategories(all[key]);
+      }
+      if (missing.length) pricing.ensureFilled(missing);
+      return all;
+    };
+
+    const cs2 = prep(inventory.allCs2() as Record<string, AccountInventory>);
+    const tf2 = prep(inventory.tf2Store.all() as Record<string, AccountInventory>);
+
+    let newest: number | null = null, oldest: number | null = null;
+    const stampFreshness = (inv: AccountInventory): void => {
+      const t = new Date(inv.fetchedAt).getTime();
+      if (!Number.isFinite(t)) return;
+      newest = newest === null ? t : Math.max(newest, t);
+      oldest = oldest === null ? t : Math.min(oldest, t);
+    };
+
+    const perGame = (all: Record<string, AccountInventory>) => {
+      let grossCents = 0, netCents = 0, count = 0;
+      let lockedCount = 0, lockedGross = 0, lockedNet = 0;
+      let missing = 0, softNull = 0;
+      for (const inv of Object.values(all)) {
+        stampFreshness(inv);
+        const t = pricing.totalsOf(inv);              // read-only gross + honesty flags (never mutates)
+        grossCents += t.totalCents;
+        missing += t.missing.length;
+        softNull += t.softNull;
+        for (const it of inv.items) {
+          const qty = it.quantity || 0;
+          count += qty;
+          const g = (typeof it.price === 'number' ? it.price : 0) * qty;   // gross USD cents
+          const n = g > 0 ? sellerNetFromBuyer(g) : 0;                     // net per item (fee floors) — never gross/1.15
+          netCents += n;
+          // `category` is a GC-record tag (tagCategories runs only for source==='gc') — web-fetched
+          // records carry the lock as `tradeLockExpiry` instead. Count EITHER signal, once per item,
+          // or the dashboard shows "0 items frozen" for a fleet full of web-parsed trade-holds.
+          if (it.category === 'tradelocked' || it.tradeLockExpiry) { lockedCount += qty; lockedGross += g; lockedNet += n; }
+        }
+      }
+      return { grossCents, netCents, count, lockedCount, lockedGross, lockedNet, missing, softNull };
+    };
+
+    const gCs2 = perGame(cs2);
+    const gTf2 = perGame(tf2);
+
+    // Wallet ONCE per account over the cs2∪tf2 union (wallet is game-independent — never double it).
+    // The two caches can key the SAME account with different casing (e.g. GC-merged CS2 view vs the
+    // lowercase TF2 store) — a raw key union then counts every account twice ("1.076 with inventory"
+    // on a 538-account fleet) and sums its wallet twice. Normalize to lowercase before the union.
+    const lcOf = (all: Record<string, AccountInventory>): Record<string, AccountInventory> => {
+      const m: Record<string, AccountInventory> = {};
+      for (const k of Object.keys(all)) m[k.toLowerCase()] = all[k];
+      return m;
+    };
+    const cs2Lc = lcOf(cs2), tf2Lc = lcOf(tf2);
+    const usernames = new Set<string>([...Object.keys(cs2Lc), ...Object.keys(tf2Lc)]);
+    let balanceCents = 0, walletKnown = 0, walletUnknown = 0, unconvertible = 0;
+    for (const u of usernames) {
+      const w = cs2Lc[u]?.wallet ?? tf2Lc[u]?.wallet;
+      const cents = walletUsdCents(w);
+      if (cents === null) {
+        walletUnknown++;
+        if (w && typeof w.balance === 'number' && w.balance > 0) unconvertible++; // real non-USD/EUR balance, excluded
+      } else { balanceCents += cents; walletKnown++; }
+    }
+
+    const totalAccounts = accounts.getAll().length;
+    const totalGross = gCs2.grossCents + gTf2.grossCents;
+    const totalNet = gCs2.netCents + gTf2.netCents;
+    const partial = (gCs2.missing + gCs2.softNull + gTf2.missing + gTf2.softNull) > 0;
+
+    // Widgets: TF2-key tile + the two fleet Top-10 lists. One pass over both prepped caches,
+    // keyed per game so a same-named item can never merge across games. Owner decision
+    // (2026-07-09): "most valuable" ranks by highest UNIT price; "most owned" by total quantity.
+    const TF2_KEY_NAME = 'Mann Co. Supply Crate Key';
+    let tf2KeyCount = 0, tf2KeyGross = 0;
+    interface TopItem { name: string; game: 'cs2' | 'tf2'; qty: number; unitCents: number | null; totalCents: number }
+    const itemAgg = new Map<string, TopItem>();
+    const collectTop = (all: Record<string, AccountInventory>, game: 'cs2' | 'tf2') => {
+      for (const inv of Object.values(all)) {
+        for (const it of inv.items) {
+          const qty = it.quantity || 0;
+          if (qty <= 0) continue;
+          const unit = typeof it.price === 'number' ? it.price : null;
+          if (game === 'tf2' && it.marketHashName === TF2_KEY_NAME) {
+            tf2KeyCount += qty;
+            tf2KeyGross += (unit ?? 0) * qty;
+          }
+          const key = `${game}:${it.marketHashName}`;
+          let e = itemAgg.get(key);
+          if (!e) { e = { name: it.marketHashName, game, qty: 0, unitCents: unit, totalCents: 0 }; itemAgg.set(key, e); }
+          e.qty += qty;
+          if (unit !== null) { e.unitCents = unit; e.totalCents += unit * qty; }
+        }
+      }
+    };
+    collectTop(cs2, 'cs2');
+    collectTop(tf2, 'tf2');
+    const aggList = [...itemAgg.values()];
+    const topValuable = aggList
+      .filter((e) => e.unitCents !== null && e.unitCents > 0)
+      .sort((a, b) => (b.unitCents! - a.unitCents!) || (b.totalCents - a.totalCents))
+      .slice(0, 10);
+    const topOwned = aggList
+      .sort((a, b) => (b.qty - a.qty) || (b.totalCents - a.totalCents))
+      .slice(0, 10);
+
+    res.json({
+      asOf: newest,
+      oldestAsOf: oldest,
+      currency: 'USD',
+      counts: {
+        environments: accounts.getEnvironments().length,
+        accounts: totalAccounts,
+        accountsWithInventory: usernames.size,
+        accountsNeverRefreshed: Math.max(0, totalAccounts - usernames.size),
+        walletKnown,
+        walletUnknown,
+      },
+      items: {
+        cs2: { grossCents: gCs2.grossCents, netCents: gCs2.netCents, count: gCs2.count, missingPrices: gCs2.missing, softNull: gCs2.softNull },
+        tf2: { grossCents: gTf2.grossCents, netCents: gTf2.netCents, count: gTf2.count, missingPrices: gTf2.missing, softNull: gTf2.softNull },
+        totalGrossCents: totalGross,
+        totalNetCents: totalNet,
+        totalCount: gCs2.count + gTf2.count,
+        partial,
+      },
+      balance: { usdCents: balanceCents, unconvertible },
+      tradelocked: {
+        count: gCs2.lockedCount + gTf2.lockedCount,
+        grossCents: gCs2.lockedGross + gTf2.lockedGross,
+        netCents: gCs2.lockedNet + gTf2.lockedNet,
+      },
+      grandTotal: {
+        grossCents: totalGross + balanceCents,
+        netCents: totalNet + balanceCents,
+      },
+      tf2Keys: { count: tf2KeyCount, grossCents: tf2KeyGross },
+      topValuable,
+      topOwned,
+    });
+  });
+
+  // Combined value-over-time series for the Dashboard graph. cs2+tf2 items are joined with the
+  // SAME carry-forward union ValueHistoryService.aggregate() uses: game-scoped snapshots almost
+  // never share an exact timestamp (a TF2 refresh stamps its own `t`), so an exact-`t` join left
+  // every merged point single-game — the legend's "last point" read as TF2-only. At each timestamp
+  // present in EITHER series, each game contributes its latest value at-or-before it (0 before its
+  // first point). Wallet is taken ONCE (recorded identically in both game series — summing would
+  // double-count it). Shaped as HistoryPoint[] for renderHistoryChart.
+  app.get('/api/dashboard/history', (_req: Request, res: Response) => {
+    const series = [history.get(GLOBAL_SERIES, 'cs2'), history.get(GLOBAL_SERIES, 'tf2')]
+      .filter((arr) => arr.length > 0);
+    if (series.length === 0) return res.json([]);
+    if (series.length === 1) {
+      return res.json(series[0].map((p) => ({ t: p.t, items: p.items, wallet: p.wallet, partial: !!p.partial })));
+    }
+    const tsSet = new Set<number>();
+    for (const arr of series) for (const p of arr) tsSet.add(p.t);
+    const timestamps = [...tsSet].sort((a, b) => a - b);
+    const cursors = series.map(() => 0);
+    const out: Array<{ t: number; items: number; wallet: number; partial: boolean }> = [];
+    for (const t of timestamps) {
+      let items = 0, wallet: number | null = null, partial = false;
+      for (let s = 0; s < series.length; s++) {
+        const arr = series[s];
+        let i = cursors[s];
+        while (i + 1 < arr.length && arr[i + 1].t <= t) i++;
+        cursors[s] = i;
+        const p = arr[i];
+        if (p && p.t <= t) {
+          items += p.items;
+          if (wallet === null) wallet = p.wallet;   // wallet once — first contributing series wins
+          if (p.partial) partial = true;
+        }
+      }
+      out.push({ t, items, wallet: wallet ?? 0, partial });
+    }
+    res.json(out);
   });
 
   app.get('/api/inventory/refresh-status', (_req: Request, res: Response) => {
@@ -1738,7 +2523,7 @@ export function createApp(deps: ApiDeps): Express {
     const game = appid === 440 ? 'tf2' : 'cs2';
     const currency = inventory.getCached(username, game)?.wallet?.currency ?? 3;
     const info = currencyInfo(currency);
-    const lowestMinor = await market.lowestAsk(name, appid, currency);
+    const lowestMinor = await market.lowestAsk(name, appid, currency, username);
     res.json({ lowestMinor, currency, currencyIso: info.iso, decimals: info.decimals });
   }));
 
@@ -1982,13 +2767,14 @@ export function createApp(deps: ApiDeps): Express {
   //  explicitly selected + started. See FEATURES_REPORT.md.
   // ════════════════════════════════════════════════════════════════════════
 
-  // POST /api/tradeup/candidates { username } — live-refresh + compute every positive-profit trade-up.
+  // POST /api/tradeup/candidates { username, all? } — live-refresh + compute trade-ups. `all:true`
+  // returns EVERY computable contract (profitable + not) for the "All trade-ups" tab; default = profitable only.
   app.post('/api/tradeup/candidates', asyncHandler(async (req, res) => {
     const username = typeof req.body?.username === 'string' ? req.body.username : '';
     if (!accounts.get(username)) return res.status(400).json({ error: 'valid username is required' });
     const minProfitCents = Number.isFinite(req.body?.minProfitCents) ? Number(req.body.minProfitCents) : 0;
     try {
-      res.json(await tradeup.getCandidates(username, { minProfitCents }));
+      res.json(await tradeup.getCandidates(username, { minProfitCents, includeUnprofitable: req.body?.all === true }));
     } catch (err) {
       res.status(502).json({ error: (err as Error).message });
     }

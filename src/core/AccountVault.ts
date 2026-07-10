@@ -66,6 +66,11 @@ interface VaultPayload {
    *  LIMITED QR imports), key: username.toLowerCase(). Lets such an account carry a dedicated
    *  proxy encrypted instead of the update being silently dropped (B42). */
   accountProxies: Record<string, string>;
+  /** Proxy-rule pools (credential-bearing), key: ProxyRule.id → normalized proxy URLs. Kept in the
+   *  ENCRYPTED vault so rule pools never sit plaintext in accounts.json (parity with envProxies).
+   *  The on-disk proxyRules[].proxies is blanked once provably vaulted; hydrateRuleProxies refills
+   *  it in memory at boot. */
+  ruleProxies: Record<string, string[]>;
   /** Unknown/newer top-level sections are PRESERVED verbatim (downgrade-safe, B30). */
   [extra: string]: unknown;
 }
@@ -266,7 +271,7 @@ export class AccountVaultImpl {
     const salt = crypto.randomBytes(16);
     this.salt = salt;
     this.key = this.deriveKey(password, salt);
-    this.payload = { version: VAULT_VERSION, accounts: {}, tokens: {}, csfloatKeys: {}, envProxies: {}, accountProxies: {} };
+    this.payload = { version: VAULT_VERSION, accounts: {}, tokens: {}, csfloatKeys: {}, envProxies: {}, accountProxies: {}, ruleProxies: {} };
     // H-ACC-038: roll the fields back on a persist throw so a save failure during create leaves the
     // vault locked (isEnabled()===false) instead of enabled-in-memory with no vault.enc on disk.
     try { this.save(); }
@@ -516,6 +521,42 @@ export class AccountVaultImpl {
     }
     this.save();
   }
+  /** Token-only usernames (lowercase) that carry a per-account proxy — for the proxy-rules migration
+   *  union (so a B42 proxy is never missed when synthesizing account rules). */
+  listAccountProxyUsernames(): string[] { return this.payload ? Object.keys(this.payload.accountProxies) : []; }
+
+  // ── Proxy-rule pools (credential-bearing → kept encrypted, never plaintext in accounts.json) ──
+  getRuleProxies(ruleId: string): string[] | undefined {
+    const v = this.payload?.ruleProxies[ruleId];
+    return v && v.length ? [...v] : undefined;
+  }
+  /** Rule ids currently holding a vaulted pool — for GC of orphaned pools on rule delete. */
+  listRuleProxyIds(): string[] { return this.payload ? Object.keys(this.payload.ruleProxies) : []; }
+  /** Set (non-empty) or clear (empty/undefined) a rule's pool. Saves immediately (a credential change). */
+  setRuleProxies(ruleId: string, proxies: string[] | undefined): void {
+    if (!this.payload) throw new Error('vault not unlocked');
+    const val = (proxies ?? []).filter(p => p && p.trim());
+    if (val.length) {
+      if (JSON.stringify(this.payload.ruleProxies[ruleId]) === JSON.stringify(val)) return; // no-op, skip re-encrypt
+      this.payload.ruleProxies[ruleId] = val;
+    } else {
+      if (!(ruleId in this.payload.ruleProxies)) return; // nothing to clear → no-op
+      delete this.payload.ruleProxies[ruleId];
+    }
+    this.save();
+  }
+  /** Import a rule's pool WITHOUT saving (the migration batches one save). Returns true if stored. */
+  importRuleProxies(ruleId: string, proxies: string[]): boolean {
+    if (!this.payload) throw new Error('vault not unlocked');
+    const val = (proxies ?? []).filter(p => p && p.trim());
+    if (!val.length || (this.payload.ruleProxies[ruleId]?.length)) return false;
+    this.payload.ruleProxies[ruleId] = val;
+    return true;
+  }
+  deleteRuleProxies(ruleId: string): void {
+    if (!this.payload) return;
+    if (this.payload.ruleProxies[ruleId]) { delete this.payload.ruleProxies[ruleId]; this.save(); }
+  }
 }
 
 /** Defensive shape normalization for a decrypted payload (corrupt/older file safety).
@@ -533,6 +574,7 @@ function normalizePayload(p: unknown): VaultPayload {
     csfloatKeys: (obj.csfloatKeys && typeof obj.csfloatKeys === 'object') ? obj.csfloatKeys as Record<string, string> : {},
     envProxies:  (obj.envProxies && typeof obj.envProxies === 'object') ? obj.envProxies as Record<string, string> : {},
     accountProxies: (obj.accountProxies && typeof obj.accountProxies === 'object') ? obj.accountProxies as Record<string, string> : {},
+    ruleProxies:    (obj.ruleProxies && typeof obj.ruleProxies === 'object') ? obj.ruleProxies as Record<string, string[]> : {},
   };
 }
 

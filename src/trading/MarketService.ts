@@ -27,7 +27,13 @@ const SELL_BACKOFF_MS    = [15_000, 25_000, 35_000]; // backoff before each retr
 const PREFLIGHT_RETRIES  = 2;                       // connectivity-probe retries before deferring a bot
 const PREFLIGHT_BACKOFF_MS = 8_000;
 const CONFIRM_RETRIES    = 3;                       // 2FA-confirmation retries (Steam's confirm servers 500 a lot)
-const CONFIRM_BACKOFF_MS = 18_000;                  // pause between confirmation retries
+const CONFIRM_BACKOFF_MS = 18_000;                  // pause between confirmation retries (5xx / transport)
+// A 429 needs the rate-limit WINDOW to elapse, not a transport backoff. Retrying inside the window is
+// both futile and harmful (each attempt re-arms it), so: long pause, few attempts. Mirrors the long-pause
+// branch InventoryService already applies to `rateLimited` (RETRY_PAUSE_RATELIMIT).
+const CONFIRM_RATELIMIT_PAUSE_MS  = 65_000;
+const CONFIRM_RATELIMIT_JITTER_MS = 15_000;         // de-sync the fleet's retries
+const CONFIRM_RATELIMIT_RETRIES   = 2;              // ≤3 getlist calls total, not 4 inside one window
 
 /**
  * Money-safety gate (B11): every price SSIM computes is EUR seller-net cents, but
@@ -145,6 +151,7 @@ export class MarketService {
   private retryBackoffs = SELL_BACKOFF_MS;
   private preflightBackoff = PREFLIGHT_BACKOFF_MS;
   private confirmBackoff = CONFIRM_BACKOFF_MS;
+  private confirmRateLimitPause = CONFIRM_RATELIMIT_PAUSE_MS;
   /** Co-operative cancel flag for the live mass-sell (set by cancelSell()). */
   private cancelRequested = false;
   /** H-TRD-020: bots currently executing processBot, mirrored into job.activeBots for the UI.
@@ -191,9 +198,12 @@ export class MarketService {
   }
 
   /** Lowest market ask (minor units of `currency`) for the buy modal's live-price
-   *  button. Delegates to the pricing engine; null when no price is found. */
-  lowestAsk(name: string, appid: number, currency: number): Promise<number | null> {
-    return this.pricing.getLowestAsk(name, appid, currency);
+   *  button. Delegates to the pricing engine; null when no price is found. Routed through
+   *  the buying account so the read is AUTHENTICATED (its own priceoverview budget) — an
+   *  anonymous read 429s cold on the shared pool. (2026-07-10) */
+  async lowestAsk(name: string, appid: number, currency: number, username?: string): Promise<number | null> {
+    const ctx = await this.priceCtxFor(username);
+    return this.pricing.getLowestAsk(name, appid, currency, ctx);
   }
 
   // ── Active Orders: fetch + cancel (sell listings & buy orders) ──────────────
@@ -217,13 +227,14 @@ export class MarketService {
     await trader.cancelBuyOrder(buyOrderId);
   }
 
-  /** Resolves a bot's price-fetch context (proxy agent) so price checks egress
-   *  via its IP. */
-  private async priceCtxFor(username?: string): Promise<{ httpsAgent?: unknown }> {
+  /** Resolves a bot's price-fetch context so price checks egress via its IP AND carry its session
+   *  cookie (authenticated priceoverview → the account's own budget; anonymous reads 429 cold on the
+   *  shared pool — 2026-07-10). Falls back to {} when the account has no live session. */
+  private async priceCtxFor(username?: string): Promise<{ httpsAgent?: unknown; cookieHeader?: string }> {
     if (!username) return {};
     try {
       const trader = await this.trades.getTrader(username);
-      return { httpsAgent: trader.httpsAgent };
+      return { httpsAgent: trader.httpsAgent, cookieHeader: trader.cookieHeader };
     } catch (err) {
       logger.warn(`[market-price] could not resolve price context for ${username}: ${(err as Error).message}`);
       return {};
@@ -290,7 +301,7 @@ export class MarketService {
   startMassSell(
     groups:   MassSellGroup[],
     strategy: SellStrategy,
-    opts?: { concurrency?: number; itemDelayMs?: number; customCents?: number; retryBackoffMs?: number; preflightBackoffMs?: number; confirmBackoffMs?: number },
+    opts?: { concurrency?: number; itemDelayMs?: number; customCents?: number; retryBackoffMs?: number; preflightBackoffMs?: number; confirmBackoffMs?: number; confirmRateLimitPauseMs?: number },
   ): MassSellJob {
     if (this.job.running) throw new Error('A mass-sell is already running');
     this.cancelRequested = false; // fresh run — clear any prior cancel request
@@ -304,6 +315,7 @@ export class MarketService {
     this.retryBackoffs   = opts?.retryBackoffMs   != null ? [opts.retryBackoffMs] : SELL_BACKOFF_MS;
     this.preflightBackoff = opts?.preflightBackoffMs != null ? opts.preflightBackoffMs : PREFLIGHT_BACKOFF_MS;
     this.confirmBackoff   = opts?.confirmBackoffMs != null ? opts.confirmBackoffMs : CONFIRM_BACKOFF_MS;
+    this.confirmRateLimitPause = opts?.confirmRateLimitPauseMs != null ? opts.confirmRateLimitPauseMs : CONFIRM_RATELIMIT_PAUSE_MS;
     // S33: a fire-and-forget orchestrator that ever REJECTS would (a) escape `void` as an
     // unhandledRejection → a money-breaker tick, and (b) never reach its trailing running=false → the
     // job type latched refused until restart. Finalize on rejection: reset the flag + log (never rethrow).
@@ -355,7 +367,7 @@ export class MarketService {
     // when Steam actually answered (`info.authoritative`). A transport-failure null
     // (all cascade tries threw) is NOT cached and surfaces as `transport:true` so the
     // caller defers the item instead of failing it and poisoning the rest of the run.
-    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown }, appId: number): Promise<{ net: number | null; transport: boolean }> => {
+    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookieHeader?: string }, appId: number): Promise<{ net: number | null; transport: boolean }> => {
       if (customNet != null) return { net: customNet, transport: false };
       // Cache key includes appId: a same-named item can exist in both games at DIFFERENT prices,
       // so a CS2 price must never be reused for a TF2 item (or vice versa).
@@ -465,7 +477,7 @@ export class MarketService {
 
   private async processBot(
     group: MassSellGroup,
-    resolveNet: (name: string, ctx: { httpsAgent?: unknown }, appId: number) => Promise<{ net: number | null; transport: boolean }>,
+    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookieHeader?: string }, appId: number) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
   ): Promise<void> {
     const user = group.username;
@@ -519,22 +531,24 @@ export class MarketService {
     }
 
     let listedSet: Set<string>;
+    let unconfirmedSet: Set<string>;
     try {
-      listedSet = await this.preflightProbe(trader, appId);
+      ({ listed: listedSet, unconfirmed: unconfirmedSet } = await this.preflightProbe(trader, appId));
     } catch (err) {
       logger.warn(`[mass-sell] ${user}: pre-flight connectivity check failed (${(err as Error).message}) – ${N} item(s) deferred`);
       this.deferAll(group, group.items, `No Steam connection (pre-flight): ${(err as Error).message}`);
       this.trackBotActive(user, false);
       return;
     }
-    logger.info(`[mass-sell] ${user}: pre-flight OK (${listedSet.size} existing listing(s)) – listing ${N} item(s)…`);
+    logger.info(`[mass-sell] ${user}: pre-flight OK (${listedSet.size} existing listing(s), ${unconfirmedSet.size} awaiting 2FA) – listing ${N} item(s)…`);
 
     // ── List each item (Rules 2 + 3) ──────────────────────────────────────────
     this.job.phase = 'listing';
     const failedHere = new Set<string>(); // S28: identity (assetId), NOT a positional index into the shared failed[]
     let listedForBot = 0;
     let pendingForBot = 0; // listings (incl. phantoms) that still need a 2FA confirm
-    let skippedAlreadyListed = 0; // H-TRD-026: pre-existing listings (crash-rerun) — may still await a 2FA confirm
+    let skippedAlreadyListed = 0; // pre-existing listings we skipped (for the operator-facing count)
+    let skippedAwaitingConfirm = 0; // H-TRD-026: …of which are STILL unconfirmed → the confirm phase must run
     let transportPriceMisses = 0; // S2: consecutive price lookups that failed at the transport layer (not "no price")
 
     // Pre-list guard, snapshotted ONCE per bot (H-TRD-021): the trade-locked / non-tradable
@@ -565,11 +579,13 @@ export class MarketService {
       }
 
       // Already listed (pre-existing or an earlier phantom) → count once, skip.
-      // H-TRD-026: a pre-existing listing may still be awaiting its 2FA confirm (crash-rerun
-      // after listings were created but before the confirm phase). Count it so the confirm
-      // gate below still fires; confirmMarketListings is idempotent when nothing is pending.
+      // H-TRD-026: a pre-existing listing may still be awaiting its 2FA confirm (crash-rerun after
+      // listings were created but before the confirm phase). Steam tells us WHICH ones (pending_listings
+      // → confirmed:false), so only those arm the confirm gate below. Arming it for already-ACTIVE
+      // listings bought nothing and spent a mobileconf/getlist against the account's per-IP budget.
       if (listedSet.has(item.assetId)) {
         this.job.listed++; this.job.done++; skippedAlreadyListed++;
+        if (unconfirmedSet.has(item.assetId)) skippedAwaitingConfirm++;
         logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} already listed → skipped (${listedForBot} new this bot)`);
         continue;
       }
@@ -585,7 +601,7 @@ export class MarketService {
         continue;
       }
 
-      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent }, appId);
+      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookieHeader: trader.cookieHeader }, appId);
       if (net == null && transport) {
         // S2 (in-run): the price lookup failed at the transport layer (429 storm, proxy
         // reset, 5xx) — Steam never answered, so this is NOT "no price". Defer the item
@@ -664,13 +680,13 @@ export class MarketService {
     }
 
     // ── Confirm this bot's pending listings in one 2FA batch (Hotfix A: retry) ──
-    // H-TRD-026: also arm the confirm phase when the only "pending" work is pre-existing
-    // listings from an interrupted earlier run (skippedAlreadyListed) — those may still
-    // await mobile confirmation. confirmMarketListings is idempotent (getConfirmations
-    // returns only still-pending confirmations → resolves 0 when nothing is left).
-    if (pendingForBot + skippedAlreadyListed > 0) {
+    // H-TRD-026: also arm the confirm phase when the only pending work is pre-existing listings from an
+    // interrupted earlier run — but ONLY the ones Steam still reports as awaiting confirmation. A re-run
+    // over listings that are already active has nothing to confirm, and calling anyway cost a
+    // mobileconf/getlist per bot against a per-IP budget the account needs for real money ops.
+    if (pendingForBot + skippedAwaitingConfirm > 0) {
       this.job.phase = 'confirming';
-      logger.info(`[mass-sell] ${user}: confirming ${pendingForBot} new + ${skippedAlreadyListed} pre-existing listing(s) via 2FA…`);
+      logger.info(`[mass-sell] ${user}: confirming ${pendingForBot} new + ${skippedAwaitingConfirm} pre-existing listing(s) via 2FA…`);
       try {
         const n = await this.confirmWithRetry(trader, user);
         this.job.confirmed += n;
@@ -681,6 +697,8 @@ export class MarketService {
         this.job.confirmed += (err as { confirmedSoFar?: number }).confirmedSoFar ?? 0;
         logger.error(`[mass-sell] ${user}: confirmation FAILED after retries (${(err as Error).message}) – listings exist but await manual 2FA`);
       }
+    } else if (skippedAlreadyListed > 0) {
+      logger.info(`[mass-sell] ${user}: ${skippedAlreadyListed} pre-existing listing(s) are already confirmed — no 2FA pass needed`);
     }
 
     // ── Rule 3 backstop: reconcile phantoms ────────────────────────────────────
@@ -718,6 +736,7 @@ export class MarketService {
   ): Promise<number> {
     let total = 0;
     let lastErr: unknown;
+    let rateLimitRetries = 0;
     for (let attempt = 0; attempt <= CONFIRM_RETRIES; attempt++) {
       let err: Error;
       try {
@@ -732,8 +751,27 @@ export class MarketService {
         err = rejErr instanceof Error ? rejErr : new Error(String(rejErr)); // getConfirmations threw — nothing counted this pass
       }
       lastErr = err;
+      const cls = classifyNetworkError(err);
+      // A 429 is NOT a 500. errorClass classifies it as {transient:true, rateLimited:true} and its own
+      // doc prescribes a LONG pause; routing it onto the transient path retried Steam's mobileconf
+      // endpoint 4× inside its own rate-limit window (18s apart), which cannot succeed and only pushes
+      // the account deeper into the window. Give the window time to elapse, and try far fewer times.
+      if (cls.rateLimited) {
+        if (rateLimitRetries < CONFIRM_RATELIMIT_RETRIES && attempt < CONFIRM_RETRIES) {
+          rateLimitRetries++;
+          // Jitter de-syncs the fleet's retries; it rides on the base pause, so a 0 pause (tests/tuning)
+          // stays a 0 pause rather than sleeping a random 0-15s.
+          const pause = this.confirmRateLimitPause > 0
+            ? this.confirmRateLimitPause + Math.floor(Math.random() * CONFIRM_RATELIMIT_JITTER_MS)
+            : 0;
+          logger.warn(`[mass-sell] ${user}: 2FA confirm rate-limited by Steam (${err.message}) – waiting ${Math.round(pause / 1000)}s for the window to clear (${rateLimitRetries}/${CONFIRM_RATELIMIT_RETRIES})`);
+          await sleep(pause);
+          continue;
+        }
+        throw Object.assign(err, { confirmedSoFar: total });
+      }
       // Only retry on transient/server errors.
-      if (isTransient(err) && attempt < CONFIRM_RETRIES) {
+      if (cls.transient && attempt < CONFIRM_RETRIES) {
         logger.warn(`[mass-sell] ${user}: 2FA confirm attempt ${attempt + 1}/${CONFIRM_RETRIES + 1} failed (${err.message}) – retry in ${this.confirmBackoff / 1000}s`);
         await sleep(this.confirmBackoff);
         continue;
@@ -743,14 +781,21 @@ export class MarketService {
     throw Object.assign(lastErr instanceof Error ? lastErr : new Error('confirmation failed'), { confirmedSoFar: total });
   }
 
-  /** Rule 1: connectivity pre-flight – probes getListedAssetIds with a couple
-   *  of retries so a brief hiccup doesn't defer a whole bot. Returns the live
-   *  set of already-listed asset ids; throws only when truly unreachable. */
-  private async preflightProbe(trader: { getListedAssetIds(appId: number): Promise<Set<string>> }, appId: number): Promise<Set<string>> {
+  /** Rule 1: connectivity pre-flight – probes the account's live market listings with a couple of
+   *  retries so a brief hiccup doesn't defer a whole bot. Returns the already-listed asset ids AND the
+   *  subset still awaiting a 2FA confirm (one HTTP read, both answers); throws only when truly
+   *  unreachable. A trader without `getListedAssets` falls back FAIL-SAFE: every pre-existing listing is
+   *  treated as possibly-unconfirmed, i.e. exactly the old behaviour — we never skip a needed confirm. */
+  private async preflightProbe(
+    trader: { getListedAssetIds(appId: number): Promise<Set<string>>; getListedAssets?(appId: number): Promise<{ listed: Set<string>; unconfirmed: Set<string> }> },
+    appId: number,
+  ): Promise<{ listed: Set<string>; unconfirmed: Set<string> }> {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= PREFLIGHT_RETRIES; attempt++) {
       try {
-        return await trader.getListedAssetIds(appId);
+        if (typeof trader.getListedAssets === 'function') return await trader.getListedAssets(appId);
+        const listed = await trader.getListedAssetIds(appId);
+        return { listed, unconfirmed: new Set(listed) };
       } catch (err) {
         lastErr = err;
         if (attempt < PREFLIGHT_RETRIES) await sleep(this.preflightBackoff);

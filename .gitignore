@@ -56,3 +56,18 @@ _sg_server.cjs
 public/_ssim_styleguide.html
 .shot_*.png
 .sg_*.png
+
+# --- Working scratch: session prompts, analysis reports, planning docs -------
+#  (AI/handoff prompts + investigation write-ups; NOT source, kept out of history)
+*_PROMPT*.md
+*_fable5.md
+*_opus48*.md
+DEEPTHINK_*.md
+HANDOFF_*.md
+SESSION_HANDOFF_*.md
+MASTERPIECE_PLAN.md
+PROJECT_MAP.md
+PROXY_RULES_IMPLEMENTATION_REPORT.md
+RATELIMIT_ROOT_CAUSE_*.md
+/Version 1.4.1/
+/hardening/

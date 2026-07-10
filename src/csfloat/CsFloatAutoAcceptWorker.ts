@@ -91,6 +91,12 @@ export class CsFloatAutoAcceptWorker {
     // an operator disabling this account mid-pass must stop its queued delivery this pass, matching
     // the re-validate-on-live-state pattern the tier/hasKey guards below already follow.
     if (!acc || !acc.enabled) return;
+    // F1: pool-lost (rule matched a pool that hydrated empty → withNetwork attached no network).
+    // Refuse CSFloat egress rather than fall to the host IP; skip with zero HTTP calls until fixed.
+    if (!acc.network) {
+      logger.warn(`[csfloat-auto-accept] ${username}: proxy pool unavailable (pool-lost) — refusing CSFloat egress (would leak host IP); skipping this pass.`);
+      return;
+    }
     // INV-A1 / C5 (H-ACC-083): gate on the REAL "can confirm" capability (the maFile's
     // identity_secret, resolved vault THEN disk like login does), not the raw tier label — a
     // full/absent-tier account whose maFile lacks an identity_secret would otherwise send a real

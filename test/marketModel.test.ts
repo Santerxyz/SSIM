@@ -126,11 +126,48 @@ test('parseMyListings: two unnamed listings with DISTINCT classids do not collap
 
 test('bucketOf: a non-tradable item with no lock is NOT in the tradable bucket', () => {
   const past = Date.now() - 1000;
-  assert.equal(bucketOf({ tradable: false, tradeLockExpiry: null }), 'tradelocked');
+  // 2026-07-10: it is 'untradable', not 'tradelocked'. Still fail-closed (≠ tradable), but now NAMED: a
+  // Storage Unit / Veteran Coin has no unlock date and never will, so calling it "Locked" promised a
+  // countdown that never arrives. 262 items in the live cache were mislabelled this way.
+  assert.equal(bucketOf({ tradable: false, tradeLockExpiry: null }), 'untradable');
   assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: null }), 'tradable');
   assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: new Date(Date.now() + 1e7) }), 'tradelocked');
   assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: new Date(past) }), 'tradable');
   assert.equal(bucketOf({ category: 'listed', tradable: false }), 'listed');
+});
+
+// ── 2026-07-10: four distinct states, and the BRANCH ORDER is load-bearing ────────────────────────
+
+test('bucketOf: four distinct states — listed / tradelocked / untradable / tradable', () => {
+  const soon = new Date(Date.now() + 1e7);
+  assert.equal(bucketOf({ category: 'listed', tradable: false, tradeLockExpiry: null }), 'listed');
+  assert.equal(bucketOf({ tradable: false, tradeLockExpiry: soon }), 'tradelocked', 'a HELD item has a date');
+  assert.equal(bucketOf({ tradable: false, tradeLockExpiry: null }), 'untradable', 'an INERT item has none');
+  assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: null }), 'tradable');
+});
+
+test('bucketOf: a HELD item is never mislabelled inert — expiry is tested before tradability', () => {
+  // Every hold that reaches bucketOf carries a future expiry: parseTradeLock routes an undatable hold to
+  // the far-future TRADE_LOCK_DATE_UNKNOWN sentinel, and applyManualLock stamps a real Date before
+  // tagCategories runs. If the untradable branch ever moved above the expiry branch, all of these would
+  // silently become "Not tradable" and the operator would lose every countdown.
+  const sentinel = new Date('2099-01-01T00:00:00.000Z');
+  assert.equal(bucketOf({ tradable: false, tradeLockExpiry: sentinel }), 'tradelocked', 'date-unknown sentinel ⇒ held');
+  assert.equal(bucketOf({ tradable: false, tradeLockExpiry: new Date(Date.now() + 864e5) }), 'tradelocked', 'manual protection ⇒ held');
+  assert.equal(bucketOf({ tradable: true,  tradeLockExpiry: 'not-a-date' }), 'tradelocked', 'unparseable ⇒ fail closed, still held');
+});
+
+test('bucketOf: `listed` wins over every other signal (it is market-sourced truth)', () => {
+  assert.equal(bucketOf({ category: 'listed', tradable: true }), 'listed');
+  assert.equal(bucketOf({ category: 'listed', tradable: false, tradeLockExpiry: new Date(Date.now() + 1e7) }), 'listed');
+});
+
+test('bucketOf: `untradable` is still fail-closed — it is never the tradable bucket', () => {
+  for (const inert of [{ tradable: false }, {}, { tradable: undefined }]) {
+    assert.notEqual(bucketOf(inert), 'tradable', 'an item Steam does not call tradable is never "tradable"');
+  }
+  // …and isSellable, which every money path actually gates on, is untouched by the rename.
+  assert.equal(isSellable({ tradable: false, tradeLockExpiry: null }), false);
 });
 
 // ── INV-B2 / INV-D1 / C3: locked/untradable items are not sellable/sendable ──
@@ -151,7 +188,10 @@ test('isSellable fails closed on a missing tradable flag and an unparseable lock
 });
 
 test('bucketOf fails closed on a missing tradable flag and an unparseable lock date', () => {
-  assert.equal(bucketOf({}), 'tradelocked', 'undefined tradable ⇒ not classified tradable');
+  // The GUARANTEE is "never classified tradable". A missing flag means Steam never affirmed tradability,
+  // so the item is inert-until-proven-otherwise; an unparseable DATE means a hold we could not read, which
+  // stays 'tradelocked'. Both remain fail-closed; only the name of the first one changed (2026-07-10).
+  assert.equal(bucketOf({}), 'untradable', 'undefined tradable ⇒ not classified tradable');
   assert.equal(bucketOf({ tradable: true, tradeLockExpiry: 'not-a-date' }), 'tradelocked', 'NaN lock date ⇒ tradelocked');
 });
 

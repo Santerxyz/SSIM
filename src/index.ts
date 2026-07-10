@@ -165,6 +165,13 @@ async function startFullApp(opts: { firstBoot: boolean } = { firstBoot: true }):
   // the mafiles/ drop zone — loose maFiles are imported solely by the explicit "Import Bots" UI,
   // so starting the app with files sitting in mafiles/ no longer auto-imports anything.
   migrateAccountsIntoVault(deps.accounts);
+  // Proxy rules (v5): hydrate rule pools from the vault, then synthesize → prove-equivalence → cut
+  // over (idempotent; re-runs every boot until proven). MUST come after the vault→org heal + env
+  // proxy hydration (inside migrateAccountsIntoVault) and BEFORE any login can occur (createApp and
+  // the refresh scheduler come later), so a blanked-but-not-yet-hydrated pool never logs an account
+  // in over the host IP.
+  deps.accounts.hydrateRuleProxies();
+  deps.accounts.migrateProxyRules();
   // Memory trajectory recorder: writes rss/heap/handles + live fleet counts to
   // logs/mem-heartbeat.log so a silent death is diagnosable from its last sample
   // (rising trend ⇒ leak; flat-then-stops ⇒ external kill). Unref'd + never throws.
@@ -217,6 +224,7 @@ async function teardownFullApp(): Promise<void> {
   stopMemHeartbeat();
   if (deps) {
     deps.csfloatWorker.stop();
+    deps.paysafe.shutdown();   // W4_40: stop the credit-poll timer + drop run state before the server is discarded
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();
@@ -480,6 +488,7 @@ async function shutdown(signal: string): Promise<void> {
   stopMemHeartbeat();
   if (deps) {
     deps.csfloatWorker.stop();
+    deps.paysafe.shutdown();   // W4_40: stop the credit-poll timer + drop run state before the server is discarded
     deps.trades.shutdown();
     deps.exchange.stop();
     deps.pricing.shutdown();

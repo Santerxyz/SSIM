@@ -9,13 +9,9 @@ const APPID_CS2     = 730;
 export const EUR_CURRENCY  = 3;
 const COUNTRY       = 'DE';
 
-// Distinct User-Agents per cascade step – varying the UA (plus a fresh proxy IP
-// per request) is what actually beats Steam's per-fingerprint rate limit.
 const UA_CHROME  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const UA_FIREFOX = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0';
-const UA_MOBILE  = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
 
-const BACKOFF_BASE_MS = 500; // exponential backoff between cascade tries (500 → 1000)
+const BACKOFF_BASE_MS = 500; // exponential backoff between the two cascade tries (transient-retry only)
 
 export type SellStrategy = 'lowest' | 'undercut' | 'custom';
 
@@ -40,9 +36,14 @@ export interface SellInfo {
 /** A per-account HTTPS agent (proxy / local-IP bound) used to route a price
  *  request through a bot's residential IP instead of the shared server IP. */
 export interface PriceFetchOpts {
-  /** Route the request through this agent (bot proxy) – avoids Steam's per-IP
-   *  rate limit on the shared local IP, the #1 cause of "no price". */
+  /** Route the request through this agent (the selling bot's proxy) so the price read egresses on the
+   *  same exit the account's cookie was issued to. */
   httpsAgent?: unknown;
+  /** steamcommunity Cookie header ("steamLoginSecure=…") of the acting account (2026-07-10). An
+   *  AUTHENTICATED priceoverview draws that account's per-session budget; the anonymous per-IP budget on
+   *  the shared rotating pool is routinely exhausted and 429s cold. Absent → an anonymous call (dev/no
+   *  session), which the sell path only reaches when no account context is available. */
+  cookieHeader?: string;
   /** Wall-clock budget (ms) for the WHOLE getSellInfo cascade. When set, the loop
    *  stops before a try it can't finish inside the budget, caps each try's axios
    *  timeout to the remaining time, and skips a backoff that would cross the
@@ -74,25 +75,22 @@ function describeErr(err: unknown): string {
 /**
  * Live Steam Community Market price reader (EUR / currency=3).
  *
- * getSellInfo runs a 3-step CASCADE. A retry is worthless if it just repeats the
- * exact same failing call, so each step changes the levers that actually matter
- * for Steam's throttle: a DIFFERENT User-Agent (fingerprint) and — with a bot
- * httpsAgent + `Connection: close` — a FRESH rotating-proxy exit IP per request.
- * priceoverview is the only Steam endpoint that reliably returns a sell price
- * (listings/render is HTML-walled even when authenticated — verified live), so
- * the cascade hardens THAT call instead of chasing dead endpoints:
- *   Try 1  Chrome UA            · lowest price only      (fast happy path)
- *   Try 2  Firefox UA, fresh IP · lowest OR median       (Fallback 1)
- *   Try 3  Mobile UA, fresh IP  · lowest OR median, 20s   (aggressive last resort)
+ * getSellInfo hardens priceoverview — the only Steam endpoint that reliably returns a sell price
+ * (listings/render is HTML-walled even when authenticated — verified live). The 2026-07-10 fix: the LEVER
+ * that beats Steam's throttle is the AUTHENTICATED session cookie (`opts.cookieHeader`), not User-Agent
+ * rotation — the anonymous per-IP budget on the shared rotating pool is routinely exhausted and 429s cold,
+ * while the same account's authenticated reads sail through. So the old 3× UA-rotation "beat the
+ * fingerprint" cascade is gone; two tries remain, and the second exists only to retry a TRANSIENT failure:
+ *   Try 1  authenticated · lowest price only  (fast happy path)
+ *   Try 2  authenticated · lowest OR median   (accept the median when there is no live lowest ask)
  * Exponential backoff between tries; every step is logged verbosely.
  */
 export class MarketPricing {
   async getSellInfo(name: string, opts?: PriceFetchOpts): Promise<SellInfo> {
     const short = name.length > 44 ? name.slice(0, 42) + '…' : name;
     const methods: Array<{ label: string; ua: string; stepTimeout: number; allowMedian: boolean }> = [
-      { label: 'priceoverview (Chrome)',           ua: UA_CHROME,  stepTimeout: 12_000, allowMedian: false },
-      { label: 'priceoverview (Firefox+Median)',   ua: UA_FIREFOX, stepTimeout: 15_000, allowMedian: true  },
-      { label: 'priceoverview (Mobile, aggressiv)',ua: UA_MOBILE,  stepTimeout: 20_000, allowMedian: true  },
+      { label: 'priceoverview (lowest)',        ua: UA_CHROME, stepTimeout: 12_000, allowMedian: false },
+      { label: 'priceoverview (lowest/median)', ua: UA_CHROME, stepTimeout: 15_000, allowMedian: true  },
     ];
 
     const t0 = Date.now();
@@ -105,29 +103,30 @@ export class MarketPricing {
     // (viaPriceOverview throws on any non-200 or success!==true). Track it so an
     // exhausted-with-no-price result is still authoritative if any try was answered.
     let sawAuthoritative = false;
-    // H-PRC-003: name the egress route honestly. A proxy agent yields a FRESH exit IP
-    // per try; agentless calls (no username, or trader resolution failed → priceCtxFor
-    // returns {}) all egress from the SHARED local IP, so only the UA rotates. The log
-    // must not assert IP rotation that isn't happening — that masks the degraded case.
-    const route = opts?.httpsAgent ? 'fresh proxy IP + different UA' : 'SHARED local IP (no agent) + different UA';
+    // H-PRC-003: name the egress route honestly. The lever is the account's cookie (authenticated
+    // → its own per-session budget); the agent is that account's exit. An agentless / cookieless call
+    // egresses anonymously from the shared IP and is what 429s — the log must not hide that.
+    const route = opts?.cookieHeader
+      ? (opts?.httpsAgent ? 'authenticated (account cookie + its exit)' : 'authenticated (account cookie, shared IP)')
+      : (opts?.httpsAgent ? 'ANONYMOUS via proxy (no cookie)' : 'ANONYMOUS via shared IP (no cookie)');
     for (let i = 0; i < methods.length; i++) {
       const n = i + 1;
       const m = methods[i];
       // (a) Don't start a try we can't finish inside the budget (a full round-trip needs
       // headroom); stop the cascade and return what we have (authoritative iff a prior try answered).
       if (Date.now() + 2000 > deadline) {
-        plog(`[Try ${n}/3] budget exhausted for "${short}" – stopping cascade (total ${Date.now() - t0}ms)`, 'warn');
+        plog(`[Try ${n}/${methods.length}] budget exhausted for "${short}" – stopping cascade (total ${Date.now() - t0}ms)`, 'warn');
         break;
       }
       // (b) Cap this try's axios timeout to the time left in the budget.
       const timeout = Math.min(m.stepTimeout, deadline - Date.now());
       const ts = Date.now();
-      plog(`[Try ${n}/3] "${short}" → trying ${m.label} [${opts?.httpsAgent ? 'proxy' : 'shared IP'}]…`);
+      plog(`[Try ${n}/${methods.length}] "${short}" → trying ${m.label} [${opts?.httpsAgent ? 'proxy' : 'shared IP'}]…`);
       try {
         const info = await this.viaPriceOverview(name, opts, m.ua, timeout, m.allowMedian);
         sawAuthoritative = true;
         if (info.lowestCents != null) {
-          plog(`[Try ${n}/3] ✓ hit via ${m.label}: ${(info.lowestCents / 100).toFixed(2)}€ ` +
+          plog(`[Try ${n}/${methods.length}] ✓ hit via ${m.label}: ${(info.lowestCents / 100).toFixed(2)}€ ` +
                `(basis ${info.basis}, method ${Date.now() - ts}ms, total ${Date.now() - t0}ms)`);
           return info;
         }
@@ -135,21 +134,21 @@ export class MarketPricing {
         // NOR a median cannot be read any more permissively by a later try — return the
         // all-null (authoritative) result now instead of burning try 3 + its backoff.
         if (m.allowMedian && info.medianCents == null) {
-          plog(`[Try ${n}/3] authoritative empty — no listings and no median; stopping cascade (total ${Date.now() - t0}ms)`, 'warn');
+          plog(`[Try ${n}/${methods.length}] authoritative empty — no listings and no median; stopping cascade (total ${Date.now() - t0}ms)`, 'warn');
           return info;
         }
-        plog(`[Try ${n}/3] ✗ ${m.label}: no price in response (${Date.now() - ts}ms)`, 'warn');
+        plog(`[Try ${n}/${methods.length}] ✗ ${m.label}: no price in response (${Date.now() - ts}ms)`, 'warn');
       } catch (err) {
-        plog(`[Try ${n}/3] ✗ ${m.label} failed: ${describeErr(err)} (${Date.now() - ts}ms)`, 'warn');
+        plog(`[Try ${n}/${methods.length}] ✗ ${m.label} failed: ${describeErr(err)} (${Date.now() - ts}ms)`, 'warn');
       }
       if (i < methods.length - 1) {
         const backoff = BACKOFF_BASE_MS * 2 ** i;
         // (c) Skip the inter-try backoff (and the next try) when it would cross the deadline.
         if (Date.now() + backoff >= deadline) {
-          plog(`[Try ${n}/3] budget exhausted for "${short}" – skipping backoff (total ${Date.now() - t0}ms)`, 'warn');
+          plog(`[Try ${n}/${methods.length}] budget exhausted for "${short}" – skipping backoff (total ${Date.now() - t0}ms)`, 'warn');
           break;
         }
-        plog(`[Try ${n}/3] → Backoff ${backoff}ms (${route}), then fallback ${n + 1}…`, 'warn');
+        plog(`[Try ${n}/${methods.length}] → Backoff ${backoff}ms (${route}), then fallback ${n + 1}…`, 'warn');
         await sleep(backoff);
       }
     }
@@ -158,11 +157,11 @@ export class MarketPricing {
   }
 
   /**
-   * priceoverview fetch. `ua` varies the fingerprint and (with a proxy agent +
-   * Connection:close) each call lands on a fresh exit IP. `allowMedian` lets the
-   * fallback tries accept the median sale price when no live `lowest_price` is
-   * present (a degraded/throttled response) – a different DATA interpretation,
-   * not a blind repeat.
+   * priceoverview fetch. When `opts.cookieHeader` is present the request is AUTHENTICATED as the acting
+   * account (drawing its per-session budget — the lever that beats Steam's throttle), egressing through
+   * that account's `opts.httpsAgent`. `allowMedian` lets the fallback try accept the median sale price
+   * when no live `lowest_price` is present (a degraded/throttled response) — a different DATA
+   * interpretation, not a blind repeat.
    */
   private async viaPriceOverview(
     name: string, opts: PriceFetchOpts | undefined, ua: string, timeout: number, allowMedian: boolean,
@@ -171,11 +170,13 @@ export class MarketPricing {
     // for BOTH — Steam serves TF2 prices in EUR at currency=3, keeping the EUR-wallet guard valid.
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?country=${COUNTRY}&currency=${EUR_CURRENCY}&appid=${opts?.appid ?? APPID_CS2}&market_hash_name=${encodeURIComponent(name)}`;
+    const headers: Record<string, string> = { 'User-Agent': ua, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' };
+    if (opts?.cookieHeader) headers.Cookie = opts.cookieHeader;
     const r = await axios.get(url, {
       timeout,
       validateStatus: () => true,
       ...(opts?.httpsAgent ? { httpsAgent: opts.httpsAgent, proxy: false as const } : {}),
-      headers: { 'User-Agent': ua, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' },
+      headers,
     });
     if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
     if (!r.data || r.data.success !== true) throw new Error(`success=${r.data?.success}`);
@@ -208,11 +209,13 @@ export class MarketPricing {
     if (!cInfo) return null;
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?country=${COUNTRY}&currency=${currency}&appid=${appid}&market_hash_name=${encodeURIComponent(name)}`;
+    const headers: Record<string, string> = { 'User-Agent': UA_CHROME, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' };
+    if (opts?.cookieHeader) headers.Cookie = opts.cookieHeader; // authenticated → the account's own budget
     const r = await axios.get(url, {
       timeout: 12_000,
       validateStatus: () => true,
       ...(opts?.httpsAgent ? { httpsAgent: opts.httpsAgent, proxy: false as const } : {}),
-      headers: { 'User-Agent': UA_CHROME, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' },
+      headers,
     });
     // A non-200 (5xx/403/429/login-wall) or Steam-level failure (missing body / success !== true) is
     // NOT an authoritative "no price" — it's a transient fetch failure (`success:false` is served under

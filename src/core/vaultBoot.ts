@@ -620,6 +620,9 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
   const folderPaths = (!explicitFolder && rawAccountsJson) ? folderPathsFromAccountsJson(rawAccountsJson) : null;
   let imported = 0;
   let skipped = 0;
+  // F3: collect each imported account's dedicated proxy so we can synthesize account-scope RULES at
+  // the end (post-cutover the engine ignores the legacy networkOverride/accountProxies fields).
+  const proxyEntries: Array<{ username: string; proxy?: string; forcedLocal?: boolean }> = [];
   for (const [k, acc] of Object.entries(ext.accounts)) {
     // decryptExternalVault CASTS payload.accounts verbatim (AccountVault.ts:497) — an entry may be
     // null / a non-object / carry a non-string username or password (a hand-edited, corrupt or
@@ -640,6 +643,7 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
         folderId = (folderNamePath && folderNamePath.length) ? accounts.ensureFolderPath(env, folderNamePath) : null;
       }
       accounts.addImportedAccount({ username, maFilePath: `${username}.maFile`, environmentId: env, folderId });
+      if (typeof acc.proxy === 'string' && acc.proxy.trim()) proxyEntries.push({ username, proxy: acc.proxy.trim() }); // F3
       const tok = ext.tokens[k];
       if (typeof tok === 'string' && tok) AccountVault.setToken(username, tok); // carry over the refresh token too
       // H-ACC-044: carry over the source's per-account CSFloat key (its marketplace credential),
@@ -668,6 +672,7 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
     // Same non-destructive CSFloat-key carry-over as the full-account loop.
     const tokProxy = ext.accountProxies[k];
     if (typeof tokProxy === 'string' && tokProxy.trim() && !AccountVault.getAccountProxy(k)) AccountVault.setAccountProxy(k, tokProxy.trim());
+    if (typeof tokProxy === 'string' && tokProxy.trim()) proxyEntries.push({ username: k, proxy: tokProxy.trim() }); // F3
     const tokCsKey = ext.csfloatKeys[k];
     if (typeof tokCsKey === 'string' && tokCsKey.trim() && !AccountVault.getCsFloatKey(k)) AccountVault.setCsFloatKey(k, tokCsKey.trim());
     imported++;
@@ -675,6 +680,9 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
   if (imported) {
     AccountVault.save();
     accounts.enterVaultMode();
+    // F3: post-cutover, turn each imported per-account proxy into an account-scope rule (no-op
+    // pre-cutover; the legacy fields written above stay as rollback insurance — constraint 4).
+    if (proxyEntries.length) accounts.ensureAccountProxyRules(proxyEntries);
     logger.info(`[vault] external-vault import: ${imported} new account(s) added, ${skipped} skipped${folderPaths ? ' (folder structure recreated)' : ''}`);
   }
   return { imported, skipped };

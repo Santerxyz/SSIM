@@ -56,6 +56,13 @@ export interface IsolatedSessionSpec {
   proxyServer: string | null;
   /** Upstream proxy credentials when authenticated (used by the local relay), else null. */
   proxyAuth:   { host: string; port: number; username: string; password: string; scheme: string } | null;
+  /** The page to open after cookie injection. Default STEAM_URL (the community home). W4_40 opens the
+   *  store addfunds page here so the operator lands pre-authenticated on the paysafecard checkout. */
+  landingUrl?: string;
+  /** W4_40: a CDP addScriptToEvaluateOnNewDocument source injected on EVERY page of the flow (the
+   *  paysafecard addfunds auto-fill). When present, the debugger WS is kept open for the browser's
+   *  lifetime so the registration survives the flow's navigations. */
+  automationScript?: string;
   warnings:    string[];
 }
 
@@ -82,6 +89,8 @@ export function buildIsolatedSession(input: {
   username: string;
   cookieStrings: string[];                       // session.webSession.cookies (THIS account only)
   network?: { type: string; value: string } | null;
+  landingUrl?: string;                           // W4_40: page to open post-injection (default community home)
+  automationScript?: string;                     // W4_40: addfunds auto-fill script (persistent CDP injection)
 }): IsolatedSessionSpec {
   const warnings: string[] = [];
 
@@ -138,7 +147,7 @@ export function buildIsolatedSession(input: {
     warnings.push('this account has NO proxy (runs on the host IP) — opening on the local IP may differ from its normal egress and risk a Steam lock');
   }
 
-  return { username: input.username, cookies, proxyServer, proxyAuth, warnings };
+  return { username: input.username, cookies, proxyServer, proxyAuth, landingUrl: input.landingUrl, automationScript: input.automationScript, warnings };
 }
 
 // ── Launch (side-effect; smoke-level — needs a real Chromium + proxy + Steam) ───
@@ -299,9 +308,9 @@ type CdpPending = Map<number, { resolve: () => void; reject: (e: Error) => void 
  * `ws.onmessage` handler set up by injectSessionOverCdp) — or reject on a 3s per-command timeout.
  * An error/failure reply rejects, so a refused `Network.setCookie` no longer looks like success.
  */
-function cdp(ws: WebSocket, pending: CdpPending, id: number, method: string, params: unknown): Promise<void> {
+function cdp(ws: WebSocket, pending: CdpPending, id: number, method: string, params: unknown, timeoutMs = 3000): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, 3000);
+    const t = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, timeoutMs);
     t.unref?.();
     pending.set(id, { resolve: () => { clearTimeout(t); resolve(); }, reject: (e) => { clearTimeout(t); reject(e); } });
     ws.send(JSON.stringify({ id, method, params }));
@@ -315,8 +324,8 @@ function cdp(ws: WebSocket, pending: CdpPending, id: number, method: string, par
  * and skips the false "clean browser opened" log) instead of the old fire-and-forget 400ms flush
  * that reported success regardless. Exported as the injection test seam (H-TRD-060).
  */
-export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[]): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[], landingUrl: string = STEAM_URL, automationScript?: string): Promise<WebSocket | null> {
+  return new Promise<WebSocket | null>((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let id = 0;
     const pending: CdpPending = new Map();
@@ -333,15 +342,34 @@ export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[]): 
       else p.resolve();
     };
     ws.onopen = async () => {
+      // The WS handshake succeeded — from here per-command timeouts govern, so clear the outer
+      // handshake timeout (else a legitimately slow Page.navigate below would trip its 8s budget).
+      clearTimeout(t);
       try {
         await cdp(ws, pending, ++id, 'Network.enable', {});
+        // W4_40: register the addfunds auto-fill BEFORE navigating so it runs on the very first document
+        // and every subsequent navigation of the flow (needs the Page domain enabled first).
+        if (automationScript) {
+          await cdp(ws, pending, ++id, 'Page.enable', {});
+          await cdp(ws, pending, ++id, 'Page.addScriptToEvaluateOnNewDocument', { source: automationScript });
+        }
         for (const c of cookies) {
           await cdp(ws, pending, ++id, 'Network.setCookie', { name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly });
         }
-        await cdp(ws, pending, ++id, 'Page.navigate', { url: STEAM_URL });
-        clearTimeout(t);
+        // Navigation is BEST-EFFORT: the cookies (this account's auth) are already set, so the browser
+        // is authenticated regardless. Page.navigate's CDP reply only returns once the navigation COMMITS
+        // (first response headers), which through a slow/authed proxy easily exceeds the old 3s → the
+        // launch used to throw and TEAR THE BROWSER DOWN ("CDP Page.navigate timed out", owner 2026-07-10).
+        // Give it a generous budget AND swallow a timeout/error: a slow addfunds page finishes loading on
+        // its own; we must never close an authenticated browser just because the landing was slow.
+        try { await cdp(ws, pending, ++id, 'Page.navigate', { url: landingUrl }, 30000); }
+        catch (navErr) { /* keep the authenticated browser open; the page loads on its own */ }
+        // With an automation script we KEEP the ws open — a CDP evaluate-on-new-document registration is
+        // scoped to the debugger session, so closing the ws would drop the auto-fill on the very next
+        // navigation (amount → details → paysafecard). The caller closes it at browser teardown.
+        if (automationScript) { resolve(ws); return; }
         try { ws.close(); } catch { /* ignore */ }
-        resolve();
+        resolve(null);
       } catch (e) {
         // A throw inside this bare async handler would otherwise become an unhandled rejection — route
         // it to reject so the caller's catch (H-TRD-064's gated teardown) sees the failure.
@@ -479,11 +507,13 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
   let tornDown = false;
   let port = -1;            // the debug port (hoisted so the failure-path catch can reach the live browser, H-TRD-064)
   let portAnswered = false; // did the debug port ever respond? (guards the failure-path teardown, H-TRD-064)
+  let keepAliveWs: WebSocket | null = null;   // W4_40: the automation debugger WS, kept open for the flow
   const teardown = (): void => {
     if (tornDown) return;
     tornDown = true;
     liveTeardowns.delete(teardown);
     liveProfiles.delete(profileDir);
+    try { keepAliveWs?.close(); } catch { /* ignore */ }
     try { relay?.close(); } catch { /* ignore */ }
     try {
       fs.rmSync(profileDir, { recursive: true, force: true });
@@ -549,7 +579,7 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     // Response-awaited injection: every CDP command is awaited to its reply, so a rejected setCookie
     // or a failed navigate throws to the catch below (real 500, no false success log) instead of the
     // old fire-and-forget 400ms flush that always "succeeded". (H-TRD-060.)
-    await injectSessionOverCdp(wsUrl, spec.cookies);
+    keepAliveWs = await injectSessionOverCdp(wsUrl, spec.cookies, spec.landingUrl, spec.automationScript);
 
     const authNote = proxyAuthApplied ? 'yes (via local relay)' : (spec.proxyServer ? 'no (open proxy)' : 'n/a');
     logger.info(`[${spec.username}] clean browser opened (proxy=${spec.proxyServer ?? 'LOCAL IP'}, proxy auth: ${authNote}, cookies=${spec.cookies.map((c) => c.name).join('+') || 'none'})`);

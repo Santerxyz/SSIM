@@ -4,10 +4,12 @@ import type { AccountConfig, MaFile } from '../types/account';
 import { SessionState, type ManagedSession, type WebSession, type SessionManagerEvents } from '../types/session';
 import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
 import { proxyHealth, proxyKey, isResetClass } from '../network/ProxyHealth';
+import { chooseCmProtocol, noteCmOutcome, CmProtocolLabel, TCP_FAILURES_TO_DEMOTE } from '../network/CmProtocol';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
 import { webCookiesFresh, ownsCreatedSession, WEB_COOKIE_REFRESH_MS } from './sessionHealth';
+import { pickPricerIdentities, type PricerIdentity, type PricerCandidate } from '../pricing/PricerIdentityPool';
 import { logger } from '../utils/logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -105,11 +107,17 @@ const MAX_CONNECTION_ATTEMPTS = 5;
 const BACKOFF_BASE_MS         = 4_000;
 const BACKOFF_MAX_MS          = 45_000;
 
-// steam-user's EConnectionProtocol.TCP (runtime value 1) — the .d.ts does not expose the enum, so
-// read it defensively with a literal fallback. Forcing TCP removes the wss-TLS-over-proxy CM path
-// (a native-teardown-race primitive under the reset storm); see the client construction below.
-const CM_PROTOCOL_TCP: number =
-  (SteamUser as unknown as { EConnectionProtocol?: { TCP?: number } }).EConnectionProtocol?.TCP ?? 1;
+// steam-user's EConnectionProtocol (Auto=0, TCP=1, WebSocket=2) — the .d.ts does not expose the
+// enum, so read it defensively with literal fallbacks. The label is chosen per login attempt by
+// CmProtocol (TCP-first, per-proxy demotion to WebSocket when the provider blocks HTTP CONNECT
+// to the CM's TCP ports 27017-27050 — the 2026-07-09 "only one provider still works" regression);
+// see the client construction in performLogin.
+const CM_ENUM = (SteamUser as unknown as { EConnectionProtocol?: { Auto?: number; TCP?: number; WebSocket?: number } }).EConnectionProtocol;
+const CM_PROTO_ENUM: Record<CmProtocolLabel, number> = {
+  auto: CM_ENUM?.Auto ?? 0,
+  tcp:  CM_ENUM?.TCP ?? 1,
+  ws:   CM_ENUM?.WebSocket ?? 2,
+};
 
 // ─── Token-invalidation criteria (Problem 2: don't nuke tokens on flaky proxies) ──
 // A refresh token is a valuable, restart-proof credential. It is deleted ONLY when
@@ -177,6 +185,13 @@ export class SessionManager extends EventEmitter {
   private loginSlots = MAX_CONCURRENT_LOGINS;
   private readonly loginWaiters: Array<() => void> = [];
 
+  /** Optional login-time network resolver (wired to AccountManager.networkForLogin in createDeps).
+   *  Re-resolves the account's egress at the moment of login — this is where per-login proxy
+   *  rotation ADVANCES its cursor. `undefined` return ⇒ pool-lost ⇒ performLogin fail-closes the
+   *  login (never falls to the host IP). Absent ⇒ use the pre-attached `account.network` (today's
+   *  behaviour, fully backward compatible). */
+  private loginNetworkResolver?: (account: AccountConfig) => AccountConfig['network'];
+
   /** Idle-session reaper handle (B40). Unref'd so it never keeps the process alive. */
   private readonly reaperTimer?: NodeJS.Timeout;
 
@@ -186,6 +201,12 @@ export class SessionManager extends EventEmitter {
     // always runs. To disable the anti-storm machinery, set SSIM_MAX_LIVE_SESSIONS=0 (the ceiling), not the TTL.
     this.reaperTimer = setInterval(() => { void this.reapIdleSessions(); }, REAPER_INTERVAL_MS);
     this.reaperTimer.unref?.();
+  }
+
+  /** Wire the login-time network resolver (AccountManager.networkForLogin). Called once at
+   *  createDeps. See loginNetworkResolver. */
+  setLoginNetworkResolver(fn: (account: AccountConfig) => AccountConfig['network']): void {
+    this.loginNetworkResolver = fn;
   }
 
   /** Marks a session as actively USED right now (called at every genuine op entry) so the idle
@@ -318,7 +339,12 @@ export class SessionManager extends EventEmitter {
     const p = (async (): Promise<ManagedSession> => {
       await this.acquireLoginSlot();
       try {
-        return await this.doLoginAccount(account, key);
+        // Re-resolve the egress AT login (once per non-deduped login) so per-login proxy rotation
+        // advances here. A pool-lost `undefined` flows to performLogin's fail-closed refusal.
+        const resolved = this.loginNetworkResolver
+          ? { ...account, network: this.loginNetworkResolver(account) }
+          : account;
+        return await this.doLoginAccount(resolved, key);
       } finally {
         this.releaseLoginSlot();
       }
@@ -428,8 +454,15 @@ export class SessionManager extends EventEmitter {
     // provider trips OPEN and bulk dials on it back off (recording is global + harmless; only the
     // BULK refresh dispatch CONSULTS the breaker — money ops never defer). Proxyless → null → no-op.
     const pkey = account.network?.type === 'proxy' ? proxyKey(account.network.value) : null;
+    // SOCKS proxies must run the CM over WebSocket (steam-user hard-forces that combination);
+    // detected here so chooseCmProtocol can pick it explicitly instead of tripping steam-user's warn.
+    const isSocks = account.network?.type === 'proxy' && /^socks/i.test(account.network.value.trim());
 
     for (let attempt = 1; attempt <= MAX_CONNECTION_ATTEMPTS; attempt++) {
+      // Re-chosen every attempt: two TCP connect failures demote this proxy to WebSocket, so
+      // attempt 3 of the SAME login round (and every other account on this proxy) already
+      // connects over wss:443 — a 443-only provider costs one slow round, not a dead fleet.
+      const cmProto = chooseCmProtocol(pkey, isSocks);
       try {
         // The credential payload's TOTP is valid for one 30s window; a retry re-sends the
         // SAME object minutes later. Re-stamp a current-window code before every retry so
@@ -437,8 +470,11 @@ export class SessionManager extends EventEmitter {
         // race against the 15s login timeout. Attempt 1 keeps the just-built code; the token
         // path ({ refreshToken }) carries no maFile and is untouched.
         if (attempt > 1 && pathLabel === 'credential' && maFile) restampTotp(logOnOptions, maFile);
-        const ok = await this.performLogin(account, logOnOptions, maFile);
+        const ok = await this.performLogin(account, logOnOptions, maFile, cmProto);
         proxyHealth.record(pkey, 'ok');
+        if (noteCmOutcome(pkey, cmProto, true) === 'promoted') {
+          logger.info(`[cm-protocol] proxy ${pkey} PROMOTED back to TCP CM — a re-probe succeeded (the provider now allows HTTP CONNECT to the CM ports). Persisted.`);
+        }
         return ok;
       } catch (err) {
         lastErr = err as LoginError;
@@ -446,6 +482,12 @@ export class SessionManager extends EventEmitter {
         lastErr.loginErrorKind = kind;
         // Only a reset-class transport failure trips the breaker; auth/ceiling/config do not.
         if (!lastErr.ceilingRefusal) proxyHealth.record(pkey, kind === 'connection' && isResetClass(lastErr) ? 'reset' : 'fail');
+        // CM-protocol learning: only genuine connection-class failures count (an auth/ceiling
+        // failure means the CM connected fine — it must never demote a healthy proxy).
+        if (kind === 'connection' && !lastErr.ceilingRefusal
+            && noteCmOutcome(pkey, cmProto, false) === 'demoted') {
+          logger.warn(`[cm-protocol] proxy ${pkey} demoted to WebSocket CM after ${TCP_FAILURES_TO_DEMOTE} TCP connect failures – provider likely blocks HTTP CONNECT to the CM ports (27017-27050); wss:443 from now on. PERSISTED (re-probes TCP after 24h). Force globally with SSIM_CM_PROTOCOL=ws.`);
+        }
 
         // S49: a resident-ceiling insertion refusal (B46) — and an S48 shutdown abort — must NOT be retried
         // in-slot. Retrying holds a login slot through ~60s of backoff and rebuilds/tears down a client each
@@ -507,6 +549,7 @@ export class SessionManager extends EventEmitter {
     account:      AccountConfig,
     logOnOptions: Record<string, unknown>,
     maFile?:      MaFile,
+    cmProto:      CmProtocolLabel = 'tcp',
   ): Promise<ManagedSession> {
     const key = account.username.toLowerCase();
     const isTokenLogin = !!logOnOptions.refreshToken;
@@ -528,14 +571,17 @@ export class SessionManager extends EventEmitter {
     const { steamUserOptions, httpsAgent } = AgentFactory.create(network);
 
     // ── Create a fresh, isolated SteamUser instance ────────────────────────
-    // protocol: TCP (not the default Auto). Under an httpProxy, Auto leaves ~half of CM connections
-    // running over wss-TLS-through-the-proxy (a tls.connect({socket}) over the CONNECT tunnel — a
-    // native-teardown-race primitive that the flaky-proxy RESET storm can trip into the 0xC0000409
-    // fast-fail). Raw-TCP CM uses Valve's own crypto (no TLSWrap over the proxy socket), removing that
-    // primitive on the CM side and determinising teardown. The web fetch path is unaffected.
+    // protocol: TCP-first (not the default Auto). Under an httpProxy, Auto leaves ~half of CM
+    // connections running over wss-TLS-through-the-proxy (a tls.connect({socket}) over the CONNECT
+    // tunnel — a native-teardown-race primitive that the flaky-proxy RESET storm can trip into the
+    // 0xC0000409 fast-fail). Raw-TCP CM uses Valve's own crypto (no TLSWrap over the proxy socket),
+    // removing that primitive on the CM side. BUT: TCP CMs live on ports 27017-27050, and providers
+    // that whitelist CONNECT :443 only cannot carry them — CmProtocol demotes such a proxy to
+    // WebSocket after TCP_FAILURES_TO_DEMOTE connect failures (attemptLogin passes the per-attempt
+    // choice in). The web fetch path is unaffected either way.
     const client = new SteamUser({
       ...steamUserOptions,
-      protocol:         CM_PROTOCOL_TCP,
+      protocol:         CM_PROTO_ENUM[cmProto],
       dataDirectory:    null,   // we persist the refresh token ourselves (TokenStore)
       autoRelogin:      false,  // we handle reconnection ourselves
       singleSentryfile: false,
@@ -617,9 +663,14 @@ export class SessionManager extends EventEmitter {
       });
 
       // ── wallet – capture Steam balance (fires shortly after login) ─────
+      // Steam ALSO pushes this (ClientWalletInfoUpdate) whenever the balance changes on a live
+      // session, so a resident session's `wallet` tracks credits without any re-login. Re-emitted
+      // on the manager so callers can await the first/next value (see awaitWallet) instead of
+      // racing the login promise, which resolves on 'webSession' and may beat this event (W4_40).
       client.on('wallet', (hasWallet: boolean, currency: number, balance: number) => {
         session.wallet = { hasWallet, currency, balance };
         logger.info(`[${account.username}] wallet balance ${balance} (currency ${currency})`);
+        this.emit('wallet', account.username, session.wallet);
       });
 
       // ── steamGuard – handle 2FA challenge (credential path only) ───────
@@ -833,8 +884,52 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(username.toLowerCase());
   }
 
+  /**
+   * Resolve this account's wallet, waiting up to `timeoutMs` for the 'wallet' event if the CM has
+   * not delivered it yet. The login promise resolves on 'webSession', which can beat 'wallet' — so
+   * reading `session.wallet` straight after `loginAccount()` may see `undefined`, or (on an account
+   * with no wallet) `{hasWallet:false, currency:0}`. A money read-back must not race that (W4_40).
+   * Returns `undefined` if no session exists or the CM never sent one within the timeout.
+   */
+  async awaitWallet(username: string, timeoutMs = 5_000): Promise<ManagedSession['wallet']> {
+    const key = username.toLowerCase();
+    const existing = this.sessions.get(key)?.wallet;
+    if (existing) return existing;
+    if (!this.sessions.has(key)) return undefined;
+    return new Promise((resolve) => {
+      const done = (w: ManagedSession['wallet']): void => {
+        clearTimeout(timer);
+        this.off('wallet', onWallet);
+        resolve(w);
+      };
+      const onWallet = (u: string, w: ManagedSession['wallet']): void => { if (u.toLowerCase() === key) done(w); };
+      const timer = setTimeout(() => done(this.sessions.get(key)?.wallet), timeoutMs);
+      timer.unref?.();
+      this.on('wallet', onWallet);
+    });
+  }
+
   getAllSessions(): ManagedSession[] {
     return [...this.sessions.values()];
+  }
+
+  /**
+   * Up to `limit` authenticated identities for the background price fill (2026-07-10 root-cause fix):
+   * logged-in sessions with FRESH web cookies, reduced to {username, cookies, agent}. PricerIdentityPool
+   * builds the Cookie header + drops any candidate without a real steamLoginSecure. The fill sends these
+   * cookies over each account's own egress agent so priceoverview draws that account's per-session budget
+   * instead of the anonymous per-IP budget the shared pool leaves exhausted. Read fresh on every fill, so
+   * the identity set naturally tracks which sessions are currently live.
+   */
+  pricerIdentities(limit: number): PricerIdentity[] {
+    const candidates: PricerCandidate[] = [];
+    for (const s of this.sessions.values()) {
+      if (candidates.length >= limit * 2) break; // gather a little extra; the pool de-dups + drops cookieless
+      if (s.state === SessionState.LOGGED_IN && s.webSession && webCookiesFresh(s.webSession.obtainedAt)) {
+        candidates.push({ username: s.account.username, cookies: s.webSession.cookies, agent: s.httpsAgent });
+      }
+    }
+    return pickPricerIdentities(candidates, limit);
   }
 
   /**

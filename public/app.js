@@ -5,7 +5,8 @@
 const API = '';
 
 const state = {
-  screen: 'dashboard',          // 'dashboard' | 'inventory'
+  nav: 'dashboard',             // 'dashboard'|'portfolios'|'inventories'|'accounts'|'batch' — top-level rail destination (W1_10)
+  screen: 'dashboard',          // (Inventories-internal) 'dashboard'(env-picker) | 'inventory'(drill)
   invMode: 'account',           // 'account' | 'env-master' | 'global' | 'folder' | 'selection'
   selectedAccounts: new Set(),  // usernames checkbox-picked in the sidebar (multi-select scope)
   preSelection: null,           // view snapshot {invMode,activeUsername,activeFolder} to restore when selection clears
@@ -38,7 +39,6 @@ const state = {
   editProxyInitial: '',         // raw saved proxy the edit field was pre-filled with (change-detection)
   editUseEnvInitial: true,      // was "Use environment proxy" on when the edit modal opened (change-detection)
   search: '',
-  showHidden: false,
   sort: null,
   accountSort: 'default',       // sidebar account order: 'default' | 'balance-desc' | 'balance-asc'
   refreshTimer: null,
@@ -47,6 +47,23 @@ const state = {
   massTimer: null,
   currency: localStorage.getItem('ssim.currency') || 'EUR',  // 'EUR' | 'USD'
   priceSource: localStorage.getItem('ssim.priceSource') || 'steam', // Feature 3: 'steam' | 'csfloat'
+  dashSummary: null,            // W1_12: last GET /api/dashboard/summary payload, or null
+  gamesCache: {},               // W2_20: username → { username, count, games:[{appId,name,playtimeMinutes,iconUrl}], scannedAt }
+  profileCache: {},             // W2_20: username → { name, realName, summary, avatarUrl, privacy, partial }
+  accountsBusy: {},             // W2_20: username → 'wallet'|'profile'|'games'|null (per-sub-card spinner)
+  accountsUser: null,           // W2_20: selected account in the Accounts module (null → aggregate table)
+  accountsEditProfile: null,    // W2_20: username whose profile edit form is open
+  accountsGameFilter: '',       // W2_20: owned-games filter text
+  accountsAddFunds: null,       // W3_31: username whose Add-Funds (wallet-code) form is open
+  accEnv: null,                 // Accounts module: selected environment (null → env-tile picker)
+  accSel: new Set(),            // Accounts module: multi-selected usernames (mass move)
+  paysafeEnabled: false,        // W4_40: is the paysafecard top-up flag on? (probed once)
+  accountsPaysafe: null,        // W4_40: username whose single-account paysafecard form is open
+  accPaysafeSession: null,      // W4_40: the single-account paysafecard session (open→verify)
+  accTree: { targets: null, expanded: new Set(), search: '', _loading: false }, // Accounts sidebar folder tree data/state
+  batch: { registry: [], scopeEnvs: new Set(), scopeFolders: new Set(), scopeAccounts: new Set(), expanded: new Set(), search: '', targets: null, jobType: null, params: {}, status: null, timer: null, history: [], dist: { sel: { envs: new Set(), folders: new Set(), accounts: new Set(), expanded: new Set(), search: '' }, amount: '', minItem: '', plan: null, status: null, timer: null }, paysafe: { session: null, busy: false, timer: null, tierMinor: 0, freeAmount: '', _attached: false }, _loading: false, _targetsLoading: false, _histLoaded: false }, // W3_32 (micro-selection) + inline Distribute + sequential paysafecard jobs
+  paysafeTiers: {},             // K3: username → { currency, tiers[] } | 'loading' | { error } — Steam's real top-up amount options
+  proxies: { rules: [], authoritative: false, loaded: false, _loading: false, modal: null, targets: null, preview: null, previewSearch: '', previewFilter: 'all' }, // Proxies module (v5)
   usdToEur: 0.92,               // live rate from /api/exchange-rate (fallback 0.92)
 };
 
@@ -59,6 +76,10 @@ function saveCollapsed() { localStorage.setItem('cs2.collapsed', JSON.stringify(
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 const el = {
+  // top-level nav rail (W1_10)
+  navRail:          $('nav-rail'),
+  appSidebar:       $('app-sidebar'),
+  sidebarResizer:   $('sidebar-resizer'),
   // sidebar context
   sidebarNav:       $('sidebar-nav'),
   btnBackDashboard: $('btn-back-dashboard'),
@@ -86,10 +107,24 @@ const el = {
   accountsLabel:    $('accounts-label'),
   accountList:      $('account-list'),
   accountCount:     $('account-count'),
-  toggleHidden:     $('btn-toggle-hidden'),
   // screens
   screenDashboard:  $('screen-dashboard'),
   screenInventory:  $('screen-inventory'),
+  screenSummary:    $('screen-summary'),
+  screenPortfolios: $('screen-portfolios'),
+  screenAccounts:   $('screen-accounts'),
+  screenBatch:      $('screen-batch'),
+  summaryHeader:    $('summary-header'),
+  portfoliosHeader: $('portfolios-header'),
+  portfoliosBody:   $('portfolios-body'),
+  gameToggle:       $('game-toggle'),
+  accountsHeader:   $('accounts-header'),
+  accountsBody:     $('accounts-body'),
+  batchHeader:      $('batch-header'),
+  batchBody:        $('batch-body'),
+  screenProxies:    $('screen-proxies'),
+  proxiesHeader:    $('proxies-header'),
+  proxiesBody:      $('proxies-body'),
   envTiles:         $('env-tiles'),
   envEmpty:         $('env-empty'),
   btnNewEnv:        $('btn-new-env'),
@@ -216,7 +251,6 @@ const el = {
   envCancel:     $('env-cancel'),
   envForm:       $('env-form'),
   envNameInput:  $('env-name-input'),
-  envProxyInput: $('env-proxy-input'),
   envModalTitle: $('env-modal-title'),
   envSubmitLabel:$('env-submit-label'),
   // mass-send progress
@@ -311,9 +345,6 @@ const el = {
   editDelete:       $('edit-delete'),
   editLabel:        $('edit-account-label'),
   editDisplayName:  $('edit-displayname'),
-  editProxy:        $('edit-proxy'),
-  editProxyCurrent: $('edit-proxy-current'),
-  editUseEnvProxy:  $('edit-use-env-proxy'),
   editPassword:     $('edit-password'),
   editMafile:       $('edit-mafile'),
   // trade modal
@@ -562,13 +593,19 @@ function updateGameToggle() {
   if (el.btnGameTf2) el.btnGameTf2.classList.toggle('is-on', state.game === 'tf2');
 }
 
+// W1_11: hide feature removed — strip any residual hidden flag so no account can strand.
+function normalizeAccounts(list) {
+  if (Array.isArray(list)) for (const a of list) if (a && a.hidden) delete a.hidden;
+  return list;
+}
+
 async function reloadAll() {
   const [environments, allAccounts, invMap, fx] = await Promise.all([
     api('/api/environments'), api('/api/accounts'), api('/api/inventory'),
     api('/api/exchange-rate').catch(() => ({ usdToEur: state.usdToEur })),
   ]);
   state.environments = environments;
-  state.allAccounts = allAccounts;
+  state.allAccounts = normalizeAccounts(allAccounts);
   if (fx && typeof fx.usdToEur === 'number') state.usdToEur = fx.usdToEur;
   // FX provenance (C20 / INV-E5): record whether the rate is the hardcoded fallback or
   // stale, so EUR figures aren't presented as live when they aren't.
@@ -579,6 +616,7 @@ async function reloadAll() {
     const inv = invMap[k];
     storeCs2Inv(inv);
   }
+  state.accTree.targets = null;   // structure may have changed → the Accounts tree refetches on next paint
 }
 
 // ── Inventory ingestion (single funnel so the GLOBAL wallet store stays current) ──
@@ -614,7 +652,7 @@ function wasRefreshed(u) {
 async function refreshActiveViewFromCache() {
   try {
     const accountsList = await api('/api/accounts').catch(() => null);
-    if (Array.isArray(accountsList)) state.allAccounts = accountsList;
+    if (Array.isArray(accountsList)) state.allAccounts = normalizeAccounts(accountsList);
     if (state.game === 'tf2') {
       const invMap = await api('/api/inventory-tf2');
       state.tf2Inventories = {};
@@ -762,6 +800,8 @@ function setCurrency(cur) {
   localStorage.setItem('ssim.currency', cur);
   updateCurrencyButton();
   renderMain();
+  if (state.nav === 'portfolios') renderPortfolios();   // W1_13: reformat all Portfolios columns
+  else if (state.nav === 'dashboard') paintSummary();    // W1_12: reformat Dashboard KPI tiles
 }
 function updateCurrencyButton() {
   if (el.currencyLabel) el.currencyLabel.textContent = state.currency;
@@ -1166,16 +1206,75 @@ async function refreshEnv() {
     api('/api/accounts'),
   ]);
   state.tree = tree;
-  state.allAccounts = allAccounts;
+  state.allAccounts = normalizeAccounts(allAccounts);
   renderSidebar();
   renderMain();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Screen navigation
+//  Top-level navigation rail (state.nav) — W1_10
+// ════════════════════════════════════════════════════════════════════════════
+
+// Allow-list guards against a bad localStorage value or a typo destination.
+const NAV_DEST = { dashboard: 1, portfolios: 1, inventories: 1, accounts: 1, batch: 1, proxies: 1 };
+
+function setNav(nav) {
+  if (!NAV_DEST[nav]) nav = 'dashboard';
+  state.nav = nav;
+  const inInv = nav === 'inventories';
+
+  // (a) New standalone module containers — one-hot visibility.
+  el.screenSummary.classList.toggle('hidden', nav !== 'dashboard');
+  el.screenPortfolios.classList.toggle('hidden', nav !== 'portfolios');
+  el.screenAccounts.classList.toggle('hidden', nav !== 'accounts');
+  el.screenBatch.classList.toggle('hidden', nav !== 'batch');
+  el.screenProxies.classList.toggle('hidden', nav !== 'proxies');
+
+  // (b) The Inventories module wraps the two LEGACY screens. Force both hidden on exit
+  //     and drop the windowed-scroll listener (mirrors showScreen's own TBL-02 teardown).
+  if (!inInv) {
+    el.screenDashboard.classList.add('hidden');
+    el.screenInventory.classList.add('hidden');
+    unmountWindow();
+  }
+
+  // (c) The account sidebar + resizer belong to Inventories only.
+  el.appSidebar.classList.toggle('hidden', !inInv);
+  el.sidebarResizer.classList.toggle('hidden', !inInv);
+
+  // (d) Rail active highlight.
+  updateNavRail();
+  // (d2) The CS2/TF2 toggle is Inventories-only — hide it on every other module (W1_13).
+  el.gameToggle?.classList.toggle('hidden', nav !== 'inventories');
+
+  // (e) Mount the destination's render entry (stubs until each module's wave lands).
+  if      (nav === 'dashboard')  renderSummary();
+  else if (nav === 'portfolios') renderPortfolios();
+  else if (nav === 'accounts')   renderAccountsModule();
+  else if (nav === 'batch')      renderBatchModule();
+  else if (nav === 'proxies')    renderProxiesModule();
+  else                           enterInventories();
+}
+
+/** Enter the Inventories module. Land on the env-picker, or re-land on a live drill-down —
+ *  the legacy showScreen/invMode machinery then owns everything inside, exactly as before. */
+function enterInventories() {
+  if (state.invMode === 'global')                          { showScreen('inventory'); renderMain(); }
+  else if (state.activeEnv && state.invMode !== 'account') { showScreen('inventory'); renderMain(); }
+  else                                                     { showScreen('dashboard'); renderDashboard(); }
+}
+
+function updateNavRail() {
+  el.navRail.querySelectorAll('[data-nav]').forEach((b) =>
+    b.classList.toggle('is-active', b.dataset.nav === state.nav));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Screen navigation (INTERNAL to the Inventories module)
 // ════════════════════════════════════════════════════════════════════════════
 
 function showScreen(name) {
+  if (state.nav !== 'inventories') return;   // legacy screens live only inside the Inventories module
   state.screen = name;
   el.screenDashboard.classList.toggle('hidden', name !== 'dashboard');
   el.screenInventory.classList.toggle('hidden', name !== 'inventory');
@@ -1186,6 +1285,13 @@ function showScreen(name) {
 function updateSidebar() {
   // "in an environment" covers account/env-master/folder modes (global has no env).
   const inEnv = state.screen === 'inventory' && state.invMode !== 'global' && !!state.activeEnv;
+  // Chrome refactor (2026-07-09): on the env PICKER the context sidebar has nothing to show
+  // (brand + version live in the rail now; add-controls live in Accounts) — hide the whole
+  // panel there. The GLOBAL master hides it too (owner: it held only a back button — the
+  // breadcrumb's "All inventories" is the way back). It shows only inside an env drill-down.
+  const showSidebar = state.nav === 'inventories' && state.screen === 'inventory' && state.invMode !== 'global';
+  el.appSidebar.classList.toggle('hidden', !showSidebar);
+  el.sidebarResizer.classList.toggle('hidden', !showSidebar);
   el.sidebarNav.classList.toggle('hidden', state.screen === 'dashboard');
   el.envContext.classList.toggle('hidden', !inEnv);
   el.accountsLabel.classList.toggle('hidden', !inEnv);
@@ -1203,7 +1309,6 @@ function updateSidebar() {
     renderSidebar();
   } else {
     el.accountList.innerHTML = '';
-    el.toggleHidden.classList.add('hidden');
   }
 }
 
@@ -1392,8 +1497,8 @@ function envTile(env, idx = 0, animate = false) {
 // ════════════════════════════════════════════════════════════════════════════
 
 function envAccounts() { return state.allAccounts.filter((a) => a.environmentId === state.activeEnv); }
-function visibleAccounts() { return state.showHidden ? envAccounts() : envAccounts().filter((a) => !a.hidden); }
-function accountVisible(acc) { return state.showHidden || !acc.hidden; }
+function visibleAccounts() { return envAccounts(); }   // W1_11: hide feature removed — all accounts always visible
+function accountVisible() { return true; }             // W1_11: no-op (hide removed); kept — still used as a filter predicate for counts/render
 
 /** Phase 2 (B+C): does an account pass the quick-filter (inventory state) + name search? */
 function accountMatchesFilters(acc) {
@@ -1499,33 +1604,26 @@ function renderAccountRow(acc, depth) {
           class="acct-check w-4 h-4 rounded accent-brand cursor-pointer ${selected ? '' : 'opacity-40'}"></label>
       <button data-username="${escapeAttr(acc.username)}"
         class="account-btn flex-1 min-w-0 text-left pr-3 py-2 rounded-xl border border-transparent transition flex items-center gap-2.5
-               ${active ? 'is-active' : 'hover:bg-slate-800/60'} ${acc.hidden ? 'opacity-50' : ''}">
+               ${active ? 'is-active' : 'hover:bg-slate-800/60'}">
         <span class="avatar shrink-0" style="width:2rem;height:2rem">
           <i class="fa-solid fa-user t11 ${active ? 'text-brand-light' : ''}"></i></span>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1.5">
             <span class="t13 font-semibold truncate min-w-0 ${active ? 'text-white' : 'text-slate-200'}">
-              ${escapeHtml(acc.displayName || acc.username)}</span>
+              ${escapeHtml(acc.username)}</span>
             ${acc.canConfirm === false ? `<span class="pill pill--ltd t10 shrink-0" style="padding:0 .4rem" title="Cannot confirm trades — its maFile has no identity_secret (or none is attached). Buy orders, market buys &amp; cancels work; sell listings &amp; trade offers need one. Attach a maFile to fix.">LTD</span>` : ''}
             <span class="acct-balance ml-auto shrink-0 t11 font-mono font-semibold leading-none transition-opacity group-hover:opacity-0 ${known ? 'text-emerald-400/90' : 'text-slate-600'}" title="${known ? 'Wallet balance' : 'Balance not fetched yet — refresh this account'}">${escapeHtml(bal)}</span>
           </div>
-          <p class="t10 text-slate-500 truncate font-mono">${escapeHtml(acc.username)}</p></div>
+        </div>
       </button>
       <div class="acct-actions row-actions absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
-        <button data-edit="${escapeAttr(acc.username)}" title="Edit account" aria-label="Edit ${escapeAttr(acc.username)}"
-          class="edit-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-pen t10"></i></button>
-        <button data-move="${escapeAttr(acc.username)}" title="Move" aria-label="Move ${escapeAttr(acc.username)}"
-          class="move-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-folder-tree t10"></i></button>
-        <button data-bancheck="${escapeAttr(acc.username)}" title="Check bans" aria-label="Check bans for ${escapeAttr(acc.username)}"
-          class="bancheck-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
-        <button data-hide="${escapeAttr(acc.username)}" data-hidden="${acc.hidden ? '1' : '0'}"
-          title="${acc.hidden ? 'Show' : 'Hide'}" aria-label="${acc.hidden ? 'Show' : 'Hide'} ${escapeAttr(acc.username)}"
-          class="hide-btn btn btn-icon-sm btn-ghost"><i class="fa-solid ${acc.hidden ? 'fa-eye' : 'fa-eye-slash'} t10"></i></button>
-        ${acc.canConfirm === false ? `<button data-attach="${escapeAttr(acc.username)}" title="Attach maFile → upgrade to Full" aria-label="Attach maFile for ${escapeAttr(acc.username)}"
-          class="attach-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10" style="color:rgb(var(--success-rgb))"></i></button>` : ''}
+        <button data-otpcopy="${escapeAttr(acc.username)}" title="Copy Steam Guard code" aria-label="Copy Steam Guard code for ${escapeAttr(acc.username)}"
+          class="otpcopy-btn btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
       </div>
     </div>`;
 }
+// (Edit / Move / Attach row buttons moved to the Accounts module's function bar, 2026-07-09 —
+// account management belongs to Accounts; the Inventories row keeps only the quick OTP copy.)
 
 function renderSidebar() {
   // HARD CONTEXT GUARD: never paint the account tree outside an environment context.
@@ -1537,7 +1635,6 @@ function renderSidebar() {
   const inEnvContext = state.screen === 'inventory' && state.invMode !== 'global' && !!state.activeEnv;
   if (!inEnvContext) {
     el.accountList.innerHTML = '';
-    el.toggleHidden.classList.add('hidden');
     return;
   }
   el.accountCount.textContent = fmtCount(visibleAccounts().length);
@@ -1559,22 +1656,29 @@ function renderSidebar() {
   }
   el.accountList.innerHTML = html || `<p class="t12 text-slate-600 px-3 py-6 text-center">No accounts.</p>`;
   // PERF-01: events are delegated once (setupDelegation) — no per-row re-binding here.
-
-  const hiddenCount = envAccounts().filter((a) => a.hidden).length;
-  if (hiddenCount > 0) {
-    el.toggleHidden.classList.remove('hidden');
-    el.toggleHidden.innerHTML = state.showHidden
-      ? `<i class="fa-solid fa-eye-slash mr-1.5"></i>Hide hidden`
-      : `<i class="fa-solid fa-eye mr-1.5"></i>Show ${hiddenCount} hidden`;
-  } else {
-    el.toggleHidden.classList.add('hidden');
-    state.showHidden = false;
-  }
 }
 
 // ── PERF-01: ONE delegated listener per container (attached once in setupDelegation) ──
 // replaces the per-row re-binding that ran on every render — eliminating the listener
 // churn that made large fleets/inventories jank. Checks run most-specific-first.
+/** One-click Steam Guard (TOTP) copy for a sidebar account row. Offline read — the
+ *  shared_secret never leaves the backend (server.ts:670). The toast reports a SNAPSHOT
+ *  of the remaining validity at fetch time (no live tick). */
+async function copyAccountOtp(username) {
+  try {
+    const { code, msRemaining } = await api(`/api/accounts/${encodeURIComponent(username)}/otp`);
+    await copyToClipboard(code);
+    const secsLeft = Math.max(1, Math.ceil((Number(msRemaining) || 0) / 1000));
+    toast(`Code ${code} copied · ${secsLeft}s left`, 'success');
+  } catch (e) {
+    if (e && e.status === 400) {
+      toast('No Steam Guard secret for this account — attach a maFile to enable codes', 'warn');
+    } else {
+      toast(e && e.message ? e.message : 'Could not fetch Steam Guard code', 'error');
+    }
+  }
+}
+
 function onSidebarClick(e) {
   const t = e.target; let n;
   if ((n = t.closest('[data-toggle]')))     return toggleFolder(n.dataset.toggle);
@@ -1584,11 +1688,7 @@ function onSidebarClick(e) {
   if ((n = t.closest('[data-rename]')))     return openFolderModal({ mode: 'rename', id: n.dataset.rename, name: n.dataset.name });
   if ((n = t.closest('[data-delfolder]')))  return deleteFolder(n.dataset.delfolder, n.dataset.name);
   if ((n = t.closest('[data-banfolder]')))  return checkFolderBans(n.dataset.banfolder);
-  if ((n = t.closest('.bancheck-btn')))     return checkAccountBans(n.dataset.bancheck);
-  if ((n = t.closest('.attach-btn')))       return openAttachMaFile(n.dataset.attach);
-  if ((n = t.closest('.hide-btn')))         return toggleHide(n.dataset.hide, n.dataset.hidden === '1');
-  if ((n = t.closest('.move-btn')))         return openMoveModal(n.dataset.move);
-  if ((n = t.closest('.edit-btn')))         return openEditAccount(n.dataset.edit);
+  if ((n = t.closest('.otpcopy-btn')))      return copyAccountOtp(n.dataset.otpcopy);
   if ((n = t.closest('[data-folder]')))     return openFolderMaster(n.dataset.folder);
   if (t.closest('.acct-check-wrap'))        return;   // label wrapper; checkbox handled on change
   if ((n = t.closest('.account-btn')))      return selectAccount(n.dataset.username);
@@ -1693,7 +1793,7 @@ function renderBreadcrumb() {
   if (!bc) return;
   if (state.screen !== 'inventory') { bc.classList.add('hidden'); bc.innerHTML = ''; return; }
   const env = state.environments.find((e) => e.id === state.activeEnv);
-  const seg = [{ label: 'Environments', go: 'dash' }];
+  const seg = [{ label: 'All inventories', go: 'dash' }];
   if (state.invMode === 'global') {
     seg.push({ label: 'Global Master' });
   } else if (env) {
@@ -1731,6 +1831,2042 @@ function renderBreadcrumb() {
   }));
 }
 
+// ── Top-level module render entries (W1_10 stubs; later waves replace the bodies) ──
+// ── W1_12 Dashboard (fleet summary + value graph) — read-only aggregation of the cache ──
+// Mount entry (called by setNav('dashboard')): build the body skeleton once, kick off the two
+// read-only GETs, then paint tiles from current state (loading → data). No login, no per-account loop.
+function renderSummary() {
+  ensureSummarySkeleton();
+  fetchDashboardSummary();
+  loadDashboardHistory();
+  paintSummary();
+}
+
+// Body skeleton — created ONCE so the async graph draw and the tile re-paints never clobber
+// each other. Density-first (owner 2026-07-09): compact KPI grid, then the GRAPH immediately
+// (visible without scrolling), then the two compact Top-10 lists.
+function ensureSummarySkeleton() {
+  const body = document.getElementById('summary-body');
+  if (!body || body.dataset.mounted === '1') return;
+  body.dataset.mounted = '1';
+  body.innerHTML =
+    `<div id="summary-kpis"></div>
+     <div class="mt-3 p-4 rounded-2xl border border-slate-800 bg-slate-900/40">
+       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+         <h3 class="t12 font-bold text-white uppercase tracking-wider">Fleet value over time</h3>
+         <div id="summary-legend" class="flex items-center gap-3 t11 text-slate-400"></div>
+       </div>
+       <div id="summary-chart"></div>
+     </div>
+     <div id="summary-toplists" class="mt-3"></div>`;
+}
+
+async function fetchDashboardSummary() {
+  try {
+    state.dashSummary = await api('/api/dashboard/summary');
+  } catch (e) {
+    state.dashSummary = null;
+    toast(e && e.message ? e.message : 'Could not load the dashboard summary', 'error');
+  }
+  paintSummary();   // re-paint tiles only (never the chart panel)
+}
+
+async function loadDashboardHistory() {
+  const chart = document.getElementById('summary-chart');
+  const legend = document.getElementById('summary-legend');
+  if (!chart || !legend) return;
+  try {
+    const points = await api('/api/dashboard/history');
+    renderHistoryChart(Array.isArray(points) ? points : [], chart, legend);
+  } catch { renderHistoryChart([], chart, legend); }
+}
+
+function dashAgo(t) {
+  if (!t) return '—';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60); if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60); if (h < 48) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+function dashFreshnessLine(s) {
+  if (!s || !s.asOf) return 'Fleet summary across your environments.';
+  return `As of last refresh · newest ${dashAgo(s.asOf)} · oldest ${dashAgo(s.oldestAsOf)}`;
+}
+
+// One stat card. `big` is trusted HTML (caller builds it); label/sub are the caller's responsibility to escape.
+function dashCard(label, big, opts = {}) {
+  const { sub = '', accent = 'brand', wide = false } = opts;
+  return `<div class="stat-card ${wide ? 'sm:col-span-2 xl:col-span-3' : ''}" style="--stat-accent:rgb(var(--${accent}-rgb))">
+    <p class="stat-label">${escapeHtml(label)}</p>
+    <p class="stat-value text-white font-mono ${wide ? 't28' : ''}">${big}</p>
+    ${sub ? `<p class="t10 text-slate-500 mt-1">${sub}</p>` : ''}
+  </div>`;
+}
+
+// One ranked Top-10 list card — COMPACT (dashboard = density): one slim line per item,
+// capped height with inner scroll so the two lists never push the page tall.
+// `mode` picks the emphasized figure: 'value' → unit price (rarest skins), 'owned' → quantity.
+function dashTopList(title, icon, entries, mode) {
+  const list = Array.isArray(entries) ? entries : [];
+  const rows = list.map((e, i) => {
+    const gamePill = `<span class="t10 px-1 rounded font-bold shrink-0 ${e.game === 'tf2'
+      ? 'text-amber-300' : 'text-brand-light'}" style="background:rgb(var(--${e.game === 'tf2' ? 'warn' : 'brand'}-rgb) / .12)">${e.game === 'tf2' ? 'TF2' : 'CS2'}</span>`;
+    const big = mode === 'value'
+      ? `<span class="t11 font-mono font-bold text-brand-light" title="${escapeAttr(fmtCents(e.unitCents))} each">${fmtCentsCompact(e.unitCents)}</span>`
+      : `<span class="t11 font-mono font-bold text-white">${fmtCount(e.qty)}×</span>`;
+    const sub = mode === 'value'
+      ? `<span class="t10 text-slate-600 font-mono">×${fmtCount(e.qty)}</span>`
+      : `<span class="t10 text-slate-600 font-mono" title="${e.unitCents == null ? '' : escapeAttr(`${fmtCents(e.unitCents)} each`)}">${e.totalCents ? fmtCentsCompact(e.totalCents) : ''}</span>`;
+    return `<li class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-slate-800/60 transition">
+      <span class="w-4 shrink-0 text-center t10 font-mono font-bold ${i === 0 ? 'text-amber-300' : i < 3 ? 'text-slate-300' : 'text-slate-600'}">${i + 1}</span>
+      ${gamePill}
+      <span class="t11 text-slate-200 truncate flex-1 min-w-0" title="${escapeAttr(e.name)}">${escapeHtml(e.name)}</span>
+      ${big}${sub}
+    </li>`;
+  }).join('');
+  return `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-3 min-w-0">
+    <h3 class="t11 font-bold text-white uppercase tracking-wider mb-1.5 px-1">
+      <i class="fa-solid ${icon} mr-1.5 text-brand"></i>${escapeHtml(title)}</h3>
+    ${list.length
+      ? `<ul class="max-h-52 overflow-y-auto pr-1">${rows}</ul>`
+      : `<p class="t11 text-slate-600 px-1 py-3">No priced items in cache yet — refresh some inventories.</p>`}
+  </section>`;
+}
+
+// Pure formatting from state.dashSummary into the header + #summary-kpis grid.
+// Basis is GROSS market value only — the Gross/Net toggle was removed (owner, 2026-07-09).
+function paintSummary() {
+  const s = state.dashSummary;
+  if (el.summaryHeader) {
+    el.summaryHeader.innerHTML =
+      `<div>
+        <h2 class="t28 font-bold text-white tracking-tight">Dashboard</h2>
+        <p class="t14 text-slate-500 mt-1">${escapeHtml(dashFreshnessLine(s))}</p>
+      </div>`;
+  }
+  const kpis = document.getElementById('summary-kpis');
+  if (!kpis) return;
+  if (!s) {
+    kpis.innerHTML = `<div class="empty py-16"><div class="empty-icon"><i class="fa-solid fa-spinner cs2-spin"></i></div><p class="empty-title">Loading fleet summary…</p></div>`;
+    return;
+  }
+  const money = (c) => fmtCentsCompact(c);
+  const exact = (c) => fmtCents(c);
+  const partialHint = s.items.partial ? ` · <span class="text-amber-400/80" title="Some prices are still loading — this total will rise as they fill.">~ prices loading</span>` : '';
+  const neverChip = s.counts.accountsNeverRefreshed > 0 ? `${fmtCount(s.counts.accountsNeverRefreshed)} not refreshed` : 'all refreshed';
+  const unknownChip = s.counts.walletUnknown > 0 ? `${fmtCount(s.counts.walletUnknown)} wallet unknown/excluded` : '&nbsp;';
+  const cell = (c) => `<span title="${escapeAttr(exact(c))}">${money(c)}</span>`;
+  const keys = s.tf2Keys || { count: 0, grossCents: 0 };
+
+  // EXACTLY 8 cards in a 4-column grid → two rows; the graph sits directly below (density-first).
+  kpis.innerHTML =
+    `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      ${dashCard('Grand Total', cell(s.grandTotal.grossCents), { accent: 'brand', sub: `items + balance · gross${partialHint}` })}
+      ${dashCard('Items Value', cell(s.items.totalGrossCents), { accent: 'brand', sub: `${fmtCount(s.items.totalCount)} items${partialHint}` })}
+      ${dashCard('Total Balance', cell(s.balance.usdCents), { accent: 'success', sub: unknownChip })}
+      ${dashCard('Trade-Locked', `<span title="${escapeAttr(exact(s.tradelocked.grossCents))}">${fmtCount(s.tradelocked.count)}</span>`, { accent: 'warn', sub: `worth ${money(s.tradelocked.grossCents)}` })}
+      ${dashCard('CS2 Value', cell(s.items.cs2.grossCents), { accent: 'brand', sub: `${fmtCount(s.items.cs2.count)} items` })}
+      ${dashCard('TF2 Value', cell(s.items.tf2.grossCents), { accent: 'brand', sub: `${fmtCount(s.items.tf2.count)} items` })}
+      ${dashCard('TF2 Keys', `<span title="${escapeAttr(exact(keys.grossCents))}">${fmtCount(keys.count)}</span>`, { accent: 'warn', sub: `worth ${money(keys.grossCents)}` })}
+      ${dashCard('Fleet', fmtCount(s.counts.accounts), { accent: 'brand', sub: `${fmtCount(s.counts.environments)} environments · ${fmtCount(s.counts.accountsWithInventory)} with inventory · ${neverChip}` })}
+    </div>`;
+
+  const toplists = document.getElementById('summary-toplists');
+  if (toplists) {
+    toplists.innerHTML =
+      `<div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        ${dashTopList('Top 10 · Most valuable', 'fa-gem', s.topValuable, 'value')}
+        ${dashTopList('Top 10 · Most owned', 'fa-layer-group', s.topOwned, 'owned')}
+      </div>`;
+  }
+}
+// ══════════════════════════════════════════════════════════════════════════════
+//  W1_13 — Portfolios (cross-environment value: CS2 + TF2 + wallet, both games)
+//  Pure client-side aggregation of already-cached inventories/wallets. Reads BOTH
+//  caches explicitly (never invFor/state.game). Money tri-state honest.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Sum both games' item worth + wallet for one environment. A column is null only when NO
+// account in the env has that datum cached (→ "—"); a refreshed-empty account keeps it a real 0.
+function envBreakdown(envId) {
+  const accts = state.allAccounts.filter((a) => a.environmentId === envId);
+  let cs2Cents = 0, cs2Loaded = 0, tf2Cents = 0, tf2Loaded = 0, walletUsd = 0, walletAccounts = 0;
+  let tf2Keys = 0, lockedCount = 0;
+  for (const a of accts) {
+    const u = a.username, lc = u.toLowerCase();
+    const cs2 = state.inventories[u] || state.inventories[lc];
+    const tf2 = state.tf2Inventories[u] || state.tf2Inventories[lc];
+    if (cs2) {
+      cs2Loaded++; cs2Cents += cs2.totalValueUsd || 0;
+      for (const it of cs2.items) if (it.tradeLockExpiry) lockedCount += it.quantity || 1;
+    }
+    if (tf2) {
+      tf2Loaded++; tf2Cents += tf2.totalValueUsd || 0;
+      tf2Keys += countTf2Keys(tf2.items);
+      for (const it of tf2.items) if (it.tradeLockExpiry) lockedCount += it.quantity || 1;
+    }
+    const wu = walletToUsd(walletOf(u));
+    if (wu != null) { walletUsd += wu; walletAccounts++; }
+  }
+  return {
+    accountCount: accts.length,
+    cs2Cents: cs2Loaded ? cs2Cents : null,
+    tf2Cents: tf2Loaded ? tf2Cents : null,
+    walletUsd: walletAccounts ? walletUsd : null,
+    tf2Keys, lockedCount,
+    cs2Loaded, tf2Loaded, walletAccounts,
+  };
+}
+
+// Per-env grand total in USD cents: items(CS2)+items(TF2)+wallet(→cents). null iff all three null.
+function envGrandCents(br) {
+  if (br.cs2Cents == null && br.tf2Cents == null && br.walletUsd == null) return null;
+  return (br.cs2Cents || 0) + (br.tf2Cents || 0) + Math.round((br.walletUsd || 0) * 100);
+}
+
+// Grand total across the SELECTED environments (state.globalEnvs).
+function portfolioGrand() {
+  let cs2 = 0, tf2 = 0, wallet = 0, anyCs2 = false, anyTf2 = false, anyWallet = false;
+  for (const env of state.environments) {
+    if (!state.globalEnvs.has(env.id)) continue;
+    const br = envBreakdown(env.id);
+    if (br.cs2Cents != null) { cs2 += br.cs2Cents; anyCs2 = true; }
+    if (br.tf2Cents != null) { tf2 += br.tf2Cents; anyTf2 = true; }
+    if (br.walletUsd != null) { wallet += br.walletUsd; anyWallet = true; }
+  }
+  return {
+    cs2Cents: anyCs2 ? cs2 : null,
+    tf2Cents: anyTf2 ? tf2 : null,
+    walletUsd: anyWallet ? wallet : null,
+    grandCents: (!anyCs2 && !anyTf2 && !anyWallet) ? null : cs2 + tf2 + Math.round(wallet * 100),
+  };
+}
+
+// One-shot lazy TF2 load so the TF2 column isn't a false "—". Re-renders on settle.
+function ensureTf2ForPortfolios() {
+  if (state.tf2Loaded || state.tf2LoadError || state._tf2Loading) return;
+  state._tf2Loading = true;
+  loadTf2Inventories().finally(() => {
+    state._tf2Loading = false;
+    if (state.nav === 'portfolios') renderPortfolios();
+  });
+}
+
+// TF2 column is honest about the lazy cache: … while loading, retry on error, "—"/value otherwise.
+function tf2Cell(br) {
+  if (!state.tf2Loaded && state.tf2LoadError) {
+    return `<button data-pf-tf2-retry class="text-amber-400 hover:text-amber-300 underline decoration-dotted" title="${escapeAttr(state.tf2LoadError)}">TF2 failed — retry</button>`;
+  }
+  if (!state.tf2Loaded) return `<span class="text-slate-600">…</span>`;
+  return `<span title="${br.tf2Cents == null ? '' : escapeAttr(fmtCents(br.tf2Cents))}">${fmtCentsCompact(br.tf2Cents)}</span>`;
+}
+
+function renderPortfolios() {
+  // Open with every environment selected (matches the legacy global-master default-fill).
+  if (state.globalEnvs.size === 0 && state.environments.length) {
+    for (const env of state.environments) state.globalEnvs.add(env.id);
+  }
+  ensureTf2ForPortfolios();
+
+  const g = portfolioGrand();
+  if (el.portfoliosHeader) {
+    el.portfoliosHeader.innerHTML =
+      `<div class="flex items-center justify-between flex-wrap gap-3">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h2 class="t28 font-bold text-white tracking-tight">Portfolios</h2>
+            <span class="t10 px-2 py-0.5 rounded-full" style="background:rgb(var(--brand-rgb) / .15); color:rgb(var(--brand-rgb))">Cross-environment</span>
+          </div>
+          <p class="t14 text-slate-500 mt-1">${state.globalEnvs.size} of ${state.environments.length} environments selected · CS2 + TF2 + wallet</p>
+        </div>
+        <div class="text-right shrink-0">
+          <p class="t10 font-semibold uppercase tracking-wider text-slate-500">Grand total · ${state.globalEnvs.size} selected</p>
+          <p class="t28 font-mono font-bold text-brand-light leading-tight" title="${g.grandCents == null ? '' : escapeAttr(fmtCents(g.grandCents))}">${fmtCentsCompact(g.grandCents)}</p>
+          <p class="t11 text-slate-500 font-mono">CS2 ${fmtCentsCompact(g.cs2Cents)} · TF2 ${fmtCentsCompact(g.tf2Cents)} · Wallet ${fmtUsdCompact(g.walletUsd)}</p>
+        </div>
+      </div>`;
+  }
+  if (!el.portfoliosBody) return;
+
+  el.portfoliosBody.innerHTML = state.environments.length
+    ? `<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+        ${state.environments.map((env, i) => portfolioTile(env, i)).join('')}
+      </div>`
+    : `<div class="empty py-20"><div class="empty-icon"><i class="fa-solid fa-layer-group"></i></div><p class="empty-title">No environments yet</p><p class="empty-sub">Create an environment to see it here.</p></div>`;
+
+  wirePortfolioDelegation();
+  void loadPortfolioSparks();
+}
+
+// One portfolio card — the same .env-tile/.env-stat look the Environments picker uses, so the
+// two grids read as one family. The whole card opens the env in Inventories (data-pf-open);
+// only the leading checkbox toggles grand-total inclusion (data-genv2 — delegation checks it first).
+function portfolioTile(env, idx = 0) {
+  const on = state.globalEnvs.has(env.id);
+  const br = envBreakdown(env.id);
+  const grand = envGrandCents(br);
+  const anyLoaded = (br.cs2Loaded + br.tf2Loaded) > 0;
+  const stat = (k, vHtml, tone = '') =>
+    `<div class="env-stat"><p class="k">${k}</p><p class="v font-mono ${tone}">${vHtml}</p></div>`;
+  const money = (c) => `<span title="${c == null ? '' : escapeAttr(fmtCents(c))}">${fmtCentsCompact(c)}</span>`;
+  const keysCell = !state.tf2Loaded ? '<span class="text-slate-600">…</span>' : (br.tf2Loaded ? fmtCount(br.tf2Keys) : '—');
+  const lockedCell = anyLoaded ? fmtCount(br.lockedCount) : '—';
+  return `
+    <div data-pf-open="${escapeAttr(env.id)}" role="button" tabindex="0" title="Open in Inventories"
+      class="env-tile group cursor-pointer" style="--i:${idx}">
+      <div class="env-tile__glow"></div>
+      <div class="${on ? '' : 'opacity-45'}">
+        <div class="flex items-center gap-2.5 mb-3 min-w-0">
+          <button data-genv2="${escapeAttr(env.id)}" aria-pressed="${on}" title="Include in the grand total"
+            class="shrink-0 t16 ${on ? 'text-brand' : 'text-slate-600'} hover:text-brand-light transition">
+            <i class="fa-solid ${on ? 'fa-square-check' : 'fa-square'}"></i></button>
+          <div class="min-w-0 flex-1">
+            <p class="t14 font-bold text-white truncate">${escapeHtml(env.name)}</p>
+            <p class="t10 text-slate-500">${fmtCount(br.accountCount)} account(s)</p>
+          </div>
+          <span class="pill pill--brand shrink-0" title="${grand == null ? 'No cached data yet' : escapeAttr(fmtCents(grand))}">${fmtCentsCompact(grand)}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          ${stat('CS2 worth', money(br.cs2Cents), 'text-brand-light')}
+          ${stat('TF2 worth', tf2Cell(br), 'text-brand-light')}
+          ${stat('TF2 keys', keysCell, 'text-amber-300')}
+          ${stat('Trade-locked', lockedCell, 'text-amber-400')}
+          ${stat('Wallet', `<span title="${br.walletUsd == null ? '' : escapeAttr(fmtUsd(br.walletUsd))}">${fmtUsdCompact(br.walletUsd)}</span>`, 'text-emerald-400')}
+          ${stat('Grand total', money(grand), 'text-white font-bold')}
+        </div>
+        <div data-spark="${escapeAttr(env.id)}" class="mt-3 h-10"></div>
+      </div>
+    </div>`;
+}
+
+// ── Per-card sparkline: CS2+TF2 series carry-forward-merged client-side (same join as the
+// backend /api/dashboard/history), then drawn as one grand-total (items+wallet) curve. ──
+const pfSparkCache = new Map();   // envId → merged HistoryPoint[] (cleared with invalidateHistory)
+
+function mergeGameSeries(cs2, tf2) {
+  const series = [cs2, tf2].filter((a) => Array.isArray(a) && a.length > 0);
+  if (series.length === 0) return [];
+  if (series.length === 1) return series[0];
+  const ts = [...new Set(series.flatMap((a) => a.map((p) => p.t)))].sort((a, b) => a - b);
+  const cur = series.map(() => 0);
+  return ts.map((t) => {
+    let items = 0, wallet = null;
+    series.forEach((arr, s) => {
+      let i = cur[s];
+      while (i + 1 < arr.length && arr[i + 1].t <= t) i++;
+      cur[s] = i;
+      const p = arr[i];
+      if (p && p.t <= t) { items += p.items; if (wallet === null) wallet = p.wallet; }  // wallet once
+    });
+    return { t, items, wallet: wallet || 0 };
+  });
+}
+
+function pfSparkline(points) {
+  const pts = (Array.isArray(points) ? points : []).filter((p) => p && typeof p.t === 'number');
+  if (pts.length < 2) return `<p class="t10 text-slate-600 text-center pt-3">History grows with the next refresh.</p>`;
+  const W = 240, H = 40, P = 3;
+  const t0 = pts[0].t, span = Math.max(1, pts[pts.length - 1].t - t0);
+  const vals = pts.map((p) => (p.items || 0) + (p.wallet || 0));
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 1) { hi += 1; lo = Math.max(0, lo - 1); }
+  const x = (t) => P + ((t - t0) / span) * (W - 2 * P);
+  const y = (v) => P + (H - 2 * P) - ((v - lo) / (hi - lo)) * (H - 2 * P);
+  const d = smoothLinePath(pts.map((p, i) => [x(p.t), y(vals[i])]), P, H - P);
+  const area = `${d}L${(W - P).toFixed(1)},${H - P}L${P},${H - P}Z`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="w-full h-10 block" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${area}" fill="rgb(var(--brand-rgb) / .12)"/>
+    <path d="${d}" fill="none" stroke="rgb(var(--brand-rgb))" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+
+async function loadPortfolioSparks() {
+  if (!el.portfoliosBody) return;
+  const jobs = [...el.portfoliosBody.querySelectorAll('[data-spark]')].map(async (m) => {
+    const envId = m.dataset.spark;
+    let pts = pfSparkCache.get(envId);
+    if (!pts) {
+      try {
+        const [cs2, tf2] = await Promise.all([
+          api(`/api/history/${encodeURIComponent(envId)}?game=cs2`),
+          api(`/api/history/${encodeURIComponent(envId)}?game=tf2`),
+        ]);
+        pts = mergeGameSeries(cs2, tf2);
+      } catch { pts = []; }
+      pfSparkCache.set(envId, pts);
+    }
+    // The body may have re-rendered while we awaited — paint the CURRENT mount for this env.
+    const live = el.portfoliosBody.querySelector(`[data-spark="${CSS.escape(envId)}"]`);
+    if (live && state.nav === 'portfolios') live.innerHTML = pfSparkline(pts);
+  });
+  await Promise.allSettled(jobs);
+}
+
+// One delegated listener on the body (PERF-01), attached once and surviving re-renders.
+function wirePortfolioDelegation() {
+  if (!el.portfoliosBody || el.portfoliosBody.dataset.wired === '1') return;
+  el.portfoliosBody.dataset.wired = '1';
+  el.portfoliosBody.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-genv2]');
+    if (chip) {
+      const id = chip.dataset.genv2;
+      if (state.globalEnvs.has(id)) state.globalEnvs.delete(id); else state.globalEnvs.add(id);
+      return renderPortfolios();
+    }
+    const open = e.target.closest('[data-pf-open]');
+    if (open) return openPortfolioEnv(open.dataset.pfOpen);
+    const retry = e.target.closest('[data-pf-tf2-retry]');
+    if (retry) { state.tf2LoadError = null; state.tf2Loaded = false; ensureTf2ForPortfolios(); return renderPortfolios(); }
+  });
+}
+
+async function openPortfolioEnv(envId) {
+  setNav('inventories');            // Lock A: rail-highlight + sidebar un-gate
+  await enterEnvironment(envId);    // invMode='env-master', loadTree, renderMain
+}
+// ══════════════════════════════════════════════════════════════════════════════
+//  W2_20 — Accounts module (per-account Steam management: wallet / profile / games)
+//  Self-contained: aggregate table → click an account → a card with wallet, profile
+//  (inline edit) and owned-games (scan + add free-on-demand). Mutations are ssimConfirm-
+//  gated. ⚠ The /api/steam/* backend needs a live Steam session — joint acceptance test.
+// ══════════════════════════════════════════════════════════════════════════════
+const ACC_IN = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 t13 focus:border-brand outline-none';
+
+// Accounts module = the EXACT Inventories layout twin (owner 2026-07-09): an env-tile picker
+// (less info: balance + account count) → click an env → left sidebar with the account list,
+// right pane with the selected account's functions.
+function renderAccountsModule() {
+  ensureAccountsWiring();
+  const envValid = state.accEnv && state.environments.some((e) => e.id === state.accEnv);
+  if (!envValid) { state.accEnv = null; state.accountsUser = null; return renderAccountsPicker(); }
+  if (state.accountsUser) {
+    const a = state.allAccounts.find((x) => x.username === state.accountsUser);
+    if (!a || a.environmentId !== state.accEnv) state.accountsUser = null;   // stale selection
+  }
+  renderAccountsEnv();
+}
+
+function ensureAccountsWiring() {
+  const body = el.accountsBody || document.getElementById('accounts-body');
+  if (!body || body.dataset.wired === '1') return;
+  body.dataset.wired = '1';
+  body.addEventListener('click', onAccountsClick);
+  body.addEventListener('input', onAccountsInput);
+  if (el.accountsHeader) el.accountsHeader.addEventListener('click', onAccountsClick);   // Back / header buttons
+}
+function acctBusy(u, kind) { return state.accountsBusy[u] === kind; }
+function setAcctBusy(u, kind) { state.accountsBusy[u] = kind; }
+
+// ── Accounts picker: env-tile card grid (same .env-tile look as Inventories, LESS info —
+//    balance + account count only). All top-level ADD controls live in this header. ──
+function renderAccountsPicker() {
+  if (el.accountsHeader) {
+    el.accountsHeader.innerHTML =
+      `<div class="flex items-center justify-between flex-wrap gap-3">
+        <div><h2 class="t28 font-bold text-white tracking-tight">Accounts</h2>
+          <p class="t14 text-slate-500 mt-1">Environments — choose one to manage its accounts.</p></div>
+        <div class="flex gap-2 flex-wrap">
+          <button data-acc-login class="btn btn-secondary" title="Log in &amp; import an account via QR or credentials">
+            <i class="fa-solid fa-right-to-bracket text-brand"></i><span>Account Login</span></button>
+          <button data-acc-import class="btn btn-secondary"><i class="fa-solid fa-file-import"></i><span>Import bots</span></button>
+          <button data-acc-newenv class="btn bg-brand text-white"><i class="fa-solid fa-plus"></i><span>New environment</span></button>
+        </div>
+      </div>`;
+  }
+  if (!el.accountsBody) return;
+  el.accountsBody.className = 'flex-1 overflow-y-auto p-8';
+  el.accountsBody.innerHTML = state.environments.length
+    ? `<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+        ${state.environments.map((e, i) => accEnvTile(e, i)).join('')}
+      </div>`
+    : `<div class="empty py-20"><div class="empty-icon"><i class="fa-solid fa-user-gear"></i></div>
+        <p class="empty-title">No environments yet</p>
+        <p class="empty-sub">Create your first environment, then import or add accounts.</p></div>`;
+}
+
+function accEnvTile(env, idx = 0) {
+  const accs = state.allAccounts.filter((a) => a.environmentId === env.id);
+  let walletUsd = 0, walletAccounts = 0;
+  for (const a of accs) {
+    const wu = walletToUsd(walletOf(a.username));
+    if (wu != null) { walletUsd += wu; walletAccounts++; }
+  }
+  return `
+    <div data-accenv="${escapeAttr(env.id)}" role="button" tabindex="0"
+      class="env-tile group cursor-pointer" style="--i:${idx}">
+      <div class="env-tile__glow"></div>
+      <div class="flex items-center gap-3 mb-3">
+        <span class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style="background:rgb(var(--brand-rgb)/.15);color:rgb(var(--brand-l-rgb))">
+          <i class="fa-solid fa-user-gear"></i></span>
+        <div class="min-w-0 flex-1">
+          <p class="t16 font-bold text-white truncate">${escapeHtml(env.name)}</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div class="env-stat"><p class="k">Balance</p><p class="v font-mono text-emerald-400" title="${walletAccounts ? escapeAttr(fmtUsd(walletUsd)) : ''}">${walletAccounts ? fmtUsdCompact(walletUsd) : '—'}</p></div>
+        <div class="env-stat"><p class="k">Accounts</p><p class="v font-mono text-white">${fmtCount(accs.length)}</p></div>
+      </div>
+    </div>`;
+}
+
+// ── Accounts env view: left sidebar (folder tree + account rows — the Inventories sidebar's
+//    twin, incl. the per-env ADD controls) + right pane with the selected account's functions. ──
+function renderAccountsEnv() {
+  const env = state.environments.find((e) => e.id === state.accEnv);
+  const accs = state.allAccounts.filter((a) => a.environmentId === state.accEnv);
+  if (el.accountsHeader) {
+    el.accountsHeader.innerHTML =
+      `<div class="flex items-center gap-3 flex-wrap">
+        <button data-accenv-back class="btn btn-secondary btn-sm"><i class="fa-solid fa-arrow-left"></i><span>All accounts</span></button>
+        <div><div class="flex items-center gap-2 flex-wrap">
+          <h2 class="t28 font-bold text-white tracking-tight">${escapeHtml(env.name)}</h2>
+          <span class="pill pill--brand">Accounts</span></div>
+          <p class="t12 text-slate-500 mt-0.5">${fmtCount(accs.length)} account(s) · click one to manage it</p></div>
+      </div>`;
+  }
+  if (!el.accountsBody) return;
+  el.accountsBody.className = 'flex-1 overflow-hidden flex';
+  el.accountsBody.innerHTML =
+    `<aside class="app-sidebar w-72 shrink-0 border-r border-slate-800 flex flex-col">
+      <div class="px-4 pt-3 space-y-2">
+        <div class="flex gap-2">
+          <button data-acctree-addacct="${escapeAttr(env.id)}"
+            class="flex-1 px-2 py-2 rounded-xl bg-brand hover:bg-brand-dark text-white t12 font-bold transition flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-plus"></i><span>Account</span></button>
+          <button data-acctree-addfolder="${escapeAttr(env.id)}" title="Create new folder"
+            class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 t12 transition">
+            <i class="fa-solid fa-folder-plus"></i></button>
+        </div>
+        <div class="relative">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs z-10"></i>
+          <input data-acctree-search type="text" autocomplete="off" placeholder="Search accounts…"
+            value="${escapeAttr(state.accTree.search || '')}" class="field pl-8 py-2 t12" />
+        </div>
+        ${state.accSel.size ? `
+        <div class="flex items-center gap-2 px-1">
+          <span class="t11 text-slate-400 flex-1">${fmtCount(state.accSel.size)} selected</span>
+          <button data-accsel-move class="btn btn-secondary btn-sm" title="Move the selected accounts to another environment/folder">
+            <i class="fa-solid fa-folder-tree t10"></i><span>Move</span></button>
+          <button data-accsel-clear class="btn btn-ghost btn-sm" title="Clear selection"><i class="fa-solid fa-xmark t10"></i></button>
+        </div>` : ''}
+      </div>
+      <nav id="acc-env-list" class="flex-1 overflow-y-auto px-3 py-2 mt-1">${accEnvTreeHtml(state.accEnv)}</nav>
+    </aside>
+    <div id="acc-env-main" class="flex-1 overflow-y-auto p-8"></div>`;
+  if (state.accountsUser) renderAccountCard(state.accountsUser);
+  else {
+    const main = document.getElementById('acc-env-main');
+    if (main) main.innerHTML = `<div class="empty py-24"><div class="empty-icon"><i class="fa-solid fa-user"></i></div>
+      <p class="empty-title">Select an account</p>
+      <p class="empty-sub">Pick an account on the left to see its functions — wallet, profile, games &amp; more coming.</p></div>`;
+  }
+}
+
+/** Lazy structural data for the Accounts tree (same /api/batch/targets shape the Batch scope
+ *  tree uses: environments + folders(parentId) + accounts(folderId)). reloadAll() nulls it so
+ *  any structural change (add/move/delete) refetches on the next paint. */
+function accTreeData() {
+  const t = state.accTree;
+  if (!t.targets && !t._loading) {
+    t._loading = true;
+    api('/api/batch/targets')
+      .then((r) => { t.targets = r && r.environments ? r : { environments: [], folders: [], accounts: [] }; })
+      .catch(() => { t.targets = { environments: [], folders: [], accounts: [] }; })
+      .finally(() => {
+        t._loading = false;
+        if (state.nav === 'accounts') renderAccountsModule();
+      });
+  }
+  return t.targets;
+}
+
+/** The one-environment folder→account tree for the Accounts sidebar (Inventories twin: search
+ *  flattens, folders collapse, rows show balance; the ACTIVE account row is highlighted). */
+function accEnvTreeHtml(envId) {
+  const t = accTreeData();
+  if (!t) return '<div class="t12 text-slate-600 py-4 px-2"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Loading…</div>';
+  const st = state.accTree;
+  const q = (st.search || '').trim().toLowerCase();
+  const searching = q.length > 0;
+  const matches = (u) => !searching || u.toLowerCase().includes(q);
+  const caret = (open) => `<i class="fa-solid fa-chevron-${open ? 'down' : 'right'} t10 text-slate-500 w-3"></i>`;
+
+  const childFolders = new Map(), acctsByFolder = new Map(), rootAccts = [];
+  for (const f of t.folders) {
+    if (f.environmentId !== envId) continue;
+    const p = f.parentId || null;
+    if (!childFolders.has(p)) childFolders.set(p, []);
+    childFolders.get(p).push(f);
+  }
+  for (const a of t.accounts) {
+    if (a.environmentId !== envId) continue;
+    if (a.folderId) { if (!acctsByFolder.has(a.folderId)) acctsByFolder.set(a.folderId, []); acctsByFolder.get(a.folderId).push(a); }
+    else rootAccts.push(a);
+  }
+
+  // Row = the Inventories sidebar row's twin: leading multi-select checkbox, name + balance,
+  // hover-revealed action SYMBOLS (shield → copy OTP, pen → edit) over the balance slot.
+  const acctRow = (a, depth) => {
+    const w = walletOf(a.username);
+    const meta = state.allAccounts.find((x) => x.username === a.username);
+    const active = state.accountsUser === a.username;
+    const selected = state.accSel.has(a.username);
+    const bal = w ? fmtWallet(w) : (wasRefreshed(a.username) ? fmtMoneyMinor(0, fleetCurrency()) : '—');
+    return `
+    <div class="account-row group relative flex items-stretch ${selected ? 'bg-brand/5 rounded-xl' : ''}" style="padding-left:${depth * 14}px">
+      <label class="acct-check-wrap flex items-center pl-1 pr-1.5 shrink-0 cursor-pointer" title="Select for mass actions (Move)">
+        <input type="checkbox" data-accsel="${escapeAttr(a.username)}" ${selected ? 'checked' : ''}
+          aria-label="Select ${escapeAttr(a.username)} for mass actions"
+          class="acct-check w-4 h-4 rounded accent-brand cursor-pointer ${selected ? '' : 'opacity-40'}"></label>
+      <button data-acc-open="${escapeAttr(a.username)}" class="account-btn flex-1 min-w-0 text-left pr-2 py-1.5 rounded-xl border border-transparent transition flex items-center gap-2 ${active ? 'is-active' : 'hover:bg-slate-800/50'}">
+        <span class="avatar shrink-0" style="width:1.5rem;height:1.5rem"><i class="fa-solid fa-user t10 ${active ? 'text-brand-light' : ''}"></i></span>
+        <span class="t12 font-medium truncate flex-1 min-w-0 ${active ? 'text-white' : 'text-slate-200'}">${escapeHtml(a.username)}</span>
+        ${meta && meta.canConfirm === false ? '<span class="pill pill--ltd t10 shrink-0" style="padding:0 .4rem" title="Cannot confirm trades — no identity_secret attached">LTD</span>' : ''}
+        <span class="acct-balance t11 font-mono shrink-0 transition-opacity group-hover:opacity-0 ${w ? 'text-emerald-400/90' : 'text-slate-600'}" title="${w ? 'Wallet balance' : 'Balance not fetched yet'}">${escapeHtml(bal)}</span>
+      </button>
+      <div class="acct-actions row-actions absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+        <button data-acc-fn-otp="${escapeAttr(a.username)}" title="Copy Steam Guard code" aria-label="Copy Steam Guard code for ${escapeAttr(a.username)}"
+          class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
+        <button data-acc-fn-edit="${escapeAttr(a.username)}" title="Edit account" aria-label="Edit ${escapeAttr(a.username)}"
+          class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-pen t10"></i></button>
+      </div>
+    </div>`;
+  };
+
+  const renderFolder = (f, depth) => {
+    const kids = childFolders.get(f.id) || [];
+    const own = acctsByFolder.get(f.id) || [];
+    const shown = own.filter((a) => matches(a.username));
+    const kidHtml = kids.map((k) => renderFolder(k, depth + 1)).join('');
+    if (searching && !shown.length && !kidHtml) return '';
+    const open = searching || st.expanded.has(f.id);
+    const head = `<div class="group flex items-center gap-1.5 rounded-lg hover:bg-slate-800/40 transition pr-1" style="padding-left:${depth * 14}px">
+      <button data-acctree-exp="${escapeAttr(f.id)}" class="px-1 py-1.5" aria-label="${open ? 'Collapse' : 'Expand'} folder ${escapeAttr(f.name)}">${caret(open)}</button>
+      <i class="fa-solid ${open ? 'fa-folder-open' : 'fa-folder'} text-brand t11 shrink-0"></i>
+      <span class="t12 font-semibold text-slate-300 truncate flex-1 py-1.5">${escapeHtml(f.name)}</span>
+      <span class="t10 font-mono text-slate-600">${fmtCount(own.length)}</span>
+      <button data-acctree-addsub="${escapeAttr(f.id)}" data-env="${escapeAttr(f.environmentId)}" title="Create subfolder in ${escapeAttr(f.name)}"
+        class="btn btn-icon-sm btn-ghost opacity-0 group-hover:opacity-100 transition-opacity"><i class="fa-solid fa-folder-plus t10"></i></button>
+    </div>`;
+    return head + (open ? kidHtml + shown.map((a) => acctRow(a, depth + 1)).join('') : '');
+  };
+
+  const roots = (childFolders.get(null) || []);
+  const html = roots.map((f) => renderFolder(f, 0)).join('')
+    + rootAccts.filter((a) => matches(a.username)).map((a) => acctRow(a, 0)).join('');
+  return html || `<div class="t12 text-slate-600 px-2 py-6 text-center">${searching ? `Nothing matches “${escapeHtml(st.search)}”.` : 'No accounts in this environment yet.'}</div>`;
+}
+
+function renderAccountCard(u) {
+  const acc = state.allAccounts.find((a) => a.username === u);
+  if (!acc) { state.accountsUser = null; return renderAccountsModule(); }
+  // The card renders into the env view's RIGHT pane (falls back to the module body when
+  // called outside the two-pane layout, e.g. by a stale async repaint).
+  const mount = document.getElementById('acc-env-main') || el.accountsBody;
+  const card = (title, inner, actions = '') =>
+    `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4">
+       <div class="flex items-center justify-between mb-3 gap-2 flex-wrap"><h3 class="t14 font-bold text-white">${title}</h3>${actions}</div>${inner}</section>`;
+
+  // ── Wallet ──
+  const addingFunds = state.accountsAddFunds === u;
+  const payingSafe = state.accountsPaysafe === u;
+  const ps = state.accPaysafeSession;                    // single-account session (this account only)
+  const psCur = ps && ps.results && ps.results[0];       // the 1-account result row
+  if (payingSafe && !psCur) ensurePaysafeTiers(u, () => { if (state.accountsPaysafe === u) renderAccountsModule(); });
+  const psT = payingSafe ? paysafeTiersOf(u) : null;
+  const psReady = paysafeSupported(psT);   // loaded, no error, EUR wallet → Open enabled; amount validated on click
+  let psAmountCtrl = '';
+  if (payingSafe && !psCur) {
+    if (!psT || psT === 'loading') psAmountCtrl = `<p class="t11 text-slate-500"><i class="fa-solid fa-spinner cs2-spin mr-1"></i>Loading Steam's amount options…</p>`;
+    else if (psT.error) psAmountCtrl = `<p class="t11 text-rose-400">Couldn't load amounts — ${escapeHtml(psT.error)}. <button data-paysafe-tiers-retry-acc="${escapeAttr(u)}" class="underline text-brand-light">retry</button></p>`;
+    else if (!psT.supported) psAmountCtrl = `<p class="t11 text-amber-400"><i class="fa-solid fa-triangle-exclamation mr-1"></i>${psT.iso ? `paysafecard top-ups need a <b>EUR</b> Steam wallet — this account's wallet is ${escapeHtml(psT.iso)}.` : `SSIM couldn't read this account's wallet currency from Steam, so the top-up is refused rather than guessed.`}</p>`;
+    else if (!psT.tiers.length) psAmountCtrl = `<input id="acc-paysafe-free" class="${ACC_IN}" type="number" min="1" max="1000" step="0.01" placeholder="Amount (EUR), e.g. 5.00"><p class="t10 text-slate-600">Steam didn't list fixed amounts for this region — enter how much to top up. ${escapeHtml(paysafeAmountHint())}.</p>`;
+    else psAmountCtrl = `<select id="acc-paysafe-tier" class="${ACC_IN}">${psT.tiers.map((v) => `<option value="${v}">${escapeHtml(fmtPaysafe(v))}</option>`).join('')}</select>`;
+  }
+  const paysafeForm = payingSafe ? `
+         <div class="mt-3 space-y-2 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+           <p class="t11 font-semibold text-white"><i class="fa-solid fa-money-bill-wave text-brand mr-1.5"></i>Add funds via paysafecard <span class="t10 px-1 rounded ml-1" style="background:rgb(var(--warn-rgb) / .2); color:rgb(var(--warn-rgb))">Beta</span></p>
+           ${!psCur ? `
+             ${psAmountCtrl}
+             <p class="t10 text-slate-600">Opens the paysafecard page for this account in a secure browser. Enter your code there and the new balance is confirmed automatically. Your code is only ever entered on paysafecard's own page.</p>
+             <div class="flex gap-2">
+               <button ${psReady ? `data-acc-paysafe-go="${escapeAttr(u)}"` : 'disabled'} class="btn ${psReady ? 'bg-brand text-white' : 'btn-secondary opacity-50 cursor-not-allowed'} btn-sm"><i class="fa-solid fa-arrow-up-right-from-square"></i><span>Open checkout</span></button>
+               <button data-acc-paysafe-cancel class="btn btn-secondary btn-sm">Cancel</button>
+             </div>`
+           : `
+             <p class="t12 ${psCur.status === 'credited' ? 'text-emerald-400' : psCur.status === 'error' ? 'text-rose-400' : 'text-slate-300'}">${paysafeStatusIcon(psCur.status)} ${escapeHtml(psCur.detail)}</p>
+             <div class="flex gap-2">
+               ${ps.running ? `<button data-acc-paysafe-verify class="btn bg-brand text-white btn-sm"${state.batch.paysafe.busy ? ' disabled' : ''}><i class="fa-solid fa-circle-check"></i><span>I've paid — verify credit</span></button>` : ''}
+               <button data-acc-paysafe-cancel class="btn btn-secondary btn-sm">${ps.running ? 'Close' : 'Done'}</button>
+             </div>`}
+         </div>` : '';
+  const walletInner = acctBusy(u, 'wallet')
+    ? `<p class="text-slate-500 t13"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Working…</p>`
+    : `<p class="t28 font-mono font-bold text-emerald-400">${escapeHtml(fmtWallet(walletOf(u)))}</p>
+       ${addingFunds ? `
+         <div class="mt-3 space-y-2">
+           <input id="acc-wallet-code" class="${ACC_IN}" placeholder="Wallet code (XXXXX-XXXXX-XXXXX)" autocomplete="off" spellcheck="false">
+           <p class="t10 text-slate-600">Redeems a Steam wallet code into this account. The code is never stored or logged.</p>
+           <div class="flex gap-2">
+             <button data-acc-redeem="${escapeAttr(u)}" class="btn bg-brand text-white btn-sm"><i class="fa-solid fa-plus"></i><span>Redeem</span></button>
+             <button data-acc-cancel-funds class="btn btn-secondary btn-sm">Cancel</button>
+           </div>
+         </div>` : ''}
+       ${paysafeForm}`;
+  const walletActions = (acctBusy(u, 'wallet') || addingFunds || payingSafe) ? '' :
+    `<div class="flex items-center gap-2">
+       <button data-acc-addfunds="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Redeem a Steam wallet code"><i class="fa-solid fa-plus"></i><span>Wallet code</span></button>
+       ${state.paysafeEnabled ? `<button data-acc-paysafe="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Top up via paysafecard (beta)"><i class="fa-solid fa-money-bill-wave"></i><span>paysafecard</span><span class="t10 px-1 rounded ml-1" style="background:rgb(var(--warn-rgb) / .2); color:rgb(var(--warn-rgb))">Beta</span></button>` : ''}
+       <button data-acc-refresh-wallet="${escapeAttr(u)}" class="btn btn-ghost btn-sm" title="Fetch the live balance"><i class="fa-solid fa-rotate"></i></button>
+     </div>`;
+  const walletCard = card('Wallet', walletInner, walletActions);
+
+  // ── Profile ──
+  const editing = state.accountsEditProfile === u;
+  const prof = state.profileCache[u];
+  let profileInner;
+  if (editing) {
+    profileInner =
+      `<div class="space-y-3">
+        <label class="block t11 text-slate-400">Persona name<input id="acc-pf-name" class="${ACC_IN} mt-1" maxlength="64" value="${escapeAttr((prof && prof.name) || acc.displayName || '')}"></label>
+        <label class="block t11 text-slate-400">Summary<textarea id="acc-pf-summary" class="${ACC_IN} mt-1" rows="2" maxlength="1000">${escapeHtml((prof && prof.summary) || '')}</textarea></label>
+        <label class="block t11 text-slate-400">Profile visibility
+          <select id="acc-pf-privacy" class="${ACC_IN} mt-1"><option value="">(unchanged)</option><option value="public">Public</option><option value="friends">Friends only</option><option value="private">Private</option></select></label>
+        <div class="flex gap-2 pt-1">
+          <button data-acc-save-profile="${escapeAttr(u)}" class="btn bg-brand text-white btn-sm"><i class="fa-solid fa-check"></i><span>Save</span></button>
+          <button data-acc-cancel-edit class="btn btn-secondary btn-sm">Cancel</button></div>
+      </div>`;
+  } else {
+    profileInner = acctBusy(u, 'profile')
+      ? `<p class="text-slate-500 t13"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Loading…</p>`
+      : `<p class="t14 text-slate-200 font-semibold">${escapeHtml((prof && prof.name) || acc.displayName || '—')}</p>
+         ${prof && prof.summary ? `<p class="t12 text-slate-500 mt-1">${escapeHtml(prof.summary)}</p>` : ''}
+         ${prof && prof.partial ? `<p class="t10 text-slate-600 mt-1">Steam has no read-back API; edit to set new values.</p>` : ''}`;
+  }
+  const profileCard = card('Profile', profileInner,
+    editing ? '' : `<button data-acc-edit="${escapeAttr(u)}" class="btn btn-secondary btn-sm"><i class="fa-solid fa-pen"></i><span>Edit</span></button>`);
+
+  // ── Owned games ──
+  const gc = state.gamesCache[u];
+  const q = (state.accountsGameFilter || '').toLowerCase();
+  let gamesInner;
+  if (acctBusy(u, 'games')) gamesInner = `<p class="text-slate-500 t13"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Scanning owned games…</p>`;
+  else if (!gc) gamesInner = `<p class="text-slate-500 t13">Not scanned yet — click <b>Scan</b> to read this account's owned games (uses one login slot).</p>`;
+  else {
+    const rows = gc.games.map((g) => {
+      const hide = q && !g.name.toLowerCase().includes(q);
+      return `<div data-gname="${escapeAttr(g.name.toLowerCase())}" class="flex items-center justify-between py-1.5 t13 ${hide ? 'hidden' : ''}">
+        <span class="text-slate-300 truncate"><span class="text-slate-600 font-mono mr-2">${g.appId}</span>${escapeHtml(g.name)}</span>
+        <span class="text-slate-500 font-mono shrink-0 ml-2">${(Number(g.playtimeMinutes) / 60).toFixed(1)}h</span></div>`;
+    }).join('');
+    gamesInner =
+      `<input id="acc-games-filter" class="${ACC_IN} mb-3" placeholder="Filter games…" value="${escapeAttr(state.accountsGameFilter || '')}">
+       <div class="max-h-80 overflow-y-auto divide-y divide-slate-800/60">${rows || '<p class="text-slate-600 t12 py-4 text-center">No games.</p>'}</div>
+       <p class="t10 text-slate-600 mt-2">${fmtCount(gc.count)} owned · scanned ${gc.scannedAt ? new Date(gc.scannedAt).toLocaleString('en-GB') : ''}</p>`;
+  }
+  const gamesActions =
+    `<div class="flex items-center gap-2">
+       <input id="acc-freeapp" class="${ACC_IN}" style="width:7rem" placeholder="appId" inputmode="numeric">
+       <button data-acc-addfree="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Add a free-on-demand game by appId"><i class="fa-solid fa-plus"></i><span>Add free</span></button>
+       <button data-acc-scan="${escapeAttr(u)}" class="btn btn-secondary btn-sm"><i class="fa-solid fa-magnifying-glass"></i><span>Scan</span></button>
+     </div>`;
+  const gamesCard = card(`Owned games${gc ? ` (${fmtCount(gc.count)})` : ''}`, gamesInner, gamesActions);
+
+  // Title + the account's FUNCTION bar. Edit/Move/OTP live as row SYMBOLS in the sidebar now
+  // (owner 2026-07-09) — the pane keeps the heavier functions; more land here over time.
+  const title =
+    `<div class="mb-4">
+      <h2 class="t20 font-bold text-white">${escapeHtml(acc.displayName || u)}</h2>
+      <p class="t12 text-slate-500 font-mono mt-0.5">@${escapeHtml(u)}${acc.canConfirm === false ? ' · <span class="text-amber-400/80" title="Cannot confirm trades — no identity_secret attached">LTD</span>' : ''}</p>
+    </div>`;
+  const fnBar =
+    `<div class="flex items-center gap-2 flex-wrap mb-5">
+      <button data-acc-fn-browser="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Open this account in an isolated, proxied browser session">
+        <i class="fa-solid fa-globe text-brand"></i><span>Open in Browser</span></button>
+      ${acc.canConfirm === false ? `<button data-acc-fn-attach="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Attach maFile → upgrade to Full"><i class="fa-solid fa-shield-halved" style="color:rgb(var(--success-rgb))"></i><span>Attach maFile</span></button>` : ''}
+      <button data-acc-fn-logs="${escapeAttr(u)}" class="btn btn-ghost btn-sm"><i class="fa-solid fa-clock-rotate-left"></i><span>Activity log</span></button>
+    </div>`;
+
+  mount.innerHTML = title + fnBar + walletCard + profileCard + gamesCard;
+
+  // First view: pull the (cheap, best-effort) profile once so the name/summary populate.
+  if (!prof && !acctBusy(u, 'profile')) loadProfileCard(u);
+}
+
+function onAccountsClick(e) {
+  const t = e.target; let n;
+  // IA refactor: header add-controls + env tiles + sidebar tree (all ADD flows live in Accounts now).
+  if (t.closest('[data-acc-login]'))                return openLogin();
+  if (t.closest('[data-acc-import]'))               return openBulkImport();
+  if (t.closest('[data-acc-newenv]'))               return openEnvModal('create');
+  if ((n = t.closest('[data-accenv]')))             { state.accEnv = n.dataset.accenv; state.accountsUser = null; state.accTree.search = ''; state.accSel.clear(); return renderAccountsModule(); }
+  if (t.closest('[data-accenv-back]'))              { state.accEnv = null; state.accountsUser = null; state.accTree.search = ''; state.accSel.clear(); return renderAccountsModule(); }
+  if ((n = t.closest('[data-accsel]')))             { toggleInSet(state.accSel, n.dataset.accsel); return renderAccountsEnv(); }
+  if (t.closest('.acct-check-wrap'))                return;   // label wrapper; the checkbox above handles it
+  if (t.closest('[data-accsel-move]'))              return openMoveModal([...state.accSel]);
+  if (t.closest('[data-accsel-clear]'))             { state.accSel.clear(); return renderAccountsEnv(); }
+  if ((n = t.closest('[data-acc-fn-browser]')))     return openCleanBrowser(n, n.dataset.accFnBrowser);
+  if ((n = t.closest('[data-acctree-exp]')))        { toggleInSet(state.accTree.expanded, n.dataset.acctreeExp); return renderAccountsModule(); }
+  if ((n = t.closest('[data-acctree-addacct]')))    return openAddAccount(n.dataset.acctreeAddacct);
+  if ((n = t.closest('[data-acctree-addfolder]')))  return openFolderModal({ mode: 'create', parentId: null, environmentId: n.dataset.acctreeAddfolder });
+  if ((n = t.closest('[data-acctree-addsub]')))     return openFolderModal({ mode: 'create', parentId: n.dataset.acctreeAddsub, environmentId: n.dataset.env });
+  if ((n = t.closest('[data-acc-open]')))           { state.accountsUser = n.dataset.accOpen; state.accountsEditProfile = null; state.accountsGameFilter = ''; return renderAccountsModule(); }
+  if (t.closest('[data-acc-back]'))                 { state.accountsUser = null; return renderAccountsModule(); }
+  // Account function bar (relocated from the Inventories sidebar rows).
+  if ((n = t.closest('[data-acc-fn-edit]')))        return openEditAccount(n.dataset.accFnEdit);
+  if ((n = t.closest('[data-acc-fn-move]')))        return openMoveModal(n.dataset.accFnMove);
+  if ((n = t.closest('[data-acc-fn-otp]')))         return copyAccountOtp(n.dataset.accFnOtp);
+  if ((n = t.closest('[data-acc-fn-attach]')))      return openAttachMaFile(n.dataset.accFnAttach);
+  if ((n = t.closest('[data-acc-fn-logs]')))        return openAccountLogs(n.dataset.accFnLogs);
+  if ((n = t.closest('[data-acc-refresh-wallet]'))) return loadWalletCard(n.dataset.accRefreshWallet);
+  if ((n = t.closest('[data-acc-addfunds]')))       { state.accountsAddFunds = n.dataset.accAddfunds; state.accountsPaysafe = null; return renderAccountsModule(); }
+  if (t.closest('[data-acc-cancel-funds]'))         { state.accountsAddFunds = null; return renderAccountsModule(); }
+  if ((n = t.closest('[data-acc-redeem]')))         return redeemWalletCode(n.dataset.accRedeem);
+  if ((n = t.closest('[data-acc-paysafe]')))        { state.accountsPaysafe = n.dataset.accPaysafe; state.accPaysafeSession = null; state.accountsAddFunds = null; return renderAccountsModule(); }
+  if (t.closest('[data-acc-paysafe-cancel]'))       { state.accountsPaysafe = null; state.accPaysafeSession = null; return renderAccountsModule(); }
+  if ((n = t.closest('[data-acc-paysafe-go]')))     return startPaysafe(n.dataset.accPaysafeGo);
+  if ((n = t.closest('[data-paysafe-tiers-retry-acc]'))) { delete state.paysafeTiers[n.dataset.paysafeTiersRetryAcc]; return renderAccountsModule(); }
+  if (t.closest('[data-acc-paysafe-verify]'))       return verifyPaysafe();
+  if ((n = t.closest('[data-acc-edit]')))           { state.accountsEditProfile = n.dataset.accEdit; return renderAccountsModule(); }
+  if (t.closest('[data-acc-cancel-edit]'))          { state.accountsEditProfile = null; return renderAccountsModule(); }
+  if ((n = t.closest('[data-acc-save-profile]')))   return saveAccountProfile(n.dataset.accSaveProfile);
+  if ((n = t.closest('[data-acc-scan]')))           return loadGamesCard(n.dataset.accScan, true);
+  if ((n = t.closest('[data-acc-addfree]')))        return addAccountFreeGame(n.dataset.accAddfree);
+}
+
+// In-place owned-games filter (no re-render → no focus loss).
+function onAccountsInput(e) {
+  // Sidebar account search: repaint ONLY the #acc-env-list mount so the input keeps focus.
+  const s = e.target && e.target.closest && e.target.closest('[data-acctree-search]');
+  if (s) {
+    state.accTree.search = s.value;
+    const mount = document.getElementById('acc-env-list');
+    if (mount && state.accEnv) mount.innerHTML = accEnvTreeHtml(state.accEnv);
+    return;
+  }
+  if (!e.target || e.target.id !== 'acc-games-filter') return;
+  state.accountsGameFilter = e.target.value;
+  const qq = e.target.value.toLowerCase();
+  el.accountsBody.querySelectorAll('[data-gname]').forEach((row) =>
+    row.classList.toggle('hidden', !!qq && !row.dataset.gname.includes(qq)));
+}
+
+async function loadWalletCard(u) {
+  setAcctBusy(u, 'wallet'); renderAccountsModule();
+  try {
+    const r = await api(`/api/accounts/${encodeURIComponent(u)}/wallet`);
+    const w = r && (r.wallet || (typeof r.currency !== 'undefined' ? r : null));
+    if (w) state.wallets[u.toLowerCase()] = { wallet: w, ts: Date.now() };
+  } catch (e) { toast(e.message || 'Could not refresh wallet', 'error'); }
+  setAcctBusy(u, null); renderAccountsModule();
+}
+
+async function loadProfileCard(u) {
+  setAcctBusy(u, 'profile'); renderAccountsModule();
+  try { state.profileCache[u] = await api(`/api/steam/${encodeURIComponent(u)}/profile`); }
+  catch (e) { toast(e.message || 'Could not load profile', 'warn'); }
+  setAcctBusy(u, null); renderAccountsModule();
+}
+
+async function loadGamesCard(u, refresh) {
+  setAcctBusy(u, 'games'); renderAccountsModule();
+  try { state.gamesCache[u] = await api(`/api/steam/${encodeURIComponent(u)}/games${refresh ? '?refresh=1' : ''}`); }
+  catch (e) { toast(e.message || 'Owned-games scan failed', 'error'); }
+  setAcctBusy(u, null); renderAccountsModule();
+}
+
+async function saveAccountProfile(u) {
+  const name = (document.getElementById('acc-pf-name')?.value ?? '').trim();
+  const summary = document.getElementById('acc-pf-summary')?.value ?? '';
+  const privacy = document.getElementById('acc-pf-privacy')?.value ?? '';
+  const body = { summary };
+  if (name) body.name = name;
+  if (privacy) body.privacy = { profile: privacy };
+  const changes = [name ? `Persona → “${escapeHtml(name)}”` : '', privacy ? `Profile visibility → ${privacy}` : '', 'Summary updated'].filter(Boolean).join('<br>');
+  if (!(await ssimConfirm({ title: 'Edit Steam profile', body: `This changes the <b>live</b> Steam account <span class="font-mono">@${escapeHtml(u)}</span>:<br><br>${changes}`, confirmLabel: 'Apply', confirmIcon: 'fa-user-pen', tone: 'brand' }))) return;
+  state.accountsEditProfile = null; setAcctBusy(u, 'profile'); renderAccountsModule();
+  try {
+    await api(`/api/steam/${encodeURIComponent(u)}/profile`, { method: 'POST', body: JSON.stringify(body) });
+    toast('Profile updated', 'success');
+    delete state.profileCache[u];
+  } catch (e) { toast(e.message || 'Profile update failed', 'error'); }
+  setAcctBusy(u, null); renderAccountsModule();
+}
+
+async function addAccountFreeGame(u) {
+  const appId = Number(document.getElementById('acc-freeapp')?.value);
+  if (!Number.isInteger(appId) || appId <= 0) { toast('Enter a numeric appId', 'warn'); return; }
+  if (!(await ssimConfirm({ title: 'Add free game', body: `Add app <b>${appId}</b> as a free-on-demand license to <span class="font-mono">@${escapeHtml(u)}</span>?`, confirmLabel: 'Add', confirmIcon: 'fa-plus', tone: 'brand' }))) return;
+  try {
+    const r = await api(`/api/steam/${encodeURIComponent(u)}/free-license`, { method: 'POST', body: JSON.stringify({ appIds: [appId] }) });
+    toast(`Granted ${(r.grantedAppIds || []).length} app(s)`, 'success');
+    delete state.gamesCache[u];
+    return loadGamesCard(u, true);   // re-scan to show it
+  } catch (e) { toast(e.message || 'Free-license request failed', 'error'); }
+}
+
+// W4_40: paysafecard status → an icon. Shared by the single-account form and the batch wizard.
+function paysafeStatusIcon(status) {
+  return {
+    awaiting:    '<i class="fa-solid fa-hourglass-half text-amber-400"></i>',
+    credited:    '<i class="fa-solid fa-circle-check text-emerald-400"></i>',
+    unconfirmed: '<i class="fa-solid fa-circle-question text-amber-400"></i>',
+    skipped:     '<i class="fa-solid fa-forward text-slate-500"></i>',
+    error:       '<i class="fa-solid fa-circle-xmark text-rose-400"></i>',
+  }[status] || '<i class="fa-solid fa-circle text-slate-500"></i>';
+}
+
+// W4_40: single-account paysafecard (a 1-account run). Opens the checkout in the clean browser; the
+// operator enters the code ON THE STEAM PAGE, then clicks Verify → SSIM reconciles by wallet read-back.
+// SSIM never handles the PIN. Money-safe: 'credited' only on an observed balance rise, else 'unconfirmed'.
+async function startPaysafe(u) {
+  const t = paysafeTiersOf(u);
+  if (!t || t === 'loading' || t.error) { toast('Steam amount options not loaded yet', 'warn'); return; }
+  if (!t.supported) { toast(t.iso ? `paysafecard top-ups need a EUR Steam wallet — this account's wallet is ${t.iso}` : `SSIM couldn't read this account's wallet currency from Steam`, 'warn'); return; }
+  let amountMinor;
+  if (t.tiers && t.tiers.length) {                       // fixed-tier region → dropdown
+    amountMinor = Number(document.getElementById('acc-paysafe-tier')?.value || 0);
+    if (!t.tiers.includes(amountMinor)) { toast('Pick an amount', 'warn'); return; }
+  } else {                                               // custom-amount region → free-text (bounds-checked)
+    amountMinor = paysafeMinorFromMajor(document.getElementById('acc-paysafe-free')?.value || '');
+    if (amountMinor == null) { toast(paysafeAmountHint(), 'warn'); return; }
+  }
+  const disp = fmtPaysafe(amountMinor);
+  if (!(await ssimConfirm({ title: 'Add funds via paysafecard', body: `Top up <span class="font-mono">@${escapeHtml(u)}</span> with <b>${escapeHtml(disp)}</b>?<br><br>The paysafecard page opens in a secure browser — enter your code there and the new balance is confirmed automatically.`, confirmLabel: 'Open checkout', confirmIcon: 'fa-arrow-up-right-from-square', tone: 'spend' }))) return;
+  state.batch.paysafe.busy = true; setAcctBusy(u, 'wallet'); renderAccountsModule();
+  try {
+    state.accPaysafeSession = await api(`/api/steam/${encodeURIComponent(u)}/paysafe/open`, { method: 'POST', body: JSON.stringify({ amountMinor }) });
+    toast('Checkout opened — pay in the browser, then click Verify credit.', 'success', { duration: 10000 });
+  } catch (e) {
+    toast(e && e.message ? e.message : 'Could not open the paysafecard checkout', 'warn', { duration: 12000 });
+  }
+  state.batch.paysafe.busy = false; setAcctBusy(u, null); renderAccountsModule();
+}
+
+async function verifyPaysafe() {
+  state.batch.paysafe.busy = true; renderAccountsModule();
+  try {
+    state.accPaysafeSession = await api('/api/steam/paysafe/verify', { method: 'POST', body: '{}' });
+    const r = state.accPaysafeSession.results && state.accPaysafeSession.results[0];
+    if (r) toast(`paysafecard: ${r.detail}`, r.status === 'credited' ? 'success' : 'info', { duration: 10000 });
+  } catch (e) {
+    toast(e && e.message ? e.message : 'Verify failed', 'warn', { duration: 10000 });
+  }
+  state.batch.paysafe.busy = false; renderAccountsModule();
+}
+
+// W3_31: redeem a Steam wallet code into this account (money-in). Serialized, confirm-gated, masked.
+async function redeemWalletCode(u) {
+  const raw = (document.getElementById('acc-wallet-code')?.value ?? '').trim();
+  const norm = raw.replace(/[^A-Za-z0-9]/g, '');
+  if (!norm) { toast('Enter a wallet code', 'warn'); return; }
+  const masked = '•••••-•••••-•' + norm.slice(-4);
+  if (!(await ssimConfirm({ title: 'Redeem wallet code', body: `Redeem <span class="font-mono">${escapeHtml(masked)}</span> into <span class="font-mono">@${escapeHtml(u)}</span>?<br><br>This adds <b>real funds</b> to the account.`, confirmLabel: 'Redeem', confirmIcon: 'fa-plus', tone: 'spend' }))) return;
+  state.accountsAddFunds = null; setAcctBusy(u, 'wallet'); renderAccountsModule();
+  try {
+    const r = await api(`/api/steam/${encodeURIComponent(u)}/redeem`, { method: 'POST', body: JSON.stringify({ code: raw }) });
+    if (r && r.status === 'redeemed') { toast(`Redeemed ${r.codeMasked} — refreshing balance`, 'success'); setAcctBusy(u, null); return loadWalletCard(u); }
+    if (r && r.status === 'ambiguous') toast(`${r.codeMasked}: outcome unknown — verify the balance on Steam. No auto-retry.`, 'warn', { duration: 12000 });
+    else toast(`${(r && r.codeMasked) || 'Code'} ${(r && r.status) || 'rejected'}: ${(r && r.detail) || ''}`, 'error');
+  } catch (e) {
+    // api() throws on 409 (needs-verify) / 502 (ambiguous) — never auto-retry; tell the operator to verify.
+    toast(e && e.message ? e.message : 'Redeem failed — verify the balance on Steam before retrying.', 'warn', { duration: 12000 });
+  }
+  setAcctBusy(u, null); renderAccountsModule();
+}
+// ══════════════════════════════════════════════════════════════════════════════
+//  W3_32 — Batch Jobs (scope → job → params → run → one progress view → history)
+//  The backend engine is a router; this UI collects a scope (usernames), a job + params,
+//  and polls one status surface. Money jobs are ssimConfirm-gated. Legacy bulk UIs still work.
+// ══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+//  Proxies module (v5) — declarative proxy rules (most-specific match wins)
+// ════════════════════════════════════════════════════════════════════════════
+
+function renderProxiesModule() {
+  ensureProxiesWiring();
+  const p = state.proxies;
+  if (!p.loaded && !p._loading) {
+    p._loading = true;
+    Promise.all([api('/api/proxies/rules'), api('/api/proxies/targets')])
+      .then(([rulesResp, targets]) => {
+        p.rules = (rulesResp && rulesResp.rules) || [];
+        p.authoritative = !!(rulesResp && rulesResp.authoritative);
+        p.targets = targets || { environments: [], folders: [], accounts: [] };
+        p.loaded = true; p._loading = false; paintProxies();
+      })
+      .catch((e) => { p._loading = false; toast(e.message || 'Could not load proxy rules', 'error'); });
+  }
+  paintProxies();
+}
+
+function ensureProxiesWiring() {
+  const body = el.proxiesBody || document.getElementById('proxies-body');
+  if (body && body.dataset.wired !== '1') {
+    body.dataset.wired = '1';
+    body.addEventListener('click', onProxiesClick);
+    body.addEventListener('input', onProxiesInput);
+    const header = el.proxiesHeader || document.getElementById('proxies-header');
+    if (header) header.addEventListener('click', onProxiesClick); // the "New rule" button lives here
+  }
+  if (!document.getElementById('proxy-modal-overlay')) {
+    const ov = document.createElement('div');
+    ov.id = 'proxy-modal-overlay';
+    ov.className = 'hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4';
+    ov.innerHTML = '<div id="proxy-modal-card" class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl fade-in max-h-[90vh] overflow-y-auto"></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', onProxyModalClick);
+    ov.addEventListener('input', onProxyModalInput);
+    ov.addEventListener('change', onProxyModalInput);
+    // T1: this overlay is created LAZILY (after init's modalOverlays().forEach(observeOverlay) ran), so
+    // wire it into the shared FB-04 lifecycle explicitly — otherwise Esc takes the raw classList
+    // fallback, bypassing closeProxyModal(): state.proxies.modal stays set, the reveal race-guard
+    // passes, and the un-redacted pool gets written into the still-open hidden DOM.
+    observeOverlay(ov);
+    OVERLAY_CLOSERS.set('proxy-modal-overlay', closeProxyModal);
+  }
+}
+
+function paintProxies() {
+  const p = state.proxies;
+  if (el.proxiesHeader) el.proxiesHeader.innerHTML = `<div class="flex items-center justify-between gap-4"><div><h2 class="t28 font-bold text-white tracking-tight">Proxies</h2><p class="t14 text-slate-500 mt-1">Add a proxy once, assign it by rule. Most-specific match wins: account ▸ folder ▸ environment ▸ global.</p></div><button data-proxy-add class="px-4 py-2 rounded-xl t13 font-semibold bg-brand text-white hover:brightness-110 shrink-0"><i class="fa-solid fa-plus mr-1.5"></i>New rule</button></div>`;
+  const body = el.proxiesBody; if (!body) return;
+  if (!p.loaded) { body.innerHTML = `<div class="t13 text-slate-500">Loading proxy rules…</div>`; return; }
+  // Coverage tab REMOVED (owner 2026-07-09) — a stale saved tab falls back to Rules.
+  const tab = p.tab === 'preview' ? 'preview' : 'rules';
+  const tabBtn = (id, label) => `<button data-proxy-tab="${id}" class="px-3 py-1.5 rounded-lg t12 border ${tab === id ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">${label}</button>`;
+  const tabs = `<div class="flex gap-2 mb-4">${tabBtn('rules', 'Rules')}${tabBtn('preview', 'Resolution preview')}</div>`;
+  const content = tab === 'preview' ? renderPreviewTab() : renderRulesTab();
+  body.innerHTML = tabs + content;
+  // Re-apply the resolution-preview search/filter after every repaint (tab switch, segment click),
+  // so a persisted search term / non-'all' segment stays honoured across the innerHTML rebuild.
+  if (tab === 'preview' && p.preview) applyProxyPreviewFilter();
+}
+
+function renderRulesTab() {
+  const p = state.proxies;
+  const banner = p.authoritative ? '' : `<div class="rounded-xl border border-amber-700/50 bg-amber-500/10 px-4 py-3 mb-4 t12 text-amber-300 flex items-center justify-between gap-3"><span><i class="fa-solid fa-triangle-exclamation mr-1.5"></i>Rules were synthesized from your current proxy config but are <b>not yet live</b> — some accounts resolve differently. Review the <b>Resolution preview</b> first.</span><button data-proxy-activate class="px-3 py-1.5 rounded-lg t12 font-semibold bg-amber-500/20 border border-amber-600/60 text-amber-200 hover:bg-amber-500/30 shrink-0"><i class="fa-solid fa-bolt mr-1"></i>Activate</button></div>`;
+  const tester = `<div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 mb-4">
+    <div class="flex items-center gap-2">
+      <input data-proxy-test-input value="${escapeAttr(p.testInput || '')}" class="${ACC_IN} font-mono t12 flex-1" placeholder="Test a proxy — host:port:user:pass · full URL (empty = local IP)">
+      <button data-proxy-test-run class="px-3 py-2 rounded-lg t12 border border-slate-700 text-slate-300 hover:text-white shrink-0">${p.testBusy ? '<i class="fa-solid fa-spinner fa-spin"></i>' : '<i class="fa-solid fa-gauge-high mr-1"></i>Test'}</button>
+    </div>${renderTestResult(p.testResult)}
+  </div>`;
+  const rows = p.rules.length
+    ? p.rules.map((r, i) => proxyRuleRow(r, i, p.rules.length)).join('')
+    : `<div class="t13 text-slate-500 px-1 py-8 text-center">No proxy rules yet. Click <b>New rule</b> to add one.</div>`;
+  return `${banner}${tester}<div class="rounded-2xl border border-slate-800 bg-slate-900/40 divide-y divide-slate-800">${rows}</div>`;
+}
+
+function renderTestResult(r) {
+  if (!r) return '';
+  if (r.ok) return `<div class="mt-2 t12 text-emerald-400"><i class="fa-solid fa-check mr-1"></i>${r.mode === 'localip' ? 'Local IP' : 'Proxy'} OK — ${escapeHtml(String(r.ip))}${r.countryCode ? ` (${escapeHtml(r.countryCode)})` : ''} · ${r.latencyMs} ms</div>`;
+  return `<div class="mt-2 t12 text-red-400"><i class="fa-solid fa-xmark mr-1"></i>Failed — ${escapeHtml(String(r.error || 'unknown'))}${r.latencyMs != null ? ` · ${r.latencyMs} ms` : ''}</div>`;
+}
+
+function renderPreviewTab() {
+  const p = state.proxies;
+  if (!p.preview) { if (!p._previewLoading) loadProxyPreview(); return `<div class="t13 text-slate-500">Resolving every account…</div>`; }
+  const rows = p.preview.rows || [];
+  const ruleName = (id) => { const r = p.rules.find((x) => x.id === id); return r ? (r.name || (r.scope + ' rule')) : (id ? id.slice(0, 8) : '—'); };
+  const envName = (id) => { const e = ((p.targets && p.targets.environments) || []).find((x) => x.id === id); return e ? e.name : id; };
+  // Egress bucket for the filter segments: pool lost > proxied > local IP (covers no-rule + force-local).
+  const catOf = (r) => r.poolLost ? 'poollost' : (r.network && r.network.type === 'proxy' ? 'proxied' : 'localip');
+  // ── Search + filter-segment chrome (all client-side; rows carry data-search / data-cat / data-conflict) ──
+  const search = p.previewSearch || '';
+  const filter = p.previewFilter || 'all';
+  const counts = {
+    all: rows.length,
+    proxied: rows.filter((r) => catOf(r) === 'proxied').length,
+    localip: rows.filter((r) => catOf(r) === 'localip').length,
+    poollost: rows.filter((r) => r.poolLost).length,
+    conflict: rows.filter((r) => r.conflicts && r.conflicts.length).length,
+  };
+  const segBtn = (id, label) => `<button data-proxy-preview-filter="${id}" class="px-2.5 py-1 rounded-lg t11 border ${filter === id ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">${label}<span class="ml-1.5 t10 ${filter === id ? 'text-brand/70' : 'text-slate-600'}">${counts[id]}</span></button>`;
+  const controls = `<div class="flex items-center gap-3 mb-3 flex-wrap">
+    <div class="relative flex-1 min-w-[12rem]">
+      <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs z-10"></i>
+      <input data-proxy-preview-search type="text" autocomplete="off" placeholder="Search account, environment, rule or egress…" value="${escapeAttr(search)}" class="field pl-8 py-2 t12 w-full" />
+    </div>
+    <div class="flex gap-1.5 flex-wrap shrink-0">${segBtn('all', 'All')}${segBtn('proxied', 'Proxied')}${segBtn('localip', 'Local IP')}${segBtn('poollost', 'Pool lost')}${segBtn('conflict', 'Conflicts')}</div>
+  </div>`;
+  const tbody = rows.map((r) => {
+    const net = r.poolLost
+      ? '<span class="text-red-400">pool lost — login refused</span>'
+      : (r.network ? (r.network.type === 'localip' ? '<span class="text-amber-400">local IP</span>' : escapeHtml(r.network.value)) : '—');
+    const rule = r.ruleId ? escapeHtml(ruleName(r.ruleId)) : '<span class="text-slate-600">no rule → local IP</span>';
+    const hasConflict = !!(r.conflicts && r.conflicts.length);
+    const conflict = hasConflict ? `<span class="t10 ml-1 px-1 rounded bg-amber-500/15 text-amber-400" title="Overlapping rules at the same specificity">⚠ ${r.conflicts.length}</span>` : '';
+    // Plain-text haystack (network.value is already backend-redacted, so safe in a data- attribute).
+    const netText = r.poolLost ? 'pool lost login refused' : (r.network ? (r.network.type === 'localip' ? 'local ip' : r.network.value) : '');
+    const searchText = `${r.username} ${envName(r.environmentId)} ${r.ruleId ? ruleName(r.ruleId) : 'no rule local ip'} ${netText}`.toLowerCase();
+    return `<tr class="border-t border-slate-800" data-cat="${catOf(r)}" data-conflict="${hasConflict ? '1' : '0'}" data-search="${escapeAttr(searchText)}"><td class="py-1.5 pr-4 text-slate-200">${escapeHtml(r.username)}</td><td class="py-1.5 pr-4 text-slate-500">${escapeHtml(String(envName(r.environmentId)))}</td><td class="py-1.5 pr-4">${rule}${conflict}</td><td class="py-1.5 font-mono t11 text-slate-400">${net}</td></tr>`;
+  }).join('');
+  const emptyRow = `<tr data-proxy-preview-empty class="hidden"><td class="py-6 text-slate-600 text-center" colspan="4">No accounts match the current search / filter.</td></tr>`;
+  return `${controls}<div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 overflow-x-auto"><table data-proxy-preview-table class="w-full t12"><thead><tr class="text-slate-500 text-left"><th class="pb-2 pr-4 font-medium">Account</th><th class="pb-2 pr-4 font-medium">Environment</th><th class="pb-2 pr-4 font-medium">Winning rule</th><th class="pb-2 font-medium">Effective egress</th></tr></thead><tbody>${tbody ? tbody + emptyRow : '<tr><td class="py-3 text-slate-600" colspan="4">No accounts.</td></tr>'}</tbody></table></div>`;
+}
+
+// In-place search + category filter for the resolution preview. Toggles row visibility from
+// data-search / data-cat / data-conflict (never repaints → the search box keeps focus while typing).
+function applyProxyPreviewFilter() {
+  const p = state.proxies;
+  const q = (p.previewSearch || '').trim().toLowerCase();
+  const f = p.previewFilter || 'all';
+  const table = document.querySelector('[data-proxy-preview-table]');
+  if (!table) return;
+  let shown = 0;
+  table.querySelectorAll('tr[data-cat]').forEach((r) => {
+    const catOk = f === 'all' || (f === 'conflict' ? r.dataset.conflict === '1' : r.dataset.cat === f);
+    const textOk = !q || (r.dataset.search || '').includes(q);
+    const match = catOk && textOk;
+    r.style.display = match ? '' : 'none';
+    if (match) shown++;
+  });
+  const empty = table.querySelector('[data-proxy-preview-empty]');
+  if (empty) empty.classList.toggle('hidden', shown > 0);
+}
+
+async function loadProxyPreview() {
+  const p = state.proxies; p._previewLoading = true;
+  try { p.preview = await api('/api/proxies/resolution'); } catch (e) { toast(e.message, 'error'); p.preview = { rows: [] }; }
+  p._previewLoading = false; paintProxies();
+}
+async function runProxyTest() {
+  const p = state.proxies; p.testBusy = true; paintProxies();
+  try { p.testResult = await api('/api/proxies/check', { method: 'POST', body: JSON.stringify({ proxy: p.testInput || '' }) }); }
+  catch (e) { p.testResult = { ok: false, error: e.message }; }
+  p.testBusy = false; paintProxies();
+}
+
+function proxyRuleRow(r, i, n) {
+  const scopeBadge = { global: 'Global', environment: 'Environment', folder: 'Folder', account: 'Account' }[r.scope] || r.scope;
+  const targetSummary = r.scope === 'global' ? 'everything' : proxyTargetsSummary(r);
+  const poolLabel = r.kind === 'local' ? '<span class="text-amber-400">force local IP</span>' : `${r.proxyCount} prox${r.proxyCount === 1 ? 'y' : 'ies'}`;
+  const enabledCls = r.enabled ? 'text-emerald-400' : 'text-slate-600';
+  return `<div class="flex items-center gap-3 px-4 py-3" data-rule="${escapeAttr(r.id)}">
+    <div class="flex flex-col gap-0.5 shrink-0">
+      <button data-rule-up="${escapeAttr(r.id)}" ${i === 0 ? 'disabled' : ''} class="t10 leading-none ${i === 0 ? 'text-slate-700 cursor-not-allowed' : 'text-slate-500 hover:text-white'}"><i class="fa-solid fa-chevron-up"></i></button>
+      <button data-rule-down="${escapeAttr(r.id)}" ${i === n - 1 ? 'disabled' : ''} class="t10 leading-none ${i === n - 1 ? 'text-slate-700 cursor-not-allowed' : 'text-slate-500 hover:text-white'}"><i class="fa-solid fa-chevron-down"></i></button>
+    </div>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2">
+        <span class="t13 font-semibold text-white truncate">${escapeHtml(r.name || scopeBadge + ' rule')}</span>
+        <span class="t10 px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">${scopeBadge}</span>
+      </div>
+      <div class="t11 text-slate-500 mt-0.5 truncate">${escapeHtml(targetSummary)} · ${poolLabel}</div>
+    </div>
+    <button data-rule-toggle="${escapeAttr(r.id)}" title="${r.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}" class="${enabledCls} t18 px-1"><i class="fa-solid ${r.enabled ? 'fa-toggle-on' : 'fa-toggle-off'}"></i></button>
+    <button data-rule-edit="${escapeAttr(r.id)}" class="t12 text-slate-400 hover:text-white px-2"><i class="fa-solid fa-pen"></i></button>
+    <button data-rule-del="${escapeAttr(r.id)}" class="t12 text-slate-500 hover:text-red-400 px-2"><i class="fa-solid fa-trash"></i></button>
+  </div>`;
+}
+
+function proxyTargetsSummary(r) {
+  const t = state.proxies.targets || {};
+  const names = (r.targets || []).map((id) => {
+    if (r.scope === 'environment') return ((t.environments || []).find((e) => e.id === id) || {}).name || id;
+    if (r.scope === 'folder') return ((t.folders || []).find((f) => f.id === id) || {}).name || id;
+    return id; // account username
+  });
+  if (!names.length) return '(no targets)';
+  return names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} +${names.length - 3} more`;
+}
+
+function onProxiesClick(e) {
+  const tab = e.target.closest('[data-proxy-tab]');
+  if (tab) { state.proxies.tab = tab.getAttribute('data-proxy-tab'); paintProxies(); return; }
+  const pf = e.target.closest('[data-proxy-preview-filter]');
+  if (pf) { state.proxies.previewFilter = pf.getAttribute('data-proxy-preview-filter'); paintProxies(); return; }
+  if (e.target.closest('[data-proxy-test-run]')) return runProxyTest();
+  if (e.target.closest('[data-proxy-activate]')) return activateProxyRulesUi();
+  const t = e.target.closest('[data-proxy-add],[data-rule-edit],[data-rule-del],[data-rule-toggle],[data-rule-up],[data-rule-down]');
+  if (!t) return;
+  if (t.hasAttribute('data-proxy-add')) return openProxyRuleModal('create');
+  const rid = t.getAttribute('data-rule-edit') || t.getAttribute('data-rule-del') || t.getAttribute('data-rule-toggle') || t.getAttribute('data-rule-up') || t.getAttribute('data-rule-down');
+  const rule = state.proxies.rules.find((r) => r.id === rid);
+  if (!rule) return;
+  if (t.hasAttribute('data-rule-edit')) return openProxyRuleModal('edit', rule);
+  if (t.hasAttribute('data-rule-del')) return deleteProxyRuleUi(rule);
+  if (t.hasAttribute('data-rule-toggle')) return toggleProxyRuleUi(rule);
+  if (t.hasAttribute('data-rule-up')) return reorderProxyRuleUi(rule.id, -1);
+  if (t.hasAttribute('data-rule-down')) return reorderProxyRuleUi(rule.id, +1);
+}
+
+function onProxiesInput(e) {
+  if (e.target.matches('[data-proxy-test-input]')) { state.proxies.testInput = e.target.value; return; }
+  // Resolution-preview live search: update state and filter rows in place (no repaint → keeps focus).
+  if (e.target.matches('[data-proxy-preview-search]')) { state.proxies.previewSearch = e.target.value; applyProxyPreviewFilter(); return; }
+}
+
+async function activateProxyRulesUi() {
+  if (!(await ssimConfirm({ title: 'Activate proxy rules', tone: 'brand', confirmLabel: 'Activate', confirmIcon: 'fa-bolt', body: 'Make these rules the live source of proxy resolution?<br><span class="text-slate-500">Accounts take effect on their next login/refresh — no live session is disturbed. Review the resolution preview first.</span>' }))) return;
+  try { await api('/api/proxies/activate', { method: 'POST' }); await reloadProxyRules(); toast('Proxy rules activated', 'success'); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function reloadProxyRules() {
+  const resp = await api('/api/proxies/rules');
+  state.proxies.rules = (resp && resp.rules) || [];
+  state.proxies.authoritative = !!(resp && resp.authoritative);
+  state.proxies.preview = null;
+  paintProxies();
+}
+
+async function toggleProxyRuleUi(rule) {
+  try { await api(`/api/proxies/rules/${encodeURIComponent(rule.id)}`, { method: 'PATCH', body: JSON.stringify({ enabled: !rule.enabled }) }); await reloadProxyRules(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteProxyRuleUi(rule) {
+  if (!(await ssimConfirm({ title: 'Delete proxy rule', tone: 'danger', confirmLabel: 'Delete', confirmIcon: 'fa-trash', body: `Delete this ${escapeHtml(rule.scope)} rule?<br><span class="text-slate-500">Accounts it covered fall to the next-most-specific rule (or local IP) on their next login.</span>` }))) return;
+  try { await api(`/api/proxies/rules/${encodeURIComponent(rule.id)}`, { method: 'DELETE' }); await reloadProxyRules(); toast('Rule deleted', 'success'); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function reorderProxyRuleUi(id, dir) {
+  const ids = state.proxies.rules.map((r) => r.id);
+  const i = ids.indexOf(id), j = i + dir;
+  if (i < 0 || j < 0 || j >= ids.length) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  try { await api('/api/proxies/rules/reorder', { method: 'POST', body: JSON.stringify({ order: ids }) }); await reloadProxyRules(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Add/Edit rule modal ───────────────────────────────────────────────────────
+
+async function openProxyRuleModal(mode, rule) {
+  const isEditPool = mode === 'edit' && !!rule && rule.kind === 'pool';
+  const m = {
+    mode, id: (rule && rule.id) || null, name: (rule && rule.name) || '',
+    scope: (rule && rule.scope) || 'global',
+    targets: new Set(mode === 'edit' && rule ? rule.targets : []),
+    kind: (rule && rule.kind) || 'pool',
+    proxiesText: '', validation: null,
+    // F2: Save is BLOCKED while the current pool is being fetched, and after a fetch FAILURE, so an
+    // edit can never save an empty/half-loaded pool (which the backend turns into a vault-wipe).
+    revealPending: isEditPool, revealFailed: false,
+  };
+  state.proxies.modal = m;
+  renderProxyModal();
+  const ov = document.getElementById('proxy-modal-overlay'); if (ov) ov.classList.remove('hidden');
+  if (isEditPool) {
+    try {
+      const info = await api(`/api/proxies/rules/${encodeURIComponent(rule.id)}/reveal`);
+      if (state.proxies.modal !== m) return; // a different modal opened meanwhile
+      m.proxiesText = (info.proxies || []).join('\n');
+      m.revealPending = false;
+      renderProxyModal();
+    } catch {
+      if (state.proxies.modal !== m) return;
+      m.revealPending = false;
+      m.revealFailed = true; // Save stays disabled until the operator re-enters a non-empty pool
+      renderProxyModal();
+    }
+  }
+}
+
+function closeProxyModal() {
+  state.proxies.modal = null;
+  const ov = document.getElementById('proxy-modal-overlay'); if (ov) ov.classList.add('hidden');
+  const card = document.getElementById('proxy-modal-card'); if (card) card.innerHTML = ''; // T1: clear the un-redacted pool out of the hidden DOM
+}
+
+function folderPathLabel(f, t) {
+  const env = (t.environments || []).find((e) => e.id === f.environmentId);
+  return `${env ? env.name : '?'} / ${f.name}`;
+}
+
+function targetCheckboxes(items, selected) {
+  if (!items.length) return '<p class="t12 text-slate-600">Nothing to target at this scope.</p>';
+  return items.map((it) => `<label class="flex items-center gap-2 t12 text-slate-300 py-0.5 cursor-pointer"><input type="checkbox" data-target="${escapeAttr(it.id)}" ${selected.has(it.id) ? 'checked' : ''}> ${escapeHtml(it.label)}</label>`).join('');
+}
+
+function crossRuleUsage(redacted) {
+  const modal = state.proxies.modal;
+  for (const rule of state.proxies.rules) {
+    if (modal && rule.id === modal.id) continue;
+    if ((rule.proxies || []).includes(redacted)) return rule.name || (rule.scope + ' rule');
+  }
+  return null;
+}
+
+function renderValidation(v) {
+  if (!v) return '';
+  if (!v.length) return '<p class="t11 text-slate-500 mt-2">Nothing to validate.</p>';
+  return `<div class="mt-2 space-y-0.5">${v.map((r) => {
+    if (!r.valid) return `<div class="t11 text-red-400"><i class="fa-solid fa-xmark mr-1"></i>${escapeHtml(r.input)} — ${escapeHtml(r.reason)}</div>`;
+    const cross = crossRuleUsage(r.redacted);
+    return `<div class="t11 ${r.dup ? 'text-amber-400' : 'text-emerald-400'}"><i class="fa-solid ${r.dup ? 'fa-triangle-exclamation' : 'fa-check'} mr-1"></i>${escapeHtml(r.redacted)}${r.dup ? ' — duplicate in this list' : ''}${cross ? ` — <span class="text-amber-400">already in “${escapeHtml(cross)}”</span>` : ''}</div>`;
+  }).join('')}</div>`;
+}
+
+function renderProxyModal() {
+  const m = state.proxies.modal; if (!m) return;
+  const card = document.getElementById('proxy-modal-card'); if (!card) return;
+  const t = state.proxies.targets || { environments: [], folders: [], accounts: [] };
+  const scopeBtn = (val, label) => `<button data-scope="${val}" class="px-3 py-1.5 rounded-lg t12 border ${m.scope === val ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">${label}</button>`;
+  let picker;
+  if (m.scope === 'environment') picker = targetCheckboxes(t.environments.map((e) => ({ id: e.id, label: e.name })), m.targets);
+  else if (m.scope === 'folder') picker = targetCheckboxes(t.folders.map((f) => ({ id: f.id, label: folderPathLabel(f, t) })), m.targets);
+  else if (m.scope === 'account') picker = targetCheckboxes(t.accounts.map((a) => ({ id: a.username.toLowerCase(), label: a.username })), m.targets);
+  else picker = '<p class="t12 text-slate-500">Applies to every account.</p>';
+
+  const poolLines = m.proxiesText.split('\n').map((s) => s.trim()).filter(Boolean);
+  // F2/F7: a pool rule may only Save with a non-empty pool AND never while its prefill is pending.
+  const saveDisabled = m.kind === 'pool' && (m.revealPending || poolLines.length === 0);
+  const revealNote = m.revealPending
+    ? '<p class="t11 text-slate-500 mt-2"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Loading the current pool…</p>'
+    : (m.revealFailed
+      ? '<p class="t11 text-red-400 mt-2"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Couldn’t load the current pool — re-enter the proxies or cancel. Saving is blocked (an empty save would delete the pool).</p>'
+      : '');
+  // Validate & dedupe button + pin-per-account checkbox REMOVED (owner 2026-07-09):
+  // Save validates every line itself and duplicates are dropped automatically — no extra click.
+  const pool = m.kind === 'local'
+    ? '<p class="t12 text-amber-400"><i class="fa-solid fa-house-laptop mr-1"></i>This rule forces its targets onto the local IP (no proxy).</p>'
+    : `<textarea data-proxy-text rows="5" ${m.revealPending ? 'disabled' : ''} class="${ACC_IN} font-mono t12 ${m.revealPending ? 'opacity-50' : ''}" placeholder="One proxy per line — host:port:user:pass · user:pass@host:port · full URL">${escapeHtml(m.proxiesText)}</textarea>
+       <p class="t10 text-slate-600 mt-1.5">Lines are validated on save; duplicates are removed automatically.</p>
+       ${revealNote}${renderValidation(m.validation)}`;
+
+  card.innerHTML = `
+    <div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
+      <h3 class="t16 font-bold text-white"><i class="fa-solid fa-network-wired text-brand mr-2"></i>${m.mode === 'edit' ? 'Edit' : 'New'} proxy rule</h3>
+      <button data-proxy-cancel aria-label="Close" class="modal-x"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <div class="px-6 py-5 space-y-4">
+      <label class="block t11 text-slate-400">Name <span class="text-slate-600">(optional)</span><input data-proxy-name value="${escapeAttr(m.name)}" class="${ACC_IN} mt-1" placeholder="e.g. EU residential pool"></label>
+      <div><p class="t11 text-slate-400 mb-1.5">Scope</p><div class="flex flex-wrap gap-2">${scopeBtn('global', 'Global')}${scopeBtn('environment', 'Environment')}${scopeBtn('folder', 'Folder')}${scopeBtn('account', 'Account')}</div></div>
+      <div><p class="t11 text-slate-400 mb-1.5">Targets</p><div class="max-h-40 overflow-y-auto rounded-lg border border-slate-800 p-2">${picker}</div></div>
+      <div><p class="t11 text-slate-400 mb-1.5">Type</p><div class="flex gap-2">
+        <button data-kind="pool" class="px-3 py-1.5 rounded-lg t12 border ${m.kind === 'pool' ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-400'}">Proxy pool</button>
+        <button data-kind="local" class="px-3 py-1.5 rounded-lg t12 border ${m.kind === 'local' ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-400'}">Force local IP</button>
+      </div></div>
+      <div>${pool}</div>
+    </div>
+    <div class="px-6 py-4 border-t border-slate-800 flex justify-end gap-2">
+      <button data-proxy-cancel class="px-4 py-2 rounded-xl t13 text-slate-400 hover:text-white">Cancel</button>
+      <button data-proxy-save ${saveDisabled ? 'disabled' : ''} class="px-4 py-2 rounded-xl t13 font-semibold ${saveDisabled ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-brand text-white hover:brightness-110'}">${m.mode === 'edit' ? 'Save' : 'Create'}</button>
+    </div>`;
+}
+
+function onProxyModalClick(e) {
+  const m = state.proxies.modal; if (!m) return;
+  if (e.target === document.getElementById('proxy-modal-overlay')) return closeProxyModal();
+  const scope = e.target.closest('[data-scope]'); if (scope) { m.scope = scope.getAttribute('data-scope'); m.targets = new Set(); renderProxyModal(); return; }
+  const kind = e.target.closest('[data-kind]'); if (kind) { m.kind = kind.getAttribute('data-kind'); renderProxyModal(); return; }
+  if (e.target.closest('[data-proxy-cancel]')) return closeProxyModal();
+  if (e.target.closest('[data-proxy-save]')) return saveProxyModal();
+}
+
+function onProxyModalInput(e) {
+  const m = state.proxies.modal; if (!m) return;
+  if (e.target.matches('[data-proxy-name]')) m.name = e.target.value;
+  else if (e.target.matches('[data-proxy-text]')) m.proxiesText = e.target.value;
+  else if (e.target.matches('[data-target]')) { const id = e.target.getAttribute('data-target'); if (e.target.checked) m.targets.add(id); else m.targets.delete(id); }
+}
+
+async function saveProxyModal() {
+  const m = state.proxies.modal; if (!m) return;
+  if (m.revealPending) return; // F2: never save a half-loaded edit
+  // Automatic dedupe (owner 2026-07-09): duplicate lines are dropped silently — no extra click.
+  const proxies = m.kind === 'pool' ? [...new Set(m.proxiesText.split('\n').map((s) => s.trim()).filter(Boolean))] : [];
+  if (m.kind === 'pool') {
+    if (!proxies.length) { toast('Add at least one proxy, or switch the type to “Force local IP”.', 'error'); return; }
+    // F7: classify on Save (not only via the button) so the operator sees per-line reasons; block if
+    // NONE are valid — the server 400s anyway, but this shows exactly which lines are bad.
+    try {
+      const resp = await api('/api/proxies/validate', { method: 'POST', body: JSON.stringify({ proxies }) });
+      m.validation = (resp && resp.results) || [];
+      renderProxyModal();
+      if (!m.validation.some((r) => r.valid)) { toast('No valid proxies — fix the highlighted lines.', 'error'); return; }
+    } catch (e) { toast(e.message, 'error'); return; }
+  }
+  // pinPerAccount feature removed (owner 2026-07-09) — saving a rule always clears any old pin.
+  const body = { name: m.name, scope: m.scope, targets: [...m.targets], kind: m.kind, proxies, pinPerAccount: false };
+  try {
+    if (m.mode === 'edit') { await api(`/api/proxies/rules/${encodeURIComponent(m.id)}`, { method: 'PATCH', body: JSON.stringify(body) }); toast('Rule saved', 'success'); }
+    else { await api('/api/proxies/rules', { method: 'POST', body: JSON.stringify(body) }); toast('Rule created', 'success'); }
+    closeProxyModal(); await reloadProxyRules();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function renderBatchModule() {
+  ensureBatchWiring();
+  if (!state.batch.registry.length && !state.batch._loading) {
+    state.batch._loading = true;
+    api('/api/batch/registry').then((r) => { state.batch.registry = Array.isArray(r) ? r : []; state.batch._loading = false; paintBatch(); }).catch(() => { state.batch._loading = false; });
+  }
+  if (!state.batch.targets && !state.batch._targetsLoading) {
+    state.batch._targetsLoading = true;
+    api('/api/batch/targets').then((r) => { state.batch.targets = r && r.environments ? r : { environments: [], folders: [], accounts: [] }; state.batch._targetsLoading = false; paintBatch(); }).catch(() => { state.batch._targetsLoading = false; });
+  }
+  if (!state.batch._histLoaded) { state.batch._histLoaded = true; loadBatchHistory(); }
+  if (state.batch.status && state.batch.status.running && !state.batch.timer) pollBatch();
+  // The paysafecard sub-run needs the SAME re-arm as the headless job poll above. pollPaysafeStatus()
+  // self-clears the moment the operator navigates away (and a human-in-the-loop run gives them plenty of
+  // time to), so without this the money-run view would come back frozen on a stale snapshot: no
+  // auto-advance, no credited tally, no completion toast.
+  const ps = state.batch.paysafe;
+  if (ps.session && ps.session.running && !ps.timer) pollPaysafeStatus();
+  // On a fresh page load the server may still be driving a run we know nothing about — reattach to it
+  // rather than leaving the operator locked out (a new Start would just 409).
+  if (!ps.session && !ps._attached) { ps._attached = true; reattachPaysafeRun(); }
+  paintBatch();
+}
+
+/** Adopt a paysafecard run that the SERVER is still driving (page reload / backend restart of the UI). */
+async function reattachPaysafeRun() {
+  const p = state.batch.paysafe;
+  try {
+    const s = await api('/api/steam/paysafe/status');
+    if (s && s.running) { p.session = s; pollPaysafeStatus(); paintBatch(); }
+  } catch { /* no run in progress, or the backend isn't up yet — nothing to adopt */ }
+}
+
+function ensureBatchWiring() {
+  const body = el.batchBody || document.getElementById('batch-body');
+  if (!body || body.dataset.wired === '1') return;
+  body.dataset.wired = '1';
+  body.addEventListener('click', onBatchClick);
+  body.addEventListener('input', onBatchInput);
+}
+
+/** All descendant folder ids of `fid` (inclusive), walking the parentId tree from state.batch.targets. */
+function batchFolderSubtree(fid) {
+  const t = state.batch.targets;
+  const out = new Set([fid]);
+  if (!t) return out;
+  const kids = new Map();
+  for (const f of t.folders) { const p = f.parentId || null; if (!kids.has(p)) kids.set(p, []); kids.get(p).push(f.id); }
+  const stack = [fid];
+  while (stack.length) { const cur = stack.pop(); for (const c of (kids.get(cur) || [])) if (!out.has(c)) { out.add(c); stack.push(c); } }
+  return out;
+}
+
+/** The batch scope selection (step 1) as a generic tree-selection object. */
+function batchScopeSel() {
+  const b = state.batch;
+  return { envs: b.scopeEnvs, folders: b.scopeFolders, accounts: b.scopeAccounts, expanded: b.expanded, search: b.search || '' };
+}
+
+/** Resolve an env/folder/account micro-selection to a username set. The scope is PURE
+ *  (owner 2026-07-09): only the tree picks count — no side-channel "current selection".
+ *  `sel` defaults to the step-1 scope; the Distribute SOURCE picker passes its own. */
+function batchScopeUsernames(sel = batchScopeSel()) {
+  const b = state.batch;
+  const set = new Set();
+  const accts = (b.targets && b.targets.accounts) || state.allAccounts;
+  // Folder selection expands to descendants (a parent folder covers its subfolders' accounts).
+  let wantedFolders = null;
+  if (sel.folders.size) { wantedFolders = new Set(); for (const fid of sel.folders) for (const d of batchFolderSubtree(fid)) wantedFolders.add(d); }
+  for (const a of accts) {
+    if (sel.envs.has(a.environmentId)) { set.add(a.username); continue; }
+    if (wantedFolders && a.folderId && wantedFolders.has(a.folderId)) { set.add(a.username); continue; }
+    if (sel.accounts.has(a.username)) set.add(a.username);
+  }
+  return [...set];
+}
+
+/** Is this account already pulled in by a selected environment or (ancestor) folder? (for display) */
+function batchAccountCovered(a, sel = batchScopeSel()) {
+  if (sel.envs.has(a.environmentId)) return 'environment';
+  if (sel.folders.size && a.folderId) { for (const fid of sel.folders) if (batchFolderSubtree(fid).has(a.folderId)) return 'folder'; }
+  return null;
+}
+
+/** The env→folder→account selection tree (search-filterable, collapsible). Parameterized so it
+ *  serves BOTH the step-1 scope (prefix 'batch') and the Distribute SOURCE picker (prefix 'dist')
+ *  with independent selection state; the structural data (state.batch.targets) is shared. */
+function batchScopeTree(sel = batchScopeSel(), prefix = 'batch') {
+  const t = state.batch.targets;
+  if (!t) return '<div class="t12 text-slate-600 py-2">Loading accounts…</div>';
+  const q = (sel.search || '').trim().toLowerCase();
+  const searching = q.length > 0;
+  const matches = (u) => !searching || u.toLowerCase().includes(q);
+  const chk = (on) => `<span class="inline-flex items-center justify-center w-4 h-4 rounded border ${on ? 'bg-brand border-brand text-white' : 'border-slate-600'}">${on ? '<i class="fa-solid fa-check t10"></i>' : ''}</span>`;
+  const caret = (open) => `<i class="fa-solid fa-chevron-${open ? 'down' : 'right'} t10 text-slate-500 w-3"></i>`;
+
+  const childFolders = new Map();
+  for (const f of t.folders) {
+    const p = f.parentId || null; if (!childFolders.has(p)) childFolders.set(p, []); childFolders.get(p).push(f);
+  }
+  const acctsByEnv = new Map(); const acctsByFolder = new Map(); const rootAcctsByEnv = new Map();
+  for (const a of t.accounts) {
+    if (!acctsByEnv.has(a.environmentId)) acctsByEnv.set(a.environmentId, []);
+    acctsByEnv.get(a.environmentId).push(a);
+    if (a.folderId) { if (!acctsByFolder.has(a.folderId)) acctsByFolder.set(a.folderId, []); acctsByFolder.get(a.folderId).push(a); }
+    else { if (!rootAcctsByEnv.has(a.environmentId)) rootAcctsByEnv.set(a.environmentId, []); rootAcctsByEnv.get(a.environmentId).push(a); }
+  }
+
+  const acctRow = (a, depth) => {
+    const covered = batchAccountCovered(a, sel);
+    const on = sel.accounts.has(a.username) || !!covered;
+    return `<button data-${prefix}-acct="${escapeAttr(a.username)}" class="w-full flex items-center gap-2 py-1 pr-2 rounded hover:bg-slate-800/40 text-left" style="padding-left:${depth * 16 + 8}px" title="${covered ? 'Covered by the selected ' + covered : 'Select this account'}">
+      ${chk(on)}<span class="t12 ${on ? 'text-slate-200' : 'text-slate-400'} truncate">${escapeHtml(a.username)}</span>${covered ? `<span class="t10 text-slate-600">· via ${covered}</span>` : ''}</button>`;
+  };
+  // Recursive folder render; returns '' if searching and nothing inside matches.
+  const renderFolder = (f, depth) => {
+    const kids = childFolders.get(f.id) || [];
+    const own = (acctsByFolder.get(f.id) || []);
+    const shownAccts = own.filter((a) => matches(a.username));
+    const kidHtml = kids.map((k) => renderFolder(k, depth + 1)).join('');
+    if (searching && !shownAccts.length && !kidHtml) return '';
+    const open = searching || sel.expanded.has(f.id);
+    const on = sel.folders.has(f.id);
+    const total = (acctsByFolder.get(f.id) || []).length;
+    const head = `<div class="flex items-center gap-1" style="padding-left:${depth * 16}px">
+      <button data-${prefix}-exp="${escapeAttr(f.id)}" class="px-1 py-1">${caret(open)}</button>
+      <button data-${prefix}-folder="${escapeAttr(f.id)}" class="flex items-center gap-2 py-1 pr-2 rounded hover:bg-slate-800/40 flex-1 text-left">${chk(on)}<i class="fa-solid fa-folder t11 ${on ? 'text-brand' : 'text-slate-500'}"></i><span class="t12 ${on ? 'text-brand' : 'text-slate-300'} truncate">${escapeHtml(f.name)}</span><span class="t10 text-slate-600">${fmtCount(total)}</span></button></div>`;
+    const body = open ? `${kidHtml}${shownAccts.map((a) => acctRow(a, depth + 1)).join('')}` : '';
+    return head + body;
+  };
+
+  const envBlocks = t.environments.map((e) => {
+    const roots = (childFolders.get(null) || []).filter((f) => f.environmentId === e.id);
+    const rootAccts = (rootAcctsByEnv.get(e.id) || []);
+    const shownRootAccts = rootAccts.filter((a) => matches(a.username));
+    const foldersHtml = roots.map((f) => renderFolder(f, 1)).join('');
+    if (searching && !shownRootAccts.length && !foldersHtml) return '';
+    const open = searching || sel.expanded.has(e.id);
+    const on = sel.envs.has(e.id);
+    const total = (acctsByEnv.get(e.id) || []).length;
+    const head = `<div class="flex items-center gap-1">
+      <button data-${prefix}-exp="${escapeAttr(e.id)}" class="px-1 py-1">${caret(open)}</button>
+      <button data-${prefix}-env="${escapeAttr(e.id)}" class="flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-slate-800/40 flex-1 text-left">${chk(on)}<i class="fa-solid fa-layer-group t11 ${on ? 'text-brand' : 'text-slate-500'}"></i><span class="t13 font-medium ${on ? 'text-brand' : 'text-slate-200'} truncate">${escapeHtml(e.name)}</span><span class="t10 text-slate-600">${fmtCount(total)} acct</span></button></div>`;
+    const body = open ? `<div class="border-l border-slate-800 ml-3">${foldersHtml}${shownRootAccts.map((a) => acctRow(a, 1)).join('')}</div>` : '';
+    return `<div class="mb-0.5">${head}${body}</div>`;
+  }).join('');
+
+  return envBlocks || `<div class="t12 text-slate-600 py-2">${searching ? 'No accounts match “' + escapeHtml(sel.search) + '”.' : 'No environments.'}</div>`;
+}
+
+function paintBatch() {
+  const b = state.batch;
+  if (el.batchHeader) el.batchHeader.innerHTML = `<div><h2 class="t28 font-bold text-white tracking-tight">Batch Jobs</h2><p class="t14 text-slate-500 mt-1">Pick a scope, pick a job, run it across many accounts with one progress view.</p></div>`;
+  if (!el.batchBody) return;
+  const scopeCount = batchScopeUsernames().length;
+  const running = !!(b.status && b.status.running);
+
+  const anySel = b.scopeEnvs.size || b.scopeFolders.size || b.scopeAccounts.size;
+  // Accounts currently VISIBLE in the tree given the active filter — the exact set "Select all" grabs.
+  const scopeQ = (b.search || '').trim().toLowerCase();
+  const scopeVisibleAccts = ((b.targets && b.targets.accounts) || []).filter((a) => !scopeQ || a.username.toLowerCase().includes(scopeQ));
+  // Scope = PURE selection (owner 2026-07-09): the tree and nothing else. For Distribute the
+  // scope is the RECEIVING accounts; everything job-specific lives in step 3.
+  const scopeSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="t14 font-bold text-white">1 · Scope <span class="t11 text-slate-500 font-normal">— ${fmtCount(scopeCount)} account${scopeCount === 1 ? '' : 's'} selected</span></h3>
+      <div class="flex items-center gap-3">
+        ${scopeVisibleAccts.length ? `<button data-batch-select-all class="t11 text-slate-500 hover:text-slate-300"><i class="fa-solid fa-check-double mr-1"></i>Select all${scopeQ ? ' ' + fmtCount(scopeVisibleAccts.length) : ''}</button>` : ''}
+        ${anySel ? '<button data-batch-clear class="t11 text-slate-500 hover:text-slate-300"><i class="fa-solid fa-xmark mr-1"></i>Clear</button>' : ''}
+      </div>
+    </div>
+    <p class="t11 text-slate-500 mb-2">Pick any mix — whole environments, individual folders (subfolders included), or single accounts.</p>
+    <div class="relative mb-2"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 t11 text-slate-600"></i>
+      <input data-batch-search type="text" placeholder="Filter accounts…" value="${escapeAttr(b.search || '')}" class="${ACC_IN}" style="padding-left:2rem"></div>
+    <div data-scope-scroll="batch" class="max-h-72 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/40 p-2">${batchScopeTree()}</div>
+  </section>`;
+
+  // Distribute + paysafecard are first-class client-routed JOBS in step 2 (their own engines/
+  // sequential flow; the registry stays server-truth for headless fan-out jobs).
+  const allJobs = [...b.registry, BATCH_DIST_JOB, ...(state.paysafeEnabled ? [BATCH_PAYSAFE_JOB] : [])];
+  const groups = { read: 'Read', money: 'Money', manage: 'Manage' };
+  const jobCards = Object.keys(groups).map((g) => {
+    const jobs = allJobs.filter((j) => j.group === g);
+    if (!jobs.length) return '';
+    return `<div class="mb-3"><p class="t10 text-slate-500 uppercase tracking-wide mb-1.5">${groups[g]}</p><div class="flex flex-wrap gap-2">${jobs.map((j) => {
+      const sel = b.jobType === j.jobType, dis = !j.enabled;
+      return `<button ${dis ? 'disabled' : `data-batch-job="${escapeAttr(j.jobType)}"`} class="px-3 py-1.5 rounded-lg t12 border ${dis ? 'border-slate-800 text-slate-600 cursor-not-allowed' : sel ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-300 hover:text-white'}" title="${dis ? 'Not runnable from Batch — see the button hint' : (j.experimental ? 'Beta — wired but not yet live-verified' : '')}">${escapeHtml(j.label)}${j.moneySafe ? ' <span class="t10" style="color:rgb(var(--brand-rgb))">$</span>' : ''}${j.experimental && !dis ? ' <span class="t10 px-1 rounded" style="background:rgb(var(--warn-rgb) / .2); color:rgb(var(--warn-rgb))">Beta</span>' : ''}${dis ? ' <i class="fa-solid fa-lock t10"></i>' : ''}</button>`;
+    }).join('')}</div></div>`;
+  }).join('');
+  const jobSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4"><h3 class="t14 font-bold text-white mb-3">2 · Job</h3>${jobCards || '<span class="t12 text-slate-600">Loading…</span>'}</section>`;
+
+  let runSection;
+  if (b.jobType === 'distribute') {
+    runSection = batchDistributeSection(scopeCount);
+  } else if (b.jobType === 'paysafe') {
+    runSection = batchPaysafeSection(scopeCount);
+  } else {
+    const def = b.registry.find((j) => j.jobType === b.jobType);
+    let paramInner;
+    if (def && def.paramSchema && def.paramSchema.length) {
+      paramInner = def.paramSchema.map((f) => {
+        const val = b.params[f.key] ?? '';
+        if (f.type === 'select') return `<label class="block t11 text-slate-400 mb-2">${escapeHtml(f.label)}<select data-batch-param="${escapeAttr(f.key)}" class="${ACC_IN} mt-1">${(f.options || []).map((o) => `<option value="${escapeAttr(o.value)}" ${String(val) === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}</select></label>`;
+        // 'multiline' → a REAL textarea: paste one-per-line lists without guessing (owner 2026-07-09).
+        if (f.type === 'multiline') return `<label class="block t11 text-slate-400 mb-2">${escapeHtml(f.label)}<textarea data-batch-param="${escapeAttr(f.key)}" rows="8" spellcheck="false" class="${ACC_IN} mt-1 font-mono" placeholder="One per line…">${escapeHtml(String(val))}</textarea>${f.help ? `<span class="block t10 text-slate-600 mt-0.5">${escapeHtml(f.help)}</span>` : ''}</label>`;
+        return `<label class="block t11 text-slate-400 mb-2">${escapeHtml(f.label)}<input data-batch-param="${escapeAttr(f.key)}" type="${f.type === 'money' || f.type === 'number' ? 'number' : 'text'}" ${f.min != null ? `min="${f.min}"` : ''} class="${ACC_IN} mt-1" value="${escapeAttr(String(val))}">${f.help ? `<span class="block t10 text-slate-600 mt-0.5">${escapeHtml(f.help)}</span>` : ''}</label>`;
+      }).join('');
+    } else if (def) paramInner = `<p class="t12 text-slate-500">No parameters — runs on the ${fmtCount(scopeCount)}-account scope.</p>`;
+    else paramInner = `<p class="t12 text-slate-600">Select a job above.</p>`;
+    const canRun = !!(def && def.enabled && scopeCount > 0 && !running);
+    runSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4"><h3 class="t14 font-bold text-white mb-3">3 · Run</h3>${paramInner}
+      <div class="mt-3 flex gap-2">
+        <button ${canRun ? 'data-batch-run' : 'disabled'} class="btn ${canRun ? (def && def.moneySafe ? 'bg-brand text-white' : 'btn-secondary') : 'btn-secondary opacity-50 cursor-not-allowed'} btn-sm"><i class="fa-solid fa-play"></i><span>Run</span></button>
+        ${running ? '<button data-batch-cancel class="btn btn-secondary btn-sm"><i class="fa-solid fa-stop"></i><span>Cancel</span></button>' : ''}
+      </div></section>`;
+  }
+
+  let progressSection = '';
+  const st = b.status;
+  if (st && (st.running || st.finishedAt)) {
+    const pct = st.total ? Math.round((st.done / st.total) * 100) : 0;
+    progressSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4">
+      <div class="flex items-center justify-between mb-2"><h3 class="t14 font-bold text-white">${escapeHtml(st.label || 'Job')} ${st.running ? '<span class="t11 text-brand">running…</span>' : '<span class="t11 text-emerald-400">done</span>'}</h3><span class="t12 font-mono text-slate-400">${fmtCount(st.done)}/${fmtCount(st.total)} · ${fmtCount((st.failed || []).length)} failed</span></div>
+      <div class="h-2 rounded-full bg-slate-800 overflow-hidden"><div class="h-full bg-brand transition-all" style="width:${pct}%"></div></div>
+      ${(st.failed || []).length ? `<div class="mt-3 max-h-40 overflow-y-auto t11 text-slate-500 space-y-0.5">${st.failed.slice(0, 50).map((f) => `<div><span class="font-mono text-amber-400/80">${escapeHtml(f.username)}</span> — ${escapeHtml(f.error)}</div>`).join('')}</div>` : ''}
+    </section>`;
+  }
+
+  const histSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5"><h3 class="t14 font-bold text-white mb-3">History</h3>${
+    (b.history || []).length ? `<div class="space-y-1">${b.history.slice(0, 30).map((h) => `<div class="flex items-center justify-between t12 py-1 border-b border-slate-800/60"><span class="text-slate-300">${escapeHtml(h.label)} <span class="text-slate-600">· ${fmtCount(h.scopeCount)} acct</span></span><span class="font-mono text-slate-500">${fmtCount(h.done)}/${fmtCount(h.total)} · <span class="${h.outcome === 'ok' ? 'text-emerald-400' : h.outcome === 'error' ? 'text-red-400' : 'text-amber-400'}">${escapeHtml(h.outcome)}</span></span></div>`).join('')}</div>` : '<p class="t12 text-slate-600">No runs yet.</p>'
+  }</section>`;
+
+  el.batchBody.innerHTML = scopeSection + jobSection + runSection + progressSection + histSection;
+}
+
+/** Repaint the whole batch body but KEEP each scope tree's scroll position. The tree lives inside a
+ *  full innerHTML re-render (paintBatch), so its container is destroyed & recreated with scrollTop=0 —
+ *  making the list "jump to top" on every account toggle. Save→restore mirrors the search-input focus
+ *  preservation; keyed by data-scope-scroll ("batch"/"dist") so the fresh node is matched 1:1. */
+function paintBatchKeepScroll() {
+  const body = el.batchBody;
+  const saved = new Map();
+  if (body) for (const c of body.querySelectorAll('[data-scope-scroll]')) saved.set(c.getAttribute('data-scope-scroll'), c.scrollTop);
+  paintBatch();
+  if (body) for (const c of body.querySelectorAll('[data-scope-scroll]')) { const v = saved.get(c.getAttribute('data-scope-scroll')); if (v) c.scrollTop = v; }
+}
+/** Add every account currently VISIBLE under the step-1 filter to the explicit account scope. */
+function batchSelectAllVisible() {
+  const b = state.batch;
+  const accts = (b.targets && b.targets.accounts) || [];
+  const q = (b.search || '').trim().toLowerCase();
+  for (const a of accts) if (!q || a.username.toLowerCase().includes(q)) b.scopeAccounts.add(a.username);
+}
+function toggleInSet(set, id) { if (set.has(id)) set.delete(id); else set.add(id); }
+function onBatchClick(e) {
+  const t = e.target; let n;
+  if ((n = t.closest('[data-batch-exp]')))    { toggleInSet(state.batch.expanded, n.dataset.batchExp); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-batch-env]')))    { toggleInSet(state.batch.scopeEnvs, n.dataset.batchEnv); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-batch-folder]'))) { toggleInSet(state.batch.scopeFolders, n.dataset.batchFolder); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-batch-acct]')))   { toggleInSet(state.batch.scopeAccounts, n.dataset.batchAcct); return paintBatchKeepScroll(); }
+  if (t.closest('[data-batch-select-all]'))   { batchSelectAllVisible(); return paintBatchKeepScroll(); }
+  if (t.closest('[data-batch-clear]'))        { state.batch.scopeEnvs.clear(); state.batch.scopeFolders.clear(); state.batch.scopeAccounts.clear(); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-batch-job]')))    { state.batch.jobType = n.dataset.batchJob; state.batch.params = {}; state.batch.dist.plan = null; return paintBatch(); }
+  if (t.closest('[data-batch-run]'))          return runBatch();
+  if (t.closest('[data-batch-cancel]'))       return cancelBatch();
+  // Distribute SOURCE micro-selection tree (prefix 'dist') + its actions.
+  if ((n = t.closest('[data-dist-exp]')))     { toggleInSet(state.batch.dist.sel.expanded, n.dataset.distExp); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-dist-env]')))     { toggleInSet(state.batch.dist.sel.envs, n.dataset.distEnv); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-dist-folder]')))  { toggleInSet(state.batch.dist.sel.folders, n.dataset.distFolder); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-dist-acct]')))    { toggleInSet(state.batch.dist.sel.accounts, n.dataset.distAcct); return paintBatchKeepScroll(); }
+  if (t.closest('[data-dist-clear]'))         { const s = state.batch.dist.sel; s.envs.clear(); s.folders.clear(); s.accounts.clear(); return paintBatchKeepScroll(); }
+  if (t.closest('[data-batch-dist-preview]')) return batchDistPreview();
+  if (t.closest('[data-batch-dist-run]'))     return batchDistRun();
+  if (t.closest('[data-batch-dist-cancel]'))  return batchDistCancel();
+  // Sequential paysafecard wizard.
+  if (t.closest('[data-paysafe-start]'))      return batchPaysafeStart();
+  if (t.closest('[data-paysafe-stop]'))       return batchPaysafeStop();
+  if (t.closest('[data-paysafe-reset]'))      { const p = state.batch.paysafe; if (p.timer) { clearInterval(p.timer); p.timer = null; } p.session = null; return paintBatch(); }
+  const retry = t.closest('[data-paysafe-tiers-retry]');
+  if (retry) { delete state.paysafeTiers[retry.dataset.paysafeTiersRetry]; return paintBatch(); }   // drop the cached error → re-fetch on next render
+}
+function onBatchInput(e) {
+  const s = e.target.closest && e.target.closest('[data-batch-search]');
+  if (s) {
+    state.batch.search = e.target.value;
+    paintBatch();
+    const sb = el.batchBody && el.batchBody.querySelector('[data-batch-search]');
+    if (sb) { sb.focus(); sb.setSelectionRange(sb.value.length, sb.value.length); }
+    return;
+  }
+  const ds = e.target.closest && e.target.closest('[data-dist-search]');
+  if (ds) {
+    state.batch.dist.sel.search = e.target.value;
+    paintBatch();
+    const sb = el.batchBody && el.batchBody.querySelector('[data-dist-search]');
+    if (sb) { sb.focus(); sb.setSelectionRange(sb.value.length, sb.value.length); }
+    return;
+  }
+  const d = e.target.closest && e.target.closest('[data-batch-dist]');
+  if (d) { state.batch.dist[d.dataset.batchDist] = e.target.value; return; }   // no repaint → no focus loss
+  const ps = e.target.closest && e.target.closest('[data-paysafe-tier]');
+  if (ps) { state.batch.paysafe.tierMinor = Number(e.target.value); return; }   // <select> — no repaint needed
+  const pf = e.target.closest && e.target.closest('[data-paysafe-free]');
+  if (pf) { state.batch.paysafe.freeAmount = e.target.value; return; }          // no repaint → no focus loss (validated on Start)
+  const n = e.target.closest && e.target.closest('[data-batch-param]');
+  if (n) state.batch.params[n.dataset.batchParam] = e.target.value;
+}
+
+async function runBatch() {
+  const b = state.batch;
+  const def = b.registry.find((j) => j.jobType === b.jobType);
+  if (!def) return;
+  const usernames = batchScopeUsernames();
+  if (!usernames.length) { toast('Pick a scope first', 'warn'); return; }
+  if (def.moneySafe || def.experimental) {
+    const testWarn = def.experimental ? '<br><br><b>Beta.</b> Start with a few accounts and review the results before running at scale.' : '';
+    const moneyWarn = def.moneySafe ? 'This is a <b>money</b> job. ' : '';
+    if (!(await ssimConfirm({ title: `Run "${def.label}"`, body: `${moneyWarn}Run across <b>${usernames.length}</b> account(s)?${testWarn}`, confirmLabel: 'Run', confirmIcon: 'fa-play', tone: def.moneySafe ? 'spend' : 'brand', typedWord: (def.moneySafe && usernames.length > 25) ? 'RUN' : null }))) return;
+  }
+  try {
+    b.status = await api('/api/batch/run', { method: 'POST', body: JSON.stringify({ jobType: def.jobType, scope: { usernames }, params: b.params, game: state.game }) });
+    toast(`${def.label} started on ${usernames.length} account(s)`, 'success');
+    pollBatch();
+  } catch (e) { toast(e.message || 'Could not start the job', 'error'); }
+  paintBatch();
+}
+
+function pollBatch() {
+  if (state.batch.timer) clearInterval(state.batch.timer);
+  state.batch.timer = setInterval(async () => {
+    try {
+      const s = await api('/api/batch/status');
+      state.batch.status = s;
+      if (!s.running) {
+        clearInterval(state.batch.timer); state.batch.timer = null;
+        loadBatchHistory();
+        toast(`Job finished: ${fmtCount(s.done)}/${fmtCount(s.total)}${(s.failed || []).length ? ` · ${s.failed.length} failed` : ''}`, (s.failed || []).length ? 'warn' : 'success');
+      }
+      paintBatch();
+    } catch { /* transient — keep polling */ }
+  }, 1200);
+}
+
+async function cancelBatch() {
+  try { state.batch.status = await api('/api/batch/cancel', { method: 'POST' }); toast('Cancelling…', 'info'); paintBatch(); }
+  catch (e) { toast(e.message || 'Cancel failed', 'error'); }
+}
+
+async function loadBatchHistory() {
+  try { const h = await api('/api/batch/history'); state.batch.history = Array.isArray(h) ? h : []; paintBatch(); } catch { /* ignore */ }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  W3_33 — Distribute Items modal. Targets come from the scope; the modal collects a
+//  source environment + a per-target NET amount, previews the packing plan, then serial-
+//  sends. Money-gated (ssimConfirm spend + typed-word on large buyer totals). Wire = USD cents.
+// ══════════════════════════════════════════════════════════════════════════════
+function distToCents(amount) { const a = Number(amount); if (!Number.isFinite(a) || a <= 0) return 0; return Math.round((state.currency === 'EUR' ? a / state.usdToEur : a) * 100); }
+
+// ── Distribute as a Batch JOB (owner 2026-07-09): scope (step 1) = the RECEIVING accounts;
+//    step 3 collects the source pool + amount, PREVIEWS the exact plan (who receives what,
+//    from which sources — multi-source per target is the default), then runs + polls inline. ──
+const BATCH_DIST_JOB = { jobType: 'distribute', label: 'Distribute items', group: 'money', moneySafe: true, enabled: true, experimental: true, synthetic: true };
+
+// ── W4_40 — paysafecard as a SEQUENTIAL Batch job (owner 2026-07-09): scope = accounts to top up,
+//    step 3 = amount + Start → SSIM opens account 1's checkout; you pay in the browser, click Next;
+//    it opens account 2; and so on. SSIM never handles the PIN (entered on the Steam page) and only
+//    marks an account 'credited' when a wallet read-back confirms the balance rose. ──
+const BATCH_PAYSAFE_JOB = { jobType: 'paysafe', label: 'Add funds via paysafecard', group: 'money', moneySafe: true, enabled: true, experimental: true, synthetic: true };
+
+function batchPaysafeSection(scopeCount) {
+  const p = state.batch.paysafe;
+  const s = p.session;
+  const running = !!(s && s.running);
+  const cur = running && s.results ? s.results[s.index] : null;
+
+  // Per-account progress list (index-aligned to the queue).
+  const rows = s && s.queue ? s.queue.map((u, i) => {
+    const r = s.results[i];
+    const isCur = running && i === s.index;
+    const st = r ? r.status : (i > s.index ? 'queued' : 'awaiting');
+    const icon = r ? paysafeStatusIcon(r.status) : '<i class="fa-solid fa-clock text-slate-600"></i>';
+    return `<div class="flex items-center gap-2 py-1 t12 ${isCur ? 'text-white font-semibold' : 'text-slate-400'}">
+      <span class="w-5 text-center t10 font-mono text-slate-600">${i + 1}</span>${icon}
+      <span class="font-mono truncate flex-1">${escapeHtml(u)}</span>
+      <span class="t10 ${r && r.status === 'credited' ? 'text-emerald-400' : r && r.status === 'error' ? 'text-rose-400' : 'text-slate-500'}">${r ? escapeHtml(r.status) : (i > (s.index) ? 'queued' : '')}</span>
+    </div>`;
+  }).join('') : '';
+
+  let body;
+  if (!s || (!running && !s.finishedAt)) {
+    // Amount tiers come from Steam itself (the account's region) — fetched from the first scope account.
+    const firstAcct = batchScopeUsernames()[0];
+    if (firstAcct) ensurePaysafeTiers(firstAcct, () => { if (state.nav === 'batch') paintBatch(); });
+    const t = paysafeTiersOf(firstAcct);
+    let amountControl, tiersReady = false;
+    if (!firstAcct) {
+      amountControl = `<p class="t12 text-slate-500">Pick a scope (step 1) — SSIM then loads Steam's amount options for the region.</p>`;
+    } else if (!t || t === 'loading') {
+      amountControl = `<p class="t12 text-slate-500"><i class="fa-solid fa-spinner cs2-spin mr-1"></i>Loading Steam's amount options for <b>${escapeHtml(firstAcct)}</b>…</p>`;
+    } else if (t.error) {
+      amountControl = `<p class="t12 text-rose-400">Couldn't load amounts — ${escapeHtml(t.error)}. <button data-paysafe-tiers-retry="${escapeAttr(firstAcct)}" class="underline text-brand-light">retry</button></p>`;
+    } else if (!t.supported) {
+      amountControl = `<p class="t12 text-amber-400"><i class="fa-solid fa-triangle-exclamation mr-1"></i>${t.iso ? `paysafecard top-ups need a <b>EUR</b> Steam wallet — <b>${escapeHtml(firstAcct)}</b>'s wallet is ${escapeHtml(t.iso)}. Pick a scope of EUR accounts.` : `SSIM couldn't read <b>${escapeHtml(firstAcct)}</b>'s wallet currency from Steam, so the top-up is refused rather than guessed.`}</p>`;
+    } else if (!t.tiers.length) {
+      // Steam lists no fixed tiers (custom-amount region / page changed) → free-text entry, in EUR.
+      amountControl = `<label class="block t11 text-slate-400 max-w-xs">Amount per account (EUR)<input data-paysafe-free class="${ACC_IN} mt-1" type="number" min="1" max="1000" step="0.01" value="${escapeAttr(String(p.freeAmount ?? ''))}" placeholder="e.g. 5.00"></label>
+      <p class="t10 text-slate-500 mt-1">Steam didn't list fixed amounts for this region — enter how much to top up each account. ${escapeHtml(paysafeAmountHint())}.</p>`;
+      tiersReady = true;   // Start enabled; the amount is validated on click (matches the Distribute field)
+    } else {
+      if (!t.tiers.includes(Number(p.tierMinor))) p.tierMinor = t.tiers[0];   // default / repair the selection
+      const opts = t.tiers.map((v) => `<option value="${v}" ${Number(p.tierMinor) === v ? 'selected' : ''}>${escapeHtml(fmtPaysafe(v))}</option>`).join('');
+      amountControl = `<label class="block t11 text-slate-400 max-w-xs">Amount per account<select data-paysafe-tier class="${ACC_IN} mt-1">${opts}</select></label>`;
+      tiersReady = true;
+    }
+    const canStart = scopeCount > 0 && !p.busy && tiersReady;
+    body = `
+      <p class="t11 text-slate-500 mb-3">Top up the <b>${fmtCount(scopeCount)}</b> account(s) in your scope. Choose an amount and press Start — the paysafecard page opens for each account in turn. Enter your code, and the balance is confirmed before moving to the next one.</p>
+      <p class="t10 text-slate-500 mb-3">Your code is only ever entered on paysafecard's own page. Each top-up is confirmed against the live balance before SSIM continues.</p>
+      ${amountControl}
+      <div class="mt-3"><button ${canStart ? 'data-paysafe-start' : 'disabled'} class="btn ${canStart ? 'bg-brand text-white' : 'btn-secondary opacity-50 cursor-not-allowed'} btn-sm"><i class="fa-solid fa-play"></i><span>Start</span></button></div>`;
+  } else if (running) {
+    const done = s.results.filter((r) => r && r.status !== 'awaiting').length;
+    const stopping = !!s.stopping;   // a stop was accepted but an in-flight step still owns the run
+    body = `
+      <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-4 mb-3">
+        <p class="t11 text-slate-500">Account <b class="text-slate-300">${s.index + 1}</b> of ${s.total} · top up <b class="text-slate-300">${escapeHtml(fmtPaysafe(s.amountMinor))}</b></p>
+        <p class="t16 font-mono font-bold text-white mt-0.5">${escapeHtml(s.queue[s.index] || '')}</p>
+        <p class="t12 mt-1 ${cur && cur.status === 'error' ? 'text-rose-400' : 'text-slate-300'}">${cur ? paysafeStatusIcon(cur.status) + ' ' + escapeHtml(cur.detail) : ''}</p>
+        <p class="t10 text-brand-light/80 mt-1.5"><i class="fa-solid fa-robot mr-1"></i>Enter your code in the browser — SSIM <b>opens the next account automatically</b> once the balance updates.</p>
+      </div>
+      <div class="flex flex-wrap gap-2 items-center">
+        <button ${p.busy || stopping ? 'disabled' : 'data-paysafe-stop'} class="btn btn-ghost btn-sm ${p.busy || stopping ? 'opacity-50' : ''}"><i class="fa-solid fa-stop"></i><span>${stopping ? 'Stopping…' : 'Stop'}</span></button>
+        <span class="t11 text-slate-500 self-center ml-1">${done}/${s.total} done${stopping ? ' · finishing this account…' : p.busy ? ' · working…' : ''}</span>
+      </div>`;
+  } else {
+    const credited = s.results.filter((r) => r && r.status === 'credited').length;
+    const unconfirmed = s.results.filter((r) => r && r.status === 'unconfirmed').length;
+    body = `
+      <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-4 mb-3 t12">
+        <p class="text-slate-300"><b class="text-emerald-400">${credited}</b> credited · <b class="text-amber-400">${unconfirmed}</b> unconfirmed (verify on Steam) · ${s.results.filter((r) => r && r.status === 'skipped').length} skipped · ${s.results.filter((r) => r && r.status === 'error').length} error</p>
+      </div>
+      <button data-paysafe-reset class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate-left"></i><span>New run</span></button>`;
+  }
+
+  return `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4">
+    <h3 class="t14 font-bold text-white mb-3">3 · Run — Add funds via paysafecard</h3>
+    ${body}
+    ${rows ? `<div class="mt-4 max-h-56 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/30 p-2">${rows}</div>` : ''}
+  </section>`;
+}
+
+// Background status poll: reflects SERVER-SIDE auto-advances (the wallet-credit poll opens the next
+// account without a click). Runs while a paysafe run is active; a manual step pauses it via p.busy.
+function pollPaysafeStatus() {
+  const p = state.batch.paysafe;
+  if (p.timer) clearInterval(p.timer);
+  p.timer = setInterval(async () => {
+    if (state.nav !== 'batch' || !p.session || !p.session.running) { clearInterval(p.timer); p.timer = null; return; }
+    if (p.busy) return;   // a manual advance/stop is mid-flight — don't clobber it with a poll snapshot
+    try {
+      const s = await api('/api/steam/paysafe/status');
+      if (p.busy) return;
+      const before = p.session ? JSON.stringify(p.session) : '';
+      p.session = s;
+      if (JSON.stringify(s) !== before) paintBatch();   // repaint only on a real change (auto-advance / credit)
+      if (!s.running) {
+        clearInterval(p.timer); p.timer = null;
+        const credited = (s.results || []).filter((r) => r && r.status === 'credited').length;
+        toast(`paysafecard run done — ${credited}/${s.total} credited`, credited === s.total ? 'success' : 'info', { duration: 10000 });
+      }
+    } catch { /* transient — keep polling */ }
+  }, 2500);
+}
+
+// paysafecard is EUR-ONLY (owner 2026-07-10). Every amount on this path is EURO-CENTS — the tier Steam
+// printed, the value we POST, and the credit threshold the backend reconciles against. There is no
+// conversion anywhere, which is exactly what keeps the wallet read-back honest.
+const PAYSAFE_CUR = 3;              // Steam ECurrencyCode for EUR
+const PAYSAFE_MIN_MINOR = 100;      // €1.00     — mirrors PAYSAFE_MIN_MINOR in src/store/PaysafeService.ts
+const PAYSAFE_MAX_MINOR = 100000;   // €1000.00  — mirrors PAYSAFE_MAX_MINOR (the fat-finger ceiling)
+function fmtPaysafe(minor) { return fmtMoneyMinor(minor, PAYSAFE_CUR); }
+function paysafeAmountHint() { return `Enter an amount between ${fmtPaysafe(PAYSAFE_MIN_MINOR)} and ${fmtPaysafe(PAYSAFE_MAX_MINOR)}`; }
+/** A typed major amount ("5", "5,00", "1.500,00") → euro-cents, or null when it is not a usable amount.
+ *  The decimal count comes from the currency table (EUR → 2), never a hardcoded ×100, and the result is
+ *  bounds-checked here as well as at the route. */
+function paysafeMinorFromMajor(str) {
+  const major = Number(normalizeMajor(str));
+  if (!Number.isFinite(major) || major <= 0) return null;
+  const minor = Math.round(major * Math.pow(10, curInfo(PAYSAFE_CUR).d));
+  if (!Number.isSafeInteger(minor) || minor < PAYSAFE_MIN_MINOR || minor > PAYSAFE_MAX_MINOR) return null;
+  return minor;
+}
+/** The account can be topped up: tiers loaded, no error, and Steam says the wallet is EUR. */
+function paysafeSupported(t) { return !!(t && t !== 'loading' && !t.error && t.supported); }
+function paysafeTiersOf(username) { return username ? state.paysafeTiers[username] : null; }
+// Fetch (once) Steam's real top-up amount tiers for this account; re-render when they land.
+// ANY cache entry (loading | error | real tiers) stops the auto-fetch — an error must NOT retry on
+// every render (that loops: error → re-render → re-fetch). Only the retry button (which deletes the
+// entry) re-triggers a fetch.
+function ensurePaysafeTiers(username, onDone) {
+  if (!username) return;
+  const cache = state.paysafeTiers;
+  if (cache[username] !== undefined) return;
+  cache[username] = 'loading';
+  api(`/api/steam/${encodeURIComponent(username)}/paysafe/tiers`)
+    .then((r) => { cache[username] = { currency: Number(r && r.currency) || 0, iso: (r && r.iso) || '', tiers: Array.isArray(r && r.tiers) ? r.tiers : [], supported: !!(r && r.supported) }; })
+    .catch((e) => { cache[username] = { error: (e && e.message) || 'could not load amounts', currency: 0, iso: '', tiers: [], supported: false }; })
+    .finally(() => { if (typeof onDone === 'function') onDone(); });
+}
+
+async function batchPaysafeStart() {
+  const p = state.batch.paysafe;
+  const usernames = batchScopeUsernames();
+  if (!usernames.length) { toast('Pick a scope first — the accounts to top up', 'warn'); return; }
+  const t = paysafeTiersOf(usernames[0]);
+  if (!t || t === 'loading' || t.error) { toast('Steam amount options not loaded yet', 'warn'); return; }
+  if (!t.supported) { toast(t.iso ? `paysafecard top-ups need a EUR Steam wallet — ${usernames[0]}'s wallet is ${t.iso}` : `SSIM couldn't read ${usernames[0]}'s wallet currency from Steam`, 'warn'); return; }
+  let amountMinor;
+  if (t.tiers.length) {                                  // fixed-tier region → dropdown selection
+    amountMinor = Number(p.tierMinor);
+    if (!t.tiers.includes(amountMinor)) { toast('Pick an amount', 'warn'); return; }
+  } else {                                               // custom-amount region → free-text (bounds-checked)
+    amountMinor = paysafeMinorFromMajor(p.freeAmount);
+    if (amountMinor == null) { toast(paysafeAmountHint(), 'warn'); return; }
+  }
+  // Show BOTH the per-account amount and what the whole run costs — the operator is authorising N charges.
+  const disp = fmtPaysafe(amountMinor);
+  const total = fmtPaysafe(amountMinor * usernames.length);
+  if (!(await ssimConfirm({ title: 'Add funds via paysafecard', body: `Top up <b>${escapeHtml(disp)}</b> into each of <b>${usernames.length}</b> account(s) — <b>${escapeHtml(total)}</b> in total?<br><br>The paysafecard page opens for each account in turn. Enter your code, and SSIM confirms the balance and moves to the next one automatically.<br><br><span class="t11 text-slate-500">Accounts whose Steam wallet is not in euros are refused before anything is charged.</span>`, confirmLabel: 'Start', confirmIcon: 'fa-play', tone: 'spend' }))) return;
+  p.busy = true; paintBatch();
+  try {
+    p.session = await api('/api/steam/paysafe/batch/start', { method: 'POST', body: JSON.stringify({ usernames, amountMinor }) });
+    pollPaysafeStatus();   // watch for server-side auto-advances
+  } catch (e) { toast(e.message || 'Could not start', 'error'); }
+  p.busy = false; paintBatch();
+}
+
+
+async function batchPaysafeStop() {
+  const p = state.batch.paysafe;
+  if (!(await ssimConfirm({ title: 'Stop the paysafecard run', body: 'Stop the run? The current account finishes and is confirmed first; the rest are left untouched.', confirmLabel: 'Stop', confirmIcon: 'fa-stop', tone: 'danger' }))) return;
+  p.busy = true; paintBatch();
+  try { p.session = await api('/api/steam/paysafe/batch/stop', { method: 'POST', body: '{}' }); }
+  catch (e) { toast(e.message || 'Stop failed', 'error'); }
+  p.busy = false; paintBatch();
+  // A stop that lands while a step is in flight is DEFERRED by the backend: it returns `stopping: true` with
+  // the run still `running`, and the in-flight step ends it. Keep polling until the server says it's done —
+  // killing the timer here (as this used to) freezes the view on "Stopping…" forever.
+  if (p.session && p.session.running) pollPaysafeStatus();
+  else if (p.timer) { clearInterval(p.timer); p.timer = null; }
+}
+
+function batchDistributeSection(scopeCount) {
+  const d = state.batch.dist;
+  const st = d.status, running = !!(st && st.running);
+  const srcCount = batchScopeUsernames(d.sel).length;
+  const anySrc = d.sel.envs.size || d.sel.folders.size || d.sel.accounts.size;
+  let planHtml = '';
+  if (d.plan) {
+    const pl = d.plan;
+    planHtml = `<div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4 t12">
+      <p class="text-slate-300">Sends <b>${fmtCentsCompact(pl.totalBuyerCents)}</b> of market value so targets net <b>${fmtCentsCompact(pl.totalNetCents)}</b>, across <b>${pl.tradeCount}</b> offer(s).</p>
+      <p class="t10 text-slate-500 mt-1">Amount = what each target receives net of Steam fees (~13%). A target may be filled from SEVERAL source accounts (one offer per source). Skipped: ${pl.skipped.unpriced} unpriced · ${pl.skipped.locked} locked · ${pl.skipped.untradable} untradable.</p>
+      ${pl.poolExhausted ? '<p class="t10 text-amber-400/80 mt-1">⚠ The pool can\'t fully cover every target — some are under-filled (shortfall shown).</p>' : ''}
+      <div class="mt-2 space-y-0.5 max-h-48 overflow-y-auto">${pl.targets.map((t) => `
+        <div class="flex justify-between gap-3 py-0.5 border-b border-slate-800/50">
+          <span class="font-mono text-slate-300 shrink-0">${escapeHtml(t.target)}</span>
+          <span class="t10 text-slate-500 truncate flex-1 text-right" title="${escapeAttr((t.sources || []).join(', '))}">← ${t.itemCount} item(s) from ${(t.sources || []).length ? escapeHtml((t.sources || []).join(' + ')) : '—'}</span>
+          <span class="font-mono shrink-0">${fmtCentsCompact(t.netCents)}${t.shortfallCents ? ` <span class="text-amber-400/80">(short ${fmtCentsCompact(t.shortfallCents)})</span>` : ''}</span>
+        </div>`).join('')}</div>
+    </div>`;
+  }
+  let progHtml = '';
+  if (st && (st.running || st.finishedAt)) {
+    const pct = st.total ? Math.round((st.done / st.total) * 100) : 0;
+    progHtml = `<div class="mt-4"><div class="flex justify-between t11 mb-1"><span>${running ? 'Distributing…' : 'Done'}</span><span class="font-mono">${st.done}/${st.total} offers · ${st.confirmed || 0} confirmed · ${(st.failed || []).length} failed</span></div>
+      <div class="h-2 rounded-full bg-slate-800 overflow-hidden"><div class="h-full bg-brand transition-all" style="width:${pct}%"></div></div>
+      ${(st.failed || []).length ? `<div class="mt-2 max-h-32 overflow-y-auto t11 text-slate-500 space-y-0.5">${st.failed.slice(0, 30).map((f) => `<div><span class="font-mono text-amber-400/80">${escapeHtml(f.source)} → ${escapeHtml(f.target)}</span> — ${escapeHtml(f.error)}</div>`).join('')}</div>` : ''}
+    </div>`;
+  }
+  const canPreview = scopeCount > 0 && srcCount > 0 && !running;
+  const canRun = !!(d.plan && d.plan.tradeCount && !running);
+  return `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4">
+    <h3 class="t14 font-bold text-white mb-1">3 · Run — Distribute items</h3>
+    <p class="t11 text-slate-500 mb-3">Your scope is the <b>${fmtCount(scopeCount)} receiving</b> account(s). Choose the source pool below — environments, folders or individual accounts — preview the plan, then run.</p>
+    <p class="t10 text-amber-400/70 mb-3">⚠ If a source or target lacks mobile authentication, Steam may hold items in escrow up to 15 days — this can't be detected before sending.</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <p class="t11 text-slate-400">Source pool — <b>${fmtCount(srcCount)}</b> account${srcCount === 1 ? '' : 's'} selected</p>
+          ${anySrc ? '<button data-dist-clear class="t11 text-slate-500 hover:text-slate-300"><i class="fa-solid fa-xmark mr-1"></i>Clear</button>' : ''}
+        </div>
+        <div class="relative mb-2"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 t11 text-slate-600"></i>
+          <input data-dist-search type="text" placeholder="Filter accounts…" value="${escapeAttr(d.sel.search || '')}" class="${ACC_IN}" style="padding-left:2rem"></div>
+        <div data-scope-scroll="dist" class="max-h-56 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/40 p-2">${batchScopeTree(d.sel, 'dist')}</div>
+      </div>
+      <div class="space-y-3">
+        <label class="block t11 text-slate-400">Net amount per target (${state.currency})<input data-batch-dist="amount" class="${ACC_IN} mt-1" type="number" min="0.01" step="0.01" value="${escapeAttr(String(d.amount ?? ''))}"></label>
+        <label class="block t11 text-slate-400">Min item value (${state.currency}, optional)<input data-batch-dist="minItem" class="${ACC_IN} mt-1" type="number" min="0" step="0.01" value="${escapeAttr(String(d.minItem ?? ''))}"></label>
+        <p class="t10 text-slate-600">A target can be filled from SEVERAL source accounts — one trade offer per source→target pair. Accounts that are both source and target never send to themselves.</p>
+      </div>
+    </div>
+    <div class="mt-3 flex gap-2">
+      <button ${canPreview ? 'data-batch-dist-preview' : 'disabled'} class="btn btn-secondary btn-sm ${canPreview ? '' : 'opacity-50 cursor-not-allowed'}"><i class="fa-solid fa-eye"></i><span>Preview plan</span></button>
+      <button ${canRun ? 'data-batch-dist-run' : 'disabled'} class="btn ${canRun ? 'bg-brand text-white' : 'btn-secondary opacity-50 cursor-not-allowed'} btn-sm"><i class="fa-solid fa-play"></i><span>Run</span></button>
+      ${running ? '<button data-batch-dist-cancel class="btn btn-secondary btn-sm"><i class="fa-solid fa-stop"></i><span>Cancel</span></button>' : ''}
+    </div>${planHtml}${progHtml}
+  </section>`;
+}
+
+async function batchDistPreview() {
+  const d = state.batch.dist;
+  const targets = batchScopeUsernames();
+  if (!targets.length) { toast('Pick a scope first — the accounts that RECEIVE items', 'warn'); return; }
+  const sources = batchScopeUsernames(d.sel);
+  if (!sources.length) { toast('Pick a source pool — envs, folders or single accounts', 'warn'); return; }
+  const cents = distToCents(d.amount);
+  if (!cents) { toast('Enter a net amount per target', 'warn'); return; }
+  try {
+    d.plan = await api('/api/inventory/distribute/preview', { method: 'POST', body: JSON.stringify({
+      sources, targets, amountNetCents: cents,
+      minItemNetCents: distToCents(d.minItem) || 0, game: state.game,
+    }) });
+    paintBatch();
+  } catch (e) { toast(e.message || 'Preview failed', 'error'); }
+}
+
+async function batchDistRun() {
+  const d = state.batch.dist; if (!d.plan) return;
+  const targets = batchScopeUsernames();
+  const sources = batchScopeUsernames(d.sel);
+  const gateThreshold = state.currency === 'EUR' ? 20000 * state.usdToEur : 20000;   // ~$200 buyer value
+  const gate = d.plan.totalBuyerCents >= gateThreshold;
+  if (!(await ssimConfirm({ title: 'Distribute items', body: `Send <b>${fmtCentsCompact(d.plan.totalBuyerCents)}</b> of market value as <b>${d.plan.tradeCount}</b> trade offer(s) to <b>${targets.length}</b> account(s)?<br><br>This moves <b>real items</b>. Trades run serially (~1–2s each).`, confirmLabel: 'Distribute', confirmIcon: 'fa-paper-plane', tone: 'spend', typedWord: gate ? 'DISTRIBUTE' : null }))) return;
+  try {
+    d.status = await api('/api/inventory/distribute', { method: 'POST', body: JSON.stringify({
+      sources, targets, amountNetCents: distToCents(d.amount),
+      minItemNetCents: distToCents(d.minItem) || 0, game: state.game,
+    }) });
+    toast('Distribution started', 'success'); pollBatchDist();
+  } catch (e) { toast(e.message || 'Could not start', 'error'); }
+  paintBatch();
+}
+
+function pollBatchDist() {
+  const d = state.batch.dist;
+  if (d.timer) clearInterval(d.timer);
+  d.timer = setInterval(async () => {
+    try {
+      const s = await api('/api/inventory/distribute/status');
+      d.status = s;
+      if (!s.running) {
+        clearInterval(d.timer); d.timer = null;
+        toast(`Distribution done: ${s.confirmed || 0} confirmed · ${s.sent || 0} sent · ${(s.failed || []).length} failed`, (s.failed || []).length ? 'warn' : 'success');
+      }
+      if (state.nav === 'batch') paintBatch();
+    } catch { /* transient — keep polling */ }
+  }, 1500);
+}
+
+async function batchDistCancel() {
+  try { state.batch.dist.status = await api('/api/inventory/distribute/cancel', { method: 'POST' }); paintBatch(); }
+  catch (e) { toast(e.message || 'Cancel failed', 'error'); }
+}
+
+// Placeholder body used until each module's own wave lands. Purely cosmetic; no data, no network.
+function stubModule(section, bodyId, label) {
+  const body = document.getElementById(bodyId);
+  if (body && !body.dataset.mounted) {
+    body.innerHTML =
+      `<div class="empty py-20"><div class="empty-icon"><i class="fa-solid fa-screwdriver-wrench"></i></div>` +
+      `<p class="empty-title">${label} — coming in a later wave</p>` +
+      `<p class="empty-sub">The navigation backbone is live; this module's content ships in its own section.</p></div>`;
+  }
+}
+
 function renderMain() {
   if (state.screen !== 'inventory') return;
   renderBreadcrumb();
@@ -1744,6 +3880,9 @@ function renderMain() {
   el.historyWrap.classList.toggle('hidden', !showHistory);
   if (showHistory) loadHistory(state.invMode === 'global' ? 'global' : state.activeEnv);
   setStatLabels('Items', 'Trade-Locked');               // default; folder-master overrides
+  // Buy is per-account/env — in the cross-environment Global Master it can never resolve a
+  // buyer, so the button hides there (owner 2026-07-09). Every other view shows it again.
+  el.btnBuyMarket?.classList.toggle('hidden', state.invMode === 'global');
   el.gcCatTabs?.classList.add('hidden');                // category pills only for full-fetched inventories (renderTable re-shows)
   el.facetBar?.classList.add('hidden');                 // TBL-03: facet chips re-shown by renderTable when a table renders
   el.ordersWrap?.classList.add('hidden');               // Active-Orders view only in account view (renderAccountView re-shows)
@@ -1843,8 +3982,70 @@ function currentHistoryKey() {
   return state.activeEnv ? `${game}:${state.activeEnv}` : null;
 }
 
-/** Invalidate the cache (called when a refresh completes → new point exists). */
-function invalidateHistory() { historyCache.clear(); }
+/** Invalidate the caches (called when a refresh completes → new point exists). */
+function invalidateHistory() { historyCache.clear(); pfSparkCache.clear(); }
+
+/** Monotone cubic (Fritsch–Carlson) → cubic-Bézier path through `coords` ([x,y] pairs, x STRICTLY
+ *  ascending — a time series). Every control point's x is placed inside its own [x_i, x_{i+1}]
+ *  segment (at x_i + h/3 and x_{i+1} − h/3), so the rendered x(t) is monotonic by construction: the
+ *  line can NEVER curl backward or form a cusp. Fritsch–Carlson tangent limiting keeps the curve from
+ *  overshooting beyond neighbouring data points (no y bulge past a local max/min), and tangents are
+ *  forced to 0 at local extrema / flats. Control-point Ys are still clamped to [yMin,yMax] so the
+ *  smoothed line stays inside the plot band (€0 baseline / top pad) — this preserves the area-fill
+ *  contract and is a no-op whenever the data already fits the band. Fewer than 3 points → plain
+ *  line segments. Shared by the main dashboard chart (renderHistoryChart) and the card sparkline
+ *  (pfSparkline); fixing it here fixes both. */
+function smoothLinePath(coords, yMin, yMax) {
+  const n = coords.length;
+  if (n === 0) return '';
+  const f = (v) => v.toFixed(1);
+  if (n < 3) return coords.map((c, i) => `${i ? 'L' : 'M'}${f(c[0])},${f(c[1])}`).join('');
+  const clampY = (v) => Math.max(yMin, Math.min(yMax, v));
+
+  // Secant slopes between consecutive points. x is a strictly-increasing time axis, but guard a
+  // duplicate/zero timestamp (h ≤ ε): treat that step as flat rather than dividing by zero.
+  const dx = new Array(n - 1), sec = new Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    const h = coords[i + 1][0] - coords[i][0];
+    dx[i] = h;
+    sec[i] = h > 1e-6 ? (coords[i + 1][1] - coords[i][1]) / h : 0;
+  }
+
+  // Tangents m[i] = dy/dx at each point. Endpoints use the one-sided secant; interior points use the
+  // average of the two adjacent secants — except at a local extremum or flat (secants of opposite or
+  // zero sign), where the tangent is 0 so the curve turns cleanly without overshooting.
+  const m = new Array(n);
+  m[0] = sec[0];
+  m[n - 1] = sec[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    m[i] = sec[i - 1] * sec[i] <= 0 ? 0 : (sec[i - 1] + sec[i]) / 2;
+  }
+  // Fritsch–Carlson: rescale each tangent pair so (α,β) stays inside the monotonicity circle r = 3.
+  // This is what guarantees the interpolant never overshoots the data on either side of a point.
+  for (let i = 0; i < n - 1; i++) {
+    if (sec[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / sec[i], b = m[i + 1] / sec[i];
+    const s = a * a + b * b;
+    if (s > 9) {
+      const t = 3 / Math.sqrt(s);
+      m[i] = t * a * sec[i];
+      m[i + 1] = t * b * sec[i];
+    }
+  }
+
+  // Emit one cubic Bézier per segment. Because both control points sit at x_i + h/3 and x_{i+1} − h/3
+  // (strictly inside the segment), x(t) is monotonic ⇒ no backward loop / cusp. Y is clamped to band.
+  let d = `M${f(coords[0][0])},${f(coords[0][1])}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i];
+    const c1x = coords[i][0] + h / 3;
+    const c1y = clampY(coords[i][1] + m[i] * h / 3);
+    const c2x = coords[i + 1][0] - h / 3;
+    const c2y = clampY(coords[i + 1][1] - m[i + 1] * h / 3);
+    d += `C${f(c1x)},${f(c1y)} ${f(c2x)},${f(c2y)} ${f(coords[i + 1][0])},${f(coords[i + 1][1])}`;
+  }
+  return d;
+}
 
 /**
  * Renders a dependency-free dual-line SVG chart: Items worth (brand purple) and
@@ -1852,12 +4053,12 @@ function invalidateHistory() { historyCache.clear(); }
  * stay readable regardless of magnitude. Values are USD cents, displayed in the
  * selected currency via fmtCents.
  */
-function renderHistoryChart(points) {
+function renderHistoryChart(points, chartEl = el.historyChart, legendEl = el.historyLegend) {
   const pts = Array.isArray(points) ? points.filter((p) => p && typeof p.t === 'number') : [];
   const anyPartial = pts.some((p) => p.partial === true);
   if (pts.length < 2) {
-    el.historyLegend.innerHTML = '';
-    el.historyChart.innerHTML = `<p class="text-center text-slate-600 text-xs py-6">Not enough data points yet – the curve grows with the next refresh.</p>`;
+    legendEl.innerHTML = '';
+    chartEl.innerHTML = `<p class="text-center text-slate-600 text-xs py-6">Not enough data points yet – the curve grows with the next refresh.</p>`;
     return;
   }
 
@@ -1879,9 +4080,11 @@ function renderHistoryChart(points) {
   lo = Math.max(0, lo - padV); hi += padV;                      // money never dips below 0
   const y = (v) => PAD_T + ih - (((v || 0) - lo) / (hi - lo)) * ih;
 
-  const linePath = (key, y) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p[key] || 0).toFixed(1)}`).join('');
-  const itemsPath = linePath('items', y);
-  const walletPath = linePath('wallet', y);
+  // Smooth curves (centripetal Catmull-Rom → Bézier), clamped to the plot band so the
+  // money line can never dip below the €0 baseline. areaPath closes over the same path.
+  const coordsOf = (key) => pts.map((p) => [x(p.t), y(p[key] || 0)]);
+  const itemsPath = smoothLinePath(coordsOf('items'), PAD_T, PAD_T + ih);
+  const walletPath = smoothLinePath(coordsOf('wallet'), PAD_T, PAD_T + ih);
   const areaPath = `${itemsPath}L${x(t1).toFixed(1)},${PAD_T + ih}L${x(t0).toFixed(1)},${PAD_T + ih}Z`;
 
   // English-only UI (invariant 8): the time axis reads in en-GB (24h, DD/MM) — never de-DE.
@@ -1904,7 +4107,7 @@ function renderHistoryChart(points) {
   const last = pts[pts.length - 1];
   const dot = (cx, cy, klass) => `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3" class="hist-dot ${klass}" stroke-width="1.5"/>`;
 
-  el.historyChart.innerHTML = `
+  chartEl.innerHTML = `
     <svg viewBox="0 0 ${W} ${H}" class="w-full h-auto block" preserveAspectRatio="none" aria-hidden="true">
       <defs>
         <linearGradient id="hist-fill" x1="0" y1="0" x2="0" y2="1">
@@ -1927,7 +4130,7 @@ function renderHistoryChart(points) {
   // Masterpiece legend markers = slim bar swatches matching each SVG line's stroke color
   // (items = --brand-rgb, wallet = --success-rgb, same as .hist-line-* in the shell); the
   // "(incomplete)" pricing-honesty marker (S2/S13) + point count are preserved verbatim.
-  el.historyLegend.innerHTML = `
+  legendEl.innerHTML = `
     <span class="flex items-center gap-1.5"><span style="width:9px;height:3px;border-radius:2px;background:rgb(var(--brand-rgb));display:inline-block"></span>
       Items worth <b class="font-mono text-brand-light ml-1">${fmtCents(last.items)}</b></span>
     <span class="flex items-center gap-1.5"><span style="width:9px;height:3px;border-radius:2px;background:rgb(var(--success-rgb));display:inline-block"></span>
@@ -2787,7 +4990,9 @@ function aggregate(usernames) {
     if (wu != null) { walletUsd += wu; walletAccounts++; }
     for (const it of inv.items) {
       totalItems += it.quantity;
-      if (it.tradeLockExpiry) lockedStacks++;
+      // Count locked ITEMS (quantity), not stacks — every surface (dashboard, portfolios,
+      // env tiles, stat bar) now reads the same number for the same fleet.
+      if (it.tradeLockExpiry) lockedStacks += it.quantity || 1;
       const ex = map.get(it.marketHashName);
       if (ex) { ex.quantity += it.quantity; ex.accounts.add(u); }
       else map.set(it.marketHashName, { ...it, accounts: new Set([u]) });
@@ -2796,7 +5001,7 @@ function aggregate(usernames) {
   return { items: [...map.values()], totalItems, lockedStacks, accountCount: loaded, valueCents, walletUsd, walletAccounts };
 }
 
-function renderAggregate(usernames, headerHtml) {
+function renderAggregate(usernames, headerHtml, opts = {}) {
   el.mainHeader.innerHTML = headerHtml;
   el.btnLoad.classList.add('hidden');
   el.statBar.classList.remove('hidden'); el.statBar.classList.add('flex');
@@ -2819,7 +5024,16 @@ function renderAggregate(usernames, headerHtml) {
     return;
   }
   el.toolbar.classList.remove('hidden');
-  renderTable(agg.items, { master: true });
+  if (opts.selectable) {
+    // Selectable master (Global): re-aggregate WITH per-owner assetIds so mass sell / send
+    // selected can fan out across every owning account — same machinery as the folder master.
+    const own = aggregateWithOwners(usernames);
+    state.aggItems = own;
+    state._aggIndex = new Map(own.map((i) => [i.marketHashName, i]));   // TBL-02: O(1) lookup index
+    renderTable(own, { master: true, selectable: true });
+  } else {
+    renderTable(agg.items, { master: true });
+  }
 }
 
 function renderEnvMaster() {
@@ -2843,18 +5057,20 @@ function renderEnvMaster() {
 function renderGlobalMaster() {
   renderGlobalFilter();
   const usernames = state.allAccounts.filter((a) => state.globalEnvs.has(a.environmentId)).map((a) => a.username);
+  // Selectable across ALL environments (owner 2026-07-09): selection → mass sell on market /
+  // send selected (internal or external) exactly like the folder master, fleet-wide.
   renderAggregate(usernames, `
     <div class="min-w-0">
       <div class="flex items-center gap-2 flex-wrap">
         <h2 class="text-2xl font-bold text-white truncate">Global Master</h2>
         <span class="pill pill--brand">Cross-environment</span>
       </div>
-      <p class="text-sm text-slate-500 mt-1">${state.globalEnvs.size} of ${state.environments.length} environments aggregated</p>
+      <p class="text-sm text-slate-500 mt-1">${state.globalEnvs.size} of ${state.environments.length} environments aggregated · select items to mass-sell or send</p>
     </div>
     <div class="flex items-center gap-2 flex-wrap justify-end">
       <button id="btn-global-bans" title="Check every aggregated account for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
       <button id="btn-refresh-global" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh all</span></button>
-    </div>`);
+    </div>`, { selectable: true });
   const b = $('btn-refresh-global');
   if (b) b.addEventListener('click', refreshAll);
   const gb = $('btn-global-bans');
@@ -2953,12 +5169,19 @@ function renderAccountTabs(items, active, opts = {}) {
   const categorized = !!opts.categorized;
   const pills = [];
   if (categorized) {
-    const counts = { all: 0, tradable: 0, tradelocked: 0, listed: 0 };
-    for (const i of items || []) { const q = i.quantity || 1; counts.all += q; counts[i.category || 'tradable'] += q; }
+    // The fallback is 'untradable', NOT 'tradable': an item whose category we don't know is not something
+    // to advertise as freely tradable. (It also stops an unknown key from making a count NaN.)
+    const counts = { all: 0, tradable: 0, tradelocked: 0, untradable: 0, listed: 0 };
+    for (const i of items || []) {
+      const q = i.quantity || 1; counts.all += q;
+      const k = itemStatusKey(i);
+      if (counts[k] === undefined) counts.untradable += q; else counts[k] += q;  // unknown key ⇒ never NaN
+    }
     pills.push(
       { key: 'all',         label: 'All',              count: counts.all,         icon: 'fa-layer-group', variant: '' },
       { key: 'tradable',    label: 'Owned Items',      count: counts.tradable,     icon: 'fa-box',         variant: 'chip--success' },
       { key: 'tradelocked', label: 'Trade-Locked',     count: counts.tradelocked,  icon: 'fa-lock',        variant: 'chip--warn' },
+      { key: 'untradable',  label: 'Not Tradable',     count: counts.untradable,   icon: 'fa-ban',         variant: '' },
       { key: 'listed',      label: 'Listed on Market', count: counts.listed,       icon: 'fa-tag',         variant: 'chip--listed' },
     );
   } else {
@@ -3082,8 +5305,11 @@ function currentFacets() {
   const k = facetViewKey();
   return (state.facetsByView[k] ||= { status: [], rarity: [], maxCents: null });
 }
-/** Canonical status bucket for an item — GC category, else derived (P3-aligned). */
-function itemStatusKey(i) { return i.category || (i.tradeLockExpiry ? 'tradelocked' : (i.tradable ? 'tradable' : 'tradelocked')); }
+/** Canonical status bucket for an item — the GC category when present, else DERIVED from the raw flags.
+ *  The derivation is the twin of bucketOf (src/core/MarketModel.ts) and must stay faithful to it: a TF2
+ *  record has no category at all, so this is the only classifier those 162 items ever see. The final term
+ *  is 'untradable' (was 'tradelocked'): a Storage Unit is not held, it is inert. */
+function itemStatusKey(i) { return i.category || (i.tradeLockExpiry ? 'tradelocked' : (i.tradable ? 'tradable' : 'untradable')); }
 function applyFacets(arr) {
   const f = currentFacets();
   let out = arr;
@@ -3107,6 +5333,7 @@ function renderFacetBar(items, opts = {}) {
   const STATUSES = [
     { key: 'tradable', label: 'Tradable', cls: 'chip--success' },
     { key: 'tradelocked', label: 'Trade-Locked', cls: 'chip--warn' },
+    { key: 'untradable', label: 'Not Tradable', cls: '' },
     { key: 'listed', label: 'Listed', cls: 'chip--listed' },
   ];
   const present = new Set(items.map(itemStatusKey));
@@ -3199,15 +5426,17 @@ function renderTable(items, opts = {}) {
   if (opts.categorized && !master) {
     const cols = (selectable ? 1 : 0) + 6;
     const active = state.gcCat || 'all';
+    // Every state needs a group, or its rows match no section and silently DISAPPEAR from the table.
     const GROUPS = [
       { key: 'tradable',    label: 'Owned · freely tradable', color: 'rgb(var(--success-rgb))', icon: 'fa-circle-check' },
       { key: 'tradelocked', label: 'Trade-Locked',            color: 'rgb(var(--warn-rgb))', icon: 'fa-lock' },
+      { key: 'untradable',  label: 'Not tradable',            color: 'rgb(148 163 184)', icon: 'fa-ban' },
       { key: 'listed',      label: 'Listed on Steam Market',  color: 'rgb(var(--listed-rgb))', icon: 'fa-tag' },
     ];
-    if (active !== 'all') shown = filtered.filter((i) => (i.category || 'tradable') === active);
+    if (active !== 'all') shown = filtered.filter((i) => itemStatusKey(i) === active);
     const visible = active === 'all' ? GROUPS : GROUPS.filter((g) => g.key === active);
     el.itemsBody.innerHTML = visible.map((g) => {
-      const rows = filtered.filter((i) => (i.category || 'tradable') === g.key);
+      const rows = filtered.filter((i) => itemStatusKey(i) === g.key);
       if (!rows.length) {
         return active === 'all' ? '' : `<tr><td colspan="${cols}" class="py-10 text-center text-slate-600">No items in this category.</td></tr>`;
       }
@@ -3256,8 +5485,20 @@ function valueCell(item) {
 function rarityBadge(item, color) {
   return `<span class="text-xs px-2 py-0.5 rounded-full font-medium" style="color:${color}; background:${color}1a; border:1px solid ${color}40">${escapeHtml(item.rarity)}</span>`;
 }
+/**
+ * Backend sentinel for "locked, but Steam served no parseable unlock date"
+ * (TRADE_LOCK_DATE_UNKNOWN = 2099-01-01 in InventoryManager). Detected by threshold so it
+ * also catches sentinel dates already persisted in cached inventories. Rendering it as a
+ * real countdown produced the "26473 days, 11 h" absurdity (owner report 2026-07-09).
+ */
+const TRADE_LOCK_UNKNOWN_MS = Date.UTC(2098, 0, 1);
+function lockDateUnknown(date) {
+  const t = new Date(date).getTime();
+  return Number.isFinite(t) && t >= TRADE_LOCK_UNKNOWN_MS;
+}
 /** Human, compact unlock countdown, e.g. "3 days, 14 h" / "5 h, 12 min" / "8 min". */
 function lockCountdown(date) {
+  if (lockDateUnknown(date)) return 'an unknown time (Steam gave no readable date)';
   const ms = new Date(date).getTime() - Date.now();
   if (!Number.isFinite(ms) || ms <= 0) return 'unlocked now';
   const d = Math.floor(ms / 86400000);
@@ -3267,8 +5508,9 @@ function lockCountdown(date) {
   if (h > 0) return `${h} h, ${m} min`;
   return `${Math.max(1, m)} min`;
 }
-/** Compact lock badge text for the icon overlay: "7D" / "14H" / "32M" (null if free). */
+/** Compact lock badge text for the icon overlay: "7D" / "14H" / "32M" / "?" (null if free). */
 function lockBadge(date) {
+  if (lockDateUnknown(date)) return '?';
   const ms = new Date(date).getTime() - Date.now();
   if (!Number.isFinite(ms) || ms <= 0) return null;
   const d = Math.floor(ms / 86400000);
@@ -3291,14 +5533,26 @@ function iconWithLock(item, imgClass, showLock = true) {
       ${badgeHtml}
     </div>`;
 }
+/** The four item states, mirroring bucketOf (src/core/MarketModel.ts) — the ONE classifier.
+ *  Branch order must match it: listed → held → tradable → untradable. Everything after the
+ *  'listed' short-circuit DERIVES from the raw flags rather than reading `category`, because TF2
+ *  records carry no category at all (tagCategories only runs for source==='gc'). */
 function statusCell(item) {
+  if (item.category === 'listed') {
+    return `<span title="On sale on the Steam Community Market" class="inline-flex items-center gap-1.5 text-sky-400 text-xs font-medium"><i class="fa-solid fa-tag"></i> Listed</span>`;
+  }
   if (item.tradeLockExpiry) {
+    if (lockDateUnknown(item.tradeLockExpiry)) {
+      return `<span title="Trade-locked — Steam did not provide a readable unlock date; re-checked on every refresh" class="inline-flex items-center gap-1.5 text-amber-400 text-xs font-medium"><i class="fa-solid fa-lock"></i> Locked <span class="text-amber-400/60">(date unknown)</span></span>`;
+    }
     const d = new Date(item.tradeLockExpiry);
     const abs = isNaN(d) ? '' : d.toLocaleString();
     return `<span title="Unlocks on ${escapeAttr(abs)}" class="inline-flex items-center gap-1.5 text-amber-400 text-xs font-medium"><i class="fa-solid fa-lock"></i> ${escapeHtml(lockCountdown(d))}</span>`;
   }
   if (item.tradable) return `<span class="inline-flex items-center gap-1.5 text-emerald-400 text-xs font-medium"><i class="fa-solid fa-circle-check"></i> Tradable</span>`;
-  return `<span class="inline-flex items-center gap-1.5 text-rose-500 text-xs font-medium"><i class="fa-solid fa-ban"></i> Locked</span>`;
+  // PERMANENTLY untradable (Storage Unit, Veteran Coin, badge, music kit, untradable crate). This used to
+  // render as a red "Locked" — implying a countdown that will never arrive.
+  return `<span title="This item can never be traded — it has no unlock date" class="inline-flex items-center gap-1.5 text-slate-400 text-xs font-medium"><i class="fa-solid fa-ban"></i> Not tradable</span>`;
 }
 
 function thSort(label, key, extra = '') {
@@ -3321,10 +5575,10 @@ function onHeaderSort(key) {
 function currentItems() { const inv = invFor(state.activeUsername); return inv ? inv.items : []; }
 function findStack(assetId) { return currentItems().find((i) => i.assetId === assetId); }
 function clearSelection() { state.selection = {}; }
-/** True in the aggregated multi-owner views — the folder master AND the sidebar
- *  multi-select scope — where the item table keys by marketHashName and Mass
- *  Buy/Sell/Trade fan out across many owner accounts. */
-function aggMode() { return state.invMode === 'folder' || state.invMode === 'selection'; }
+/** True in the aggregated multi-owner views — the folder master, the sidebar multi-select
+ *  scope AND the Global Master — where the item table keys by marketHashName and Mass
+ *  Sell/Trade fan out across many owner accounts (global: across ALL environments). */
+function aggMode() { return state.invMode === 'folder' || state.invMode === 'selection' || state.invMode === 'global'; }
 /** TBL-02: O(1) aggregated-item lookup by marketHashName (was a linear aggItems.find per
  *  selected key → O(rows²) at scale). Returns the same item object as before. */
 function aggItemByName(mhn) { return state._aggIndex ? state._aggIndex.get(mhn) : (state.aggItems || []).find((i) => i.marketHashName === mhn); }
@@ -3719,17 +5973,6 @@ function pollRefresh() {
   }, 800);
 }
 
-// ── Soft-hide ─────────────────────────────────────────────────────────────────
-async function toggleHide(username, currentlyHidden) {
-  const route = currentlyHidden ? 'unhide' : 'hide';
-  try {
-    await api(`/api/accounts/${encodeURIComponent(username)}/${route}`, { method: 'POST' });
-    await refreshEnv();
-    if (!currentlyHidden && state.invMode === 'account' && state.activeUsername === username) selectEnvMaster();
-    toast(currentlyHidden ? `"${username}" shown` : `"${username}" hidden`, 'success', { undo: () => toggleHide(username, !currentlyHidden) });
-  } catch (err) { toast(err.message, 'error'); }
-}
-
 // ── edit account (Problem 3: per-account proxy override + details) ──
 async function openEditAccount(username) {
   const acc = state.allAccounts.find((a) => a.username === username);
@@ -3737,49 +5980,10 @@ async function openEditAccount(username) {
   state.editUsername = username;
   el.editLabel.textContent = acc.username;
   el.editDisplayName.value = acc.displayName || '';
-  el.editProxy.value = '';
-  // Default state: "Use environment proxy" ON (the account inherits the env proxy).
-  el.editUseEnvProxy.checked = true;
-  state.editProxyInitial = '';
-  state.editUseEnvInitial = true;
-  syncProxyFieldEnabled();
   el.editPassword.value = '';
   el.editMafile.value = '';
-  el.editProxyCurrent.innerHTML = '<span class="text-slate-600">Loading current proxy…</span>';
   el.editOverlay.classList.remove('hidden');
-
-  // Reflect the account's ACTUAL network state once it loads. The proxy field holds
-  // the account's OWN override UN-redacted (so "Edit" shows the exact saved string).
-  //   has an override  → toggle OFF (custom proxy in field, or empty = forced local IP)
-  //   no override      → toggle ON  (uses the environment proxy)
-  try {
-    const info = await api(`/api/accounts/${encodeURIComponent(username)}/proxy`);
-    if (state.editUsername !== username) return;     // a different account was opened meanwhile
-    el.editProxy.value = info.proxy || '';
-    state.editProxyInitial = info.proxy || '';
-    state.editUseEnvInitial = !info.hasOverride;
-    el.editUseEnvProxy.checked = !info.hasOverride;
-    syncProxyFieldEnabled();
-    el.editProxyCurrent.innerHTML = proxySourceHint(info.source);
-  } catch (err) {
-    if (state.editUsername !== username) return;
-    el.editProxyCurrent.innerHTML = `<span class="text-rose-400">Could not load the saved proxy (${escapeHtml(err.message)})</span>`;
-  }
-}
-
-/** Greys out + disables the proxy field while "Use environment proxy" is ON
- *  (the account inherits the env proxy, so a custom value is irrelevant). */
-function syncProxyFieldEnabled() {
-  const useEnv = el.editUseEnvProxy.checked;
-  el.editProxy.disabled = useEnv;
-  el.editProxy.classList.toggle('opacity-40', useEnv);
-}
-
-/** Hint line describing where the account's network currently comes from. */
-function proxySourceHint(source) {
-  if (source === 'override')    return 'Current: <span class="text-emerald-400">own proxy</span> (toggle off + edit below)';
-  if (source === 'environment') return 'Current: <span class="text-slate-400">environment proxy</span> (this account has none of its own)';
-  return 'Current: <span class="text-amber-400">local proxy</span> (local IP, no proxy)';
+  // Proxy is now managed declaratively in the Proxies module (rules), not per-account here.
 }
 function closeEditAccount() { el.editOverlay.classList.add('hidden'); state.editUsername = null; }
 async function deleteEditAccount() {
@@ -3810,20 +6014,7 @@ async function submitEditAccount(ev) {
   if (!username) return;
 
   const body = { displayName: el.editDisplayName.value.trim() }; // always sent (allows clearing)
-
-  // Proxy intent from the "Use environment proxy" toggle (mirrors PATCH semantics):
-  //   toggle ON                 → null (inherit the environment proxy)
-  //   toggle OFF + value        → that custom proxy
-  //   toggle OFF + empty field  → '' (local proxy / local IP)
-  // Only sent when the intent actually CHANGED – sending it always would needlessly
-  // re-login the account (a proxy change drops the live session).
-  const useEnv   = el.editUseEnvProxy.checked;
-  const proxyNow = el.editProxy.value.trim();
-  const newIntent  = useEnv ? 'env' : (proxyNow ? `proxy:${proxyNow}` : 'local');
-  const initIntent = state.editUseEnvInitial ? 'env' : (state.editProxyInitial ? `proxy:${state.editProxyInitial}` : 'local');
-  if (newIntent !== initIntent) {
-    body.proxy = useEnv ? null : proxyNow;             // null → env; value → proxy; '' → local IP
-  }
+  // Proxy is managed in the Proxies module now — not sent from here.
   const pw = el.editPassword.value; if (pw) body.password = pw;
   const ma = el.editMafile.value.trim(); if (ma) body.maFilePath = ma;
 
@@ -3851,10 +6042,12 @@ async function submitEditAccount(ev) {
 // ════════════════════════════════════════════════════════════════════════════
 
 // ── add account ──
-function openAddAccount() {
+function openAddAccount(envId) {
   el.addForm.reset();
   el.addEnv.innerHTML = state.environments.map((e) => `<option value="${escapeAttr(e.id)}">${escapeHtml(e.name)}</option>`).join('');
-  if (state.activeEnv) el.addEnv.value = state.activeEnv;
+  // Preselect the caller's environment (Accounts-tree row) or fall back to the active Inventories env.
+  const pre = (typeof envId === 'string' && envId) ? envId : state.activeEnv;
+  if (pre) el.addEnv.value = pre;
   el.modalOverlay.classList.remove('hidden');
 }
 function closeAddAccount() { el.modalOverlay.classList.add('hidden'); }
@@ -3875,7 +6068,8 @@ async function submitAddAccount(ev) {
     closeAddAccount();
     toast(`Account "${acc.username}" added`, 'success');
     await reloadAll();
-    if (state.screen === 'inventory' && state.activeEnv === acc.environmentId) { await refreshEnv(); selectAccount(acc.username); }
+    if (state.nav === 'accounts') renderAccountsModule();
+    else if (state.screen === 'inventory' && state.activeEnv === acc.environmentId) { await refreshEnv(); selectAccount(acc.username); }
     else if (state.screen === 'dashboard') renderDashboard();
   } catch (err) { toast(err.message, 'error'); }
   finally { el.modalSubmit.disabled = false; }
@@ -4033,6 +6227,7 @@ async function onLoginImported(st) {
   toast(`Account "${st.username}" ${st.isUpdate ? 'updated' : 'imported'} as Limited`, 'success');
   closeLogin();
   await reloadAll();
+  if (state.nav === 'accounts') return renderAccountsModule();
   if (state.screen === 'inventory') renderSidebar();
   try { selectAccount(st.username); } catch { /* not in the active env view — it still appears in the sidebar */ }
 }
@@ -4106,7 +6301,7 @@ function closeCsFloat() { el.csfloatOverlay.classList.add('hidden'); }
 //  canonical OTP + getConfirmations/respond; this panel only renders + refreshes
 //  from truth (no optimistic-only state). Acts on EXACTLY the selected account.
 // ════════════════════════════════════════════════════════════════════════════
-const SDA = { username: null, otpTimer: null, barTimer: null, code: '·····', confs: [], open: false, otpErr: false };
+const SDA = { username: null, otpTimer: null, barTimer: null, rlTimer: null, code: '·····', confs: [], open: false, otpErr: false };
 const SDA_OTP_RETRY_MS = 5000;
 
 async function openSda(username) {
@@ -4122,6 +6317,7 @@ function closeSda() {
   SDA.open = false;
   if (SDA.otpTimer) { clearTimeout(SDA.otpTimer); SDA.otpTimer = null; }
   if (SDA.barTimer) { clearInterval(SDA.barTimer); SDA.barTimer = null; }
+  if (SDA.rlTimer) { clearInterval(SDA.rlTimer); SDA.rlTimer = null; }
   if (el.sdaOverlay) el.sdaOverlay.classList.add('hidden');
 }
 
@@ -4176,6 +6372,7 @@ async function copySdaOtp() {
 async function refreshSdaConfirmations() {
   const username = SDA.username;
   if (!el.sdaConfBody) return;
+  if (SDA.rlTimer) { clearInterval(SDA.rlTimer); SDA.rlTimer = null; }
   el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-slate-500 text-sm"><i class="fa-solid fa-spinner cs2-spin mr-2"></i>Loading confirmations…</div>`;
   try {
     const { confirmations } = await api(`/api/accounts/${encodeURIComponent(username)}/confirmations`);
@@ -4184,10 +6381,46 @@ async function refreshSdaConfirmations() {
     renderSdaConfirmations();
   } catch (e) {
     if (!SDA.open || SDA.username !== username) return;
+    // Steam rate-limits this ACCOUNT's mobile-confirmation endpoint (mobileconf is authenticated, so the
+    // limit follows the account, not just the exit IP). A "Refresh" click can't beat it — the window has to
+    // elapse. Say so, count it down, and retry once on its own.
+    if (e.status === 429) { renderSdaRateLimited(username, Math.max(5, Number(e.data && e.data.retryAfterSeconds) || 60)); return; }
     const msg = escapeHtml(e.message || 'failed to load confirmations');
     el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-rose-300 text-sm"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}<div class="mt-3"><button id="sda-conf-retry" class="btn btn-secondary btn-sm">Refresh</button></div></div>`;
     const r = $('sda-conf-retry'); if (r) r.addEventListener('click', refreshSdaConfirmations);
   }
+}
+
+/**
+ * Steam's per-account confirmation rate-limit. Show a live countdown to when a check is next ALLOWED,
+ * then STOP — do NOT auto-retry. (2026-07-10: the old unattended auto-retry re-probed the moment the
+ * window reopened, which keeps Steam's per-account limit armed so the account never clears. Re-checking
+ * is what sustains the lock; leaving it alone is what heals it.) The operator can force one check with
+ * "Retry now" once the countdown ends; the backend gate still refuses a network getlist until its own
+ * (escalating) cooldown elapses, so mashing the button can't re-arm Steam.
+ */
+function renderSdaRateLimited(username, seconds) {
+  let left = seconds;
+  const paint = () => {
+    if (!el.sdaConfBody) return;
+    const ready = left <= 0;
+    el.sdaConfBody.innerHTML = `<div class="px-4 py-8 text-center text-amber-300 text-sm">
+        <i class="fa-solid fa-hourglass-half mr-2"></i>Steam has temporarily limited how often this account's confirmations can be checked.
+        <div class="t12 text-slate-500 mt-1">It clears on its own once the account is left alone — checking too often keeps the limit active, so automatic checks are paused.</div>
+        <div class="t13 text-slate-300 mt-2">${ready ? 'You can check again now.' : `Next check available in <b>${left}s</b>…`}</div>
+        <div class="mt-3"><button id="sda-conf-retry" class="btn btn-secondary btn-sm"${ready ? '' : ' disabled'}>Retry now</button></div>
+      </div>`;
+    const r = $('sda-conf-retry'); if (r && ready) r.addEventListener('click', refreshSdaConfirmations);
+  };
+  paint();
+  if (SDA.rlTimer) clearInterval(SDA.rlTimer);
+  SDA.rlTimer = setInterval(() => {
+    if (!SDA.open || SDA.username !== username) { clearInterval(SDA.rlTimer); SDA.rlTimer = null; return; }
+    left -= 1;
+    // Settle to a MANUAL state at zero — never auto-fetch (that was the re-arming loop).
+    if (left <= 0) { clearInterval(SDA.rlTimer); SDA.rlTimer = null; paint(); return; }
+    paint();
+  }, 1000);
 }
 
 function renderSdaConfirmations() {
@@ -4609,64 +6842,38 @@ async function csfListAsset(btn) {
 // ── new / edit environment ──
 async function openEnvModal(mode = 'create', id = null) {
   el.envForm.reset();
-  state.envProxyInitial = '';
   if (mode === 'edit') {
     const env = state.environments.find((e) => e.id === id);
     state.envModal = { mode: 'edit', id };
     el.envModalTitle.innerHTML = '<i class="fa-solid fa-pen text-brand mr-2"></i>Edit environment';
     el.envSubmitLabel.textContent = 'Save';
     el.envNameInput.value = env ? env.name : '';
-    el.envProxyInput.value = '';
-    el.envProxyInput.placeholder = 'Loading current proxy…';
   } else {
     state.envModal = { mode: 'create' };
     el.envModalTitle.innerHTML = '<i class="fa-solid fa-layer-group text-brand mr-2"></i>New environment';
     el.envSubmitLabel.textContent = 'Create';
-    el.envProxyInput.placeholder = 'http://user:pass@geo.proxy.com:12321';
   }
   el.envOverlay.classList.remove('hidden');
   el.envNameInput.focus();
-
-  // Edit: reveal the REAL saved proxy so it shows in the field. Clearing it on save
-  // then removes it → the environment (and its inheriting accounts) use the local IP.
-  if (mode === 'edit') {
-    try {
-      const info = await api(`/api/environments/${encodeURIComponent(id)}/proxy`);
-      if (!state.envModal || state.envModal.id !== id) return;   // a different modal opened meanwhile
-      el.envProxyInput.value = info.proxy || '';
-      state.envProxyInitial = info.proxy || '';
-      el.envProxyInput.placeholder = 'http://user:pass@geo.proxy.com:12321';
-    } catch (err) {
-      if (!state.envModal || state.envModal.id !== id) return;
-      el.envProxyInput.placeholder = 'http://user:pass@geo.proxy.com:12321';
-      toast(`Could not load the saved proxy: ${err.message}`, 'error');
-    }
-  }
 }
 function closeEnvModal() { state.envModal = null; el.envOverlay.classList.add('hidden'); }
 async function submitEnv(ev) {
   ev.preventDefault();
   const m = state.envModal || { mode: 'create' };
   const name = el.envNameInput.value.trim();
-  const proxy = el.envProxyInput.value.trim();
   if (!name) return;
   try {
     if (m.mode === 'edit') {
-      const body = { name };
-      // Proxy change-detection: send only when it actually changed.
-      //   cleared (was set, now empty) → '' → environment runs on the local IP
-      //   changed to a new value       → set/replace
-      //   left untouched               → omit (no change)
-      if (proxy !== (state.envProxyInitial || '')) body.proxy = proxy;
-      await api(`/api/environments/${encodeURIComponent(m.id)}`, { method: 'PATCH', body: JSON.stringify(body) });
+      await api(`/api/environments/${encodeURIComponent(m.id)}`, { method: 'PATCH', body: JSON.stringify({ name }) });
       toast('Environment updated', 'success');
     } else {
-      await api('/api/environments', { method: 'POST', body: JSON.stringify({ name, proxy }) });
+      await api('/api/environments', { method: 'POST', body: JSON.stringify({ name }) });
       toast(`Environment "${name}" created`, 'success');
     }
     closeEnvModal();
     await reloadAll();
-    if (state.screen === 'inventory' && state.activeEnv) { updateSidebar(); renderMain(); }
+    if (state.nav === 'accounts') renderAccountsModule();
+    else if (state.screen === 'inventory' && state.activeEnv) { updateSidebar(); renderMain(); }
     else renderDashboard();
   } catch (err) { toast(err.message, 'error'); }
 }
@@ -4704,15 +6911,18 @@ async function submitFolder(ev) {
   if (!name) return;
   try {
     if (action.mode === 'create') {
-      await api('/api/folders', { method: 'POST', body: JSON.stringify({ name, environmentId: state.activeEnv, parentId: action.parentId ?? null }) });
-      if (action.parentId) { state.collapsed.delete(action.parentId); saveCollapsed(); }
+      // environmentId travels with the action (Accounts-tree adds) — state.activeEnv only backs
+      // the legacy Inventories path, where the modal always opens inside an environment.
+      await api('/api/folders', { method: 'POST', body: JSON.stringify({ name, environmentId: action.environmentId ?? state.activeEnv, parentId: action.parentId ?? null }) });
+      if (action.parentId) { state.collapsed.delete(action.parentId); saveCollapsed(); state.accTree.expanded.add(action.parentId); }
       toast(`Folder "${name}" created`, 'success');
     } else {
       await api(`/api/folders/${encodeURIComponent(action.id)}`, { method: 'PATCH', body: JSON.stringify({ name }) });
       toast('Folder renamed', 'success');
     }
     closeFolderModal();
-    await refreshEnv();
+    if (state.nav === 'accounts') { state.accTree.targets = null; renderAccountsModule(); }
+    else if (state.activeEnv) await refreshEnv();
   } catch (err) { toast(err.message, 'error'); }
 }
 async function deleteFolder(id, name) {
@@ -4749,7 +6959,8 @@ async function openMoveModal(usernameOrList) {
     ? `Move "${single.displayName || single.username}":`
     : `Move ${list.length} selected account(s):`;
   el.moveEnv.innerHTML = state.environments.map((e) => `<option value="${escapeAttr(e.id)}">${escapeHtml(e.name)}</option>`).join('');
-  el.moveEnv.value = single?.environmentId || state.activeEnv;
+  // Preselect: the single account's env → the Inventories active env → the Accounts module's env.
+  el.moveEnv.value = single?.environmentId || state.activeEnv || state.accEnv || (state.environments[0]?.id ?? '');
   // For a batch the source folder is ambiguous → start at root; for a single account preselect its folder.
   await populateMoveFolders(el.moveEnv.value, single?.folderId);
   el.moveOverlay.classList.remove('hidden');
@@ -4782,7 +6993,8 @@ async function submitMove(ev) {
     if (failed) toast(`${moved} moved, ${failed} failed`, moved ? 'warn' : 'error');
     else        toast(usernames.length === 1 ? 'Account moved' : `${moved} accounts moved`, 'success');
     await reloadAll();
-    if (state.activeEnv) await refreshEnv();
+    if (state.nav === 'accounts') { state.accSel.clear(); renderAccountsModule(); }
+    else if (state.activeEnv) await refreshEnv();
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -5592,7 +7804,7 @@ async function onBulkVaultImport() {
     const r = await api('/api/import/vault', { method: 'POST', body: JSON.stringify({ vault, accountsJson, password, environmentId, folderId }) });
     show(`Imported ${r.imported} new, ${r.skipped} skipped${acctFile ? ' · folders recreated' : ''}.`, r.imported ? 'text-emerald-400' : 'text-amber-400');
     toast(`Vault import: ${r.imported} added, ${r.skipped} skipped`, r.imported ? 'success' : 'info');
-    if (r.imported) { closeBulk(); await reloadAll(); if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard(); }
+    if (r.imported) { closeBulk(); await reloadAll(); if (state.nav === 'accounts') renderAccountsModule(); else if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard(); }
   } catch (err) {
     show(err.message, 'text-rose-400');
     toast(`Vault import failed: ${err.message}`, 'error');
@@ -5663,7 +7875,8 @@ async function submitBulk() {
     }
     closeBulk();
     await reloadAll();
-    if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard();
+    if (state.nav === 'accounts') renderAccountsModule();
+    else if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard();
   } catch (err) { toast(err.message, 'error'); el.bulkSubmit.disabled = false; }
 }
 
@@ -5686,7 +7899,7 @@ async function onBulkCsv(ev) {
       const first = r.rejected.slice(0, 5).map((x) => `line ${x.line}: ${x.reason}`).join('; ');
       toast(`${r.rejected.length} row(s) could not be imported — ${first}${r.rejected.length > 5 ? '…' : ''}`, 'warn');
     }
-    if (r.imported) { closeBulk(); await reloadAll(); if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard(); }
+    if (r.imported) { closeBulk(); await reloadAll(); if (state.nav === 'accounts') renderAccountsModule(); else if (state.screen === 'inventory' && state.activeEnv) await refreshEnv(); else renderDashboard(); }
   } catch (err) {
     show(err.message, 'text-rose-400');
     toast(`CSV import failed: ${err.message}`, 'error');
@@ -5700,7 +7913,6 @@ async function onBulkCsv(ev) {
 // ════════════════════════════════════════════════════════════════════════════
 
 function onSearch(e) { state.search = e.target.value; renderMain(); }
-function onToggleHidden() { state.showHidden = !state.showHidden; renderSidebar(); }
 
 function setButtonLoading(btn, loading, text, icon) {
   btn.disabled = loading;
@@ -6425,11 +8637,16 @@ function setupSidebarResize() {
 }
 
 function bindStaticEvents() {
+  // Top-level nav rail (W1_10) — single delegated handler, mirrors onSidebarClick.
+  el.navRail.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-nav]');
+    if (b) setNav(b.dataset.nav);
+  });
   el.btnBackDashboard.addEventListener('click', showDashboard);
   el.btnGlobalMaster.addEventListener('click', showGlobalMaster);
   el.btnEnvMaster.addEventListener('click', selectEnvMaster);
-  el.btnAddAccount.addEventListener('click', openAddAccount);
-  el.btnAddFolder.addEventListener('click', () => openFolderModal({ mode: 'create', parentId: null }));
+  // Add-account / add-folder buttons moved into the Accounts module (IA refactor 2026-07-09) —
+  // their tree rows open the same modals via onAccountsClick delegation.
   el.btnRefreshAll.addEventListener('click', refreshAll);
   el.refreshFailedClose.addEventListener('click', hideRefreshFailures);
   // "End Task" buttons — each confirms first, then co-operatively cancels the live job.
@@ -6439,11 +8656,8 @@ function bindStaticEvents() {
   el.fbuyEnd.addEventListener('click', () => endTask({ label: 'this mass buy', endpoint: '/api/market/folder-buy-cancel', button: el.fbuyEnd }));
   el.btnGameCs2.addEventListener('click', () => void setGame('cs2'));
   el.btnGameTf2.addEventListener('click', () => void setGame('tf2'));
-  el.btnNewEnv.addEventListener('click', () => openEnvModal('create'));
-  el.btnBulkImport.addEventListener('click', openBulkImport);
   el.btnLoad.addEventListener('click', refreshAccount);
   el.searchInput.addEventListener('input', onSearch);
-  el.toggleHidden.addEventListener('click', onToggleHidden);
   // Phase 2: value-filter (A) + account search/quick-filter (B+C)
   el.valueFilterBtn.addEventListener('click', selectUnderValue);
   el.valueFilterInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); selectUnderValue(); } });
@@ -6502,8 +8716,6 @@ function bindStaticEvents() {
   el.editCancel.addEventListener('click', closeEditAccount);
   el.editForm.addEventListener('submit', submitEditAccount);
   el.editDelete.addEventListener('click', deleteEditAccount);
-  // "Use environment proxy" ON greys out the custom-proxy field (it inherits the env).
-  el.editUseEnvProxy.addEventListener('change', syncProxyFieldEnabled);
   // trade
   el.btnClearSel.addEventListener('click', () => { clearSelection(); renderMain(); });
   el.btnSendSel.addEventListener('click', openTradeModal);
@@ -6677,16 +8889,19 @@ function ensureFeatureOverlay(id, title, icon, widthClass) {
 }
 
 // ── Trade-Ups ────────────────────────────────────────────────────────────────
-const tuState = { username: null, candidates: [], selected: new Set(), execTimer: null };
+// `candidates` holds EVERY computable contract (we always fetch all=true); `tab` splits the view into
+// 'profit' (profitCents > 0 — the old default) and 'all' (everything), each with multiselect + select-all.
+const tuState = { username: null, candidates: [], selected: new Set(), tab: 'profit', execTimer: null };
+function tuVisible() { return tuState.tab === 'profit' ? tuState.candidates.filter((c) => c.profitCents > 0) : tuState.candidates; }
 // H-FE-010: closing the Trade-Up overlay stops its execute-status poller (otherwise it keeps
 // firing /api/tradeup/execute-status + writing the hidden foot until the job reports running:false).
 MODAL_TEARDOWNS.set('tradeup-overlay', () => { clearTimeout(tuState.execTimer); tuState.execTimer = null; });
 
 async function openTradeUpModal(username) {
   const ov = ensureFeatureOverlay('tradeup-overlay', 'Trade-Ups', 'fa-arrow-trend-up', 'max-w-5xl');
-  tuState.username = username; tuState.candidates = []; tuState.selected = new Set();
+  tuState.username = username; tuState.candidates = []; tuState.selected = new Set(); tuState.tab = 'profit';
   ov.querySelector('[data-scope]').textContent = `· ${username}`;
-  ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div class="empty-title">Scan this account for profitable trade-up contracts.</div><div class="empty-sub">Reads the inventory and computes positive-EV contracts from its skins.</div></div>`;
+  ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div class="empty-title">Scan this account for trade-up contracts.</div><div class="empty-sub">Reads the inventory and computes every possible contract from its skins — profitable ones highlighted.</div></div>`;
   ov.querySelector('[data-foot]').textContent = '';
   renderTuToolbar();
   ov.classList.remove('hidden'); // observeOverlay (H-FE-009) fires onModalOpen off the class mutation
@@ -6696,15 +8911,21 @@ function renderTuToolbar() {
   const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
   const tb = ov.querySelector('[data-toolbar]');
   const have = tuState.candidates.length;
+  const profitN = tuState.candidates.filter((c) => c.profitCents > 0).length;
+  const tabBtn = (id, label) => `<button data-tu-tab="${id}" class="px-3 py-1.5 rounded-lg t12 border ${tuState.tab === id ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">${label}</button>`;
   tb.innerHTML =
     `<button data-tu-scan class="btn btn-primary btn-sm"><i class="fa-solid fa-magnifying-glass-dollar"></i>Scan trade-ups</button>` +
-    (have ? `<button data-tu-all class="btn btn-secondary btn-sm">Select all</button>
+    (have ? `
+      <div class="flex gap-1.5 ml-1">${tabBtn('profit', `Profitable (${profitN})`)}${tabBtn('all', `All trade-ups (${tuState.candidates.length})`)}</div>
+      <button data-tu-all class="btn btn-secondary btn-sm">Select all${tuState.tab === 'all' ? '' : ' profitable'}</button>
       <button data-tu-none class="btn btn-ghost btn-sm">Clear</button>
       <span class="ml-auto"></span>
       <button data-tu-start class="btn btn-danger btn-sm"><i class="fa-solid fa-bolt"></i>Execute (${tuState.selected.size})</button>` : '');
   tb.querySelector('[data-tu-scan]')?.addEventListener('click', tuScan);
+  tb.querySelectorAll('[data-tu-tab]').forEach((b) => b.addEventListener('click', () => { tuState.tab = b.dataset.tuTab; renderTuList(); renderTuToolbar(); }));
   tb.querySelector('[data-tu-none]')?.addEventListener('click', () => { tuState.selected.clear(); renderTuList(); renderTuToolbar(); });
-  tb.querySelector('[data-tu-all]')?.addEventListener('click', () => { tuState.candidates.forEach(c => tuState.selected.add(c.id)); renderTuList(); renderTuToolbar(); });
+  // Select-all applies to the CURRENTLY VISIBLE tab (all vs profitable-only).
+  tb.querySelector('[data-tu-all]')?.addEventListener('click', () => { tuVisible().forEach(c => tuState.selected.add(c.id)); renderTuList(); renderTuToolbar(); });
   tb.querySelector('[data-tu-start]')?.addEventListener('click', tuStart);
 }
 
@@ -6713,11 +8934,13 @@ async function tuScan() {
   const body = ov.querySelector('[data-body]');
   body.innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-spinner cs2-spin"></i></div><div class="empty-title">Refreshing inventory & computing trade-ups…</div></div>`;
   try {
-    const res = await api('/api/tradeup/candidates', { method: 'POST', body: JSON.stringify({ username: tuState.username }) });
+    // Always fetch ALL contracts — the tabs split profitable vs all client-side (one scan, two views).
+    const res = await api('/api/tradeup/candidates', { method: 'POST', body: JSON.stringify({ username: tuState.username, all: true }) });
     tuState.candidates = res.candidates || [];
-    tuState.selected = new Set(tuState.candidates.map(c => c.id)); // all auto-selected
+    tuState.selected = new Set(tuState.candidates.filter(c => c.profitCents > 0).map(c => c.id)); // profitable auto-selected
+    const profitN = tuState.candidates.filter(c => c.profitCents > 0).length;
     ov.querySelector('[data-foot]').innerHTML = [
-      `${tuState.candidates.length} profitable contract(s) · ${res.eligibleInputs} eligible input(s)`,
+      `${tuState.candidates.length} contract(s) · ${profitN} profitable · ${res.eligibleInputs} eligible input(s)`,
       ...(res.warnings || []).map(escapeHtml),
     ].join(' · ');
     renderTuList(); renderTuToolbar();
@@ -6730,11 +8953,16 @@ function renderTuList() {
   const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
   const body = ov.querySelector('[data-body]');
   if (!tuState.candidates.length) {
-    body.innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div class="empty-title">No positive-profit trade-ups from this account's skins.</div></div>`;
+    body.innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div class="empty-title">No trade-up contracts from this account's skins.</div><div class="empty-sub">Need at least 10 skins of one rarity + StatTrak status.</div></div>`;
+    return;
+  }
+  const visible = tuVisible();
+  if (!visible.length) {
+    body.innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div class="empty-title">No positive-profit trade-ups from this account's skins.</div><div class="empty-sub">Switch to <b>All trade-ups</b> to see every possible contract.</div></div>`;
     return;
   }
   const selCls = 'ring-1 ring-brand/60 border-brand/50 shadow-glow';
-  body.innerHTML = `<div class="space-y-2 px-5 py-4">` + tuState.candidates.map((c) => {
+  body.innerHTML = `<div class="space-y-2 px-5 py-4">` + visible.map((c) => {
     const sel = tuState.selected.has(c.id);
     const inputsByName = {};
     for (const i of c.inputs) inputsByName[i.baseName] = (inputsByName[i.baseName] || 0) + 1;
@@ -7042,10 +9270,14 @@ async function init() {
   updateCurrencyButton();
   updatePriceSourceButton();
   api('/api/pricing/source').then((r) => { if (r && r.effective) { state.priceSource = r.effective; localStorage.setItem('ssim.priceSource', r.effective); updatePriceSourceButton(); } }).catch(() => {});
+  // W4_40: probe the paysafecard flag once so the wallet-card action shows only when it's enabled.
+  api('/api/steam/paysafe/config').then((r) => { state.paysafeEnabled = !!(r && r.enabled); }).catch(() => {});
   try {
+    state.nav = 'inventories';                            // let the skeleton pre-paint the env picker (showScreen is nav-gated)
     showScreen('dashboard'); renderDashboardSkeleton();   // FB-03: skeleton tiles while the first load runs
     await reloadAll();
-    showDashboard();
+    renderDashboard();                                    // fill the env picker from loaded data (no screen flip)
+    setNav('dashboard');                                  // LAND on the new Dashboard (locked default)
     // The initial /api/inventory load enriches from cache and kicks off a background price fill for
     // any missing/stale prices (server.ts ensureFilled). NONE of the refresh/source-switch paths ran
     // here, so that boot fill was previously never watched — priceless items only appeared after a

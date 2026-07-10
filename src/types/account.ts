@@ -96,11 +96,6 @@ export interface AccountConfig {
    */
   userAgent?:  string;
   /**
-   * Soft-hide flag. A hidden account disappears from the dashboard but its
-   * Steam session keeps running in memory (NOT logged out / removed).
-   */
-  hidden?:     boolean;
-  /**
    * Manual trade-protection date (ISO 8601). Steam's new "Trade Protection"
    * (Trade Protection) is NOT exposed via any web inventory API, so the user can
    * set this per account to mark ALL of its items as locked until the given date.
@@ -135,6 +130,42 @@ export interface Folder {
   parentId:      string | null; // null = environment root level
   environmentId: string;        // which environment this folder belongs to (v2.0)
   createdAt:     string;        // ISO 8601
+}
+
+// ─── Proxy Rules (declarative proxy assignment — replaces per-env/per-account proxy) ─────────
+
+export type ProxyScope    = 'global' | 'environment' | 'folder' | 'account';
+export type ProxyRuleKind = 'pool' | 'local';
+
+/**
+ * A declarative proxy-assignment rule (v5). Rules REPLACE the old per-environment / per-account
+ * proxy fields: the most-specific matching rule wins (account ▸ folder-by-depth ▸ environment ▸
+ * global), and its pool (or a forced local IP) decides an account's egress. Resolution lives in
+ * ProxyRuleEngine; AccountManager.resolveOutcome / networkForLogin delegate to it once
+ * `proxyRulesAuthoritative` is set (the legacy chain, legacyResolveNetwork, is used only before that).
+ */
+export interface ProxyRule {
+  id:            string;         // uuid — the ULTIMATE deterministic tiebreak (never iteration order)
+  name?:         string;
+  scope:         ProxyScope;
+  /** [] for global; environment ids | folder ids | username.toLowerCase() for the others. */
+  targets:       string[];
+  /** 'local' forces the local IP; 'pool' uses `proxies`. Distinct from an empty pool so a
+   *  forced-local rule is never mistaken for "no usable proxy" and skipped. */
+  kind:          ProxyRuleKind;
+  /**
+   * Normalized, deduped, parseProxy-VALID proxy pool. `[]` when kind==='local' OR when the
+   * credential-bearing values have been blanked on disk (vault mode — the vault copy is
+   * authoritative; hydrateRuleProxies refills it in memory at boot, mirroring env proxies).
+   */
+  proxies:       string[];
+  /** true → stable per-account exit IP (rendezvous/HRW pick); false/absent → a new proxy each
+   *  login (rotation). The escape hatch for trade-heavy rules where IP churn risks a trade-lock. */
+  pinPerAccount?: boolean;
+  /** Unique dense rank (array index), reassigned on every save — the within-specificity tiebreak. */
+  priority:      number;
+  enabled:       boolean;
+  createdAt:     string;         // ISO 8601
 }
 
 // ─── maFile (Steam Desktop Authenticator format) ──────────────────────────────
@@ -180,6 +211,17 @@ export interface AccountsDatabase {
   /** Flat folder list (adjacency list), each scoped to an environment. */
   folders:      Folder[];
   accounts:     AccountConfig[];
+  /**
+   * Declarative proxy-assignment rules (v5). Absent until the v4→v5 migration synthesizes them
+   * from the legacy env/account proxy config.
+   */
+  proxyRules?:  ProxyRule[];
+  /**
+   * Set true ONLY after the migration proves EVERY account's egress is unchanged under the rules.
+   * The runtime resolver gates on THIS flag — never on `proxyRules.length` — so a synthesized-but-
+   * unproven rule set never goes live. See AccountManager.migrateProxyRules. (v5)
+   */
+  proxyRulesAuthoritative?: boolean;
   updatedAt:    string;
 }
 

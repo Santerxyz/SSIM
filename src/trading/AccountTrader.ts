@@ -1,5 +1,8 @@
 import axios from 'axios';
 import Request from 'request';
+import { buildCookieHeader } from '../pricing/PricerIdentityPool';
+import { MobileConfGate, type ConfFreshness } from './MobileConfGate';
+import { classifyNetworkError } from '../utils/errorClass';
 import SteamCommunity from 'steamcommunity';
 import TradeOfferManager from 'steam-tradeoffer-manager';
 import * as SteamTotp from 'steam-totp';
@@ -7,7 +10,7 @@ import type { ManagedSession } from '../types/session';
 import { logger } from '../utils/logger';
 import {
   parseMyListings, mergeParsed, emptyParsed,
-  listedAssetIdsForApp, type MarketListing,
+  listedAssetIdsForApp, unconfirmedListedAssetIdsForApp, type MarketListing,
 } from '../core/MarketModel';
 import { shapeConfirmations, type ConfirmationView } from './confirmations';
 
@@ -22,7 +25,7 @@ const CS2_CONTEXTID = '2';
 // Steam mobile-confirmation type for a market listing (vs. 2 = Trade).
 const CONF_TYPE_MARKET_LISTING = 3;
 
-const MARKET_UA =
+export const MARKET_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -205,12 +208,17 @@ export class AccountTrader {
 
   private cookiesReady = false;
   private tradeUrlCache: string | undefined;
+  /** Per-account mobileconf/getlist discipline (2026-07-10): single-flight + short snapshot + 429 latch
+   *  so the mass-sell confirm, the SDA panel and the auto-accept worker don't independently hammer the
+   *  account's tight per-account confirmation budget. */
+  private readonly confGate: MobileConfGate;
 
   constructor(
     private readonly session: ManagedSession,
     onNewOffer?: (trader: AccountTrader, offer: any) => void,
   ) {
     this.username = session.account.username;
+    this.confGate = new MobileConfGate(this.username, () => this.rawFetchConfirmationList());
 
     // ── Network isolation ──────────────────────────────────────────────────
     // Injecting the per-account agent into a `request` instance routes EVERY
@@ -288,6 +296,10 @@ export class AccountTrader {
   /** The account's current web-session cookies (for authenticated market reads
    *  such as the listings/render price fallback, which is HTML-walled anonymously). */
   get cookies(): string[]            { return this.session.webSession?.cookies ?? []; }
+  /** steamcommunity Cookie header for authenticated price reads (2026-07-10): sending this account's
+   *  steamLoginSecure draws its per-session priceoverview budget instead of the anonymous per-IP budget
+   *  the shared pool leaves exhausted. Undefined when the session has no usable auth cookie. */
+  get cookieHeader(): string | undefined { return buildCookieHeader(this.session.webSession?.cookies ?? []) ?? undefined; }
   /** The bot's native Steam wallet currency (ECurrencyCode) – buy orders MUST be
    *  priced in this currency. Undefined until the 'wallet' event has fired. */
   get walletCurrency(): number | undefined { return this.session.wallet?.currency; }
@@ -303,6 +315,15 @@ export class AccountTrader {
    * a timeout. Throws on any network/HTTP failure so callers can react.
    */
   async getListedAssetIds(appId: number): Promise<Set<string>> {
+    return (await this.getListedAssets(appId)).listed;
+  }
+
+  /**
+   * The same single `market/mylistings` read as {@link getListedAssetIds}, but ALSO reporting which of
+   * those assets are still awaiting a mobile 2FA confirmation. The mass-sell needs the distinction: only
+   * an UNCONFIRMED pre-existing listing justifies spending a `mobileconf/getlist`. Same request cost.
+   */
+  async getListedAssets(appId: number): Promise<{ listed: Set<string>; unconfirmed: Set<string> }> {
     const cookies = this.session.webSession?.cookies ?? [];
     const acc = emptyParsed();
     const PAGE = 100;
@@ -347,7 +368,7 @@ export class AccountTrader {
     }
     // App-FILTERED (never merged): assetIds are unique only within an app+context, so a CS2 and a
     // TF2 asset can share an id — filtering to `appId` keeps the already-listed/phantom check honest.
-    return listedAssetIdsForApp(acc, appId);
+    return { listed: listedAssetIdsForApp(acc, appId), unconfirmed: unconfirmedListedAssetIdsForApp(acc, appId) };
   }
 
   // ── New feature: Active Orders (fetch + cancel sell listings & buy orders) ──
@@ -1005,7 +1026,20 @@ export class AccountTrader {
    * getConfirmations itself errors. Callers apply their own identity_secret guard
    * before invoking; one list protocol, no sibling drift.
    */
-  private fetchConfirmationList(): Promise<{ off: number; confs: any[] }> {
+  /**
+   * The single source of truth for this account's pending mobile-confirmation list, routed through the
+   * per-account {@link MobileConfGate} (single-flight + short snapshot + 429 cooldown). Callers declare
+   * freshness: 'fresh' (a confirm must act on a live list) or 'recent' (a display/poll tolerates a
+   * seconds-old snapshot). The raw getlist is {@link rawFetchConfirmationList}. Rejects only when the
+   * underlying getlist errors (or a cooldown 429 is latched).
+   */
+  private fetchConfirmationList(freshness: ConfFreshness = 'fresh'): Promise<{ off: number; confs: any[] }> {
+    return this.confGate.get(freshness);
+  }
+
+  /** The actual signed getlist call (identity_secret + Steam server time). Wrapped by the gate — do not
+   *  call directly; use fetchConfirmationList(freshness) so callers share one request under contention. */
+  private rawFetchConfirmationList(): Promise<{ off: number; confs: any[] }> {
     const identitySecret = this.session.maFile?.identity_secret ?? '';
     const community = this.community as unknown as {
       getConfirmations(time: number, key: { tag: string; key: string }, cb: (err: Error | null, confs: any[]) => void): void;
@@ -1059,34 +1093,63 @@ export class AccountTrader {
   }
 
   /**
-   * Accepts a pending Steam MOBILE confirmation for a specific object (a buy
-   * order / market / trade confirmation id) using the maFile identity_secret.
-   * Retries a few times because a just-created confirmation can take a moment to
-   * register on Steam's side. This is what auto-confirms market BUYS.
+   * Accepts a pending Steam MOBILE confirmation for a specific object (a buy order / market / trade
+   * confirmation id) using the maFile identity_secret. Retries a few times because a just-created
+   * confirmation can take a moment to register on Steam's side. This is what auto-confirms market BUYS
+   * and trade sends.
+   *
+   * 2026-07-10: reimplemented on the GATED canonical primitive (fetchConfirmationList + conf.respond)
+   * instead of the vendor's `acceptConfirmationForObject`, which does its OWN fresh getlist on EVERY
+   * attempt — up to 4 un-gated getlists per object that ignore the per-account MobileConfGate. Now each
+   * attempt shares the gate (single-flight with any concurrent SDA/mass-sell read) and the ~1.5-3s
+   * inter-attempt sleep spaces the polls.
    */
   private acceptConfirmationForObject(objectId: string, label: string): Promise<void> {
     const identitySecret = this.session.maFile?.identity_secret;
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret in the maFile – ${label} cannot be confirmed`));
     }
-    const community = this.community as unknown as {
-      acceptConfirmationForObject(identitySecret: string, objectId: string, cb: (err: Error | null) => void): void;
-    };
-    const tryOnce = (): Promise<void> => new Promise<void>((resolve, reject) => {
-      community.acceptConfirmationForObject(identitySecret, objectId, (err) => (err ? reject(err) : resolve()));
-    });
     return (async () => {
       let lastErr: unknown;
       for (let attempt = 0; attempt < 4; attempt++) {
         await sleep(attempt === 0 ? 1_500 : 3_000); // give the confirmation time to register
-        try { await tryOnce(); return; }
-        catch (err) {
+        try {
+          const { off, confs } = await this.fetchConfirmationList('fresh');
+          // Steam maps the object id to the confirmation's CREATOR (offer/buy_orderid); match id too.
+          const conf = confs.find((c) => String(c?.creator) === String(objectId) || String(c?.id) === String(objectId));
+          if (!conf) { lastErr = new Error(`confirmation for ${label} not registered yet`); continue; }
+          const t = SteamTotp.time(off) + 1;
+          const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
+          await new Promise<void>((resolve, reject) =>
+            conf.respond(t, { tag: 'accept', key: acceptKey }, true, (e: Error | null) => (e ? reject(e) : resolve())));
+          this.confGate.invalidate();
+          return;
+        } catch (err) {
           lastErr = err;
           logger.warn(`[${this.username}] ${label} 2FA confirmation attempt ${attempt + 1}/4 failed: ${(err as Error).message}`);
         }
       }
       throw new Error(`${label}: 2FA confirmation failed after retries (${(lastErr as Error)?.message ?? lastErr})`);
     })();
+  }
+
+  /**
+   * ONE `multiajaxop` POST that accepts (or cancels) MANY confirmations at once — the 2026-07-10 fix
+   * that collapses N per-listing `ajaxop` hits into a single mobileconf op. Uses the vendored
+   * steamcommunity `respondToConfirmation(cid[], ck[], time, key, accept, cb)` array form. All-or-nothing:
+   * if Steam rejects any one, the whole request fails (callers fall back to per-item).
+   */
+  private batchRespond(confs: any[], off: number, accept: boolean, identitySecret: string): Promise<void> {
+    const community = this.community as unknown as {
+      respondToConfirmation(cid: string[], ck: string[], time: number, key: string, accept: boolean, cb: (err: Error | null) => void): void;
+    };
+    const time = SteamTotp.time(off);
+    const actionKey = SteamTotp.getConfirmationKey(identitySecret, time, accept ? 'allow' : 'cancel');
+    const ids  = confs.map((c) => String(c.id));
+    const keys = confs.map((c) => String(c.key));
+    return new Promise<void>((resolve, reject) => {
+      community.respondToConfirmation(ids, keys, time, actionKey, accept, (err) => (err ? reject(err) : resolve()));
+    });
   }
 
   /**
@@ -1104,26 +1167,41 @@ export class AccountTrader {
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot confirm market listings`));
     }
-    const { off, confs } = await this.fetchConfirmationList();
+    const { off, confs } = await this.fetchConfirmationList('fresh');
     const listings = confs.filter(c => c?.type === CONF_TYPE_MARKET_LISTING);
     if (listings.length === 0) return { confirmed: 0 };
 
+    // Primary: ONE multiajaxop for the whole batch → 1 mobileconf op instead of N (2026-07-10 fix).
+    try {
+      await this.batchRespond(listings, off, true, identitySecret);
+      this.confGate.invalidate();
+      return { confirmed: listings.length };
+    } catch (batchErr) {
+      // A 429 must NOT trigger a per-item storm (that hammers the exact endpoint that just rate-limited);
+      // surface it so confirmWithRetry takes its long rate-limit pause. Nothing was confirmed (all-or-nothing).
+      if (classifyNetworkError(batchErr).rateLimited) { this.confGate.invalidate(); return { confirmed: 0, error: batchErr as Error }; }
+      // A non-rate-limit batch failure (one bad confirmation fails the whole POST) → fall back to per-item
+      // so the rest still confirm (ASF pattern). Preserves the partial-count-on-error contract (H-TRD-027).
+      logger.warn(`[${this.username}] batch listing-confirm failed (${(batchErr as Error).message}) — falling back to per-item`);
+      const r = await this.confirmListingsPerItem(listings, off, identitySecret);
+      this.confGate.invalidate();
+      return r;
+    }
+  }
+
+  /** Per-item fallback for confirmMarketListings (ASF pattern): confirm each listing sequentially so one
+   *  bad confirmation doesn't block the rest. Preserves the count-confirmed-before-a-failure contract. */
+  private confirmListingsPerItem(listings: any[], off: number, identitySecret: string): Promise<{ confirmed: number; error?: Error }> {
     return new Promise<{ confirmed: number; error?: Error }>((resolve) => {
       let idx = 0, confirmed = 0;
       let firstErr: Error | null = null;
       let prevT = 0;
       const next = (): void => {
-        if (idx >= listings.length) {
-          // A mid-pass respond failure still resolves with the count confirmed
-          // before it, so confirmWithRetry accumulates across attempts.
-          resolve(firstErr ? { confirmed, error: firstErr } : { confirmed });
-          return;
-        }
+        if (idx >= listings.length) { resolve(firstErr ? { confirmed, error: firstErr } : { confirmed }); return; }
         const conf = listings[idx++];
-        // Monotonic-fresh time: strictly unique AND increasing per accept, but
-        // bounded to ≤1s beyond real server time for any batch size — a fresh
-        // base plus a running index would sign the Nth accept N seconds in the
-        // future, risking rejection once outside Steam's tolerance at 200-500 listings.
+        // Monotonic-fresh time: strictly unique AND increasing per accept, but bounded to ≤1s beyond real
+        // server time for any batch size (a fresh base + running index would sign the Nth accept N seconds
+        // in the future, risking rejection once outside Steam's tolerance at 200-500 listings).
         const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;
         const acceptKey = SteamTotp.getConfirmationKey(identitySecret, t, 'accept');
         conf.respond(t, { tag: 'accept', key: acceptKey }, true, (rErr: Error | null) => {
@@ -1147,7 +1225,7 @@ export class AccountTrader {
     if (!identitySecret) {
       return Promise.reject(new Error(`[${this.username}] no identity_secret in the maFile – cannot list confirmations`));
     }
-    const { confs } = await this.fetchConfirmationList();
+    const { confs } = await this.fetchConfirmationList('recent'); // a display tolerates a seconds-old snapshot
     return shapeConfirmations(confs);
   }
 
@@ -1163,9 +1241,27 @@ export class AccountTrader {
       return Promise.reject(new Error(`[${this.username}] no identity_secret – cannot respond to confirmations`));
     }
     const wanted = new Set(ids.map(String));
-    const { off, confs } = await this.fetchConfirmationList();
+    const { off, confs } = await this.fetchConfirmationList('fresh');
     const targets = confs.filter((c: any) => all || wanted.has(String(c?.id)));
     if (targets.length === 0) return { done: 0, failed: [] };
+
+    // Primary: ONE multiajaxop for the whole selection → 1 mobileconf op instead of N (2026-07-10 fix).
+    try {
+      await this.batchRespond(targets, off, accept, identitySecret);
+      this.confGate.invalidate();
+      return { done: targets.length, failed: [] };
+    } catch (batchErr) {
+      if (classifyNetworkError(batchErr).rateLimited) throw batchErr; // let the route map it to 429 + Retry-After
+      logger.warn(`[${this.username}] batch confirmation ${accept ? 'accept' : 'deny'} failed (${(batchErr as Error).message}) — falling back to per-item`);
+      const r = await this.respondPerItem(targets, off, accept, identitySecret);
+      this.confGate.invalidate();
+      return r;
+    }
+  }
+
+  /** Per-item fallback for respondToConfirmations: act on each target sequentially so one failure only
+   *  fails that id, not the whole selection (the multiajaxop batch is all-or-nothing). */
+  private respondPerItem(targets: any[], off: number, accept: boolean, identitySecret: string): Promise<{ done: number; failed: string[] }> {
     const tag = accept ? 'accept' : 'reject';
     return new Promise<{ done: number; failed: string[] }>((resolve) => {
       let idx = 0, done = 0; const failed: string[] = [];
@@ -1173,10 +1269,8 @@ export class AccountTrader {
       const next = (): void => {
         if (idx >= targets.length) { resolve({ done, failed }); return; }
         const conf = targets[idx++];
-        // Monotonic-fresh time: unique + increasing per response, bounded to ≤1s
-        // beyond real time (a fresh base + running index would sign the tail of an
-        // "action all" batch far in the future and risk key rejection at scale).
-        const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;   // unique time per response
+        // Monotonic-fresh time: unique + increasing per response, bounded to ≤1s beyond real time.
+        const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;
         const key = SteamTotp.getConfirmationKey(identitySecret, t, tag);
         conf.respond(t, { tag, key }, accept, (rErr: Error | null) => {
           if (rErr) failed.push(String(conf?.id)); else done++;
@@ -1200,11 +1294,11 @@ function randLetters(min: number, max: number): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/** Format-valid RANDOM billing for a market buy order. Steam only needs non-empty,
- *  format-correct fields (a digital order – the address isn't validated against
- *  reality); randomizing per request avoids fingerprinting many bots with one
- *  static address. Postal code = exactly 5 digits. */
-function generateBilling(country = 'DE'): BuyBilling {
+/** Format-valid RANDOM billing for a market buy order (and, exported, the paysafecard addfunds
+ *  auto-fill — W4_40). Steam only needs non-empty, format-correct fields (a digital order – the
+ *  address isn't validated against reality); randomizing per request avoids fingerprinting many
+ *  bots with one static address. Postal code = exactly 5 digits. */
+export function generateBilling(country = 'DE'): BuyBilling {
   let zip = '';
   for (let i = 0; i < 5; i++) zip += Math.floor(Math.random() * 10);
   return {
@@ -1232,8 +1326,8 @@ function buildMultipart(fields: Record<string, string>): { body: Buffer; content
   return { body: Buffer.from(s, 'utf8'), contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
-/** Reads a single cookie value out of a ["name=value", …] cookie array. */
-function extractCookie(cookies: string[], name: string): string | undefined {
+/** Reads a single cookie value out of a ["name=value", …] cookie array. Exported for StoreService (W3_30). */
+export function extractCookie(cookies: string[], name: string): string | undefined {
   for (const c of cookies) {
     const eq = c.indexOf('=');
     if (eq !== -1 && c.slice(0, eq).trim() === name) return c.slice(eq + 1).trim();

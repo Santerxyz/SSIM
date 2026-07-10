@@ -1,6 +1,7 @@
 import type { AccountManager } from '../core/AccountManager';
 import { AgentFactory, type HttpAgent } from '../network/AgentFactory';
 import { AppSettings } from '../core/AppSettings';
+import { logger } from '../utils/logger';
 import { CsFloatKeyStore } from './CsFloatKeyStore';
 import {
   CsFloatClient, CsFloatError,
@@ -19,6 +20,19 @@ import {
 // ════════════════════════════════════════════════════════════════════════════
 
 interface CachedClient { key: string; client: CsFloatClient; agent: HttpAgent; }
+
+/**
+ * F1: thrown when an account's proxy pool is lost (a rule matched a pool that hydrated empty).
+ * AccountManager.withNetwork attaches `network: undefined` in that state so SessionManager refuses the
+ * Steam login; CSFloat has no Steam session (pure API-key auth) so it must refuse egress the SAME way —
+ * NEVER default to the host IP (a host-IP login on this fleet = ban risk). Callers skip/park the account.
+ */
+export class PoolLostError extends Error {
+  constructor(public readonly username: string, reason = 'proxy pool unavailable') {
+    super(`CSFloat egress refused for "${username}" — ${reason} (would leak the host IP)`);
+    this.name = 'PoolLostError';
+  }
+}
 
 export class CsFloatService {
   private readonly keys = new CsFloatKeyStore();
@@ -126,17 +140,22 @@ export class CsFloatService {
   hasAnyKey(): boolean { return this.keys.usernamesWithKeys().length > 0; }
 
   pricingClient(): CsFloatClient | null {
-    const candidates = this.keys.usernamesWithKeys().sort(); // stable: first account (lexical) with a key
-    if (candidates.length === 0) { this.disposePricing(); return null; }
-    const username = candidates[0];
-    const key = this.keys.get(username);
-    if (!key) { this.disposePricing(); return null; }
-    if (this.pricing && this.pricing.username === username && this.pricing.key === key) return this.pricing.client;
+    // Stable order: prefer the lexically-first account with a key, but SKIP a pool-lost one (F1) and
+    // try the next rather than silently egressing the host IP or killing all pricing.
+    for (const username of this.keys.usernamesWithKeys().sort()) {
+      const key = this.keys.get(username);
+      if (!key) continue;
+      if (this.pricing && this.pricing.username === username && this.pricing.key === key) return this.pricing.client;
+      let agent: HttpAgent;
+      try { agent = this.agentFor(username); }
+      catch (e) { logger.warn(`[csfloat] pricing: skipping ${username} — ${(e as Error).message}`); continue; }
+      this.disposePricing();
+      // priority < 0 → the bulk pricing fill yields to interactive CSFloat tabs sharing this key's limiter.
+      this.pricing = { username, key, client: new CsFloatClient(key, agent, { priority: -1 }), agent };
+      return this.pricing.client;
+    }
     this.disposePricing();
-    const agent = this.agentFor(username);
-    // priority < 0 → the bulk pricing fill yields to interactive CSFloat tabs sharing this key's limiter.
-    this.pricing = { username, key, client: new CsFloatClient(key, agent, { priority: -1 }), agent };
-    return this.pricing.client;
+    return null;
   }
 
   // ── internals ────────────────────────────────────────────────────────────────
@@ -159,8 +178,11 @@ export class CsFloatService {
 
   private agentFor(username: string): HttpAgent {
     const acc = this.accounts.get(username);
-    const net = acc?.network ?? { type: 'localip' as const, value: '0.0.0.0' };
-    return AgentFactory.create(net, { pooled: false }).httpsAgent;
+    // F1: an account that legitimately resolves to local IP gets `{type:'localip'}` attached by
+    // withNetwork; `undefined` ONLY ever means pool-lost. Refuse rather than fall to the host IP.
+    if (!acc) throw new PoolLostError(username, 'account not found');
+    if (!acc.network) throw new PoolLostError(username);
+    return AgentFactory.create(acc.network, { pooled: false }).httpsAgent;
   }
 
   private invalidate(username: string): void {

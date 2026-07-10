@@ -81,9 +81,16 @@ function parseProxy(raw: string): ParsedProxy | null {
  */
 export function redactSecrets(input: string): string {
   if (!input) return input;
-  const urlMasked = input.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@');
-  if (urlMasked !== input) return urlMasked;   // embedded URL creds → masked
-  const p = parseProxy(input);                  // whole-string legacy proxy → mask if it carries creds
+  // W3_31: mask Steam wallet-code shapes (a bearer secret) anywhere in the text — XXXXX-XXXXX-XXXXX.
+  let s = input.replace(/[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}/gi, '«wallet-code»');
+  // W4_40: mask paysafecard PINs (a 16-digit bearer secret) — as one run "1234567890123456" or in the
+  // common 4×4 grouped forms "1234 5678 9012 3456" / "1234-5678-9012-3456". Runs BEFORE the URL/proxy
+  // masks so a PIN pasted anywhere near a proxy string is still scrubbed. (\D-anchored so it never eats a
+  // digit off a longer number.)
+  s = s.replace(/(?<!\d)\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}(?!\d)/g, '«paysafe-pin»');
+  const urlMasked = s.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@');
+  if (urlMasked !== s) return urlMasked;       // embedded URL creds → masked
+  const p = parseProxy(s);                      // whole-string legacy proxy → mask if it carries creds
   if (p && p.username) return `${p.scheme}://***:***@${p.host}:${p.port}`;
-  return input;
+  return s;
 }

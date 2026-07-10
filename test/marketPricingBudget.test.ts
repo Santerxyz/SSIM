@@ -65,14 +65,15 @@ test('H-PRC-002: a budget too small to finish any try stops the cascade with zer
   } finally { restore(); }
 });
 
-test('H-PRC-002: no budget → the full 3-try cascade runs (background mass-sell path unchanged)', async () => {
+test('H-PRC-002: no budget → the full cascade runs (2 authenticated tries; UA-rotation cascade removed)', async () => {
   const mp = new MarketPricing();
   let attempts = 0;
-  // Every try answers instantly with a throttled body (non-200) so all 3 are exercised.
+  // Every try answers instantly with a throttled body (non-200) so all tries are exercised. The 2026-07-10
+  // fix collapsed the old 3× UA-rotation cascade to 2 tries — the lever is the auth cookie, not the UA.
   const restore = installAxiosMock(async () => { attempts++; return { status: 429, data: {} }; });
   try {
     const info = await mp.getSellInfo(name); // no budgetMs
-    assert.equal(attempts, 3, 'unbounded cascade issues all 3 tries');
+    assert.equal(attempts, 2, 'unbounded cascade issues both tries');
     assert.equal(info.authoritative, false, 'all tries threw → non-authoritative null');
   } finally { restore(); }
 });

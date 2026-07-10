@@ -510,6 +510,27 @@
     /* ── value-history area fill (SVG can't read var() in presentation attrs) ── */
     .hist-area-items{ fill: rgb(var(--brand-rgb) / .12); }
     .hist-ylabel{ fill: rgb(var(--slate-600)); }
+
+    /* ── TOP-LEVEL NAV RAIL (W1_10) ─────────────────────────────────────── */
+    .nav-group-label{
+      font-size: var(--fs-11); font-weight: 700; letter-spacing: .12em;
+      text-transform: uppercase; color: rgb(var(--slate-500));
+      padding: 0 .5rem;
+    }
+    .nav-item{
+      width: 100%; display: flex; align-items: center; gap: .6rem;
+      padding: .55rem .7rem; border-radius: var(--r-btn);
+      font-size: var(--fs-14); font-weight: 600;
+      color: rgb(var(--slate-400)); transition: background .12s, color .12s;
+    }
+    .nav-item:hover{ background: rgb(var(--slate-800)); color: rgb(var(--slate-200)); }
+    .nav-item .nav-ico{ width: 1.15rem; text-align: center; }
+    .nav-item.is-active{
+      background: rgb(var(--brand-rgb) / .16);
+      color: rgb(var(--brand-rgb));
+      box-shadow: inset 3px 0 0 rgb(var(--brand-rgb));
+    }
+    .nav-item.is-active .nav-ico{ color: rgb(var(--brand-rgb)); }
   </style>
 </head>
 
@@ -520,25 +541,76 @@
 
   <div class="flex h-screen">
 
-    <!-- ════════════════ SIDEBAR (masterpiece: app-sidebar depth gradient) ════════════════ -->
-    <aside id="app-sidebar" class="app-sidebar w-72 shrink-0 border-r border-slate-800 flex flex-col">
-      <!-- Brand lockup: SSIM shield + wordmark + full name -->
-      <div class="px-5 py-5 border-b border-slate-800 flex items-center gap-3">
+    <!-- ════════════════ TOP-LEVEL NAV RAIL (state.nav) ════════════════ -->
+    <aside id="nav-rail"
+           class="nav-rail w-56 shrink-0 border-r border-slate-800 flex flex-col bg-slate-950/60">
+      <!-- Brand lockup (moved from the middle sidebar — the rail is ALWAYS visible).
+           Logo matches the full two-line lockup height so mark + text read as one unit. -->
+      <div class="px-4 py-5 border-b border-slate-800 flex items-center gap-3">
         <img src="/assets/image-Photoroom.png" alt="SSIM"
-             class="w-12 h-12 shrink-0 select-none object-contain" draggable="false"
-             style="filter:drop-shadow(0 0 12px rgb(147 51 234 / .5))" />
+             class="w-12 h-12 shrink-0 object-contain select-none" draggable="false"
+             style="filter:drop-shadow(0 0 10px rgb(147 51 234 / .5))" />
         <div class="min-w-0">
-          <h1 class="font-extrabold t16 tracking-[0.18em] text-white leading-none">SSIM</h1>
-          <p class="t11 font-semibold text-brand-light/90 mt-1 leading-tight">Santer Steam<br>Inventory Manager</p>
+          <span class="font-extrabold tracking-[0.16em] text-white t14 leading-none block">SSIM</span>
+          <p class="t10 font-semibold text-brand-light/90 mt-1 leading-tight">Santer Steam<br>Inventory Manager</p>
         </div>
       </div>
+
+      <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-5">
+        <!-- OVERVIEW group -->
+        <div>
+          <p class="nav-group-label">Overview</p>
+          <div class="space-y-1 mt-2">
+            <button class="nav-item" data-nav="dashboard">
+              <i class="fa-solid fa-gauge-high nav-ico"></i><span>Dashboard</span>
+            </button>
+            <button class="nav-item" data-nav="portfolios">
+              <i class="fa-solid fa-chart-pie nav-ico"></i><span>Portfolios</span>
+            </button>
+          </div>
+        </div>
+        <!-- MANAGE group -->
+        <div>
+          <p class="nav-group-label">Manage</p>
+          <div class="space-y-1 mt-2">
+            <button class="nav-item" data-nav="accounts">
+              <i class="fa-solid fa-user-gear nav-ico"></i><span>Accounts</span>
+            </button>
+            <button class="nav-item" data-nav="inventories">
+              <i class="fa-solid fa-boxes-stacked nav-ico"></i><span>Inventories</span>
+            </button>
+            <button class="nav-item" data-nav="batch">
+              <i class="fa-solid fa-list-check nav-ico"></i><span>Batch Jobs</span>
+            </button>
+            <button class="nav-item" data-nav="proxies">
+              <i class="fa-solid fa-network-wired nav-ico"></i><span>Proxies</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Rail footer: version + Live Logs (moved from the middle sidebar so they are visible
+           on EVERY module, not just Inventories). Version text is filled at runtime from the
+           API (pkg.version → app.js) — exactly ONE version source, no hardcoded literal. -->
+      <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
+        <span id="footer-status" data-no-i18n class="t11 text-slate-500 truncate font-mono"></span>
+        <button id="btn-live-logs" title="Open the live log window" class="btn btn-ghost btn-sm shrink-0">
+          <i class="fa-solid fa-terminal t11 text-brand"></i><span>Logs</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ════════════════ SIDEBAR (masterpiece: app-sidebar depth gradient) ════════════════ -->
+    <aside id="app-sidebar" class="app-sidebar w-72 shrink-0 border-r border-slate-800 flex flex-col">
+      <!-- Brand lockup + version footer moved to the always-visible #nav-rail (chrome refactor
+           2026-07-09) — this sidebar is pure environment context now. -->
 
       <!-- Context nav -->
       <div id="sidebar-nav" class="hidden px-4 pt-3 space-y-2">
         <button id="btn-back-dashboard"
           class="w-full px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 t12 font-semibold
                  transition flex items-center gap-2">
-          <i class="fa-solid fa-arrow-left"></i><span>All environments</span>
+          <i class="fa-solid fa-arrow-left"></i><span>All inventories</span>
         </button>
       </div>
 
@@ -553,17 +625,8 @@
                  transition flex items-center justify-center gap-2">
           <i class="fa-solid fa-chart-pie text-brand"></i><span>Master (environment)</span>
         </button>
-        <div class="flex gap-2">
-          <button id="btn-add-account"
-            class="flex-1 px-2 py-2 rounded-xl bg-brand hover:bg-brand-dark text-white t12 font-bold
-                   transition flex items-center justify-center gap-1.5">
-            <i class="fa-solid fa-plus"></i><span>Account</span>
-          </button>
-          <button id="btn-add-folder" title="Create new folder"
-            class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 t12 transition">
-            <i class="fa-solid fa-folder-plus"></i>
-          </button>
-        </div>
+        <!-- Add-account / add-folder moved to the Accounts module (IA refactor, 2026-07-09):
+             every ADD control now lives in Accounts; this sidebar only browses. -->
         <button id="btn-refresh-all"
           class="w-full px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 t12 font-semibold
                  transition flex items-center justify-center gap-2">
@@ -571,34 +634,9 @@
         </button>
       </div>
 
-      <!-- Refresh-All progress (standalone so it shows in Global-Master too) -->
-      <div id="refresh-progress" class="hidden px-4 pt-2">
-        <div class="flex justify-between t11 text-slate-400 mb-1">
-          <span id="refresh-label">Refreshing…</span><span id="refresh-count" class="font-mono"></span>
-        </div>
-        <div class="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-          <div id="refresh-bar" class="h-full bg-brand transition-all duration-300" style="width:0%"></div>
-        </div>
-        <button id="refresh-end" type="button"
-          class="mt-2 w-full px-2 py-1 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white t11 font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-50">
-          <i class="fa-solid fa-stop"></i><span>End task</span>
-        </button>
-      </div>
-
-      <!-- Failed accounts of the last refresh: WHICH account failed and WHY.
-           Persists until dismissed or the next refresh starts. -->
-      <div id="refresh-failed" class="hidden mx-3 mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10">
-        <div class="flex items-center justify-between px-3 pt-2">
-          <span class="t11 font-semibold text-amber-400">
-            <i class="fa-solid fa-triangle-exclamation mr-1"></i>Failed accounts
-          </span>
-          <button id="refresh-failed-close" title="Hide"
-            class="text-slate-500 hover:text-slate-300 text-xs px-1 transition">
-            <i class="fa-solid fa-xmark"></i>
-          </button>
-        </div>
-        <ul id="refresh-failed-list" class="px-3 pb-2 pt-1 space-y-1 max-h-40 overflow-y-auto t11"></ul>
-      </div>
+      <!-- (The Refresh-All progress + failed-accounts panels moved into the inventory
+           header, 2026-07-09 — the sidebar is hidden in Global Master, and the progress
+           of a fleet-wide refresh must stay visible + cancellable there.) -->
 
       <div id="accounts-label" class="hidden px-4 py-3 flex items-center justify-between">
         <span class="t11 font-semibold uppercase tracking-wider text-slate-400">Accounts</span>
@@ -627,26 +665,6 @@
       </div>
 
       <nav id="account-list" class="flex-1 overflow-y-auto px-3 pb-2 space-y-1"></nav>
-
-      <button id="btn-toggle-hidden"
-        class="hidden mx-3 mb-2 px-3 py-1.5 rounded-lg t11 text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition text-left">
-      </button>
-
-      <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
-        <div class="flex items-center gap-2 t11 text-slate-500 min-w-0">
-          <!-- Version text is filled at runtime from the API (pkg.version -> app.js), so there is
-               exactly ONE version source and the footer can never drift. No hardcoded literal here.
-               (The green status dot that sat here was removed on owner request, 2026-07-08.) -->
-          <span id="footer-status" data-no-i18n class="truncate font-mono"></span>
-        </div>
-        <!-- Live Logs: a REAL footer control with its own reserved space. It was a floating
-             fixed pill at bottom-left (S68), but that corner is exactly where this footer's
-             version + status light live now — the pill covered them. A layout element can
-             never overlap anything (owner requirement: must not interfere with the UI). -->
-        <button id="btn-live-logs" title="Open the live log window" class="btn btn-ghost btn-sm shrink-0">
-          <i class="fa-solid fa-terminal t11 text-brand"></i><span>Logs</span>
-        </button>
-      </div>
     </aside>
 
     <!-- Drag to resize the sidebar. Thin strip = easy grab; centered pill = the visible "button". -->
@@ -662,25 +680,34 @@
     <!-- ════════════════ MAIN PANEL ════════════════ -->
     <main class="flex-1 flex flex-col overflow-hidden">
 
+      <!-- ─────── DASHBOARD (fleet summary) — new IA "Dashboard" ─────── -->
+      <section id="screen-summary" class="hidden flex-1 flex flex-col overflow-hidden">
+        <header id="summary-header" class="frosted px-6 py-4 border-b border-slate-800 bg-slate-900/40">
+          <h2 class="t28 font-bold text-white tracking-tight">Dashboard</h2>
+          <p class="t14 text-slate-500 mt-1">Fleet summary across your environments.</p>
+        </header>
+        <div id="summary-body" class="flex-1 overflow-y-auto p-5"></div>
+      </section>
+
+      <!-- ─────── PORTFOLIOS (renamed Global Master) ─────── -->
+      <section id="screen-portfolios" class="hidden flex-1 flex flex-col overflow-hidden">
+        <header id="portfolios-header" class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40">
+          <h2 class="t28 font-bold text-white tracking-tight">Portfolios</h2>
+          <p class="t14 text-slate-500 mt-1">Per-environment value across selected environments.</p>
+        </header>
+        <div id="portfolios-body" class="flex-1 overflow-y-auto p-8"></div>
+      </section>
+
       <!-- ─────── DASHBOARD SCREEN ─────── -->
       <section id="screen-dashboard" class="hidden flex-1 flex flex-col overflow-hidden">
         <header class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h2 class="t28 font-bold text-white tracking-tight">Environments</h2>
-            <p class="t14 text-slate-500 mt-1">Choose a farm environment or create a new one.</p>
+            <h2 class="t28 font-bold text-white tracking-tight">Inventories</h2>
+            <p class="t14 text-slate-500 mt-1">Environments — choose one to browse its inventories.</p>
           </div>
           <div class="flex gap-3 flex-wrap">
             <button id="btn-global-master" class="btn btn-secondary">
               <i class="fa-solid fa-globe text-brand"></i><span>Global Master</span>
-            </button>
-            <button id="btn-account-login" title="Log in &amp; import an account via QR or credentials" class="btn btn-secondary">
-              <i class="fa-solid fa-right-to-bracket text-brand"></i><span>Account Login</span>
-            </button>
-            <button id="btn-bulk-import" class="btn btn-secondary">
-              <i class="fa-solid fa-file-import"></i><span>Import bots</span>
-            </button>
-            <button id="btn-new-env" class="btn bg-brand text-white">
-              <i class="fa-solid fa-plus"></i><span>New environment</span>
             </button>
           </div>
         </header>
@@ -689,7 +716,7 @@
           <div id="env-empty" class="hidden empty py-20">
             <div class="empty-icon"><i class="fa-solid fa-layer-group"></i></div>
             <p class="empty-title">No environments yet</p>
-            <p class="empty-sub">Create your first farm environment.</p>
+            <p class="empty-sub">Create your first environment in the Accounts module.</p>
           </div>
         </div>
       </section>
@@ -750,6 +777,40 @@
               class="btn bg-brand text-white disabled:opacity-50 disabled:cursor-not-allowed">
               <i class="fa-solid fa-rotate"></i><span>Refresh</span>
             </button>
+          </div>
+
+          <!-- Refresh-All progress — lives in the HEADER (not the sidebar) so a fleet-wide
+               refresh stays visible + cancellable in Global Master, where the sidebar is hidden. -->
+          <div id="refresh-progress" class="hidden mt-4">
+            <div class="flex items-center gap-3">
+              <div class="flex-1">
+                <div class="flex justify-between t11 text-slate-400 mb-1">
+                  <span id="refresh-label">Refreshing…</span><span id="refresh-count" class="font-mono"></span>
+                </div>
+                <div class="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                  <div id="refresh-bar" class="h-full bg-brand transition-all duration-300" style="width:0%"></div>
+                </div>
+              </div>
+              <button id="refresh-end" type="button"
+                class="px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white t11 font-bold transition flex items-center gap-1.5 disabled:opacity-50 shrink-0">
+                <i class="fa-solid fa-stop"></i><span>End task</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Failed accounts of the last refresh: WHICH account failed and WHY.
+               Persists until dismissed or the next refresh starts. -->
+          <div id="refresh-failed" class="hidden mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10">
+            <div class="flex items-center justify-between px-3 pt-2">
+              <span class="t11 font-semibold text-amber-400">
+                <i class="fa-solid fa-triangle-exclamation mr-1"></i>Failed accounts
+              </span>
+              <button id="refresh-failed-close" title="Hide"
+                class="text-slate-500 hover:text-slate-300 text-xs px-1 transition">
+                <i class="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+            <ul id="refresh-failed-list" class="px-3 pb-2 pt-1 space-y-1 max-h-32 overflow-y-auto t11"></ul>
           </div>
         </header>
 
@@ -839,6 +900,33 @@
           </div>
         </section>
       </section>
+
+      <!-- ─────── ACCOUNTS (per-account Steam management) ─────── -->
+      <section id="screen-accounts" class="hidden flex-1 flex flex-col overflow-hidden">
+        <header id="accounts-header" class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40">
+          <h2 class="t28 font-bold text-white tracking-tight">Accounts</h2>
+          <p class="t14 text-slate-500 mt-1">Wallet, games and profile per Steam account.</p>
+        </header>
+        <div id="accounts-body" class="flex-1 overflow-y-auto p-8"></div>
+      </section>
+
+      <!-- ─────── BATCH JOBS ─────── -->
+      <section id="screen-batch" class="hidden flex-1 flex flex-col overflow-hidden">
+        <header id="batch-header" class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40">
+          <h2 class="t28 font-bold text-white tracking-tight">Batch Jobs</h2>
+          <p class="t14 text-slate-500 mt-1">Pick a scope, pick a job, run it with live progress.</p>
+        </header>
+        <div id="batch-body" class="flex-1 overflow-y-auto p-8"></div>
+      </section>
+
+      <!-- ─────── PROXIES (declarative proxy rules) ─────── -->
+      <section id="screen-proxies" class="hidden flex-1 flex flex-col overflow-hidden">
+        <header id="proxies-header" class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40">
+          <h2 class="t28 font-bold text-white tracking-tight">Proxies</h2>
+          <p class="t14 text-slate-500 mt-1">Proxy rules — the most-specific match wins.</p>
+        </header>
+        <div id="proxies-body" class="flex-1 overflow-y-auto p-8"></div>
+      </section>
     </main>
   </div>
 
@@ -868,7 +956,7 @@
         </div>
         <div>
           <label class="field-label">
-            Proxy override <span class="text-slate-600 font-normal">(optional – empty = environment proxy)</span>
+            Proxy <span class="text-slate-600 font-normal">(optional – creates an account rule in Proxies)</span>
           </label>
           <input name="proxy" placeholder="http://user:pass@host:3128" class="field" />
         </div>
@@ -1026,14 +1114,10 @@
       <form id="env-form" class="px-6 py-5 space-y-4">
         <div>
           <label class="field-label">Name</label>
-          <input name="name" id="env-name-input" required placeholder="e.g. Germany farm" class="field" />
+          <input name="name" id="env-name-input" required placeholder="e.g. Germany" class="field" />
         </div>
-        <div>
-          <label class="field-label">
-            Global (rotating) proxy <span class="text-slate-600 font-normal">(empty = local IP)</span>
-          </label>
-          <input name="proxy" id="env-proxy-input" placeholder="host:port:user:pass · user:pass@host:port · http://…" class="field" />
-          <p class="t10 text-slate-600 mt-1.5 leading-relaxed">Any format works — <span class="font-mono text-slate-500">host:port:user:pass</span>, <span class="font-mono text-slate-500">host:port@user:pass</span>, <span class="font-mono text-slate-500">user:pass:host:port</span>, <span class="font-mono text-slate-500">user:pass@host:port</span>, or a full URL.</p>
+        <div class="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 t11 text-slate-500">
+          <i class="fa-solid fa-network-wired mr-1 text-brand"></i>Proxies are managed in the <b class="text-slate-300">Proxies</b> module now (declarative rules). Add an environment-scoped rule there.
         </div>
         <div class="flex gap-3 pt-1">
           <button type="button" id="env-cancel" class="btn btn-secondary flex-1">Cancel</button>
@@ -1107,17 +1191,8 @@
           <label class="field-label">Display name <span class="text-slate-600 font-normal">(optional)</span></label>
           <input id="edit-displayname" autocomplete="off" class="field" />
         </div>
-        <div>
-          <label class="field-label">Network <span class="text-slate-600 font-normal">(proxy)</span></label>
-          <p id="edit-proxy-current" class="t11 mb-1.5 font-mono text-slate-500"></p>
-          <label class="flex items-center gap-2 mb-2 t12 font-medium text-slate-300 cursor-pointer">
-            <input type="checkbox" id="edit-use-env-proxy" class="accent-violet-500 w-4 h-4" />
-            Use environment proxy
-          </label>
-          <input id="edit-proxy" placeholder="Leave empty for local proxy" autocomplete="off" class="field" />
-          <p class="t11 text-slate-500 mt-1.5">
-            <i class="fa-solid fa-circle-info mr-1 text-brand"></i><b class="text-slate-400">On</b> = use the environment proxy. <b class="text-slate-400">Off</b> = enter a custom proxy, or leave empty for local proxy (local IP).
-          </p>
+        <div class="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 t11 text-slate-500">
+          <i class="fa-solid fa-network-wired mr-1 text-brand"></i>Proxy is managed in the <b class="text-slate-300">Proxies</b> module now — add an account-scoped rule there to override this account's egress.
         </div>
         <details>
           <summary class="t12 font-semibold text-slate-400 cursor-pointer select-none hover:text-slate-200">Change credentials (optional)</summary>
@@ -1126,9 +1201,6 @@
             <input id="edit-mafile" placeholder="New maFile path (empty = unchanged)" autocomplete="off" class="field" />
           </div>
         </details>
-        <div class="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 t11 text-slate-500">
-          <i class="fa-solid fa-circle-info mr-1 text-brand"></i>On proxy change the account is re-logged in (takes effect from the next "Refresh").
-        </div>
         <div class="flex gap-3 pt-1">
           <button type="button" id="edit-cancel" class="btn btn-secondary flex-1">Cancel</button>
           <button type="submit" id="edit-submit" class="btn btn-primary flex-1">

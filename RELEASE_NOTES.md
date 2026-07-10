@@ -1,16 +1,15 @@
-- Fixed: Buy, sell, send, imports and "Open in Browser" no longer stop working after the SSIM window reloads — the app keeps its authorization for the whole session, and clearly tells you to restart if it ever loses it (before, every action silently failed with a "capability token" error until a full restart).
-- Fixed: The "Live Logs" button opens again — and no longer sits on top of your on-screen alerts and notifications.
-- Fixed: Item prices no longer get stuck blank after a brief network / Steam hiccup — a failed price lookup retries within minutes instead of being remembered as "no price" for a whole day (even across restarts).
-- New: The "Fetching prices…" indicator now shows a rough time estimate, so a large inventory's price load no longer looks frozen (it's just throttled to stay under Steam's rate limit).
-- Fixed: The update button now asks you to confirm before it installs and restarts SSIM.
-- Fixed (safety): SSIM no longer silently creates a blank vault over your existing accounts if the vault file goes missing — it stops and asks you to restore it first.
-- New: Updates that get stuck are now shown ("Update ready but blocked here — click to retry / reinstall") instead of silently keeping the old version. One click retries; a 2-min manual reinstall always fixes it.
-- Fixed: Slow / antivirus-heavy machines can finally update — the pre-install check retries with more time instead of giving up, and is much faster on repeat tries.
-- Fixed: No more re-downloading the same ~170 MB on every launch — a verified update is kept and reused.
-- New: "Check for updates" button + background checks. A mid-session update NEVER interrupts a trade/buy/refresh — it only installs when you confirm and nothing is running.
-- New: Crash visibility — if the backend ever dies, the next launch shows a "SSIM crashed last run" banner (your data is safe) pointing at the logs. Optional crash webhook for unattended machines.
-- New: "Money operations paused" is now shown on screen if the safety breaker trips (restart before more trades/buys) — no more silent failures.
-- Fixed: A damaged login-token file is now caught and preserved (warned, not overwritten) instead of dropping every saved login and forcing a re-login/2FA on the whole fleet.
-- Fixed: A crash mid buy/send can no longer be accidentally double-fired — a retry is stopped once with a "verify on Steam first" note.
-- Fixed: Disconnected accounts are cleaned up instead of piling up and blocking new logins on large fleets; interrupted inventory reads no longer show wrong owned/locked/listed counts.
-- Backend, startup and license-server hardening: safer file writes, update telemetry, safer publish/rollback, key-mismatch guard, and dozens of edge-case fixes for flaky networks and 500+ account fleets.
+SSIM v1.4.1
+
+New:
+- Proxy Rules: assign proxies by account, folder, environment, or globally — most-specific rule wins, no more editing one account at a time
+- Batch Jobs: run fleet-wide actions from a single screen with unified live progress and history
+- Item Distribution: automatically spread items across accounts up to a target value per account
+- Wallet top-up: redeem Steam wallet codes and paysafecard balance directly in SSIM, with double-redeem protection
+- Connection resilience: automatic per-proxy CM protocol fallback (TCP -> WebSocket) so more proxy providers connect reliably
+
+Improved:
+- Pricing no longer stalls for hours when Steam rate-limits price lookups; it now rides your logged-in sessions and backs off cleanly instead of grinding
+- Mass-sell 2FA confirmations are batched into a single request per account
+- The confirmations (SDA) panel now backs off gracefully when Steam rate-limits an account, instead of re-checking every minute (which kept the limit active)
+
+Note: Steam had a platform-wide "too many requests" incident on July 9. If confirmations or market pricing look limited right after updating, that is Steam recovering on its side, not SSIM.

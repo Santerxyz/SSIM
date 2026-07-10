@@ -239,10 +239,13 @@ export class TradeUpService {
     this.execCancel = false;
   }
 
-  /** Live-refresh the account, then compute every positive-profit trade-up from its skins. */
-  async getCandidates(username: string, opts?: { minProfitCents?: number }): Promise<TradeUpResult> {
+  /** Live-refresh the account, then compute trade-ups from its skins. By default only positive-profit
+   *  contracts; with `includeUnprofitable` it returns EVERY computable contract (the frontend's "All
+   *  trade-ups" tab), each carrying its own `profitCents` so the UI can split profitable vs all. */
+  async getCandidates(username: string, opts?: { minProfitCents?: number; includeUnprofitable?: boolean }): Promise<TradeUpResult> {
     await this.schema.ensureLoaded();
     const minProfit = Number.isFinite(opts?.minProfitCents) ? Number(opts?.minProfitCents) : 0;
+    const includeUnprofitable = !!opts?.includeUnprofitable;
     const warnings: string[] = [];
 
     const inv = await this.inventory.forceRefresh(username, 'cs2'); // fresh snapshot, like the buy path
@@ -325,7 +328,7 @@ export class TradeUpService {
           logger.debug(`[tradeup] skipped a set: ${(e as Error).message}`);
           continue;
         }
-        if (contract.profitCents <= minProfit) continue;
+        if (!includeUnprofitable && contract.profitCents <= minProfit) continue;
         candidates.push(this.decorate(contract, key));
       }
     }
@@ -340,7 +343,10 @@ export class TradeUpService {
     // H-TRD-072: rank fully-priced first, profit second, so the MAX_CANDIDATES slice
     // keeps honest fully-priced contracts over estimate ones with fabricated near-zero cost.
     candidates.sort((a, b) => (Number(b.fullyPriced) - Number(a.fullyPriced)) || (b.profitCents - a.profitCents));
-    const top = candidates.slice(0, MAX_CANDIDATES);
+    // The "All trade-ups" tab surfaces every computable contract (still bounded — candidate sets are
+    // generated per rarity×collection, so a few hundred is the ceiling) with a higher cap so nothing
+    // meaningful is cut; the profitable-only default keeps the tight UI cap.
+    const top = candidates.slice(0, includeUnprofitable ? 300 : MAX_CANDIDATES);
 
     // H-TRD-073: the price cache is tri-state (PricingService.priceCents: undefined = not fetched yet
     // → a re-click can fill it; null = FRESH authoritative "no market price", cached 24h per S2 → a
@@ -368,7 +374,8 @@ export class TradeUpService {
       ? 'Input floats are the REAL per-item GC floats — output wears + EV are accurate (subject to live market prices).'
       : 'Input floats are ESTIMATED from each item’s wear (GC float read unavailable) — EV is an approximation.');
 
-    logger.info(`[tradeup] ${username}: ${top.length} profitable candidate(s) from ${inputs.length} eligible input(s)${realFloats ? ' (real floats)' : ' (estimated floats)'}`);
+    const profitableCount = top.filter((c) => c.profitCents > 0).length;
+    logger.info(`[tradeup] ${username}: ${top.length} candidate(s) (${profitableCount} profitable) from ${inputs.length} eligible input(s)${realFloats ? ' (real floats)' : ' (estimated floats)'}`);
     return { username, candidates: top, warnings, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount(), realFloats };
   }
 
