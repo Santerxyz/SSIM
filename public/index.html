@@ -478,7 +478,15 @@
        (owner report 2026-07-08). z-20 sits above every row but below modals (z-40). The opaque
        slate-950 fill + the inset bottom hairline (a box-shadow, which — unlike a collapsed border —
        stays glued to the sticky cell instead of scrolling away) close the header band. */
-    .items-table thead th{ position:sticky; top:0; z-index:20; background:rgb(var(--slate-950)); color:rgb(var(--slate-400));
+    /* TBL-04 (v1.4.4 — owner: "between the taskbar at the top and the item taskbar there is an empty
+       field that's buggy"). A scroll container's PADDING offsets sticky positioning: every screen that
+       hosts .items-table scrolls inside `.overflow-y-auto.p-8`, so `top:0` pinned the column header
+       2rem BELOW the scrollport's visible top edge — leaving a 2rem band that item rows kept scrolling
+       through, above the header. (Measured: rows painting 36px above the pinned TH.) Cancelling the
+       container's top padding pins the header flush with the top of the scroll area, so rows pass
+       BEHIND it. Keep --items-head-offset in sync if that p-8 ever changes. */
+    .items-wrap{ --items-head-offset: 2rem; }
+    .items-table thead th{ position:sticky; top:calc(-1 * var(--items-head-offset, 2rem)); z-index:20; background:rgb(var(--slate-950)); color:rgb(var(--slate-400));
       font-size:var(--fs-11); text-transform:uppercase; letter-spacing:.05em; font-weight:600; text-align:left; padding:.6rem .75rem; box-shadow: inset 0 -1px 0 var(--border-1); white-space:nowrap; }
     .items-table tbody tr{ border-bottom:1px solid rgb(var(--slate-800) / .7); transition: background-color .12s; content-visibility:auto; contain-intrinsic-size:auto 52px; }
     .items-table tbody tr:hover{ background:rgb(var(--brand-rgb) / .06); }
