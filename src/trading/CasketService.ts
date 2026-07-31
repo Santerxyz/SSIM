@@ -1,6 +1,7 @@
 import type { GcActionLayer, GcItem, GcStatus } from './GcActionLayer';
 import type { InventoryService } from '../core/InventoryService';
 import { MoneyOps, assetKey } from './MoneyOps';
+import { isSellable } from '../core/MarketModel';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -67,6 +68,24 @@ export class CasketService {
     if (this.job.running) throw new Error('a storage move is already running');
     if (!casketId) throw new Error('a storage unit must be selected');
     if (!Array.isArray(itemIds) || itemIds.length === 0) throw new Error('no items selected');
+    // TRADE-LOCK PRE-FLIGHT for DEPOSITS (2026-07-31 — owner: "I still can't deposit anything to a
+    // storage unit"). Steam's own trade-protection notice states the item "cannot be consumed,
+    // MODIFIED, or TRANSFERRED until <date>" — and moving an item into a casket is exactly such a
+    // transfer, so Valve's GC silently DISCARDS a CasketItemAdd for a held item: no SO update, no
+    // error. The old behaviour was to send anyway and then burn the full 15s verify window per item
+    // before reporting the useless "unconfirmed" (observed live: "0 moved, 2 unconfirmed, 0 failed"
+    // on an account whose every storable stack was locked until 2026-08-02). Refuse up front and say
+    // WHEN it will work. Withdraw is unaffected — an item already inside a unit is not the held one.
+    if (direction === 'deposit') {
+      const locked = this.lockedForDeposit(username, itemIds);
+      if (locked.blocked.length === itemIds.length) {
+        throw new Error(`every selected item is trade-locked${locked.until ? ` until ${locked.until}` : ''} — Steam does not allow a trade-held item to be moved into a storage unit (it "cannot be transferred" while held)`);
+      }
+      if (locked.blocked.length) {
+        logger.warn(`[casket] ${username}: skipping ${locked.blocked.length} trade-locked item(s) — Steam refuses a casket deposit while an item is trade-held`);
+        itemIds = itemIds.filter((id) => !locked.blocked.includes(String(id)));
+      }
+    }
     // Cross-service asset guard (D2 / INV-D2): a move takes these items out of play for the whole
     // (budget-scaled, S16) move, so claim them all-or-nothing before starting — refuse if any is
     // mid-flight in another money op (being sold/sent). Released in runMove's finally.
@@ -80,6 +99,37 @@ export class CasketService {
     };
     void this.runMove(username, casketId, [...itemIds], direction, keys);
     return this.moveStatus();
+  }
+
+  /**
+   * Which of `itemIds` are trade-held (and so cannot be deposited), plus the soonest expiry to quote
+   * back. Mirrors TradeService.filterSendable: resolve each asset from the account's CACHED CS2
+   * inventory (caskets are CS2-only) and treat a stack that isn't freely tradable as blocked. A cache
+   * miss blocks NOTHING — an unknown item is still attempted, so a stale cache can never turn into a
+   * refusal to move an item Steam would have accepted.
+   */
+  private lockedForDeposit(username: string, itemIds: string[]): { blocked: string[]; until: string | null } {
+    // Fail OPEN on anything unusable — no inventory service, no getCached, no cache entry. This guard
+    // may only ever REFUSE a move we positively know Steam will reject; it must never become a new way
+    // for a deposit to fail. (Also keeps the cross-service busy guard below reachable, which is the
+    // stronger invariant: H-TRD-099 (c) asserts startMove reports "busy" for a held asset.)
+    const inv = typeof this.inventory?.getCached === 'function'
+      ? this.inventory.getCached(username, 'cs2')
+      : null;
+    if (!inv?.items) return { blocked: [], until: null };
+    const stackOf = (assetId: string) =>
+      inv.items.find((s) => (s.assetIds ?? []).some((id) => String(id) === String(assetId)));
+    const blocked: string[] = [];
+    let soonest: number | null = null;
+    for (const id of itemIds) {
+      const stack = stackOf(String(id));
+      if (!stack) continue;                       // unknown to the cache → attempt it (never over-block)
+      if (isSellable(stack)) continue;            // freely tradable → fine
+      blocked.push(String(id));
+      const exp = stack.tradeLockExpiry ? Date.parse(String(stack.tradeLockExpiry)) : NaN;
+      if (Number.isFinite(exp) && (soonest == null || exp < soonest)) soonest = exp;
+    }
+    return { blocked, until: soonest != null ? new Date(soonest).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : null };
   }
 
   cancelMove(): CasketMoveJob {

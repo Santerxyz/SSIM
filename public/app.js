@@ -9163,7 +9163,23 @@ function casketStorable(item) {
   if (name === 'storage unit') return false;
   const t = (item.type || '').toLowerCase();
   if (t === 'collectible' || t === 'pass' || t === 'gift') return false;
+  // TRADE-HELD items cannot go in (2026-07-31). Steam's own notice says the item "cannot be consumed,
+  // modified, or TRANSFERRED" while held, and a casket deposit is such a transfer — the GC silently
+  // discards the request, so the old behaviour was a 15s-per-item wait ending in "unconfirmed".
+  if (casketLockReason(item)) return false;
   return true;
+}
+
+/** Why this item can't be deposited right now, or '' when it can. Drives the greyed-out row label. */
+function casketLockReason(item) {
+  const exp = item && item.tradeLockExpiry ? Date.parse(item.tradeLockExpiry) : NaN;
+  if (Number.isFinite(exp) && exp > Date.now()) {
+    const d = new Date(exp);
+    return `trade-locked until ${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  }
+  // Non-tradable with no readable expiry still can't be transferred into a unit.
+  if (item && item.tradable === false) return 'not tradable';
+  return '';
 }
 
 function renderCasketPanels() {
@@ -9173,10 +9189,16 @@ function renderCasketPanels() {
   const unit = ckState.caskets.find(c => c.id === ckState.casketId);
   const invInner = invRows.length ? invRows.map(i => {
     if (!casketStorable(i)) {
-      return `<div class="flex items-center gap-2.5 px-3 py-2 t12 opacity-40 cursor-not-allowed" title="This item type can't be stored in a storage unit">
-        <i class="fa-solid fa-ban w-3.5 text-slate-600 shrink-0"></i>
+      // Name the ACTUAL reason: a trade hold is temporary and the operator wants to know WHEN it lifts,
+      // which is very different information from "this type can never be stored".
+      const lock = casketLockReason(i);
+      const tip = lock
+        ? `Steam blocks moving a trade-held item into a storage unit — ${lock}`
+        : "This item type can't be stored in a storage unit";
+      return `<div class="flex items-center gap-2.5 px-3 py-2 t12 opacity-40 cursor-not-allowed" title="${escapeAttr(tip)}">
+        <i class="fa-solid ${lock ? 'fa-lock' : 'fa-ban'} w-3.5 text-slate-600 shrink-0"></i>
         <span class="truncate flex-1 text-slate-300">${escapeHtml(i.name || i.marketHashName)}</span>
-        <span class="t10 uppercase tracking-wide text-slate-600 shrink-0">not storable</span>
+        <span class="t10 uppercase tracking-wide text-slate-600 shrink-0">${lock ? escapeHtml(lock) : 'not storable'}</span>
         <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></div>`;
     }
     const sel = ckState.invSel.has(i.marketHashName);

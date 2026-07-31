@@ -347,7 +347,18 @@ export class GcActionLayer {
       const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
       if (!unit) throw new Error(`storage unit ${casketId} not found in the live GC inventory — refresh the unit list and retry`);
       if (direction === 'deposit') {
-        const current = Number(unit?.casket_contained_item_count) || 0;
+        // The GC omits casket_contained_item_count for an EMPTY unit, so "absent" and "0" are the same
+        // on the wire — but they are NOT the same for diagnosis. `|| 0` silently lets a deposit through
+        // when the count is unreadable, and a FULL unit then behaves exactly like the trade-lock case
+        // (GC accepts the message, discards it, every item times out "unconfirmed"). Say which one we
+        // saw, so the next report distinguishes "unit full" from "item trade-held" without guesswork.
+        const raw = unit?.casket_contained_item_count;
+        const known = Number.isFinite(Number(raw));
+        const current = known ? Number(raw) : 0;
+        logger.info(`[gc] ${username} deposit pre-flight: unit ${casketId}` +
+          `${typeof unit?.custom_name === 'string' && unit.custom_name ? ` ("${unit.custom_name}")` : ''} ` +
+          `holds ${known ? current : 'UNKNOWN (attribute absent — treated as empty)'} / ${CASKET_CAPACITY}, ` +
+          `depositing ${itemIds.length}`);
         if (current + itemIds.length > CASKET_CAPACITY) {
           throw new Error(`deposit would exceed the ${CASKET_CAPACITY}-item cap (unit holds ${current})`);
         }
