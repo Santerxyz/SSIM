@@ -367,6 +367,18 @@ export class GcActionLayer {
           break;
         }
         const itemId = String(itemIds[i]);
+        // Pre-send guard for DEPOSIT: verifyMove treats "item gone from the inventory array" as proof the
+        // deposit landed (the GC emits itemRemoved). That inference is only sound if the item was a FREE
+        // inventory item to begin with — so establish that BEFORE sending. An id that is already absent (or
+        // already inside a unit) is a stale selection: fail it pre-send, with nothing submitted.
+        if (direction === 'deposit') {
+          const free = (go.inventory ?? []).find((x) => String(x.id) === String(itemId) && !x.casket_id);
+          if (!free) {
+            failed.push({ itemId, error: 'item is not a free inventory item (already stored, or the selection is stale) — refresh and retry' });
+            onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, unconfirmed: unconfirmed.length, failed: failed.length });
+            continue;
+          }
+        }
         try {
           // SEND (fire-and-forget). After this point we never throw for this item.
           if (direction === 'deposit') go.addToCasket(casketId, itemId);
@@ -386,10 +398,24 @@ export class GcActionLayer {
     }, loopBudgetMs + 20_000); // backstop > the loop's own deadline → the loop self-aborts first (no detached zombie)
   }
 
-  /** Polls the SO cache until the item reflects the expected casket state (or times out). */
+  /**
+   * Polls the SO cache until the item reflects the expected casket state (or times out).
+   *
+   * DEPOSIT (2026-07-31 root-cause fix — owner: "storage says items unconfirmed, and is insanely slow"):
+   * the old predicate required the item to still be IN `go.inventory` carrying `casket_id`. That never
+   * happens. The GC emits `itemRemoved` for a deposited item — it LEAVES the inventory array entirely and
+   * only reappears (tagged with `casket_id`) if `getCasketContents` is later called to load that unit.
+   * So every successful deposit failed the check, burned the full 15s verify window, and was reported
+   * "unconfirmed" — which also blew the move budget (20s + 3s/item), leaving most items unattempted.
+   * A deposit is confirmed when the item is no longer a FREE inventory item: gone, or tagged into THIS
+   * casket. The caller guarantees the item was free before the send, so "gone" cannot be a false positive.
+   *
+   * WITHDRAW is unchanged and was already correct: the GC emits `itemAcquired`, so the item is present
+   * with no `casket_id`.
+   */
   private async verifyMove(go: GcLike, casketId: string, itemId: string, direction: 'deposit' | 'withdraw'): Promise<boolean> {
     const want = (it: GcItem | undefined): boolean => direction === 'deposit'
-      ? !!it && String(it.casket_id) === String(casketId)
+      ? !it || String(it.casket_id) === String(casketId)
       : !!it && !it.casket_id;
     const deadline = nowMs() + MOVE_VERIFY_TIMEOUT_MS;
     while (nowMs() < deadline) {

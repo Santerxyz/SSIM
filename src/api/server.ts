@@ -582,9 +582,16 @@ export function createApp(deps: ApiDeps): Express {
   // ════════════════════════════════════════════════════════════════════════
 
   app.get('/api/environments', (_req: Request, res: Response) => {
+    // `egress` is the RESOLVED truth for the environment (see environmentEgress). Post-cutover the legacy
+    // `env.proxy` field is retired and always empty (see the POST guard below), so a UI that renders only
+    // `hasProxy`/`proxy` reported "Local IP (no proxy)" for every environment even while a proxy RULE was
+    // live and working. The rule engine is fleet-wide, so resolve ONCE here and group by environment
+    // rather than re-sweeping per env. (v1.4.4 — owner issue 1.)
+    const egressByEnv = environmentEgress(accounts);
     res.json(accounts.getEnvironments().map(e => ({
       ...sanitizeEnvironment(e),
       accountCount: accounts.countInEnvironment(e.id),
+      egress: egressByEnv.get(e.id) ?? emptyEgress(),
     })));
   });
 
@@ -3139,6 +3146,69 @@ function sanitizeAccount(account: AccountConfig): Record<string, unknown> {
       ? { type: networkOverride.type, value: redactProxyCredentials(networkOverride.value) }
       : undefined,
   };
+}
+
+/** The resolved egress summary shown for an environment that has no accounts to resolve. */
+export function emptyEgress(): EnvEgress {
+  return { kind: 'none', label: 'No accounts', ruleNames: [], proxies: [], localCount: 0, proxyCount: 0 };
+}
+
+export interface EnvEgress {
+  /** 'proxy' = every account leaves via ONE proxy · 'mixed' = more than one distinct outcome ·
+   *  'local' = every account is on the host IP · 'none' = the environment has no accounts. */
+  kind: 'proxy' | 'mixed' | 'local' | 'none';
+  /** Ready-to-render summary, credentials already redacted. */
+  label: string;
+  /** Distinct proxy-rule names covering this environment (empty when nothing matched). */
+  ruleNames: string[];
+  /** Distinct redacted proxy egress values in this environment. */
+  proxies: string[];
+  localCount: number;
+  proxyCount: number;
+}
+
+/**
+ * Per-environment EFFECTIVE egress, grouped from one fleet-wide resolution sweep.
+ *
+ * Why this exists (v1.4.4, owner issue 1: "after changing an environment proxy from no proxy to a rule it
+ * doesn't show in the environment tab, even though the logs say it applied"): egress is resolved PER ACCOUNT
+ * by the proxy-rule engine, while the environment object still carries only the legacy `proxy` string. Once
+ * proxy rules are authoritative that string is permanently empty, so any UI keyed on it reports "Local IP"
+ * forever. This reports what the accounts ACTUALLY use, so the tab agrees with the logs.
+ */
+export function environmentEgress(accounts: AccountManager): Map<string, EnvEgress> {
+  const byEnv = new Map<string, EnvEgress>();
+  for (const r of accounts.resolutionPreview()) {
+    const e = byEnv.get(r.environmentId) ?? emptyEgress();
+    // A pool-lost account has no usable egress; count it as local so it can never be shown as "proxied"
+    // (that state is the host-IP-leak guard, and over-reporting a proxy here would hide it).
+    const isProxy = !r.poolLost && r.network?.type === 'proxy' && !!r.network.value?.trim();
+    if (isProxy) {
+      e.proxyCount++;
+      const red = redactProxyCredentials(r.network!.value);
+      if (red && !e.proxies.includes(red)) e.proxies.push(red);
+      if (r.ruleName && !e.ruleNames.includes(r.ruleName)) e.ruleNames.push(r.ruleName);
+    } else {
+      e.localCount++;
+    }
+    byEnv.set(r.environmentId, e);
+  }
+  for (const e of byEnv.values()) {
+    if (e.proxyCount > 0 && e.localCount === 0 && e.proxies.length === 1) {
+      e.kind = 'proxy';
+      e.label = e.proxies[0];
+    } else if (e.proxyCount > 0) {
+      e.kind = 'mixed';
+      // Name the rules when we can — that is what the operator just configured and wants confirmed.
+      e.label = e.ruleNames.length
+        ? `${e.ruleNames.join(', ')} (${e.proxyCount} proxied${e.localCount ? `, ${e.localCount} local` : ''})`
+        : `${e.proxies.length} proxies${e.localCount ? ` (+${e.localCount} local)` : ''}`;
+    } else {
+      e.kind = 'local';
+      e.label = 'Local IP (no proxy)';
+    }
+  }
+  return byEnv;
 }
 
 /** Redacts the proxy credentials of an environment and adds a hasProxy flag. */

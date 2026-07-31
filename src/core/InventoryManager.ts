@@ -415,6 +415,15 @@ function normalizeExterior(value?: string): ItemExterior | null {
 export const TRADE_LOCK_DATE_UNKNOWN = new Date('2099-01-01T00:00:00.000Z');
 
 /**
+ * Plausibility horizon for a YEAR-LESS hold note (see the fallback in {@link extractHoldDate}).
+ * Steam's longest hold is 15 days (trade protection / market hold; CS2's own trade lock is 7), so a
+ * year-less date further out than this is never a real hold — it is an EXPIRED note rolled into next
+ * year, or an incidental date in an item's flavour text. 30 days leaves generous headroom over Steam's
+ * real 15-day maximum while still rejecting the multi-month phantoms.
+ */
+export const MAX_YEARLESS_HOLD_DAYS = 30;
+
+/**
  * Resolves a trade-lock expiry from Steam's data. The AUTHORITATIVE source is the
  * per-owner "Tradable After <date>" notice (visible only on the OWNER view, which
  * is why the inventory fetch must be authenticated). `cache_expiration` is only a
@@ -663,7 +672,7 @@ export function extractHoldDate(rawText: string): Date | null {
   while ((m = mon.exec(text))) { const d = parseSteamDate(`${m[1]}${m[2] ? ' ' + m[2] : ''} GMT`); if (d) cand.push(d.getTime()); }
 
   const now = Date.now();
-  let future = cand.filter(t => t > now).sort((a, b) => a - b);
+  const future = cand.filter(t => t > now).sort((a, b) => a - b);
   if (future.length) return new Date(future[0]);
 
   // ── FALLBACK: Steam's trade-protection notice uses a SHORT, YEAR-LESS form ──────────────────────
@@ -679,8 +688,16 @@ export function extractHoldDate(rawText: string): Date | null {
                          : (h === 12 ? 0 : h);          // am: 12→0
   };
   const yNow = new Date(now).getFullYear();
+  // Year-less candidates are kept in their OWN pool, never pushed into `cand`. They are guesses (the year
+  // is inferred, not stated), so they must clear the horizon check below — a year-BEARING date states its
+  // year and is trusted as-is.
+  const ncand: number[] = [];
   const pushNoYear = (mo: number, d: number, hh: number, mi: number): void => {
-    push(yNow, mo, d, hh, mi); push(yNow + 1, mo, d, hh, mi); // future-filter picks the nearest future
+    for (const y of [yNow, yNow + 1]) {                 // Dec→Jan notes need the roll-over; horizon bounds it
+      if (mo < 1 || mo > 12 || d < 1 || d > 31) return; // reject garbage triples (mirrors `push`)
+      const t = new Date(y, mo - 1, d, hh, mi, 0).getTime();
+      if (!Number.isNaN(t)) ncand.push(t);
+    }
   };
   // day-first  "17 Jul @ 2:00pm" / "17 July @ 14:00"
   const nyDay = /\b(\d{1,2})\s+([\p{L}\p{M}]{2,20})\.?\s*(?:@\s*)?(\d{1,2}):(\d{2})\s*([ap]\.?m\.?)?/giu;
@@ -689,8 +706,17 @@ export function extractHoldDate(rawText: string): Date | null {
   const nyMon = /\b([\p{L}\p{M}]{2,20})\.?\s+(\d{1,2})\s*(?:@\s*)?(\d{1,2}):(\d{2})\s*([ap]\.?m\.?)?/giu;
   while ((m = nyMon.exec(text))) { const mo = monthWords().get(monthWordKey(m[1])); if (mo) pushNoYear(mo, +m[2], to24(+m[3], m[5]), +m[4]); }
 
-  future = cand.filter(t => t > now).sort((a, b) => a - b);
-  return future.length ? new Date(future[0]) : null;
+  // HORIZON GUARD (2026-07-31 — owner bug: "Storage Unit tradelocked for 222 days").
+  // A year-less note whose date has ALREADY PASSED this year (an EXPIRED hold, e.g. "11 Mar @ 2:00pm" read
+  // in July) was rolled to yNow+1 by the future-filter and surfaced as a ~222-day phantom lock. Steam's
+  // longest hold is 15 days (trade protection / market hold; CS2's trade lock is 7), so a year-less
+  // candidate beyond MAX_YEARLESS_HOLD_DAYS cannot be a real hold — it is either an expired note or an
+  // incidental date in flavour text (this fallback also runs on every non-tradable item's descriptions,
+  // e.g. Storage Units). Reject it and let `desc.tradable` drive the plain "not tradable" state instead of
+  // inventing a countdown. Genuine Dec→Jan roll-overs are days out, so they still pass.
+  const horizon = now + MAX_YEARLESS_HOLD_DAYS * 86_400_000;
+  const nfuture = ncand.filter(t => t > now && t <= horizon).sort((a, b) => a - b);
+  return nfuture.length ? new Date(nfuture[0]) : null;
 }
 
 /**

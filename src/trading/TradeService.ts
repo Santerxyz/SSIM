@@ -91,7 +91,17 @@ export interface OfferActionResult {
 // per-recipient spam/DDoS protection. So mass-send runs a small FIXED worker pool and paces
 // every dispatch by a jittered gap, regardless of batch size, to protect the receiver.
 
-const TRADE_MAX_CONCURRENCY = 1;     // HARD ceiling for trades — fully serial, never scaled (Error 15 guard)
+// v1.4.4: raised 1 → 5 (owner: "one is just waay too slow"). This is safe because the Error-15 guard was
+// never the worker count — it is the GLOBAL dispatch throttle below, which reserves a jittered ≥1–2s slot
+// for every offer across ALL workers. What was serialised at 1 was the EXPENSIVE per-sender preamble (CM
+// login, web-session pre-flight, inventory load, 2FA confirm ≈ 10–20s each), which the receiver never sees.
+// Workers now overlap that preamble while `beforeDispatch` still releases the offers themselves one slot at
+// a time — identical offer cadence at the receiver, ~5× the throughput.
+const TRADE_MAX_CONCURRENCY = 5;     // HARD ceiling for trades — never scaled by the dynamic scaler
+/** Sentinel: "End Task" landed while this offer sat in its pacing gap. Nothing was dispatched, so the
+ *  worker re-queues the bot and stops — it is deliberately NOT an Error (never logged as a failure). */
+const MASS_SEND_ABORTED = Symbol('mass-send-aborted');
+
 const TRADE_MIN_DELAY_MS    = 1_000; // min gap between two dispatched offers (global, not per-worker)
 const TRADE_MAX_DELAY_MS    = 2_000; // max gap (jittered) — lets the receiver process each offer cleanly
 
@@ -546,7 +556,18 @@ export class TradeService {
     return { ...params, myItems: kept };
   }
 
-  async sendTrade(fromUsername: string, params: SendTradeParams): Promise<SendTradeResult> {
+  /**
+   * `hooks.beforeDispatch` is awaited AFTER the (slow) web-session pre-flight and IMMEDIATELY BEFORE the
+   * offer is handed to Steam. Mass-send uses it to hold the global dispatch throttle at the one point that
+   * actually matters for Steam Error 15 — the moment the offer reaches the receiver — so several senders
+   * can log in and prepare concurrently while the offers themselves still leave ≥1–2s apart. Throwing from
+   * the hook aborts the send with nothing dispatched. (v1.4.4)
+   */
+  async sendTrade(
+    fromUsername: string,
+    params: SendTradeParams,
+    hooks?: { beforeDispatch?: () => Promise<void> },
+  ): Promise<SendTradeResult> {
     // Guard (INV-D1 / C3): a trade-locked or non-tradable asset can never go into an
     // offer. Drop such assets up front (Steam rejects the whole offer otherwise) and
     // proceed with the sellable remainder; throw only if nothing tradable is left.
@@ -596,6 +617,11 @@ export class TradeService {
       // an account that's already live, so a stalled proactive cookie refresh would send on dead
       // cookies without this. Buys/sells already pre-flight; this closes the send asymmetry. (H-TRD-010)
       const trader = await this.ensureWebSession(fromUsername);
+      // Dispatch gate: the login above is the slow, parallelisable part; THIS is the moment the receiver
+      // feels. Pacing here (not around the whole call) is what lets mass-send run several senders at once
+      // without bursting the receiver. Runs before the journal records anything — a throw here means the
+      // offer was never sent.
+      if (hooks?.beforeDispatch) await hooks.beforeDispatch();
       try {
         const result = await trader.sendTrade(params);
         this.journal.record(guardKey, 'send', 'sent'); // the offer now exists on Steam (survives a post-commit crash)
@@ -680,9 +706,9 @@ export class TradeService {
     tradeUrl: string,
     opts?: { concurrency?: number; delayMs?: number; message?: string },
   ): Promise<void> {
-    // HARDCODED concurrency: trades NEVER use the dynamic scaler (Error 15 guard). The cap is
-    // exactly TRADE_MAX_CONCURRENCY (1 — fully serial) no matter how many bots are queued; an
-    // explicit opts.concurrency may only LOWER it, never raise it above the hard ceiling.
+    // HARDCODED concurrency: trades NEVER use the dynamic scaler. The cap is exactly
+    // TRADE_MAX_CONCURRENCY no matter how many bots are queued; an explicit opts.concurrency may only
+    // LOWER it (an operator can still force fully-serial with concurrency:1), never raise it.
     const concurrency = Math.min(TRADE_MAX_CONCURRENCY, Math.max(1, opts?.concurrency ?? TRADE_MAX_CONCURRENCY));
     // Global pacing floor: every dispatched offer is at least this far apart in time, jittered up
     // to TRADE_MAX_DELAY_MS so the receiving Steam account isn't hit by a burst. An explicit
@@ -696,19 +722,17 @@ export class TradeService {
       // Snapshot which senders were ALREADY live so we release ONLY the sessions this send creates.
       wasLiveBefore = this.snapshotLive(groups.map((g) => g.username));
 
-      // Global dispatch throttle (shared across ALL workers): reserve time slots `gap` apart so the
-      // gap is between ANY two offers, not just two sends by the same worker. At the default ceiling
-      // of 1 this means offers go out strictly one-at-a-time, each ≥1–2s after the last — the safest
-      // possible cadence against Steam Error 15. (If the ceiling is ever raised, the throttle still
-      // guarantees the inter-offer gap regardless of worker count.)
+      // Global dispatch throttle (shared across ALL workers): reserve time slots `gap` apart so the gap is
+      // between ANY two offers, not just two sends by the same worker. This — not the worker count — is the
+      // Steam Error 15 guard, and it holds for any ceiling: N workers reserve N distinct increasing slots
+      // (reserveWaitMs advances nextSlotAt synchronously, so the reservation cannot race).
       const throttle = createDispatchThrottle(minGap, maxGap);
 
       const worker = async (): Promise<void> => {
         while (queue.length > 0) {
           if (this.massCancel) break; // "End Task": stop pulling new bots; in-flight offer (if any) finishes
           const group = queue.shift()!;
-          await throttle.pace(); // pace the dispatch BEFORE sending (anti-spam, per-recipient Error 15 guard)
-          if (this.massCancel) break; // re-check after the pacing wait so we don't fire a freshly-paced offer
+          let aborted = false;        // "End Task" landed in this offer's pacing gap ⇒ never attempted
           try {
             const res = await this.sendTrade(group.username, {
               tradeUrl,
@@ -716,6 +740,15 @@ export class TradeService {
               // not a CS2 one. group.appId/contextId default to CS2 in toEconItem. (App-agnostic.)
               myItems: group.assetIds.map(id => ({ assetId: id, appId: group.appId, contextId: group.contextId })),
               message: opts?.message,
+            }, {
+              // Pace at the DISPATCH point (after this sender's login/pre-flight), so the receiver still
+              // sees one offer per slot while the other workers prepare in parallel.
+              beforeDispatch: async () => {
+                await throttle.pace();
+                // Re-check after the pacing wait so a cancel during the gap doesn't fire a freshly-paced
+                // offer (the pre-v1.4.4 guard, preserved). Nothing has been sent at this point.
+                if (this.massCancel) throw MASS_SEND_ABORTED;
+              },
             });
             this.massJob.sent++;
             if (res.status === 'confirmed')   this.massJob.confirmed++;
@@ -723,6 +756,9 @@ export class TradeService {
             this.massJob.results.push({ username: group.username, offerId: res.offerId, status: res.status });
             logger.info(`[mass] ${group.username} → offer ${res.offerId} (${res.status})  [${this.massJob.done + 1}/${this.massJob.total}]`);
           } catch (err) {
+            // Cancelled DURING this offer's pacing gap: nothing was dispatched, so this bot is not a
+            // failure. Put it back on the queue (an honest "not attempted") and stop pulling work.
+            if (err === MASS_SEND_ABORTED) { aborted = true; queue.unshift(group); break; }
             this.massJob.failed.push({ username: group.username, error: (err as Error).message });
             logger.error(`[mass] ${group.username} failed: ${(err as Error).message}`);
             // Every group targets the SAME receiver, so a full-inventory rejection dooms every
@@ -736,7 +772,9 @@ export class TradeService {
               logger.error(`[mass] receiver inventory is full — stopping the run (${queue.length} bot(s) skipped)`);
             }
           } finally {
-            this.massJob.done++;
+            // A cancel-in-the-gap bot went back on the queue and was never attempted, so it must not
+            // inflate `done`. Every other outcome (sent, failed, refused) counts.
+            if (!aborted) this.massJob.done++;
           }
         }
       };

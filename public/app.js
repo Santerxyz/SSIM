@@ -1300,7 +1300,7 @@ function updateSidebar() {
   if (inEnv) {
     const env = state.environments.find(e => e.id === state.activeEnv);
     el.envName.textContent = env ? env.name : '—';
-    el.envProxy.textContent = env ? (env.hasProxy ? env.proxy : 'Local IP (no proxy)') : '';
+    el.envProxy.textContent = env ? envEgressLabel(env) : '';
     el.btnEnvMaster.classList.toggle('ring-1', state.invMode === 'env-master');
     el.btnEnvMaster.classList.toggle('ring-brand', state.invMode === 'env-master');
     el.accountSearch.value = state.accountSearch || '';     // keep the controls in sync with state
@@ -1444,6 +1444,23 @@ async function openAccountLogs(username) {
 }
 function closeLogs() { el.logsOverlay.classList.add('hidden'); }
 
+// ── Environment egress (v1.4.4, owner issue 1) ────────────────────────────────
+// Egress is resolved PER ACCOUNT by the proxy-rule engine; the legacy `env.proxy` string is retired once
+// rules are authoritative and stays permanently empty. Rendering `hasProxy`/`proxy` therefore showed
+// "Local IP (no proxy)" for every environment even while a rule was live. `env.egress` (from
+// GET /api/environments) carries the RESOLVED truth; the legacy fields remain the pre-cutover fallback.
+/** True when this environment's accounts actually leave through a proxy. */
+function envIsProxied(env) {
+  if (env && env.egress && env.egress.kind !== 'none') return env.egress.kind !== 'local';
+  return !!(env && env.hasProxy);
+}
+/** Ready-to-render egress label for an environment. */
+function envEgressLabel(env) {
+  if (!env) return '';
+  if (env.egress && env.egress.kind !== 'none') return env.egress.label;
+  return env.hasProxy ? env.proxy : 'Local IP (no proxy)';
+}
+
 function envTile(env, idx = 0, animate = false) {
   const accs = state.allAccounts.filter((a) => a.environmentId === env.id);
   const count = accs.length;
@@ -1452,7 +1469,7 @@ function envTile(env, idx = 0, animate = false) {
   // the tile can never disagree with the env-master screen. '—' until inventories are cached.
   const agg = aggregate(accs.map((a) => a.username));
   const last = envLastUpdated(env.id);
-  const proxyPill = env.hasProxy
+  const proxyPill = envIsProxied(env)
     ? `<span class="pill pill--proxy"><i class="fa-solid fa-shield-halved"></i>Proxy</span>`
     : `<span class="pill pill--local"><i class="fa-solid fa-network-wired"></i>Local IP</span>`;
   return `
@@ -1470,8 +1487,8 @@ function envTile(env, idx = 0, animate = false) {
           <i class="fa-solid fa-layer-group"></i></span>
         <div class="min-w-0 flex-1">
           <p class="t16 font-bold text-white truncate">${escapeHtml(env.name)}</p>
-          <p class="t10 font-mono text-slate-500 truncate">${env.hasProxy
-            ? `<i class="fa-solid fa-globe mr-1" style="color:rgb(var(--listed-rgb))"></i>${escapeHtml(env.proxy)}`
+          <p class="t10 font-mono text-slate-500 truncate" title="${escapeAttr(envEgressLabel(env))}">${envIsProxied(env)
+            ? `<i class="fa-solid fa-globe mr-1" style="color:rgb(var(--listed-rgb))"></i>${escapeHtml(envEgressLabel(env))}`
             : 'local IP'}</p>
         </div>
         ${proxyPill}
@@ -3011,6 +3028,21 @@ async function reloadProxyRules() {
   state.proxies.authoritative = !!(resp && resp.authoritative);
   state.proxies.preview = null;
   paintProxies();
+  // A rule change (create / edit / delete / reorder / enable / activate) re-resolves egress FLEET-WIDE,
+  // and the environment tiles + header render that resolution via `env.egress`. Without this re-pull the
+  // Environment tab kept showing the pre-change value until a manual reload — the operator saw "Local IP"
+  // while the logs already reported the proxy applied. Every mutation path funnels through here, so one
+  // refresh covers them all. Environments + accounts only (NOT reloadAll: inventories are unaffected by a
+  // routing change and re-fetching them would make a rule toggle needlessly expensive).
+  // (v1.4.4 — owner issue 1.)
+  try {
+    const [environments, allAccounts] = await Promise.all([api('/api/environments'), api('/api/accounts')]);
+    state.environments = environments;
+    state.allAccounts = normalizeAccounts(allAccounts);
+    // Repaint whichever surface is showing the egress, so the change is visible without navigating away.
+    if (state.nav === 'dashboard' || state.screen === 'dashboard') renderDashboard();
+    else if (state.screen === 'inventory' && state.activeEnv) updateSidebar();
+  } catch { /* the rules themselves are already painted; a stale tile is not worth failing the action */ }
 }
 
 async function toggleProxyRuleUi(rule) {
