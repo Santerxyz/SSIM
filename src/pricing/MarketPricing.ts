@@ -135,7 +135,8 @@ export class MarketPricing {
         // NOR a median cannot be read any more permissively by a later try — return the
         // all-null (authoritative) result now instead of burning try 3 + its backoff.
         if (m.allowMedian && info.medianCents == null) {
-          plog(`[Try ${n}/${methods.length}] authoritative empty — no listings and no median; stopping cascade (total ${Date.now() - t0}ms)`, 'warn');
+          plog(`[Try ${n}/${methods.length}] authoritative empty — no listings and no median; stopping cascade ` +
+               `(${route}, total ${Date.now() - t0}ms)`, 'warn');
           return info;
         }
         plog(`[Try ${n}/${methods.length}] ✗ ${m.label}: no price in response (${Date.now() - ts}ms)`, 'warn');
@@ -153,7 +154,12 @@ export class MarketPricing {
         await sleep(backoff);
       }
     }
-    plog(`✗ All methods exhausted for "${short}" – no price (total ${Date.now() - t0}ms)`, 'warn');
+    // The EGRESS ROUTE is the single most diagnostic fact about a "no price" (authenticated reads sail
+    // through; anonymous ones 429 on the shared pool), yet it was only ever logged on the inter-try
+    // BACKOFF line — which never runs on the last try. So the one outcome the operator actually reports
+    // ("sell shows no price / 0.00") produced no record of whether the read was even authenticated.
+    // Name it on the terminal line too. (v1.4.4 — owner issue 3 diagnostics.)
+    plog(`✗ All methods exhausted for "${short}" – no price (${route}, authoritative=${sawAuthoritative}, total ${Date.now() - t0}ms)`, 'warn');
     return { lowestCents: null, medianCents: null, volume: null, authoritative: sawAuthoritative, basis: null };
   }
 

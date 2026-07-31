@@ -9,6 +9,7 @@ import TradeOfferManager from 'steam-tradeoffer-manager';
 import * as SteamTotp from 'steam-totp';
 import type { ManagedSession } from '../types/session';
 import { logger } from '../utils/logger';
+import { getSteamTotpOffsetSeconds } from './steamTotpTimeout';
 import {
   parseMyListings, mergeParsed, emptyParsed,
   listedAssetIdsForApp, unconfirmedListedAssetIdsForApp, type MarketListing,
@@ -1062,7 +1063,17 @@ export class AccountTrader {
     };
     return new Promise<{ off: number; confs: any[] }>((resolve, reject) => {
       SteamTotp.getTimeOffset((offErr, offset) => {
-        const off = offErr ? 0 : offset;
+        // A confirmation key is signed against STEAM's clock. On a QueryTime failure this fell back to
+        // offset 0 — i.e. the raw local clock — so on a host whose clock has drifted EVERY confirmation
+        // key is signed at the wrong time and Steam rejects the lot ("confirmations completely stopped
+        // working"). The login path already prefers the last REAL offset the S6 layer learned; the
+        // confirmation path did not. Align them: fall back to that mirror, which is 0 until one is
+        // learned, so a machine that never got an offset behaves exactly as before. (v1.4.4)
+        const off = offErr ? getSteamTotpOffsetSeconds() : offset;
+        if (offErr) {
+          logger.warn(`[${this.username}] confirmation getlist: Steam QueryTime failed (${offErr.message}) — ` +
+            `signing with the last known offset ${off}s${off === 0 ? ' (none learned yet → raw local clock; a drifted clock will make Steam reject every confirmation)' : ''}`);
+        }
         const time = SteamTotp.time(off);
         const listKey = SteamTotp.getConfirmationKey(identitySecret, time, 'list');
         community.getConfirmations(time, { tag: 'list', key: listKey }, (err, confs) => {

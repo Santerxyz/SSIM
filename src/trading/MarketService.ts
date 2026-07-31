@@ -334,6 +334,14 @@ export class MarketService {
     // With no identity available at all (dev / whole fleet logged out) ctxs is empty — price anonymously
     // as the last resort (one context) rather than not at all; the caller's retry affordance covers a 429.
     if (ctxs.length === 0) ctxs.push(MarketService.EMPTY_CTX);
+    // Say WHICH lanes this preview got. "no price" on every row is almost always "we ended up on the
+    // anonymous lane" (which 429s on the shared pool) rather than a genuinely price-less item — but that
+    // was invisible: the preview logged nothing at all. One line per preview makes the next report
+    // self-diagnosing. (v1.4.4 — owner issue 3 diagnostics.)
+    const authedLanes = ctxs.filter((c) => !!c.cookieHeader).length;
+    logger.info(`[market-price] preview for ${opts?.username ?? '(no acting account)'} over ${ctxs.length} lane(s) — ` +
+      `${authedLanes} authenticated, ${ctxs.length - authedLanes} ANONYMOUS` +
+      (authedLanes === 0 ? ' (anonymous priceoverview is the usual cause of "no price" — no account was web-ready to borrow)' : ''));
     // H-TRD-022: bound the cascade to a live viewer. The sequential loop kept issuing
     // Steam requests for a client that had already aborted (S32, client aborts at 120s);
     // `shouldStop` (the route flips it on 'close') stops fetching and returns the partial
