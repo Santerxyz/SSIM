@@ -19,6 +19,14 @@ const CSFLOAT_LANES        = 1;                   // CsFloatClient's per-key lim
 // re-armed Steam's rolling lockout). Two consecutive 429s retire the lane; when every lane retires the fill
 // aborts and the names are cached as SHORT soft-misses (re-tried in ~10min, not hammered).
 const LANE_RETIRE_AFTER_429 = 2;
+// P1 (2026-07-10, after the header fix): with a full browser fingerprint on every price call, an
+// ANONYMOUS priceoverview is viable again — so the fill no longer has to be stranded when no account
+// is logged in (e.g. a dashboard showing cached inventories with all sessions idle-reaped). We still
+// PREFER authenticated identity lanes when they exist (they spread volume across the accounts' proxies
+// and are the most robust), so the fill first DEFERS for a short grace to let a login arrive; only if
+// none does within the grace does it fall back to ONE anonymous lane. A login during the grace cancels
+// the fallback (kick → the preferred authenticated fill runs instead).
+const ANON_FALLBACK_GRACE_MS = 25_000;
 const APPID_CS2            = 730;
 const APPID_TF2            = 440;
 
@@ -43,14 +51,15 @@ interface LaneStat { label: string; requests: number; ok: number; rl: number; er
  * CSFloat lowest-ask — Feature 3). Lookups are served instantly from a 24h cache;
  * misses are fetched in a throttled background job so inventory loads never block.
  *
- * IDENTITY-BUDGETED EGRESS (2026-07-10 root-cause fix). Steam's ANONYMOUS priceoverview
- * budget is per-IP and, on the fleet's shared rotating residential pool, routinely
- * PRE-EXHAUSTED by other tenants — so a cold request 429s while authenticated traffic on
- * the same proxies sails through. The fill therefore rides real LOGGED-IN identities: each
- * Steam lane sends an account's `steamLoginSecure` cookie over that account's own egress
- * agent, drawing that account's per-session budget. With no identity web-ready yet (boot,
- * pre-login) the fill DEFERS rather than issue an anonymous call, and `kick()` restarts it
- * when a session comes up. CSFloat (keyed) prices off Steam entirely and needs no identity.
+ * EGRESS MODEL (2026-07-10). The load-bearing fix for the community 429s was the browser
+ * fingerprint on every request (see network/steamHeaders.ts) — Steam's bot-check was flagging
+ * bare HTTP headers. On top of that, the fill PREFERS authenticated identity lanes: each Steam
+ * lane sends a logged-in account's `steamLoginSecure` cookie over that account's own egress agent
+ * (spreads volume across the accounts' proxies — the most robust path). With no identity web-ready
+ * (boot, or a logged-out dashboard on cached inventories) the fill DEFERS for a short grace and
+ * `kick()` starts it the moment a session logs in; only if none arrives within the grace does it
+ * fall back to ONE ANONYMOUS lane (P1) — now safe because that call, too, carries the fingerprint,
+ * so valuations are never stranded. CSFloat (keyed) prices off Steam entirely and needs no identity.
  *
  * The cache is SEGMENTED by source so switching never serves a cross-source price: Steam
  * keeps the legacy name-only key (CS2) / appid-prefixed key (TF2); CSFloat keys are
@@ -75,13 +84,22 @@ export class PricingService {
   private readonly csfloat?: CsFloatService;
   /** Live authenticated identities for the Steam fill lanes. Injected as a provider so every run()
    *  reads the CURRENT set of web-ready sessions (see PricerIdentityPool). Undefined in dev/tests
-   *  with no fleet → the Steam fill simply defers (never prices anonymously). */
+   *  with no fleet → the Steam fill defers, then falls back to one anonymous lane after the grace. */
   private readonly identityProvider?: () => PricerIdentity[];
+  /** Grace before the anonymous fallback fires (injectable for tests). */
+  private readonly anonFallbackGraceMs: number;
+  /** Pending one-shot for the anonymous fallback; armed on deferral, cancelled by kick()/shutdown(). */
+  private fallbackTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(csfloat?: CsFloatService, identityProvider?: () => PricerIdentity[]) {
+  constructor(
+    csfloat?: CsFloatService,
+    identityProvider?: () => PricerIdentity[],
+    opts?: { anonFallbackGraceMs?: number },
+  ) {
     this.csfloat = csfloat;
     this.csfloatSource = csfloat ? new CsFloatPriceSource(csfloat) : undefined;
     this.identityProvider = identityProvider;
+    this.anonFallbackGraceMs = opts?.anonFallbackGraceMs ?? ANON_FALLBACK_GRACE_MS;
   }
 
   /** The EFFECTIVE source: CSFloat only when selected AND a key exists; else Steam (fallback). */
@@ -207,8 +225,10 @@ export class PricingService {
   }
 
   /** Re-arm the fill (idempotent). Wired to the SessionManager 'webSession' event so a Steam fill that
-   *  DEFERRED for lack of an authenticated identity starts the moment the first session is web-ready. */
+   *  DEFERRED for lack of an authenticated identity starts the moment the first session is web-ready.
+   *  A login also CANCELS any pending anonymous-fallback timer — the authenticated fill is preferred. */
   kick(): void {
+    if (this.fallbackTimer) { clearTimeout(this.fallbackTimer); this.fallbackTimer = undefined; }
     if (!this.running && !this.stopped && this.queue.length) void this.run();
   }
 
@@ -228,14 +248,20 @@ export class PricingService {
   flush(): void { this.cache.flush(); }
 
   /** Stops the background loop and flushes the cache (app teardown/SIGINT). */
-  shutdown(): void { this.stopped = true; this.cache.flush(); }
+  shutdown(): void {
+    this.stopped = true;
+    if (this.fallbackTimer) { clearTimeout(this.fallbackTimer); this.fallbackTimer = undefined; }
+    this.cache.flush();
+  }
 
   /**
    * The run splits by SOURCE. CSFloat jobs (keyed, off-Steam) drain through one lane on the shared
-   * per-key limiter. Steam jobs ride up to MAX_PRICE_LANES authenticated identity lanes — and if NO
-   * identity is web-ready yet, they DEFER (never an anonymous call); kick() restarts them later.
+   * per-key limiter. Steam jobs ride up to MAX_PRICE_LANES authenticated identity lanes. If NO identity
+   * is web-ready yet, the run DEFERS and arms a short grace timer (preferring an imminent login); only
+   * when invoked as the fallback (`opts.allowAnonymous`, from the grace timer) does it run ONE anonymous
+   * lane instead — safe post header-fix, since every price call carries the browser fingerprint.
    */
-  private async run(): Promise<void> {
+  private async run(opts?: { allowAnonymous?: boolean }): Promise<void> {
     this.running = true;
     this.fetchedThisRun = 0;
     this.processedThisRun = 0;
@@ -252,23 +278,49 @@ export class PricingService {
         catch (e) { logger.warn(`[pricing] identity provider failed (${(e as Error).message})`); }
       }
 
-      // No authenticated identity to price the Steam names, and nothing off-Steam to do → DEFER (leave the
-      // queue intact) rather than issue an anonymous call the shared pool will 429. kick() restarts on login.
-      if (steamPending && identities.length === 0 && !csfloatPending) {
-        logger.info(`[pricing] fill deferred — no authenticated pricer identity web-ready yet (${this.queue.length} queued); starts when a session logs in`);
-        return;
+      // This run prices Steam names anonymously only when it IS the fallback (opts.allowAnonymous) AND no
+      // identity turned up in the meantime (a login during the grace would have won via kick()).
+      const anonymous = steamPending && identities.length === 0 && !!opts?.allowAnonymous;
+
+      // Steam names with NO authenticated identity (and this isn't already the anonymous run): they'll be
+      // priced by the anonymous fallback after the grace. ARM it now — REGARDLESS of csfloat work, so a
+      // mixed queue (CS2→csfloat + TF2→steam, logged out) doesn't leave the steam names with no lane and no
+      // timer. kick() (a login) cancels the timer and prefers the authenticated fill. When there is NOTHING
+      // else to do this run (no csfloat lane), DEFER — the timer is the only thing that will run.
+      if (steamPending && identities.length === 0 && !anonymous) {
+        this.armAnonymousFallback();
+        if (!csfloatPending) {
+          logger.info(`[pricing] fill deferred — no authenticated pricer identity web-ready yet (${this.queue.length} queued); ` +
+            `starts on login, else an anonymous fallback fill in ~${Math.round(this.anonFallbackGraceMs / 1000)}s`);
+          return;
+        }
+        // else: fall through to run the csfloat lane now; the steam names wait for the armed fallback.
       }
 
       const lanes: Array<Promise<void>> = [];
-      const steamLaneCount = identities.length;
+      // Authenticated identity lanes when we have them (preferred — spreads volume across the accounts'
+      // proxies); otherwise ONE anonymous lane when this is the fallback run.
+      const steamLaneCount = identities.length > 0 ? identities.length : (anonymous ? 1 : 0);
+      const steamLaneDesc = identities.length > 0 ? `${identities.length} steam identity lane(s)`
+        : anonymous ? '1 anonymous steam lane (fallback)' : '0 steam lanes';
       logger.info(`[pricing] background fill started (${this.queue.length} queued, source=${this.getSource()}, ` +
-        `${steamLaneCount} steam identity lane(s)${csfloatPending ? ` + ${CSFLOAT_LANES} csfloat lane` : ''})`);
+        `${steamLaneDesc}${csfloatPending ? ` + ${CSFLOAT_LANES} csfloat lane` : ''})`);
 
-      const steamStats: LaneStat[] = identities.map((id) => ({ label: `steam:${id.username}`, requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0 }));
-      identities.forEach((id, i) => {
-        const route: PriceRoute = { agent: id.agent, cookieHeader: id.cookieHeader };
-        lanes.push(this.laneWorker('steam', (name, appid) => this.steamSource.fetchPriceCents(name, appid, route), steamStats[i]));
-      });
+      const steamStats: LaneStat[] = [];
+      if (identities.length > 0) {
+        for (const id of identities) {
+          const stat: LaneStat = { label: `steam:${id.username}`, requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0 };
+          steamStats.push(stat);
+          const route: PriceRoute = { agent: id.agent, cookieHeader: id.cookieHeader };
+          lanes.push(this.laneWorker('steam', (name, appid) => this.steamSource.fetchPriceCents(name, appid, route), stat));
+        }
+      } else if (anonymous) {
+        // Fallback: NO route → egresses the host IP with the browser fingerprint (header fix). ONE lane only
+        // (single IP — don't fan a large fill across the host IP). Same 429 → retire → soft-miss semantics.
+        const stat: LaneStat = { label: 'steam:anonymous', requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0 };
+        steamStats.push(stat);
+        lanes.push(this.laneWorker('steam', (name, appid) => this.steamSource.fetchPriceCents(name, appid), stat));
+      }
 
       let csfloatStat: LaneStat | undefined;
       if (csfloatPending && this.csfloatSource) {
@@ -295,7 +347,7 @@ export class PricingService {
           abandoned++;
         }
         if (abandoned > 0) {
-          logger.warn(`[pricing] Steam fill ABORTED — all ${steamLaneCount} identity lane(s) rate-limited; ` +
+          logger.warn(`[pricing] Steam fill ABORTED — all ${steamLaneCount} lane(s) rate-limited; ` +
             `${abandoned} name(s) deferred as soft-miss (retry ~${Math.round(ERROR_MISS_TTL_MS / 60000)}min). ` +
             `Lanes: ${steamStats.map((s) => `${s.label}[${s.ok}✓/${s.rl}×429/${s.requests}req]`).join(' ')}`);
         }
@@ -305,8 +357,33 @@ export class PricingService {
     } finally {
       this.cache.flush();
       this.running = false;
+      // Safety net: if this run left Steam names still queued with no identity (e.g. a csfloat-only run that
+      // couldn't price them, or a kick() that landed mid-run and couldn't start), ensure the anonymous
+      // fallback is armed so they are never stranded. Idempotent (armAnonymousFallback no-ops if already
+      // armed); harmless after an authenticated/anonymous fill (those dequeue every steam job first).
+      if (!this.stopped && this.queue.some((j) => j.sourceId === 'steam')) this.armAnonymousFallback();
       logger.info(`[pricing] background fill ${this.stopped ? 'STOPPED' : 'done'} (fetched=${this.fetchedThisRun}, cache=${this.cache.size()})`);
     }
+  }
+
+  /** Arm the anonymous-fallback grace timer if not already armed (idempotent). A login (kick) or teardown
+   *  (shutdown) cancels it; the callback prices the deferred Steam names with ONE anonymous lane. */
+  private armAnonymousFallback(): void {
+    if (this.fallbackTimer || this.stopped) return;
+    this.fallbackTimer = setTimeout(() => { this.fallbackTimer = undefined; this.runAnonymousFallback(); }, this.anonFallbackGraceMs);
+    this.fallbackTimer.unref?.();
+  }
+
+  /** Grace-timer callback: with STILL no authenticated identity, run ONE anonymous fallback lane so a
+   *  logged-out dashboard isn't left without valuations. If a fill is already in progress (a login-driven
+   *  authenticated fill, OR an overlapping csfloat run), RE-ARM and retry after the grace instead of dropping
+   *  the fallback — otherwise the deferred Steam names would be stranded. No-op when nothing steam-side
+   *  remains. Safe post header-fix; run() re-checks identities and still prefers authenticated lanes. */
+  private runAnonymousFallback(): void {
+    if (this.stopped) return;
+    if (!this.queue.some((j) => j.sourceId === 'steam')) return; // no steam work left to do
+    if (this.running) { this.armAnonymousFallback(); return; }   // a fill is in flight — retry after the grace
+    void this.run({ allowAnonymous: true });
   }
 
   /**

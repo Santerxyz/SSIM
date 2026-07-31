@@ -57,17 +57,53 @@ test('SteamPriceSource: attaches the identity Cookie header when routed', async 
   } finally { restore(); }
 });
 
-test('PricingService: DEFERS (does not fetch) when no identity is web-ready', async () => {
+test('PricingService: DEFERS within the grace when no identity is web-ready (prefers an imminent login)', async () => {
   let fetchCalls = 0;
-  const svc = new PricingService(undefined, () => []); // provider yields no identities
+  // Long grace so the anonymous fallback does NOT fire during this test — we assert the deferral only.
+  const svc = new PricingService(undefined, () => [], { anonFallbackGraceMs: 60_000 });
   (svc as any).steamSource = { id: 'steam', fetchPriceCents: async () => { fetchCalls++; return 100; } };
   try {
     svc.ensureFilled([{ name: 'DeferMe', appid: 730 }]);
     await new Promise((r) => setTimeout(r, 150));
     const st = svc.status();
-    assert.equal(fetchCalls, 0, 'no anonymous fetch may happen without an identity');
-    assert.equal(st.processed, 0, 'nothing processed — the name stays queued for kick()');
-    assert.equal(st.queued, 1, 'the name is still queued, awaiting an identity');
+    assert.equal(fetchCalls, 0, 'no fetch within the grace — the fill waits for a login first');
+    assert.equal(st.processed, 0, 'nothing processed — the name stays queued for kick()/fallback');
+    assert.equal(st.queued, 1, 'the name is still queued, awaiting an identity or the grace');
+  } finally { svc.shutdown(); }
+});
+
+test('PricingService: falls back to ONE anonymous lane after the grace when no identity ever appears', async () => {
+  const calls: Array<{ route: unknown }> = [];
+  const svc = new PricingService(undefined, () => [], { anonFallbackGraceMs: 60 });
+  (svc as any).steamSource = { id: 'steam', fetchPriceCents: async (_n: string, _a: number, route?: unknown) => { calls.push({ route }); return 100; } };
+  try {
+    svc.ensureFilled([{ name: 'AnonMe', appid: 730 }]);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(calls.length, 0, 'deferred within the grace — no fetch yet');
+    await new Promise((r) => setTimeout(r, 160));           // past the 60ms grace → fallback fires
+    assert.equal(calls.length, 1, 'the anonymous fallback priced the name once the grace elapsed');
+    assert.equal(calls[0].route, undefined, 'the fallback lane sends NO route (anonymous + the header fingerprint)');
+    assert.equal(svc.priceCents('AnonMe', 730), 100, 'the anonymous fallback populated the cache — valuation not stranded');
+  } finally { svc.shutdown(); }
+});
+
+test('PricingService: a login during the grace CANCELS the anonymous fallback (authenticated wins)', async () => {
+  let identities: any[] = [];
+  const calls: Array<{ route: any }> = [];
+  const svc = new PricingService(undefined, () => identities, { anonFallbackGraceMs: 200 });
+  (svc as any).steamSource = { id: 'steam', fetchPriceCents: async (_n: string, _a: number, route?: any) => { calls.push({ route }); return 100; } };
+  try {
+    svc.ensureFilled([{ name: 'AuthWins', appid: 730 }]);
+    await new Promise((r) => setTimeout(r, 50));            // deferred; fallback armed for 200ms
+    assert.equal(calls.length, 0, 'nothing fetched yet');
+    identities = [{ username: 'p', cookieHeader: 'steamLoginSecure=x', agent: {} }];
+    svc.kick();                                             // login → cancels the timer, runs authenticated
+    assert.equal((svc as any).fallbackTimer, undefined, 'the pending anonymous-fallback timer was cancelled by kick()');
+    await new Promise((r) => setTimeout(r, 120));           // still < the 200ms original grace
+    assert.equal(calls.length, 1, 'the authenticated fill ran');
+    assert.equal(calls[0].route?.cookieHeader, 'steamLoginSecure=x', 'it used the identity route (authenticated), not anonymous');
+    await new Promise((r) => setTimeout(r, 150));           // now PAST the original 200ms grace
+    assert.equal(calls.length, 1, 'the cancelled anonymous fallback never fired — no duplicate/anonymous fetch');
   } finally { svc.shutdown(); }
 });
 

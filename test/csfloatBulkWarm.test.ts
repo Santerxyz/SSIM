@@ -64,6 +64,29 @@ test('PricingService: a CSFloat fill warms the catalog in one request, per-name 
   } finally { svc.shutdown(); svc.setSource('steam'); }
 });
 
+test('PricingService: a mixed CSFloat+Steam queue ARMS the anonymous fallback even while csfloat work is pending (review Defect A)', async () => {
+  // Regression: the P1 anonymous-fallback timer must be armed even when csfloat jobs coexist with
+  // logged-out Steam jobs — otherwise a TF2 (steam-routed) name in a mixed queue is left with no lane
+  // AND no fallback timer (stranded). A csfloat STRAGGLER (not in the bulk catalog) keeps csfloatPending
+  // true, which is exactly the path that used to skip arming the timer.
+  const client = {
+    priceList: async () => [{ market_hash_name: 'AK-47 | Redline (Field-Tested)', min_price: 3624 }],
+    searchListings: async () => ({ data: [{ price: 1500 }] }),
+  };
+  const svc = new PricingService(fakeCsfloat(client), () => [], { anonFallbackGraceMs: 10_000 });
+  (svc as any).steamSource = { id: 'steam', fetchPriceCents: async () => 777 };
+  svc.setSource('csfloat');
+  try {
+    svc.ensureFilled([
+      { name: 'AK-47 | Redline (Field-Tested)', appid: 730 }, // CS2, in catalog → warmed (csfloat)
+      { name: 'Straggler Skin', appid: 730 },                 // CS2, NOT in catalog → keeps csfloatPending true
+      { name: 'Mann Co. Supply Crate Key', appid: 440 },      // TF2 → steam, needs the anonymous fallback
+    ]);
+    await new Promise((r) => setTimeout(r, 100)); // run() enters, bulk-warms, hits the arm block
+    assert.ok((svc as any).fallbackTimer, 'the anonymous-fallback timer is armed despite coexisting csfloat work — the steam name is not stranded');
+  } finally { svc.shutdown(); svc.setSource('steam'); }
+});
+
 test('PricingService: TF2 (440) always prices via Steam even under a CSFloat selection', async () => {
   const client = { priceList: async () => CATALOG, searchListings: async () => ({ data: [{ price: 1 }] }) };
   const svc = new PricingService(fakeCsfloat(client), () => []); // no steam identity → TF2 job defers

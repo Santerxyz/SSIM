@@ -1,11 +1,10 @@
 import axios from 'axios';
 import type { PriceSource, PriceRoute } from './PriceSource';
 import { parseSteamMoney } from '../currencies';
+import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../../network/steamHeaders';
 
 // Steam Community market priceoverview — USD base; the default source.
 const STEAM_CURRENCY_USD = 1;
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 export class SteamPriceSource implements PriceSource {
   readonly id = 'steam' as const;
@@ -26,13 +25,20 @@ export class SteamPriceSource implements PriceSource {
   async fetchPriceCents(name: string, appid: number, route?: PriceRoute): Promise<number | null> {
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?appid=${appid}&currency=${STEAM_CURRENCY_USD}&market_hash_name=${encodeURIComponent(name)}`;
-    const headers: Record<string, string> = { 'User-Agent': UA, Accept: 'application/json' };
+    // Full Chromium fingerprint (Client Hints + Sec-Fetch + Accept-Language/Encoding) so Steam's
+    // bot-detection doesn't 429 the request for looking like a bare HTTP client. Spread first;
+    // the JSON Accept + optional Cookie below are the money-relevant values and win on collision.
+    const headers: Record<string, string> = { ...STEAM_XHR_HEADERS, 'User-Agent': STEAM_BROWSER_UA, Accept: 'application/json' };
     if (route?.cookieHeader) headers.Cookie = route.cookieHeader;
     const resp = await axios.get(url, {
       timeout: 12_000,
       headers,
       validateStatus: () => true,
-      ...(route?.agent ? { httpsAgent: route.agent, proxy: false as const } : {}),
+      // proxy:false ALWAYS — never let an ambient HTTP(S)_PROXY env var silently re-route the call. With a
+      // route we pin the account's own agent; without one (the anonymous fallback) we egress the host IP
+      // directly, as the P1 design intends — NOT the shared env-proxy pool the fingerprint fix escapes.
+      proxy: false as const,
+      ...(route?.agent ? { httpsAgent: route.agent } : {}),
     });
     if (resp.status === 429) throw new Error('RATE_LIMIT');
     // A non-200 (5xx/403/…) or Steam-level failure (missing body / success !== true) is NOT an

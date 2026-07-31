@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { logger } from '../utils/logger';
 import { parseSteamMoney, knownCurrencyInfo } from './currencies';
+import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../network/steamHeaders';
 
 const APPID_CS2     = 730;
 /** Steam currency code for EUR. ALL market prices SSIM computes are EUR seller-net
@@ -9,7 +10,7 @@ const APPID_CS2     = 730;
 export const EUR_CURRENCY  = 3;
 const COUNTRY       = 'DE';
 
-const UA_CHROME  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const UA_CHROME  = STEAM_BROWSER_UA;
 
 const BACKOFF_BASE_MS = 500; // exponential backoff between the two cascade tries (transient-retry only)
 
@@ -170,7 +171,10 @@ export class MarketPricing {
     // for BOTH — Steam serves TF2 prices in EUR at currency=3, keeping the EUR-wallet guard valid.
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?country=${COUNTRY}&currency=${EUR_CURRENCY}&appid=${opts?.appid ?? APPID_CS2}&market_hash_name=${encodeURIComponent(name)}`;
-    const headers: Record<string, string> = { 'User-Agent': ua, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' };
+    // Chromium fingerprint (Client Hints + Sec-Fetch) so Steam's bot-check doesn't 429. Spread first;
+    // the de-DE Accept-Language (kept — Steam formats EUR prices by locale, the parser depends on it),
+    // JSON Accept and optional Cookie win on collision.
+    const headers: Record<string, string> = { ...STEAM_XHR_HEADERS, 'User-Agent': ua, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' };
     if (opts?.cookieHeader) headers.Cookie = opts.cookieHeader;
     const r = await axios.get(url, {
       timeout,
@@ -209,7 +213,7 @@ export class MarketPricing {
     if (!cInfo) return null;
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?country=${COUNTRY}&currency=${currency}&appid=${appid}&market_hash_name=${encodeURIComponent(name)}`;
-    const headers: Record<string, string> = { 'User-Agent': UA_CHROME, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' };
+    const headers: Record<string, string> = { ...STEAM_XHR_HEADERS, 'User-Agent': UA_CHROME, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' };
     if (opts?.cookieHeader) headers.Cookie = opts.cookieHeader; // authenticated → the account's own budget
     const r = await axios.get(url, {
       timeout: 12_000,

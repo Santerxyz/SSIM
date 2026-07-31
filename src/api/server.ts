@@ -5,6 +5,7 @@ import axios from 'axios';
 
 import { AccountManager } from '../core/AccountManager';
 import { SessionManager } from '../core/SessionManager';
+import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../network/steamHeaders';
 import { StoreService } from '../store/StoreService';   // W3_30: store.steampowered.com client (W3_31/W4 dependents)
 import { WalletRedeemJournal } from '../core/WalletRedeemJournal';   // W3_31: money-in dedup
 import { normalizeCode, codeHash, codeMasked } from '../store/walletCode';   // W3_31: bearer-secret helpers
@@ -199,9 +200,14 @@ export function createDeps(): ApiDeps {
   // Trades gets the inventory cache so the send path can refuse trade-locked / non-tradable
   // assets before an offer is created (INV-D1 / C3).
   const trades    = new TradeService(sessions, accounts, inventory, moneyJournal);
+  // How many authenticated pricer identities the background fill AND the sell-preview / buy-autofill
+  // borrow (see below + MarketService.priceCtxsFor). Declared here so both consumers share it.
+  const PRICE_IDENTITY_LANES = 3;
   // Market gets the inventory cache so a completed mass-sell moves the just-listed assets
-  // Owned→Listed immediately (optimistic), rather than waiting on a follow-up refresh.
-  const market    = new MarketService(trades, inventory);
+  // Owned→Listed immediately (optimistic), rather than waiting on a follow-up refresh. It ALSO gets the
+  // pricer-identity pool so a sell-preview whose acting bot isn't web-ready still prices through a live
+  // authenticated identity instead of an anonymous host-IP read that 429s → "no price" (2026-07-10 fix).
+  const market    = new MarketService(trades, inventory, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES));
   const buy       = new BuyService(trades, inventory, moneyJournal);
   const bans      = new BanService(accounts, sessions, trades);
   // Feature 2 "CSFloat": per-account marketplace control. Built BEFORE pricing so the
@@ -215,7 +221,6 @@ export function createDeps(): ApiDeps {
   // per-session budget. With no session web-ready yet it DEFERS (never anonymous) and `kick()` restarts it
   // once a session logs in. (The old proxy-string provider + 60-80s per-name retry + foreground gate are
   // gone — see RATELIMIT_ROOT_CAUSE_fable5.md.)
-  const PRICE_IDENTITY_LANES = 3;
   const pricing   = new PricingService(csfloat, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES));
   // Restart a deferred Steam fill the moment an authenticated session becomes web-ready.
   sessions.on('webSession', () => pricing.kick());
@@ -2542,7 +2547,8 @@ export function createApp(deps: ApiDeps): Express {
         proxy: false,
         validateStatus: () => true,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429 the autocomplete
+          'User-Agent': STEAM_BROWSER_UA,
           Accept: 'application/json',
           Referer: 'https://steamcommunity.com/market/',
         },

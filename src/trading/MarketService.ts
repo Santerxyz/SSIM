@@ -2,6 +2,7 @@ import type { TradeService } from './TradeService';
 import type { InventoryService } from '../core/InventoryService';
 import type { MarketOrders } from './AccountTrader';
 import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, EUR_CURRENCY, type SellStrategy } from '../pricing/MarketPricing';
+import type { PricerIdentity } from '../pricing/PricerIdentityPool';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { isSellable } from '../core/MarketModel';
 import { MoneyOps, assetKey as moneyKey } from './MoneyOps';
@@ -14,6 +15,25 @@ import type { GameId } from '../types/inventory';
 const CS2_APPID = 730;
 const TF2_APPID = 440;
 const gameForApp = (appId: number): GameId => (appId === TF2_APPID ? 'tf2' : 'cs2');
+
+/** A price-read egress context: route through this account's agent (its exit) and cookie (its
+ *  authenticated priceoverview budget). Empty ({}) means an anonymous read (avoided for the fill). */
+type PriceCtx = { httpsAgent?: unknown; cookieHeader?: string };
+
+/** ms budget for a BOUNDED getTrader in the price path — a login parked in the global login-concurrency
+ *  queue must NOT stall a price read (v1.4.5). Longer than a healthy login (~5s), far shorter than the
+ *  preview's own 90s budget, so a jammed login queue de-prioritises to the pool/anonymous fast. Read at
+ *  call time so tests can shrink it via SSIM_GETTRADER_BUDGET_MS. */
+function getTraderBudgetMs(): number { return Number(process.env.SSIM_GETTRADER_BUDGET_MS) || 6_000; }
+
+/** Reject after `ms` if `p` hasn't settled. The awaited work keeps running in the background (a parked
+ *  login still completes and caches its session) — we simply stop WAITING on it for this read. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
 // ceiling 25). Per-bot anti-spam pacing (item/bot delays) still applies inside each worker.
@@ -163,6 +183,11 @@ export class MarketService {
     /** Lets a completed sell move the just-listed assets Owned→Listed in the cache
      *  immediately (optimistic), instead of relying on a clean follow-up refresh. */
     private readonly inventory?: InventoryService,
+    /** Live authenticated PRICER IDENTITIES — the same pool the background price fill uses
+     *  (sessions.pricerIdentities). Preview + buy-autofill borrow one when the acting account isn't
+     *  web-ready, so an EUR price READ stays authenticated instead of falling to an anonymous host-IP
+     *  call that 429s → "no price". NEVER used to COMMIT a sell (that re-prices via the bot's own cookie). */
+    private readonly pricerIdentities?: () => PricerIdentity[],
   ) {}
 
   status(): MassSellJob {
@@ -227,18 +252,58 @@ export class MarketService {
     await trader.cancelBuyOrder(buyOrderId);
   }
 
+  private static readonly EMPTY_CTX: PriceCtx = {};
+
   /** Resolves a bot's price-fetch context so price checks egress via its IP AND carry its session
    *  cookie (authenticated priceoverview → the account's own budget; anonymous reads 429 cold on the
-   *  shared pool — 2026-07-10). Falls back to {} when the account has no live session. */
-  private async priceCtxFor(username?: string): Promise<{ httpsAgent?: unknown; cookieHeader?: string }> {
-    if (!username) return {};
-    try {
-      const trader = await this.trades.getTrader(username);
-      return { httpsAgent: trader.httpsAgent, cookieHeader: trader.cookieHeader };
-    } catch (err) {
-      logger.warn(`[market-price] could not resolve price context for ${username}: ${(err as Error).message}`);
-      return {};
+   *  shared pool — 2026-07-10). Single-context form (buy-modal autofill); returns the FIRST of
+   *  priceCtxsFor, so it inherits the pricer-identity fallback below. */
+  private async priceCtxFor(username?: string): Promise<PriceCtx> {
+    return (await this.priceCtxsFor(username, 1))[0] ?? MarketService.EMPTY_CTX;
+  }
+
+  /**
+   * Resolves up to `max` AUTHENTICATED price-fetch contexts for a price read.
+   *
+   * ORDER MATTERS (v1.4.5 fix). A price read must NEVER block on a fresh login: the acting account's
+   * getTrader() would call loginAccount(), which parks in the GLOBAL login-concurrency FIFO queue
+   * (MAX_CONCURRENT_LOGINS). During a "Refresh all" that queue is full, so the whole sell preview
+   * hung there — never reaching getSellInfo — until the client's 120s timeout → every row "no price".
+   * So we take identities in this order:
+   *   1. The ALREADY-LIVE pricer pool (non-blocking) — includes the acting account if it is web-ready,
+   *      plus others, so a multi-name preview spreads across several accounts' budgets + exits.
+   *   2. ONLY if the live pool can't fill the lanes, a BOUNDED getTrader(username) — abandoned after
+   *      GET_TRADER_BUDGET_MS so a queued login can't stall the read (the login still completes in the
+   *      background; we just don't wait). Skipped entirely when the pool already provided enough.
+   * The caller (preview) then falls back to ONE anonymous lane if this returns empty — anonymous
+   * priceoverview works (the browser fingerprint fix), so a read is never blocked, only de-prioritised.
+   *
+   * Money-safety: this only decides WHOSE per-session budget + exit a READ draws. Currency stays
+   * EUR/3 (getSellInfo) and the COMMITTED sell price is re-resolved via the SELLING bot's own cookie
+   * in resolveNet — never one of these borrowed preview contexts.
+   */
+  private async priceCtxsFor(username?: string, max = 1): Promise<PriceCtx[]> {
+    const out: PriceCtx[] = [];
+    const seen = new Set<string>(); // de-dup by cookie so one account never fills two lanes
+    // 1) Already-live identities — NON-BLOCKING, never queues behind a fleet refresh's logins.
+    if (this.pricerIdentities) {
+      for (const id of this.pricerIdentities()) {
+        if (out.length >= max) break;
+        if (id.cookieHeader && !seen.has(id.cookieHeader)) { out.push({ httpsAgent: id.agent, cookieHeader: id.cookieHeader }); seen.add(id.cookieHeader); }
+      }
     }
+    // 2) Only if the live pool didn't fill the lanes: a BOUNDED login of the acting account. Bounding it
+    //    means a login parked in the concurrency queue can't hang the price read (it finishes later).
+    if (out.length < max && username) {
+      const budget = getTraderBudgetMs();
+      try {
+        const trader = await withTimeout(this.trades.getTrader(username), budget);
+        if (trader?.cookieHeader && !seen.has(trader.cookieHeader)) { out.push({ httpsAgent: trader.httpsAgent, cookieHeader: trader.cookieHeader }); seen.add(trader.cookieHeader); }
+      } catch (err) {
+        logger.info(`[market-price] ${username} not web-ready in ${budget}ms (${(err as Error).message}) — pricing via the pool / anonymously`);
+      }
+    }
+    return out;
   }
 
   /**
@@ -261,7 +326,14 @@ export class MarketService {
       return out;
     }
 
-    const ctx = await this.priceCtxFor(opts?.username);
+    // Resolve up to WORKERS authenticated egress contexts (acting account first when web-ready, else
+    // pricer identities). Each worker gets its OWN context so a several-hundred-name preview spreads
+    // across accounts' budgets + exits instead of hammering one (and never goes anonymous → "no price").
+    const WORKERS = 3;
+    const ctxs = await this.priceCtxsFor(opts?.username, WORKERS);
+    // With no identity available at all (dev / whole fleet logged out) ctxs is empty — price anonymously
+    // as the last resort (one context) rather than not at all; the caller's retry affordance covers a 429.
+    if (ctxs.length === 0) ctxs.push(MarketService.EMPTY_CTX);
     // H-TRD-022: bound the cascade to a live viewer. The sequential loop kept issuing
     // Steam requests for a client that had already aborted (S32, client aborts at 120s);
     // `shouldStop` (the route flips it on 'close') stops fetching and returns the partial
@@ -278,19 +350,24 @@ export class MarketService {
     const PREVIEW_BUDGET_MS = 90_000;   // stop dispatching new names after 90s total
     const PER_NAME_BUDGET_MS = 10_000;  // per-name cascade budget (bounds one getSellInfo)
     let budgetTripped = false;          // 90s cap hit → backfill the undispatched names below
-    const worker = async (): Promise<void> => {
+    const worker = async (ctx: PriceCtx): Promise<void> => {
       while (idx < unique.length) {
         if (shouldStop?.()) return;
         if (Date.now() - previewStart >= PREVIEW_BUDGET_MS) { budgetTripped = true; return; }
         const name = unique[idx++];
-        // getSellInfo runs its own 3-method cascade internally – one call suffices.
+        // getSellInfo runs its own cascade internally – one call suffices.
         // appId selects the market so a TF2 preview is priced off the TF2 market, never CS2.
         const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS, appid: opts?.appId ?? CS2_APPID });
         const buyer = targetBuyerCents(info, strategy);
         out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
       }
     };
-    await Promise.all(Array.from({ length: Math.min(3, unique.length) }, () => worker()));
+    // ALWAYS run up to WORKERS concurrent workers (throughput must not drop when only one identity is
+    // available — that was the v1.4.3 regression that starved the 90s budget on a big batch). Round-robin
+    // the resolved contexts across the workers: 1 identity ⇒ all workers share it (3× concurrency, as
+    // before); ≥3 ⇒ each worker pins a distinct identity so the batch spreads across accounts + exits.
+    const workerCount = Math.min(WORKERS, unique.length);
+    await Promise.all(Array.from({ length: workerCount }, (_, i) => worker(ctxs[i % ctxs.length])));
     // On a 90s budget stop (NOT a client disconnect, where nobody is listening), any name
     // never dispatched gets an explicit null-price row so the modal shows the per-name retry
     // affordance instead of omitting it silently.

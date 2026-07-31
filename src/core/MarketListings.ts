@@ -6,6 +6,7 @@ import {
   parseMyListings, mergeParsed, emptyParsed,
   listingsForApp, listedAssetIdsForApp, type MarketListing,
 } from './MarketModel';
+import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../network/steamHeaders';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  MarketListings – the 3rd dashboard bucket: items CURRENTLY ON SALE on the
@@ -26,9 +27,7 @@ import {
 // ════════════════════════════════════════════════════════════════════════════
 
 const CS2_APPID = 730;
-const MARKET_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const MARKET_UA = STEAM_BROWSER_UA;
 
 export interface ListedItems {
   /** CS2 listed items as dashboard rows (category: 'listed'). */
@@ -69,6 +68,7 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
       timeout:        20_000,
       validateStatus: () => true,
       headers: {
+        ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429
         Cookie:       cookies.join('; '),
         'User-Agent': MARKET_UA,
         Accept:       'application/json',

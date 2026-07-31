@@ -4165,9 +4165,10 @@ function aggregateWithOwners(usernames) {
       // always set it; a placeholder like "Item #1348" is unique per def_index, so distinct
       // unresolved items never collide).
       let ex = map.get(it.marketHashName);
-      if (!ex) { ex = { ...it, quantity: 0, sendable: 0, accounts: new Set(), owners: [] }; map.set(it.marketHashName, ex); }
+      if (!ex) { ex = { ...it, quantity: 0, sendable: 0, lockedCount: 0, accounts: new Set(), owners: [] }; map.set(it.marketHashName, ex); }
       ex.quantity += it.quantity;
       ex.accounts.add(u);
+      if (it.tradeLockExpiry) ex.lockedCount += it.quantity; // aggregate lock signal → master row badge (display-only)
       if (it.tradable && !it.tradeLockExpiry) {            // sendable → counts toward trade/sell
         ex.sendable += it.quantity;
         ex.owners.push({ username: u, assetIds: it.assetIds.slice() });
@@ -4994,8 +4995,8 @@ function aggregate(usernames) {
       // env tiles, stat bar) now reads the same number for the same fleet.
       if (it.tradeLockExpiry) lockedStacks += it.quantity || 1;
       const ex = map.get(it.marketHashName);
-      if (ex) { ex.quantity += it.quantity; ex.accounts.add(u); }
-      else map.set(it.marketHashName, { ...it, accounts: new Set([u]) });
+      if (ex) { ex.quantity += it.quantity; ex.accounts.add(u); if (it.tradeLockExpiry) ex.lockedCount += it.quantity; }
+      else map.set(it.marketHashName, { ...it, accounts: new Set([u]), lockedCount: it.tradeLockExpiry ? it.quantity : 0 });
     }
   }
   return { items: [...map.values()], totalItems, lockedStacks, accountCount: loaded, valueCents, walletUsd, walletAccounts };
@@ -5261,7 +5262,7 @@ function renderItemRow(item, ctx) {
         <div class="flex items-center gap-2.5">
           <span class="rar" style="background:${color}" aria-hidden="true"></span>
           ${iconWithLock(item, 'item-icon w-12 h-9 object-contain', showLockBadge)}
-          <span class="font-semibold" style="color:${color}">${escapeHtml(item.name)}</span></div></td>`;
+          <span class="font-semibold" style="color:${color}">${escapeHtml(item.name)}</span>${master ? masterLockBadge(item) : ''}</div></td>`;
 
   // Selection cell: account view checks per-stack tradability. A MASTER row is shown 1:1
   // (incl. non-sendable items) but only its SENDABLE portion (item.sendable) is selectable.
@@ -5532,6 +5533,19 @@ function iconWithLock(item, imgClass, showLock = true) {
       <img src="${escapeAttr(safeIconUrl(item.iconUrl))}" alt="" loading="lazy" class="${imgClass}" onerror="this.style.display='none'" />
       ${badgeHtml}
     </div>`;
+}
+/** Aggregate trade-lock badge for a MASTER/aggregated row (one row = the same item grouped across many
+ *  accounts). Surfaces how many of the grouped copies are trade-locked: "Locked" when ALL are locked,
+ *  "N locked" for a PARTIAL lock (some copies still freely sendable). Reads item.lockedCount, populated
+ *  by aggregate()/aggregateWithOwners(). DISPLAY-ONLY — selection + send/sell still fan out strictly over
+ *  item.owners[].assetIds (tradable AND unlocked copies only), so a locked copy can never be dispatched. */
+function masterLockBadge(item) {
+  const locked = item.lockedCount || 0;
+  if (locked <= 0) return '';
+  const all = locked >= (item.quantity || 0);
+  const label = all ? 'Locked' : `${locked} locked`;
+  const title = all ? 'All copies are trade-locked' : `${locked} of ${item.quantity} copies trade-locked (the rest are not trade-locked)`;
+  return `<span title="${escapeAttr(title)}" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-3xs font-bold whitespace-nowrap ${all ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40' : 'bg-amber-500/10 text-amber-300/90 ring-1 ring-amber-500/25'}"><i class="fa-solid fa-lock text-4xs"></i>${label}</span>`;
 }
 /** The four item states, mirroring bucketOf (src/core/MarketModel.ts) — the ONE classifier.
  *  Branch order must match it: listed → held → tradable → untradable. Everything after the

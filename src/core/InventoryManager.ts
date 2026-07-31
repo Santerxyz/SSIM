@@ -15,6 +15,7 @@ import type {
   Sticker,
 } from '../types/inventory';
 import { logger } from '../utils/logger';
+import { STEAM_BROWSER_UA, steamXhrHeadersFor } from '../network/steamHeaders';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,10 +33,9 @@ const MAX_INVENTORY_PAGES = 25; // hard ceiling (25 × 2000 = 50k items) – saf
  * Default browser-like User-Agent. Steam sits behind Cloudflare, which often
  * rejects requests carrying a non-browser UA with HTTP 400. A realistic UA is
  * therefore mandatory; accounts may override it via AccountConfig.userAgent.
+ * Single-sourced so it stays consistent with the sec-ch-ua Client Hints (both Chrome 124).
  */
-const DEFAULT_USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DEFAULT_USER_AGENT = STEAM_BROWSER_UA;
 
 // ════════════════════════════════════════════════════════════════════════════
 //  InventoryManager – fetch, parse, and price a single account's CS2 inventory
@@ -101,6 +101,12 @@ export class InventoryManager {
 
         validateStatus: () => true,
         headers: {
+          // Chromium fingerprint (Client Hints + Sec-Fetch + browser Accept-Encoding incl. brotli,
+          // which axios decodes) so Steam's 2026-07 bot-check doesn't 429 the inventory read. UA-aware:
+          // an account with a custom (non-Chrome-124) userAgent gets the Sec-Fetch/Accept set WITHOUT the
+          // Chrome-124 Client Hints, so the UA and the hints never contradict. Spread first; the
+          // endpoint-specific values below (XHR Accept, en-US, Referer) win on collision.
+          ...steamXhrHeadersFor(userAgent),
           // Cookies MUST be joined with "; " into a single header value.
           'Cookie':           session.webSession!.cookies.join('; '),
           'User-Agent':       userAgent,
@@ -477,7 +483,10 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
     }
   }
   if (unreadableHold) {
-    logger.warn(`trade-lock notice present but date unparseable ("${unreadableHold.slice(0, 80)}") – treating item as locked (date unknown)`);
+    // Log the FULL note (JSON.stringify exposes hidden bidi/zero-width chars + the trailing text), not a
+    // truncated 80-char prefix — the old slice(0,80) cut off exactly where the date begins, so every prior
+    // fix flew blind. This reveals the exact date FORMAT so extractHoldDate can be taught it. (2026-07-10)
+    logger.warn(`trade-lock notice present but date unparseable (${JSON.stringify(unreadableHold.slice(0, 400))}) [len=${unreadableHold.length}] – treating item as locked (date unknown)`);
     return new Date(TRADE_LOCK_DATE_UNKNOWN); // deterministic sentinel (B-5 / C22)
   }
 
@@ -592,7 +601,12 @@ function normalizeYear(y: number): number { return y >= 2543 && y <= 2643 ? y - 
  * English month-name form keeps its explicit "… GMT" (Steam states GMT there).
  */
 export function extractHoldDate(rawText: string): Date | null {
-  const text = normalizeDigitsAndBidi(rawText);
+  const text = normalizeDigitsAndBidi(rawText)
+    // Strip English ordinal suffixes so "July 17th, 2026" / "17th July 2026" / "the 17th of July 2026"
+    // still bind their day to the month (the worded-month branches below expect a bare "17"). Scoped to
+    // en — other Steam locales don't use st/nd/rd/th, so this can never corrupt a non-English date. This
+    // is the most likely shape that defeats the otherwise-comprehensive battery on the trade-protection note.
+    .replace(/\b(\d{1,2})(?:st|nd|rd|th)\b/gi, '$1');
   const cand: number[] = [];
   const push = (yRaw: number, mo: number, d: number, hh = 0, mi = 0, ss = 0): void => {
     const y = normalizeYear(yRaw);
@@ -649,7 +663,33 @@ export function extractHoldDate(rawText: string): Date | null {
   while ((m = mon.exec(text))) { const d = parseSteamDate(`${m[1]}${m[2] ? ' ' + m[2] : ''} GMT`); if (d) cand.push(d.getTime()); }
 
   const now = Date.now();
-  const future = cand.filter(t => t > now).sort((a, b) => a - b);
+  let future = cand.filter(t => t > now).sort((a, b) => a - b);
+  if (future.length) return new Date(future[0]);
+
+  // ── FALLBACK: Steam's trade-protection notice uses a SHORT, YEAR-LESS form ──────────────────────
+  // The widened log (2026-07-11) revealed the real format that had shown "date unknown": e.g.
+  //   "⇆ This item is trade-protected and cannot be consumed, modified, or transferred until 17 Jul @ 2:00pm"
+  // — day-first, NO YEAR, 12-hour time. Every branch above needs a 4-digit year, so none matched. This
+  // fallback runs ONLY when nothing year-bearing parsed, so it can never override a real dated note. The
+  // year is inferred as the nearest FUTURE occurrence (a trade hold is only days out): push both this-year
+  // and next-year and let the future-filter pick. No timezone in the note → local (see § TIMEZONE above).
+  const to24 = (h: number, ap?: string): number => {
+    if (!ap) return h;                                 // already 24-hour
+    return /p/i.test(ap) ? (h === 12 ? 12 : h + 12)    // pm: 12→12, else +12
+                         : (h === 12 ? 0 : h);          // am: 12→0
+  };
+  const yNow = new Date(now).getFullYear();
+  const pushNoYear = (mo: number, d: number, hh: number, mi: number): void => {
+    push(yNow, mo, d, hh, mi); push(yNow + 1, mo, d, hh, mi); // future-filter picks the nearest future
+  };
+  // day-first  "17 Jul @ 2:00pm" / "17 July @ 14:00"
+  const nyDay = /\b(\d{1,2})\s+([\p{L}\p{M}]{2,20})\.?\s*(?:@\s*)?(\d{1,2}):(\d{2})\s*([ap]\.?m\.?)?/giu;
+  while ((m = nyDay.exec(text))) { const mo = monthWords().get(monthWordKey(m[2])); if (mo) pushNoYear(mo, +m[1], to24(+m[3], m[5]), +m[4]); }
+  // month-first  "Jul 17 @ 2:00pm"
+  const nyMon = /\b([\p{L}\p{M}]{2,20})\.?\s+(\d{1,2})\s*(?:@\s*)?(\d{1,2}):(\d{2})\s*([ap]\.?m\.?)?/giu;
+  while ((m = nyMon.exec(text))) { const mo = monthWords().get(monthWordKey(m[1])); if (mo) pushNoYear(mo, +m[2], to24(+m[3], m[5]), +m[4]); }
+
+  future = cand.filter(t => t > now).sort((a, b) => a - b);
   return future.length ? new Date(future[0]) : null;
 }
 

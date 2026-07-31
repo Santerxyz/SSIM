@@ -3,6 +3,7 @@ import Request from 'request';
 import { buildCookieHeader } from '../pricing/PricerIdentityPool';
 import { MobileConfGate, type ConfFreshness } from './MobileConfGate';
 import { classifyNetworkError } from '../utils/errorClass';
+import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS, STEAM_LIBRARY_HEADERS } from '../network/steamHeaders';
 import SteamCommunity from 'steamcommunity';
 import TradeOfferManager from 'steam-tradeoffer-manager';
 import * as SteamTotp from 'steam-totp';
@@ -25,9 +26,7 @@ const CS2_CONTEXTID = '2';
 // Steam mobile-confirmation type for a market listing (vs. 2 = Trade).
 const CONF_TYPE_MARKET_LISTING = 3;
 
-export const MARKET_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+export const MARKET_UA = STEAM_BROWSER_UA;
 
 // ── Per-account trade-manager tuning (memory + background-poll load) ───────────
 // Each logged-in account owns a TradeOfferManager that POLLS Steam on this interval
@@ -226,9 +225,20 @@ export class AccountTrader {
     // `timeout` is mandatory: neither steamcommunity nor tradeoffer-manager set
     // one, so a proxy that silently drops api.steampowered.com would hang every
     // WebAPI call (and with it the trade-history sync) forever.
-    const request = (Request as any).defaults({ agent: session.httpsAgent, timeout: 30_000 });
+    // Browser fingerprint on EVERY vendored-library call (mobileconf/confirmations, profile XML,
+    // eligibility): default the Chromium Client Hints + Sec-Fetch + Accept-Language onto the injected
+    // `request` instance, and hand the canonical UA to SteamCommunity's own `userAgent` option so it
+    // stays the single source. STEAM_LIBRARY_HEADERS deliberately omits Accept (the library sets
+    // application/json per-call on its json:true mobileconf ops) and Accept-Encoding (the `request`
+    // lib has no brotli decoder) — see steamHeaders.ts. This is the library-side half of the 2026-07-10
+    // 429 fix; the direct-axios market/inventory/price calls carry the same fingerprint (STEAM_XHR_HEADERS).
+    const request = (Request as any).defaults({
+      agent:   session.httpsAgent,
+      timeout: 30_000,
+      headers: STEAM_LIBRARY_HEADERS,
+    });
 
-    this.community = new SteamCommunity({ request });
+    this.community = new SteamCommunity({ request, userAgent: STEAM_BROWSER_UA });
     this.manager   = new TradeOfferManager({
       steam:         session.client,
       community:     this.community,
@@ -339,6 +349,7 @@ export class AccountTrader {
         timeout:        20_000,
         validateStatus: () => true,
         headers: {
+          ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429
           Cookie:       cookies.join('; '),
           'User-Agent': MARKET_UA,
           Accept:       'application/json',
@@ -402,6 +413,7 @@ export class AccountTrader {
         timeout:        20_000,
         validateStatus: () => true,
         headers: {
+          ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429
           Cookie:       cookies.join('; '),
           'User-Agent': MARKET_UA,
           Accept:       'application/json',
@@ -482,6 +494,7 @@ export class AccountTrader {
         timeout:        20_000,
         validateStatus: () => true,
         headers: {
+          ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429
           Cookie:             cookies.join('; '),
           'User-Agent':       MARKET_UA,
           'Content-Type':     'application/x-www-form-urlencoded; charset=UTF-8',
@@ -518,6 +531,7 @@ export class AccountTrader {
         timeout:        20_000,
         validateStatus: () => true,
         headers: {
+          ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429
           Cookie:             cookies.join('; '),
           'User-Agent':       MARKET_UA,
           'Content-Type':     'application/x-www-form-urlencoded; charset=UTF-8',
@@ -791,6 +805,7 @@ export class AccountTrader {
       timeout:        20_000,
       validateStatus: () => true,
       headers: {
+        ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429 the listing POST
         Cookie:             cookies.join('; '),
         'User-Agent':       MARKET_UA,
         'Content-Type':     'application/x-www-form-urlencoded; charset=UTF-8',
@@ -872,6 +887,7 @@ export class AccountTrader {
         timeout:        20_000,
         validateStatus: () => true,
         headers: {
+          ...STEAM_XHR_HEADERS, // Chromium fingerprint so Steam's bot-check doesn't 429 the buy-order POST
           Cookie:             cookies.join('; '),
           'User-Agent':       MARKET_UA,
           'Content-Type':     contentType,
