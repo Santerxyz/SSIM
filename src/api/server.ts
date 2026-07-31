@@ -2455,12 +2455,27 @@ export function createApp(deps: ApiDeps): Express {
     }
     // H-TRD-022: when the client disconnects (its 120s abort, or a manual close), stop the
     // backend cascade instead of running it to completion for an already-dead request.
+    //
+    // ⚠ The signal MUST come from the RESPONSE, not the request (v1.4.4 root-cause fix — owner:
+    // "the fetch price still doesn't work, it shows no price 0.00"). For a POST whose body has been
+    // consumed by express.json(), the request stream is finished and Node AUTO-DESTROYS it as soon as
+    // the handler awaits anything — so `req.on('close')` fires and `req.destroyed` turns true on a
+    // perfectly HEALTHY request. Measured: immediately {destroyed:false}, after one await
+    // {destroyed:true, req_on_close_fired:true}. preview() awaits priceCtxsFor() before its worker
+    // loop, so every worker saw shouldStop()===true on its FIRST check, returned without ever calling
+    // getSellInfo (hence zero `[price]` log lines), and returned an EMPTY map — which the modal renders
+    // as "no price" on every row. It could never have worked through this route; the earlier
+    // "live-proven" run called market.preview() directly, with no shouldStop.
+    //
+    // `res.on('close')` fires in both cases, so `writableFinished` disambiguates: true ⇒ we finished
+    // sending (not an abort), false ⇒ the peer really went away. (A bodyless GET/SSE is NOT affected —
+    // its request stream is never consumed — so the live-log stream's own req.on('close') stays valid.)
     let clientGone = false;
-    req.on('close', () => { clientGone = true; });
+    res.on('close', () => { if (!res.writableFinished) clientGone = true; });
     res.json(await market.preview(names, strategy, {
       customCents: custom ?? undefined,
       username: typeof username === 'string' ? username : undefined,
-      shouldStop: () => clientGone || res.writableEnded || req.destroyed,
+      shouldStop: () => clientGone,
       appId: previewAppId,
     }));
   }));
