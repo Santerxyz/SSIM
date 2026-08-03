@@ -95,15 +95,28 @@ export function knownCurrencyInfo(code: number | undefined): CurrencyInfo | null
  * S64). 0-decimal currencies are read as integers.
  *
  * The 3-digit-group carve-out assumes no currency has `decimals >= 3` (every entry
- * in STEAM_CURRENCIES is 0 or 2, and parseEurCents hardcodes 2); a 3-decimal
- * currency would need this branch revisited, since it would refuse a valid
- * 3-digit fraction.
+ * in STEAM_CURRENCIES is 0 or 2); a 3-decimal currency would need this branch
+ * revisited, since it would refuse a valid 3-digit fraction.
  */
 export function parseSteamMoney(s: unknown, decimals: number): number | null {
   if (typeof s !== 'string') return null;
   const cleaned = s.replace(/[^0-9.,]/g, '');
   if (!cleaned) return null;
   if (decimals === 0) {
+    // Steam sometimes emits a FRACTION even for a 0-decimal currency — verified live
+    // 2026-08-03: JPY (code 8) `median_price` came back as "¥ 6,709.04" while
+    // `lowest_price` was the plain "¥ 6,685". Blindly stripping every separator reads
+    // that as 670904 — 100× the real price (a 100× overbid on the buy path). So apply
+    // the same last-separator test as the fractional branch below: a trailing group
+    // that is NOT a 3-digit thousands group is a fraction, and is ROUNDED away.
+    const sep = Math.max(cleaned.lastIndexOf('.'), cleaned.lastIndexOf(','));
+    const frac = sep >= 0 ? cleaned.slice(sep + 1) : '';
+    if (frac.length > 0 && frac.length !== 3) {
+      const whole = parseInt(cleaned.slice(0, sep).replace(/[.,]/g, '') || '0', 10);
+      const f = parseInt(frac, 10);
+      if (!Number.isFinite(whole) || !Number.isFinite(f)) return null;
+      return whole + (f / Math.pow(10, frac.length) >= 0.5 ? 1 : 0);
+    }
     const n = parseInt(cleaned.replace(/[.,]/g, ''), 10);
     return Number.isFinite(n) ? n : null;
   }
@@ -125,4 +138,65 @@ export function parseSteamMoney(s: unknown, decimals: number): number | null {
   }
   const minor = parseInt(intPart || '0', 10) * Math.pow(10, decimals) + parseInt(decPart || '0', 10);
   return Number.isFinite(minor) ? minor : null;
+}
+
+// ─── Currency-mismatch detection on Steam's localized price strings ───────────
+
+/**
+ * Symbols/abbreviations Steam puts in a localized price string, each mapped to EVERY
+ * Steam currency that can legitimately produce it. Deliberately INCOMPLETE: a currency
+ * whose marker is absent (AED, SAR, QAR, KWD, ZAR, TRY-as-"TL", PEN…) simply produces
+ * no verdict, which is the safe direction — this table may only ever REFUSE a response,
+ * never approve one. Groups exist so a shared glyph ('$', '¥', 'kr') can't accuse a
+ * sibling currency of being foreign.
+ */
+const PRICE_TEXT_MARKERS: ReadonlyArray<{ re: RegExp; isos: readonly string[] }> = [
+  { re: /€/,                isos: ['EUR'] },
+  { re: /£/,                isos: ['GBP'] },
+  { re: /\$/,               isos: ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD', 'MXN', 'ARS', 'CLP', 'COP', 'UYU', 'BRL', 'PEN'] },
+  { re: /¥/,                isos: ['JPY', 'CNY'] },
+  { re: /kr/i,              isos: ['NOK', 'SEK', 'DKK'] },
+  { re: /zł/i,              isos: ['PLN'] },
+  { re: /₽|руб|pуб/i,       isos: ['RUB'] },   // Steam serves "3334,32 pуб." — Latin p, Cyrillic уб
+  { re: /₺/,                isos: ['TRY'] },
+  { re: /₴|грн/i,           isos: ['UAH'] },
+  { re: /₪/,                isos: ['ILS'] },
+  { re: /₩/,                isos: ['KRW'] },
+  { re: /₹/,                isos: ['INR'] },
+  { re: /₫/,                isos: ['VND'] },
+  { re: /฿/,                isos: ['THB'] },
+  { re: /₱/,                isos: ['PHP'] },
+  { re: /₸/,                isos: ['KZT'] },
+  { re: /₡/,                isos: ['CRC'] },
+  { re: /Kč/i,              isos: ['CZK'] },
+  { re: /Ft/i,              isos: ['HUF'] },
+  { re: /CHF/i,             isos: ['CHF'] },
+  { re: /Rp/i,              isos: ['IDR'] },
+  { re: /RM/i,              isos: ['MYR'] },
+  { re: /лв/i,              isos: ['BGN'] },
+  { re: /lei/i,             isos: ['RON'] },
+  { re: /\bkn\b/i,          isos: ['HRK'] },
+];
+
+/**
+ * MONEY SAFETY. Steam's priceoverview answers a `currency=<code>` request with a plain
+ * LOCALIZED string ("157,03 zł") and never echoes the code, so a request that came back
+ * in the WRONG currency is indistinguishable from a correct one by the number alone —
+ * and parsing it against the currency we asked for would mis-price the listing by the
+ * whole FX rate (a PLN wallet listing at EUR numbers is the ~99% underprice B11 guarded
+ * against, only now silent).
+ *
+ * Returns the ISO of the currency the text is clearly denominated in when that
+ * CONTRADICTS `expectedIso`, else null. It only ever speaks up on a POSITIVE match for
+ * a different currency: an unrecognised (or symbol-less) string yields null and is
+ * accepted, so this can add a refusal but never a false "looks fine".
+ */
+export function priceTextForeignCurrency(text: unknown, expectedIso: string): string | null {
+  if (typeof text !== 'string' || !text) return null;
+  const hits = PRICE_TEXT_MARKERS.filter((m) => m.re.test(text));
+  if (hits.length === 0) return null;
+  // Any marker that ACCEPTS the expected currency clears the string — a glyph shared with
+  // a sibling ('$' for both USD and CAD) must never be read as a contradiction.
+  if (hits.some((m) => m.isos.includes(expectedIso))) return null;
+  return hits[0].isos.join('/');
 }

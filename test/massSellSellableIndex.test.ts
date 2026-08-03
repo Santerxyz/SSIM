@@ -56,7 +56,7 @@ test('H-TRD-021: getCached is read once per bot and a trade-locked stack is stil
   const svc = new MarketService(trades, inventory);
   // Authoritative no-price → the 4 sellable items resolve without ever calling sellOnMarket,
   // so the run completes without the full listing machinery.
-  const info: SellInfo = { lowestCents: null, medianCents: null, volume: null, authoritative: true };
+  const info: SellInfo = { lowestMinor: null, medianMinor: null, volume: null, authoritative: true, basis: null, currency: 3, decimals: 2 };
   (svc as any).pricing = { getSellInfo: async () => info };
 
   const job = await runToCompletion(svc, [

@@ -269,6 +269,11 @@ const el = {
   sellFrom:        $('sell-from'),
   sellPreviewBtn:  $('sell-preview-btn'),
   sellPreviewResult: $('sell-preview-result'),
+  // per-account currency labelling (prices are native, not EUR)
+  sellPriceLabel:   $('sell-price-label'),
+  sellCustomSymbol: $('sell-custom-symbol'),
+  sellUndercutHint: $('sell-undercut-hint'),
+  sellCurrencyNote: $('sell-currency-note'),
   // market-buy modal
   btnBuyMarket:  $('btn-buy-market'),
   buyOverlay:    $('buy-overlay'),
@@ -682,11 +687,6 @@ function fmtUsd(usdMajor) {
 }
 /** USD cents → string. null/undefined handled by caller via fmtUsd. */
 function fmtCents(cents) { return cents == null ? '—' : fmtUsd(cents / 100); }
-/** EUR cents → "€x,xx" (market-sell prices are already in EUR – no FX conversion). */
-function fmtEurCents(cents) {
-  if (cents == null || isNaN(cents)) return '—';
-  return '€' + (cents / 100).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 /** Steam wallet (native currency) → USD major units. Supports USD(1) + EUR(3). */
 function walletToUsd(w) {
   if (!w) return null;
@@ -760,6 +760,16 @@ function fmtMoneyMinor(minor, code) {
   try {
     return new Intl.NumberFormat(locale, { style: 'currency', currency: c.iso, minimumFractionDigits: c.d, maximumFractionDigits: c.d }).format(major);
   } catch { return major.toLocaleString(locale, { minimumFractionDigits: c.d, maximumFractionDigits: c.d }) + ' ' + c.iso; }
+}
+/** Bare currency symbol for a Steam code ("€", "zł", "¥") — for input adornments, where a
+ *  full formatted amount would be wrong. Falls back to the ISO code when Intl has no symbol. */
+function currencySymbol(code) {
+  const c = curInfo(code);
+  try {
+    const part = new Intl.NumberFormat(localeForIso(c.iso), { style: 'currency', currency: c.iso })
+      .formatToParts(0).find((p) => p.type === 'currency');
+    return (part && part.value) || c.iso;
+  } catch { return c.iso; }
 }
 /** Steam wallet (balance in MAJOR units) → minor units of its own currency. */
 function walletMinor(w) { return w ? Math.round(w.balance * Math.pow(10, curInfo(w.currency).d)) : null; }
@@ -7571,11 +7581,29 @@ function sellStrategy() {
   return r ? r.value : 'lowest';
 }
 
-/** Reads the custom EUR price field → integer cents, or null if empty/invalid. */
-function customSellCents() {
+/** Reads the custom price field → a MAJOR amount, or null if empty/invalid. It is applied in
+ *  each selling bot's OWN wallet currency (the backend scales it by that wallet's decimals),
+ *  so it is deliberately NOT pre-converted to cents here — 2.05 means 2.05 PLN on a PLN bot. */
+function customSellMajor() {
   const raw = (el.sellCustomPrice.value || '').replace(',', '.').trim();
-  const eur = parseFloat(raw);
-  return Number.isFinite(eur) && eur > 0 ? Math.round(eur * 100) : null;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * The wallet currency the sell modal quotes in: the distinct currencies of the selected
+ * bots, and the one to price against. A folder selection can span regions, and each bot
+ * still LISTS in its own currency — the preview can only show one, so `mixed` lets the
+ * modal say so instead of implying every row is in the currency shown.
+ */
+function sellSelectionCurrency() {
+  const items = state.sellItems || [];
+  const codes = [];
+  for (const u of new Set(items.map((i) => i.username))) {
+    const c = walletOf(u)?.currency;
+    if (typeof c === 'number' && STEAM_CURRENCIES[c] && !codes.includes(c)) codes.push(c);
+  }
+  return { code: codes[0], mixed: codes.length > 1, codes };
 }
 
 /** Names of the source bots in the current selection (unique, capped for display). */
@@ -7589,6 +7617,40 @@ function toggleSellCustomRow() {
   const isCustom = sellStrategy() === 'custom';
   el.sellCustomRow.classList.toggle('hidden', !isCustom);
   if (isCustom) el.sellCustomPrice.focus();
+}
+
+/** Re-labels every currency-bearing control in the sell modal for the selection's wallet.
+ *  Prices are native now, so a hardcoded "€"/"1 cent" would misdescribe a PLN or JPY bot. */
+function renderSellCurrencyLabels() {
+  const { code, mixed, codes } = sellSelectionCurrency();
+  const c = curInfo(code);
+  const sym = currencySymbol(code);
+  if (el.sellPriceLabel) el.sellPriceLabel.textContent = code == null ? 'Sale price' : `Sale price (${c.iso})`;
+  if (el.sellCustomSymbol) el.sellCustomSymbol.textContent = sym;
+  if (el.sellCustomPrice) {
+    // A 0-decimal wallet (JPY/KRW/IDR) has no sub-unit — don't offer 0.01 steps it can't use.
+    el.sellCustomPrice.step = c.d === 0 ? '1' : '0.01';
+    el.sellCustomPrice.min = c.d === 0 ? '1' : '0.01';
+    el.sellCustomPrice.placeholder = c.d === 0 ? 'e.g. 150' : 'e.g. 1.50';
+  }
+  if (el.sellUndercutHint) {
+    // The step is ONE minor unit of the bot's own currency — 0,01 PLN, ¥1, … — so name it by
+    // formatting that unit rather than saying "1 cent", which is only true for €/$-like wallets.
+    const step = code == null ? 'one minor unit' : fmtMoneyMinor(1, code);
+    el.sellUndercutHint.textContent = `Undercut the lowest price by the smallest step (${step}) – first in the list.`;
+  }
+  if (el.sellCurrencyNote) {
+    // Two honest states worth surfacing: nothing known (the quote will be an assumption the
+    // backend flags), and a mixed-region selection (each bot lists in its OWN currency, so
+    // one preview column cannot speak for all of them).
+    const isos = codes.map((x) => curInfo(x).iso).join(', ');
+    el.sellCurrencyNote.innerHTML = mixed
+      ? `<i class="fa-solid fa-circle-info mr-1"></i>This selection spans <b>${escapeHtml(isos)}</b>. Every bot is priced and listed in its <b>own</b> wallet currency; the preview below is shown in <b>${escapeHtml(curInfo(code).iso)}</b> only.`
+      : code == null
+        ? `<i class="fa-solid fa-circle-info mr-1"></i>No wallet currency is cached for this selection — the preview assumes EUR. Each bot is still priced and listed in its own currency when the sale runs; refresh the account(s) to preview accurately.`
+        : '';
+    el.sellCurrencyNote.classList.toggle('hidden', !el.sellCurrencyNote.innerHTML);
+  }
 }
 
 function openSellModal() {
@@ -7606,28 +7668,44 @@ function openSellModal() {
   el.sellPreviewResult.classList.add('hidden');
   el.sellPreviewResult.innerHTML = '';
   state.sellPriceMap = null;
+  state.sellPriceCurrency = null;
   el.sellForm.querySelector('input[name="sellstrategy"][value="lowest"]').checked = true;
   el.sellCustomPrice.value = '';
+  renderSellCurrencyLabels();
   toggleSellCustomRow();
   el.sellOverlay.classList.remove('hidden');
 }
 function closeSellModal() { el.sellOverlay.classList.add('hidden'); }
 
+/** Body shared by the full preview and the single-item re-query, incl. the currency to
+ *  quote in (the backend validates it and falls back on its own if we send nothing). */
+function sellPreviewBody(names) {
+  const strategy = sellStrategy();
+  const body = {
+    names, strategy,
+    username: (state.sellItems[0] || {}).username,
+    appId: state.sellAppId,
+    currency: sellSelectionCurrency().code,
+  };
+  if (strategy === 'custom') {
+    const major = customSellMajor();
+    if (major == null) return null;
+    body.customPriceMajor = major;
+  }
+  return body;
+}
+
 async function previewSell() {
   const items = state.sellItems || [];
   if (!items.length) return;
-  const strategy = sellStrategy();
   const names = [...new Set(items.map((i) => i.marketHashName))];
-  const body = { names, strategy, username: items[0] && items[0].username, appId: state.sellAppId };
-  if (strategy === 'custom') {
-    const cents = customSellCents();
-    if (cents == null) { toast('Please enter a valid custom price (€)', 'warn'); return; }
-    body.customCents = cents;
-  }
+  const body = sellPreviewBody(names);
+  if (!body) { toast(`Please enter a valid custom price (${curInfo(sellSelectionCurrency().code).iso})`, 'warn'); return; }
   setButtonLoading(el.sellPreviewBtn, true, 'Calculating…');
   try {
-    const map = await api('/api/market/preview', { method: 'POST', body: JSON.stringify(body) });
-    state.sellPriceMap = map;                 // name → { netCents, buyerCents }
+    const r = await api('/api/market/preview', { method: 'POST', body: JSON.stringify(body) });
+    state.sellPriceMap = r.prices;            // name → { netMinor, buyerMinor }
+    state.sellPriceCurrency = r;              // { currency, currencyIso, decimals, resolved }
     renderSellPreview();
   } catch (err) {
     toast(err.message, 'error');
@@ -7638,16 +7716,16 @@ async function previewSell() {
 
 /** Re-queries the live price for ONE item only (Hotfix B – fast straggler fix). */
 async function retryOnePrice(name, btn) {
-  const strategy = sellStrategy();
-  const body = { names: [name], strategy, username: (state.sellItems[0] || {}).username, appId: state.sellAppId };
-  if (strategy === 'custom') { const c = customSellCents(); if (c == null) return; body.customCents = c; }
+  const body = sellPreviewBody([name]);
+  if (!body) return;
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i>'; }
   try {
-    const map = await api('/api/market/preview', { method: 'POST', body: JSON.stringify(body) });
-    state.sellPriceMap = { ...(state.sellPriceMap || {}), ...map };
+    const r = await api('/api/market/preview', { method: 'POST', body: JSON.stringify(body) });
+    state.sellPriceMap = { ...(state.sellPriceMap || {}), ...r.prices };
+    state.sellPriceCurrency = r;
     renderSellPreview();
-    const p = map[name] || {};
-    if (p.netCents == null) toast(`"${name}" still has no price – try again`, 'warn');
+    const p = r.prices[name] || {};
+    if (p.netMinor == null) toast(`"${name}" still has no price – try again`, 'warn');
   } catch (err) {
     toast(err.message, 'error');
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-rotate-right"></i>'; }
@@ -7658,13 +7736,18 @@ async function retryOnePrice(name, btn) {
 function renderSellPreview() {
   const items = state.sellItems || [];
   const map = state.sellPriceMap || {};
+  // Every amount below is MINOR units of the currency the backend quoted in — formatted
+  // with THAT currency's symbol + decimals, never a hardcoded €.
+  const q = state.sellPriceCurrency || {};
+  const code = q.currency != null ? q.currency : sellSelectionCurrency().code;
+  const fmt = (minor) => fmtMoneyMinor(minor, code);
   const names = [...new Set(items.map((i) => i.marketHashName))];
   let totalBrutto = 0, totalFee = 0, totalNetto = 0, missing = 0;
 
   const bodyRows = names.map((n) => {
     const p = map[n] || {};
     const cnt = items.filter((i) => i.marketHashName === n).length;
-    if (p.netCents == null || p.buyerCents == null) {
+    if (p.netMinor == null || p.buyerMinor == null) {
       missing += cnt;
       return `<tr class="border-t border-slate-800/60">
         <td class="py-1.5 pl-3 pr-2"><span class="text-slate-400">${escapeHtml(n)}</span> <span class="text-slate-600 font-mono">×${cnt}</span></td>
@@ -7674,15 +7757,15 @@ function renderSellPreview() {
             class="btn btn-icon-sm btn-secondary">
             <i class="fa-solid fa-rotate-right"></i></button></td></tr>`;
     }
-    const fee = Math.max(0, p.buyerCents - p.netCents);
-    totalBrutto += p.buyerCents * cnt;
+    const fee = Math.max(0, p.buyerMinor - p.netMinor);
+    totalBrutto += p.buyerMinor * cnt;
     totalFee    += fee * cnt;
-    totalNetto  += p.netCents * cnt;
+    totalNetto  += p.netMinor * cnt;
     return `<tr class="border-t border-slate-800/60">
       <td class="py-1.5 pl-3 pr-2"><span class="text-slate-300">${escapeHtml(n)}</span> <span class="text-slate-600 font-mono">×${cnt}</span></td>
-      <td class="py-1.5 px-2 text-right font-mono text-slate-300">${fmtEurCents(p.buyerCents)}</td>
-      <td class="py-1.5 px-2 text-right font-mono text-amber-400/90">−${fmtEurCents(fee)}</td>
-      <td class="py-1.5 pl-2 pr-3 text-right font-mono text-emerald-400 font-semibold">${fmtEurCents(p.netCents)}</td></tr>`;
+      <td class="py-1.5 px-2 text-right font-mono text-slate-300">${fmt(p.buyerMinor)}</td>
+      <td class="py-1.5 px-2 text-right font-mono text-amber-400/90">−${fmt(fee)}</td>
+      <td class="py-1.5 pl-2 pr-3 text-right font-mono text-emerald-400 font-semibold">${fmt(p.netMinor)}</td></tr>`;
   }).join('');
 
   el.sellPreviewResult.innerHTML = `
@@ -7699,12 +7782,13 @@ function renderSellPreview() {
       <tfoot>
         <tr class="border-t-2 border-slate-700 font-bold">
           <td class="py-2 pl-3 pr-2 text-slate-200">Total (${items.length - missing} item(s))</td>
-          <td class="py-2 px-2 text-right font-mono text-slate-200">${fmtEurCents(totalBrutto)}</td>
-          <td class="py-2 px-2 text-right font-mono text-amber-400/90">−${fmtEurCents(totalFee)}</td>
-          <td class="py-2 pl-2 pr-3 text-right font-mono text-emerald-400">${fmtEurCents(totalNetto)}</td>
+          <td class="py-2 px-2 text-right font-mono text-slate-200">${fmt(totalBrutto)}</td>
+          <td class="py-2 px-2 text-right font-mono text-amber-400/90">−${fmt(totalFee)}</td>
+          <td class="py-2 pl-2 pr-3 text-right font-mono text-emerald-400">${fmt(totalNetto)}</td>
         </tr>
       </tfoot>
     </table>
+    ${q.resolved === false ? `<div class="t10 text-amber-400 px-3 py-1.5 border-t border-slate-800"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Quoted in ${escapeHtml(curInfo(code).iso)} as an assumption – no wallet currency is known for this selection. Each bot still prices and lists in its own currency when the sale runs.</div>` : ''}
     ${missing ? `<div class="t10 text-amber-400 px-3 py-1.5 border-t border-slate-800">${missing} item(s) without price – use <i class="fa-solid fa-rotate-right"></i> to re-query individually (otherwise skipped).</div>` : ''}`;
   el.sellPreviewResult.querySelectorAll('[data-reprice]').forEach((b) =>
     b.addEventListener('click', () => retryOnePrice(b.dataset.reprice, b)));
@@ -7718,9 +7802,10 @@ async function submitSell(ev) {
   const strategy = sellStrategy();
   const body = { items, strategy, appId: state.sellAppId };
   if (strategy === 'custom') {
-    const cents = customSellCents();
-    if (cents == null) { toast('Please enter a valid custom price (€)', 'warn'); return; }
-    body.customCents = cents;
+    // MAJOR units: the backend applies this amount in EACH bot's own wallet currency.
+    const major = customSellMajor();
+    if (major == null) { toast(`Please enter a valid custom price (${curInfo(sellSelectionCurrency().code).iso})`, 'warn'); return; }
+    body.customPriceMajor = major;
   }
   setButtonLoading(el.sellSubmit, true, 'Starting…');
   try {

@@ -75,8 +75,8 @@ test('H-TRD-024: a bot throwing mid-run does not abort the fleet; run finalizes 
   const spies: Spies = { released: 0, sold: [] };
   const svc = makeService(spies);
 
-  // customCents keeps pricing out of the picture (resolveNet short-circuits on 'custom').
-  svc.startMassSell(GROUPS(), 'custom', { customCents: 1000, itemDelayMs: 0, confirmBackoffMs: 0, preflightBackoffMs: 0, retryBackoffMs: 0 });
+  // customPriceMajor keeps pricing out of the picture (resolveNet short-circuits on 'custom').
+  svc.startMassSell(GROUPS(), 'custom', { customPriceMajor: 10, itemDelayMs: 0, confirmBackoffMs: 0, preflightBackoffMs: 0, retryBackoffMs: 0 });
   await waitDone(svc);
 
   const job = svc.status();
@@ -99,11 +99,11 @@ test('H-TRD-024: a second run after the throwing run starts with clean counters 
   const spies: Spies = { released: 0, sold: [] };
   const svc = makeService(spies);
 
-  svc.startMassSell(GROUPS(), 'custom', { customCents: 1000, itemDelayMs: 0, confirmBackoffMs: 0, preflightBackoffMs: 0, retryBackoffMs: 0 });
+  svc.startMassSell(GROUPS(), 'custom', { customPriceMajor: 10, itemDelayMs: 0, confirmBackoffMs: 0, preflightBackoffMs: 0, retryBackoffMs: 0 });
   await waitDone(svc);
 
   // Second run must be ALLOWED (running latched false) and begin fresh.
-  const second = svc.startMassSell(GROUPS(), 'custom', { customCents: 1000, itemDelayMs: 0, confirmBackoffMs: 0, preflightBackoffMs: 0, retryBackoffMs: 0 });
+  const second = svc.startMassSell(GROUPS(), 'custom', { customPriceMajor: 10, itemDelayMs: 0, confirmBackoffMs: 0, preflightBackoffMs: 0, retryBackoffMs: 0 });
   assert.equal(second.total, 3, 'total reflects the new run only');
   assert.equal(second.listed, 0, 'no carry-over listings');
   assert.equal(second.failed.length, 0, 'no carry-over failed rows');

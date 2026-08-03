@@ -1,7 +1,8 @@
 import type { TradeService } from './TradeService';
 import type { InventoryService } from '../core/InventoryService';
 import type { MarketOrders } from './AccountTrader';
-import { MarketPricing, sellerNetFromBuyer, targetBuyerCents, feesForNet, EUR_CURRENCY, type SellStrategy } from '../pricing/MarketPricing';
+import { MarketPricing, sellerNetFromBuyer, targetBuyerMinor, feesForNet, EUR_CURRENCY, type SellStrategy } from '../pricing/MarketPricing';
+import { knownCurrencyInfo, type CurrencyInfo } from '../pricing/currencies';
 import type { PricerIdentity } from '../pricing/PricerIdentityPool';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { isSellable } from '../core/MarketModel';
@@ -55,23 +56,32 @@ const CONFIRM_RATELIMIT_PAUSE_MS  = 65_000;
 const CONFIRM_RATELIMIT_JITTER_MS = 15_000;         // de-sync the fleet's retries
 const CONFIRM_RATELIMIT_RETRIES   = 2;              // ≤3 getlist calls total, not 4 inside one window
 
+/** How long a sell waits for the login 'wallet' event before giving up on the currency. */
+const WALLET_WAIT_MS = 5_000;
+
 /**
- * Money-safety gate (B11): every price SSIM computes is EUR seller-net cents, but
- * Steam's market/sellitem interprets the `price` field in the SELLER's OWN wallet
- * currency's minor units. Listing an EUR-cents number on a non-EUR wallet lists the
- * item ~99% underpriced (10.00€ → ~10 RUB) and it sells instantly = silent real-money
- * loss. So a sell is only safe when the wallet is EUR. We fail CLOSED for a KNOWN
- * non-EUR wallet (never convert-and-guess); an UNKNOWN wallet keeps the EUR common
- * path (a non-EUR wallet is reported by the login 'wallet' event, so the dangerous
- * case is knowable — proceeding-on-unknown never underprices a wallet we've seen).
- * THIRD STATE: a never-funded account reports currency 0 (ECurrencyCode.Invalid) — a
- * present-but-invalid wallet, distinct from `undefined` (never observed). It is ALSO
- * blocked fail-closed here (0 !== EUR): the currency a first funding would mint is
- * unknowable, so the sell guard names it honestly ("no Steam wallet … add funds once")
- * rather than reporting a phantom foreign wallet.
+ * Money-safety gate (B11, generalised in v1.4.5). Steam's market/sellitem interprets its
+ * `price` field in the SELLER's OWN wallet currency's minor units — so the ONE thing that
+ * matters is that the number we send was READ in that same currency. SSIM now prices every
+ * listing in the selling bot's native currency (priceoverview `currency=<the bot's code>`),
+ * which is why a PLN/RUB/USD wallet is no longer refused: it is quoted, fee'd and listed in
+ * PLN/RUB/USD end to end. The old "EUR or nothing" rule listed EUR cents on a foreign wallet
+ * (10,00€ read as ~10 RUB — a ~99% underprice that sells instantly), and blocking was the
+ * only safe answer while the quote was hardcoded to EUR; it isn't any more.
+ *
+ * What remains fail-CLOSED is the currency being UNKNOWABLE, in any of three shapes:
+ *  - `undefined` — the 'wallet' event hasn't arrived (or never fires this session). Pricing
+ *    in a guessed currency is exactly the underprice above, so the caller waits for the event
+ *    (WALLET_WAIT_MS) and then blocks. This closes OQ-B1's fail-open hole, where a genuinely
+ *    foreign wallet read `undefined` for a moment right after ensureWebSession and got the
+ *    EUR path.
+ *  - `0` (ECurrencyCode.Invalid) — a never-funded account has no wallet at all, and the
+ *    currency a first top-up would mint is unknowable. Named honestly, not as a foreign wallet.
+ *  - an unrecognised code — could be a 0-decimal currency, and assuming 2 decimals mis-scales
+ *    the listing 100× (S64).
  */
 export function sellWalletBlocked(walletCurrency: number | undefined): boolean {
-  return walletCurrency != null && walletCurrency !== EUR_CURRENCY;
+  return knownCurrencyInfo(walletCurrency) == null;
 }
 
 /**
@@ -152,14 +162,32 @@ export interface MassSellJob {
   finishedAt?: string;
 }
 
+/**
+ * Sell-modal price preview. Every amount is MINOR units of `currency` — the wallet the
+ * preview was quoted for — so the client formats with that currency's own symbol and
+ * decimals instead of a hardcoded €. ADVISORY ONLY: the committed price is re-read per
+ * bot, in that bot's own currency, at list time (see resolveNet).
+ */
+export interface SellPreview {
+  /** Steam ECurrencyCode every amount below is denominated in. */
+  currency:    number;
+  currencyIso: string;
+  decimals:    number;
+  /** True when `currency` came from an actual known wallet; false when nothing was
+   *  resolvable and the quote fell back to EUR, which the client should say out loud. */
+  resolved:    boolean;
+  prices:      Record<string, { netMinor: number | null; buyerMinor: number | null }>;
+}
+
 function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
 
 /**
  * Orchestrates mass-selling selected items on the Steam Community Market — the
- * sell-side counterpart to TradeService.startMassSend. Each bot lists its own
- * assets through its isolated session, prices come from MarketPricing (EUR), and
- * every listing is auto-confirmed via 2FA in one batch per bot. Paced via a small
- * worker pool so we never burst-spam Steam.
+ * sell-side counterpart to TradeService.startMassSend. Each bot lists its own assets
+ * through its isolated session, priced by MarketPricing in THAT BOT'S OWN wallet
+ * currency (the only denomination market/sellitem will read the price as), and every
+ * listing is auto-confirmed via 2FA in one batch per bot. Paced via a small worker
+ * pool so we never burst-spam Steam.
  */
 export class MarketService {
   private readonly pricing = new MarketPricing();
@@ -278,9 +306,11 @@ export class MarketService {
    * The caller (preview) then falls back to ONE anonymous lane if this returns empty — anonymous
    * priceoverview works (the browser fingerprint fix), so a read is never blocked, only de-prioritised.
    *
-   * Money-safety: this only decides WHOSE per-session budget + exit a READ draws. Currency stays
-   * EUR/3 (getSellInfo) and the COMMITTED sell price is re-resolved via the SELLING bot's own cookie
-   * in resolveNet — never one of these borrowed preview contexts.
+   * Money-safety: this only decides WHOSE per-session budget + exit a READ draws — NOT the
+   * denomination. The currency is an explicit priceoverview parameter, so borrowing a PLN bot's
+   * cookie to read a EUR quote (or vice versa) is harmless. The COMMITTED sell price is re-resolved
+   * via the SELLING bot's own cookie AND its own wallet currency in resolveNet — never one of these
+   * borrowed preview contexts.
    */
   private async priceCtxsFor(username?: string, max = 1): Promise<PriceCtx[]> {
     const out: PriceCtx[] = [];
@@ -307,23 +337,43 @@ export class MarketService {
   }
 
   /**
-   * Price preview for the sell modal: name → { netCents, buyerCents }.
-   * `customCents` (when strategy='custom') is the operator's fixed seller-net
-   * price applied to every item – no live lookup needed. Otherwise prices are
-   * fetched live, routed through `username`'s bot proxy to dodge rate limits.
+   * The currency a PREVIEW is quoted in. Advisory, so unlike the commit path it may fall back:
+   * the client's `currency` (it knows the selection's wallets) wins when it is a code we
+   * recognise, then the acting account's CACHED wallet — deliberately cache-only, because a
+   * preview must never block on a login or a wallet event — and finally EUR, flagged
+   * `resolved:false` so the modal can say the quote is an assumption. A real listing never
+   * uses this: processBot re-resolves the currency per bot and BLOCKS when it can't.
+   */
+  private previewCurrency(username?: string, requested?: number, game: GameId = 'cs2'): { info: CurrencyInfo; resolved: boolean } {
+    const fromClient = knownCurrencyInfo(requested);
+    if (fromClient) return { info: fromClient, resolved: true };
+    const cached = username ? knownCurrencyInfo(this.inventory?.getCached(username, game)?.wallet?.currency) : null;
+    if (cached) return { info: cached, resolved: true };
+    return { info: knownCurrencyInfo(EUR_CURRENCY)!, resolved: false };
+  }
+
+  /**
+   * Price preview for the sell modal: name → { netMinor, buyerMinor }, all in the minor units
+   * of the returned `currency` (the wallet the quote was made for — see previewCurrency).
+   * `customPriceMajor` (when strategy='custom') is the operator's fixed seller-net price in
+   * MAJOR units, scaled here by that currency's decimals — no live lookup needed. Otherwise
+   * prices are fetched live, routed through `username`'s bot proxy to dodge rate limits.
    */
   async preview(
     names: string[],
     strategy: SellStrategy,
-    opts?: { customCents?: number; username?: string; shouldStop?: () => boolean; appId?: number },
-  ): Promise<Record<string, { netCents: number | null; buyerCents: number | null }>> {
-    const out: Record<string, { netCents: number | null; buyerCents: number | null }> = {};
+    opts?: { customPriceMajor?: number; username?: string; shouldStop?: () => boolean; appId?: number; currency?: number },
+  ): Promise<SellPreview> {
+    const out: SellPreview['prices'] = {};
+    const appId = opts?.appId ?? CS2_APPID;
+    const { info: cur, resolved } = this.previewCurrency(opts?.username, opts?.currency, gameForApp(appId));
+    const done = (): SellPreview => ({ currency: cur.code, currencyIso: cur.iso, decimals: cur.decimals, resolved, prices: out });
 
     if (strategy === 'custom') {
-      const net = Math.max(1, Math.round(opts?.customCents ?? 0));
+      const net = Math.max(1, Math.round((opts?.customPriceMajor ?? 0) * Math.pow(10, cur.decimals)));
       const buyer = net + feesForNet(net);
-      for (const name of [...new Set(names)]) out[name] = { netCents: net, buyerCents: buyer };
-      return out;
+      for (const name of [...new Set(names)]) out[name] = { netMinor: net, buyerMinor: buyer };
+      return done();
     }
 
     // Resolve up to WORKERS authenticated egress contexts (acting account first when web-ready, else
@@ -339,7 +389,8 @@ export class MarketService {
     // was invisible: the preview logged nothing at all. One line per preview makes the next report
     // self-diagnosing. (v1.4.4 — owner issue 3 diagnostics.)
     const authedLanes = ctxs.filter((c) => !!c.cookieHeader).length;
-    logger.info(`[market-price] preview for ${opts?.username ?? '(no acting account)'} over ${ctxs.length} lane(s) — ` +
+    logger.info(`[market-price] preview for ${opts?.username ?? '(no acting account)'} in ${cur.iso}` +
+      `${resolved ? '' : ' (ASSUMED — no wallet currency known for this selection)'} over ${ctxs.length} lane(s) — ` +
       `${authedLanes} authenticated, ${ctxs.length - authedLanes} ANONYMOUS` +
       (authedLanes === 0 ? ' (anonymous priceoverview is the usual cause of "no price" — no account was web-ready to borrow)' : ''));
     // H-TRD-022: bound the cascade to a live viewer. The sequential loop kept issuing
@@ -364,10 +415,11 @@ export class MarketService {
         if (Date.now() - previewStart >= PREVIEW_BUDGET_MS) { budgetTripped = true; return; }
         const name = unique[idx++];
         // getSellInfo runs its own cascade internally – one call suffices.
-        // appId selects the market so a TF2 preview is priced off the TF2 market, never CS2.
-        const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS, appid: opts?.appId ?? CS2_APPID });
-        const buyer = targetBuyerCents(info, strategy);
-        out[name] = { buyerCents: buyer, netCents: buyer != null ? sellerNetFromBuyer(buyer) : null };
+        // appId selects the market so a TF2 preview is priced off the TF2 market, never CS2;
+        // currency selects the denomination so the quote matches the wallet that will list.
+        const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS, appid: appId, currency: cur.code });
+        const buyer = targetBuyerMinor(info, strategy);
+        out[name] = { buyerMinor: buyer, netMinor: buyer != null ? sellerNetFromBuyer(buyer) : null };
       }
     };
     // ALWAYS run up to WORKERS concurrent workers (throughput must not drop when only one identity is
@@ -379,14 +431,14 @@ export class MarketService {
     // On a 90s budget stop (NOT a client disconnect, where nobody is listening), any name
     // never dispatched gets an explicit null-price row so the modal shows the per-name retry
     // affordance instead of omitting it silently.
-    if (budgetTripped) for (const name of unique) if (!(name in out)) out[name] = { buyerCents: null, netCents: null };
-    return out;
+    if (budgetTripped) for (const name of unique) if (!(name in out)) out[name] = { buyerMinor: null, netMinor: null };
+    return done();
   }
 
   startMassSell(
     groups:   MassSellGroup[],
     strategy: SellStrategy,
-    opts?: { concurrency?: number; itemDelayMs?: number; customCents?: number; retryBackoffMs?: number; preflightBackoffMs?: number; confirmBackoffMs?: number; confirmRateLimitPauseMs?: number },
+    opts?: { concurrency?: number; itemDelayMs?: number; customPriceMajor?: number; retryBackoffMs?: number; preflightBackoffMs?: number; confirmBackoffMs?: number; confirmRateLimitPauseMs?: number },
   ): MassSellJob {
     if (this.job.running) throw new Error('A mass-sell is already running');
     this.cancelRequested = false; // fresh run — clear any prior cancel request
@@ -428,7 +480,7 @@ export class MarketService {
   private async runMassSell(
     groups:   MassSellGroup[],
     strategy: SellStrategy,
-    opts?: { concurrency?: number; itemDelayMs?: number; customCents?: number },
+    opts?: { concurrency?: number; itemDelayMs?: number; customPriceMajor?: number },
   ): Promise<void> {
     // Dynamic scaling: 1 worker / 5 bots, floor 5, ceiling 25. An explicit override (e.g. the
     // /api/market/sell body) is honoured but CLAMPED to the 25 ceiling — proxy/socket stability
@@ -440,26 +492,32 @@ export class MarketService {
     // the delay, never drop it below the floor. `?? default` then `Math.max`, because
     // 0 ?? 1200 === 0 would otherwise keep the zero.
     const itemDelay   = Math.max(MIN_ITEM_DELAY, opts?.itemDelayMs ?? DEFAULT_ITEM_DELAY);
-    const customNet   = strategy === 'custom' ? Math.max(1, Math.round(opts?.customCents ?? 0)) : null;
-    const netCache = new Map<string, number | null>(); // marketHashName → seller net cents
+    // A custom price is a MAJOR amount (e.g. 2.05) applied in EACH bot's OWN wallet currency —
+    // the same contract as a folder mass-buy's pricePerItemMajor. It cannot be pre-scaled here:
+    // 2.05 is 205 minor units on a 2-decimal wallet and 2 on a 0-decimal one, so the scaling
+    // happens per bot inside resolveNet, once its currency is known.
+    const customMajor = strategy === 'custom' ? Math.max(0, Number(opts?.customPriceMajor ?? 0)) : null;
+    const netCache = new Map<string, number | null>(); // appId:currency:name → seller net (minor units)
     const queue = [...groups];
     // Snapshot which bots were ALREADY live so we release ONLY the sessions this sell creates.
     const wasLiveBefore = this.trades.snapshotLive(groups.map((g) => g.username));
 
-    // Fixed custom price → no lookups; otherwise getSellInfo's internal 3-method
-    // cascade (via the bot proxy) resolves the price. Cached per name.
+    // Fixed custom price → no lookups; otherwise getSellInfo's internal cascade (via the bot
+    // proxy, in the bot's own currency) resolves the price. Cached per (game, currency, name).
     // S2 (in-run): a null net is cached (and short-circuits every same-name item) ONLY
     // when Steam actually answered (`info.authoritative`). A transport-failure null
     // (all cascade tries threw) is NOT cached and surfaces as `transport:true` so the
     // caller defers the item instead of failing it and poisoning the rest of the run.
-    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookieHeader?: string }, appId: number): Promise<{ net: number | null; transport: boolean }> => {
-      if (customNet != null) return { net: customNet, transport: false };
-      // Cache key includes appId: a same-named item can exist in both games at DIFFERENT prices,
-      // so a CS2 price must never be reused for a TF2 item (or vice versa).
-      const key = `${appId}:${name}`;
+    const resolveNet = async (name: string, ctx: { httpsAgent?: unknown; cookieHeader?: string }, appId: number, cur: CurrencyInfo): Promise<{ net: number | null; transport: boolean }> => {
+      if (customMajor != null) return { net: Math.max(1, Math.round(customMajor * Math.pow(10, cur.decimals))), transport: false };
+      // Cache key includes appId AND currency: a same-named item can exist in both games at
+      // DIFFERENT prices (so a CS2 price must never be reused for a TF2 item), and the same
+      // item's price in PLN is a completely different NUMBER than in EUR — reusing one across
+      // wallets is exactly the mis-denomination this whole path exists to prevent.
+      const key = `${appId}:${cur.code}:${name}`;
       if (netCache.has(key)) return { net: netCache.get(key)!, transport: false };
-      const info = await this.pricing.getSellInfo(name, { ...ctx, appid: appId });
-      const buyer = targetBuyerCents(info, strategy);
+      const info = await this.pricing.getSellInfo(name, { ...ctx, appid: appId, currency: cur.code });
+      const buyer = targetBuyerMinor(info, strategy);
       const net = buyer != null ? sellerNetFromBuyer(buyer) : null;
       if (net != null || info.authoritative) netCache.set(key, net);
       return { net, transport: net == null && !info.authoritative };
@@ -560,9 +618,33 @@ export class MarketService {
     this.job.activeBots = [...set];
   }
 
+  /**
+   * The currency THIS bot's listings must be priced and posted in — its own Steam wallet's —
+   * or null when that is not knowable, in which case the caller must block rather than guess
+   * (see sellWalletBlocked). Three sources, cheapest first:
+   *   1. the live session's wallet (already there for a resident account);
+   *   2. a BOUNDED wait on the login 'wallet' event — the login promise resolves on 'webSession',
+   *      which regularly beats 'wallet', so reading straight after ensureWebSession sees
+   *      `undefined` on a perfectly good foreign wallet (OQ-B1 sub-case a);
+   *   3. the cached inventory's wallet, which InventoryService attaches on every refresh —
+   *      covers an account whose event never fires this session (OQ-B1 sub-case b).
+   */
+  private async resolveSellCurrency(username: string, trader: { walletCurrency?: number }, game: GameId): Promise<CurrencyInfo | null> {
+    let code = trader.walletCurrency;
+    if (sellWalletBlocked(code)) {
+      const waited = await this.trades.awaitWallet?.(username, WALLET_WAIT_MS).catch(() => undefined);
+      if (!sellWalletBlocked(waited?.currency)) code = waited!.currency;
+    }
+    if (sellWalletBlocked(code)) {
+      const cached = this.inventory?.getCached(username, game)?.wallet?.currency;
+      if (!sellWalletBlocked(cached)) code = cached;
+    }
+    return knownCurrencyInfo(code);
+  }
+
   private async processBot(
     group: MassSellGroup,
-    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookieHeader?: string }, appId: number) => Promise<{ net: number | null; transport: boolean }>,
+    resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookieHeader?: string }, appId: number, cur: CurrencyInfo) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
   ): Promise<void> {
     const user = group.username;
@@ -590,30 +672,33 @@ export class MarketService {
       return;
     }
 
-    // MONEY SAFETY (B11): refuse to list on a KNOWN non-EUR wallet — the price is EUR
-    // cents and Steam would read it as wallet-currency minor units (~99% underprice).
-    // These are BLOCKED (operator must fix the wallet/feature), not deferred (retrying
-    // wouldn't help). An unknown wallet keeps the EUR path (see sellWalletBlocked).
-    if (sellWalletBlocked(trader.walletCurrency)) {
+    // MONEY SAFETY (B11): establish the currency this bot prices AND lists in — its own
+    // wallet's. A foreign wallet is no longer refused; it is quoted in its own currency
+    // below, end to end. An UNKNOWABLE one still is refused: market/sellitem reads `price`
+    // as wallet minor units, so a guessed denomination mis-prices by the whole FX rate.
+    // BLOCKED (the operator must fund/refresh the account), not deferred — a bare retry
+    // would not learn the currency.
+    const currency = await this.resolveSellCurrency(user, trader, game);
+    if (!currency) {
       const wc = trader.walletCurrency;
-      // Currency 0 (ECurrencyCode.Invalid) = NO wallet yet on this account (a fresh,
-      // never-funded bot), not a known foreign wallet — name that third state and its
-      // remedy instead of reporting a phantom "currency 0 is not EUR / ~99% underprice".
-      const noWalletMsg = `no Steam wallet on this account – its currency is unknowable until first funds; blocked to protect pricing (add funds once to establish an EUR wallet)`;
-      const logMsg = wc === 0
-        ? noWalletMsg
-        : `wallet currency ${wc} is not EUR (${EUR_CURRENCY}) – prices are EUR-denominated; listing would underprice ~99%. BLOCKING this bot to protect real money.`;
-      const rowMsg = wc === 0
-        ? noWalletMsg
-        : `wallet currency ${wc} is not EUR – EUR-only pricing; not listed (would underprice ~99%)`;
-      logger.error(`[mass-sell] ${user}: ${logMsg}`);
+      // Three distinct causes with three different remedies, so name which one this is:
+      // 0 (ECurrencyCode.Invalid) = a fresh, never-funded account has no wallet at all;
+      // undefined = the 'wallet' event never arrived; anything else = a code we don't carry.
+      const msg = wc === 0
+        ? 'no Steam wallet on this account – its currency is unknowable until first funds; blocked to protect pricing (add funds once, then re-run)'
+        : wc == null
+          ? `wallet currency unknown (the login 'wallet' event did not arrive within ${WALLET_WAIT_MS}ms and no cached balance carries one) – refusing to guess the denomination; refresh this account and re-run`
+          : `unrecognised wallet currency code ${wc} – its minor-unit scale is unknowable (assuming 2 decimals for a 0-decimal currency mis-prices 100×); update STEAM_CURRENCIES`;
+      logger.error(`[mass-sell] ${user}: ${msg}`);
       for (const item of group.items) {
-        this.job.blocked.push({ username: user, assetId: item.assetId, error: rowMsg });
+        this.job.blocked.push({ username: user, assetId: item.assetId, error: msg });
         this.job.done++;
       }
       this.trackBotActive(user, false);
       return;
     }
+    /** minor units → "12,34 PLN" for this bot's log lines (never a hardcoded €). */
+    const money = (minor: number): string => `${(minor / Math.pow(10, currency.decimals)).toFixed(currency.decimals)} ${currency.iso}`;
 
     let listedSet: Set<string>;
     let unconfirmedSet: Set<string>;
@@ -625,7 +710,7 @@ export class MarketService {
       this.trackBotActive(user, false);
       return;
     }
-    logger.info(`[mass-sell] ${user}: pre-flight OK (${listedSet.size} existing listing(s), ${unconfirmedSet.size} awaiting 2FA) – listing ${N} item(s)…`);
+    logger.info(`[mass-sell] ${user}: pre-flight OK (${listedSet.size} existing listing(s), ${unconfirmedSet.size} awaiting 2FA) – pricing + listing ${N} item(s) in ${currency.iso}…`);
 
     // ── List each item (Rules 2 + 3) ──────────────────────────────────────────
     this.job.phase = 'listing';
@@ -686,7 +771,7 @@ export class MarketService {
         continue;
       }
 
-      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookieHeader: trader.cookieHeader }, appId);
+      const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookieHeader: trader.cookieHeader }, appId, currency);
       if (net == null && transport) {
         // S2 (in-run): the price lookup failed at the transport layer (429 storm, proxy
         // reset, 5xx) — Steam never answered, so this is NOT "no price". Defer the item
@@ -728,7 +813,7 @@ export class MarketService {
         .finally(() => MoneyOps.release(mk));
       this.job.done++;
       if (outcome === 'listed')      { this.job.listed++; listedForBot++; pendingForBot++;
-        logger.info(`[mass-sell] ${user} ${pos}: ✓ listed ${item.marketHashName} @ ${(net / 100).toFixed(2)}€ (${listedForBot} listed / ${N})`);
+        logger.info(`[mass-sell] ${user} ${pos}: ✓ listed ${item.marketHashName} @ ${money(net)} net (${listedForBot} listed / ${N})`);
       }
       else if (outcome === 'phantom'){ this.job.listed++; this.job.recovered++; pendingForBot++;
         logger.info(`[mass-sell] ${user} ${pos}: ✓ recovered (phantom) ${item.marketHashName} (${listedForBot + this.job.recovered} listed)`);

@@ -54,7 +54,7 @@ async function runToCompletion(svc: MarketService, items: Array<{ assetId: strin
 }
 
 test('H-TRD-023 (a): a transport-failure null is NOT cached — each same-name item is looked up and DEFERRED', async () => {
-  const { svc, calls } = svcWith({ lowestCents: null, medianCents: null, volume: null, authoritative: false });
+  const { svc, calls } = svcWith({ lowestMinor: null, medianMinor: null, volume: null, authoritative: false });
   const job = await runToCompletion(svc, [
     { assetId: 'x1', marketHashName: 'Dreams & Nightmares Case' },
     { assetId: 'x2', marketHashName: 'Dreams & Nightmares Case' },
@@ -67,7 +67,7 @@ test('H-TRD-023 (a): a transport-failure null is NOT cached — each same-name i
 });
 
 test('H-TRD-023 (b): an authoritative no-price IS cached — one lookup for N same-name items, all skippedNoPrice', async () => {
-  const { svc, calls } = svcWith({ lowestCents: null, medianCents: null, volume: null, authoritative: true });
+  const { svc, calls } = svcWith({ lowestMinor: null, medianMinor: null, volume: null, authoritative: true });
   const job = await runToCompletion(svc, [
     { assetId: 'y1', marketHashName: 'Dreams & Nightmares Case' },
     { assetId: 'y2', marketHashName: 'Dreams & Nightmares Case' },

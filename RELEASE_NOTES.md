@@ -1,8 +1,7 @@
-SSIM v1.4.4
+SSIM v1.4.5
 
-+ Added Multi Threading Sending Items. Sending Items no Work using 5 Threads which will make Selling Items / Sending Items much faster.
++ Added native currency support to the Market. Price fetching, sell listings and buy orders now all use the account's OWN Steam wallet currency (PLN, RUB, USD, JPY, ...) instead of Euro. Non-Euro accounts can sell again.
 
-- Fixed another issue with the trade-lock countdown.
-- Fixed Confirmations not Working. Now Buying / Selling / Transfering Items all Work again
-- Fixed Issues related to the Stoarge Unit 
-- Fixed an Issue with Proxy Rules not updating
+- Fixed non-Euro accounts being blocked from selling with "wallet currency X is not EUR".
+- Fixed a price reading bug that could read a price 100x too high on currencies without cents (JPY, KRW, IDR, HUF, CLP, VND).
+- Fixed the "No items." message showing above the Items / Active Orders tabs instead of below them.

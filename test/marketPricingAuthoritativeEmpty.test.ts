@@ -6,7 +6,7 @@ import { MarketPricing } from '../src/pricing/MarketPricing';
 //  H-PRC-004 — an allowMedian try that authoritatively returns NEITHER a lowest
 //  ask NOR a median cannot be interpreted more permissively by a later try, so
 //  getSellInfo short-circuits the cascade instead of burning try 3 + its backoff.
-//  It also tags lowestCents' provenance via `basis` ('lowest' | 'median' | null)
+//  It also tags lowestMinor' provenance via `basis` ('lowest' | 'median' | null)
 //  so a median-derived figure is no longer indistinguishable from a real ask.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -35,8 +35,8 @@ test('H-PRC-004: an authoritative empty on an allowMedian try stops the cascade 
     const info = await mp.getSellInfo(name);
     assert.equal(attempts, 2, 'try 3 must not run once try 2 is authoritatively empty');
     assert.equal(info.authoritative, true);
-    assert.equal(info.lowestCents, null);
-    assert.equal(info.medianCents, null);
+    assert.equal(info.lowestMinor, null);
+    assert.equal(info.medianMinor, null);
     assert.equal(info.basis, null);
   } finally { restore(); }
 });
@@ -45,7 +45,7 @@ test('H-PRC-004: a median-only body is tagged basis:"median"', async () => {
   const mp = new MarketPricing();
   let attempts = 0;
   // Try 1 throttled; try 2 has only a median_price (no lowest_price) → the median
-  // is substituted into lowestCents and `basis` records that provenance.
+  // is substituted into lowestMinor and `basis` records that provenance.
   const restore = installAxiosMock(async () => {
     attempts++;
     if (attempts === 1) return { status: 429, data: {} };
@@ -54,8 +54,8 @@ test('H-PRC-004: a median-only body is tagged basis:"median"', async () => {
   try {
     const info = await mp.getSellInfo(name);
     assert.equal(attempts, 2, 'a priced try 2 ends the cascade');
-    assert.equal(info.lowestCents, 150);
-    assert.equal(info.medianCents, 150);
+    assert.equal(info.lowestMinor, 150);
+    assert.equal(info.medianMinor, 150);
     assert.equal(info.basis, 'median');
   } finally { restore(); }
 });
@@ -65,7 +65,7 @@ test('H-PRC-004: a real lowest ask is tagged basis:"lowest"', async () => {
   const restore = installAxiosMock(async () => ({ status: 200, data: { success: true, lowest_price: '2,00€', median_price: '2,50€' } }));
   try {
     const info = await mp.getSellInfo(name);
-    assert.equal(info.lowestCents, 200);
+    assert.equal(info.lowestMinor, 200);
     assert.equal(info.basis, 'lowest');
   } finally { restore(); }
 });

@@ -126,7 +126,7 @@ test('MarketPricing keeps its EUR-locale Accept-Language while adding the finger
   });
   try {
     const info = await market.getSellInfo('AWP | Asiimov (Field-Tested)');
-    assert.equal(info.lowestCents, 123, 'EUR "1,23€" parsed as 123 cents — comma-decimal locale parsing intact');
+    assert.equal(info.lowestMinor, 123, 'EUR "1,23€" parsed as 123 cents — comma-decimal locale parsing intact');
     assert.ok(h(seen, 'sec-ch-ua'), 'the sell-price read carries the fingerprint');
     assert.equal(h(seen, 'accept-language'), 'de-DE,de;q=0.9',
       'the de-DE locale is preserved (Steam formats EUR by locale) — NOT overwritten by the bundle default');

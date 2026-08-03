@@ -868,19 +868,23 @@
             </div>
           </div>
 
-          <!-- Empty state. app.js sets the two <p> texts via querySelector('p') (title) and
-               querySelector('p:last-child') (sub) — the sub must remain the LAST child. -->
-          <div id="empty-state" class="hidden empty">
-            <div class="empty-icon"><i class="fa-solid fa-boxes-stacked"></i></div>
-            <p class="empty-title">No inventory loaded yet</p>
-            <p class="empty-sub">Select an account and click "Refresh".</p>
-          </div>
-
           <!-- TBL-03: faceted filter chips (status / rarity / value), composable with search -->
           <div id="facet-bar" class="hidden mb-3 flex items-center flex-wrap gap-1.5 fade-in"></div>
 
           <!-- GC 3-category filter pills (populated + shown only for GC-fetched inventories) -->
           <div id="gc-cat-tabs" class="hidden mb-3 flex items-center gap-2 flex-wrap fade-in"></div>
+
+          <!-- Empty state. app.js sets the two <p> texts via querySelector('p') (title) and
+               querySelector('p:last-child') (sub) — the sub must remain the LAST child.
+               It sits AFTER the facet/category bars and takes the TABLE's place, so an account
+               with no items reads exactly like one that has them: tabs on top, content below.
+               (It used to precede the bars, pushing "No items." above the Items/Active Orders
+               pills — misaligned with every other view.) -->
+          <div id="empty-state" class="hidden empty">
+            <div class="empty-icon"><i class="fa-solid fa-boxes-stacked"></i></div>
+            <p class="empty-title">No inventory loaded yet</p>
+            <p class="empty-sub">Select an account and click "Refresh".</p>
+          </div>
 
           <!-- Item table: #items-head (thead row) + #items-body (windowed rows) + #search-empty
                are the mount points the render/windowing pipeline drives (V4). Re-skinned to the
@@ -1305,8 +1309,12 @@
           <i class="fa-solid fa-box mr-1.5 text-emerald-400"></i>
           <span id="sell-summary">—</span> from <span id="sell-from" class="text-slate-200 font-semibold"></span>
         </div>
+        <!-- Currency is per-account: app.js re-labels #sell-price-label, #sell-custom-symbol and
+             #sell-undercut-hint from the selection's wallet, and fills #sell-currency-note when the
+             selection spans several currencies (or none is known). -->
+        <div id="sell-currency-note" class="hidden px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 t11 text-slate-400"></div>
         <div>
-          <label class="field-label mb-2">Sale price (EUR)</label>
+          <label id="sell-price-label" class="field-label mb-2">Sale price</label>
           <div class="space-y-2">
             <label class="block">
               <input type="radio" name="sellstrategy" value="lowest" class="peer sr-only" checked />
@@ -1318,8 +1326,8 @@
             <label class="block">
               <input type="radio" name="sellstrategy" value="undercut" class="peer sr-only" />
               <div class="px-3 py-2.5 rounded-xl border border-slate-700 t14 cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-500/10 transition">
-                <span class="font-semibold text-slate-200">1 cent below</span>
-                <span class="block t11 text-slate-500">Undercut the lowest price by 1 cent – first in the list.</span>
+                <span class="font-semibold text-slate-200">One step below</span>
+                <span id="sell-undercut-hint" class="block t11 text-slate-500">Undercut the lowest price by the smallest step – first in the list.</span>
               </div>
             </label>
             <label class="block">
@@ -1330,9 +1338,9 @@
               </div>
             </label>
             <div id="sell-custom-row" class="hidden flex items-center gap-2 pl-1">
-              <span class="t14 text-slate-400">€</span>
+              <span id="sell-custom-symbol" class="t14 text-slate-400">€</span>
               <input id="sell-custom-price" type="number" step="0.01" min="0.01" inputmode="decimal" placeholder="e.g. 1.50" class="field w-32" />
-              <span class="t11 text-slate-500">per item (net, after fee)</span>
+              <span class="t11 text-slate-500">per item (net, after fee) – in each bot's own wallet currency</span>
             </div>
           </div>
         </div>

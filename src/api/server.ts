@@ -48,7 +48,7 @@ export { redactProxyCredentials } from '../network/AgentFactory';
 import { proxyHealth, proxyKey } from '../network/ProxyHealth';
 import { loadPersisted as loadCmProtocolPersisted } from '../network/CmProtocol';
 import { PricingService } from '../pricing/PricingService';
-import { currencyInfo } from '../pricing/currencies';
+import { currencyInfo, knownCurrencyInfo } from '../pricing/currencies';
 import { ExchangeRateService } from '../pricing/ExchangeRateService';
 
 import type { AccountConfig, NetworkConfig, Environment, ProxyRule } from '../types/account';
@@ -349,10 +349,21 @@ export function createApp(deps: ApiDeps): Express {
 
   const VALID_STRATEGIES: SellStrategy[] = ['lowest', 'undercut', 'custom'];
 
-  /** Reads + validates a custom EUR-cent price (required only for strategy='custom'). */
-  const readCustomCents = (raw: unknown): number | null => {
+  /**
+   * Reads + validates a custom sell price (required only for strategy='custom'). MAJOR units
+   * (2.05, not 205) because it is applied in EACH selling bot's OWN wallet currency, whose
+   * minor-unit scale differs per bot (2.05 → 205 on a 2-decimal wallet, 2 on a 0-decimal one).
+   * Same contract as a folder mass-buy's pricePerItemMajor.
+   */
+  const readCustomMajor = (raw: unknown): number | null => {
     const n = Number(raw);
-    return Number.isFinite(n) && n >= 1 ? Math.round(n) : null;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  /** A client-supplied Steam currency code, or undefined. Only ever selects the DENOMINATION of
+   *  a price READ (the preview); the committed sell price is re-resolved from the bot's own wallet. */
+  const readCurrency = (raw: unknown): number | undefined => {
+    const n = Number(raw);
+    return Number.isFinite(n) && knownCurrencyInfo(n) ? n : undefined;
   };
 
   /**
@@ -2429,9 +2440,10 @@ export function createApp(deps: ApiDeps): Express {
   // ════════════════════════════════════════════════════════════════════════
 
   // Price preview for the sell modal.
-  // Body: { names: string[], strategy, customCents?, username? }
+  // Body: { names: string[], strategy, customPriceMajor?, username?, appId?, currency? }
+  // → { currency, currencyIso, decimals, resolved, prices: { name → { netMinor, buyerMinor } } }
   app.post('/api/market/preview', asyncHandler(async (req, res) => {
-    const { names, strategy, customCents, username, appId } = req.body ?? {};
+    const { names, strategy, customPriceMajor, username, appId, currency } = req.body ?? {};
     if (!Array.isArray(names) || !names.every(n => typeof n === 'string')) {
       return res.status(400).json({ error: 'names must be a string array' });
     }
@@ -2449,9 +2461,9 @@ export function createApp(deps: ApiDeps): Express {
     if (!VALID_STRATEGIES.includes(strategy)) {
       return res.status(400).json({ error: `strategy must be one of ${VALID_STRATEGIES.join(', ')}` });
     }
-    const custom = readCustomCents(customCents);
+    const custom = readCustomMajor(customPriceMajor);
     if (strategy === 'custom' && custom == null) {
-      return res.status(400).json({ error: 'customCents (EUR cents ≥ 1) is required for strategy "custom"' });
+      return res.status(400).json({ error: 'customPriceMajor (> 0, in the account\'s own wallet currency) is required for strategy "custom"' });
     }
     // H-TRD-022: when the client disconnects (its 120s abort, or a manual close), stop the
     // backend cascade instead of running it to completion for an already-dead request.
@@ -2473,16 +2485,19 @@ export function createApp(deps: ApiDeps): Express {
     let clientGone = false;
     res.on('close', () => { if (!res.writableFinished) clientGone = true; });
     res.json(await market.preview(names, strategy, {
-      customCents: custom ?? undefined,
+      customPriceMajor: custom ?? undefined,
       username: typeof username === 'string' ? username : undefined,
       shouldStop: () => clientGone,
       appId: previewAppId,
+      // The client knows the selection's wallets, so it names the denomination to quote in;
+      // an unrecognised code is dropped (readCurrency) and the service falls back on its own.
+      currency: readCurrency(currency),
     }));
   }));
 
-  // Body: { items: [{username, assetId, marketHashName}], strategy, customCents?, concurrency?, itemDelayMs? }
+  // Body: { items: [{username, assetId, marketHashName}], strategy, customPriceMajor?, concurrency?, itemDelayMs? }
   app.post('/api/market/sell', (req: Request, res: Response) => {
-    const { items, strategy, customCents, concurrency, itemDelayMs, appId } = req.body ?? {};
+    const { items, strategy, customPriceMajor, concurrency, itemDelayMs, appId } = req.body ?? {};
     if (!Array.isArray(items) || items.length === 0
       || !items.every(i => i && typeof i.username === 'string' && typeof i.assetId === 'string' && typeof i.marketHashName === 'string')) {
       return res.status(400).json({ error: 'items must be a non-empty array of { username, assetId, marketHashName }' });
@@ -2497,9 +2512,9 @@ export function createApp(deps: ApiDeps): Express {
     if (sellAppId !== 730 && sellAppId !== 440) {
       return res.status(400).json({ error: 'appId must be 730 (CS2) or 440 (TF2)' });
     }
-    const custom = readCustomCents(customCents);
+    const custom = readCustomMajor(customPriceMajor);
     if (strategy === 'custom' && custom == null) {
-      return res.status(400).json({ error: 'customCents (EUR cents ≥ 1) is required for strategy "custom"' });
+      return res.status(400).json({ error: 'customPriceMajor (> 0, applied in each bot\'s own wallet currency) is required for strategy "custom"' });
     }
 
     // Group by owner bot → one batch (and one 2FA confirmation pass) per bot.
@@ -2519,7 +2534,7 @@ export function createApp(deps: ApiDeps): Express {
       const job = market.startMassSell(groups, strategy, {
         concurrency: Number.isFinite(concurrency) ? Number(concurrency) : undefined,
         itemDelayMs: Number.isFinite(itemDelayMs) ? Number(itemDelayMs) : undefined,
-        customCents: custom ?? undefined,
+        customPriceMajor: custom ?? undefined,
       });
       const sellers = groups.map(g => g.username);
       logger.info(`[mass-sell] queued ${job.total} item(s) across ${groups.length} bot(s), strategy=${strategy}`);

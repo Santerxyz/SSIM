@@ -1,13 +1,18 @@
 import axios from 'axios';
 import { logger } from '../utils/logger';
-import { parseSteamMoney, knownCurrencyInfo } from './currencies';
+import { parseSteamMoney, knownCurrencyInfo, priceTextForeignCurrency, type CurrencyInfo } from './currencies';
 import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../network/steamHeaders';
 
 const APPID_CS2     = 730;
-/** Steam currency code for EUR. ALL market prices SSIM computes are EUR seller-net
- *  cents (this module hardcodes it), so a sell is only money-safe on an EUR wallet —
- *  see MarketService's wallet-currency guard (B11). Exported as the single source. */
+/** Steam currency code for EUR — the DEFAULT when a caller names no currency (dev reads,
+ *  the dashboard's EUR-denominated summaries). It is no longer the only sellable currency:
+ *  getSellInfo reads in whatever `PriceFetchOpts.currency` asks for, and MarketService
+ *  passes each selling bot's OWN wallet currency so the number it hands market/sellitem
+ *  is already in the minor units Steam will interpret it as. */
 export const EUR_CURRENCY  = 3;
+/** priceoverview `country` param. Verified live 2026-08-03: `currency` is authoritative
+ *  regardless of country (DE + currency=6 returns "157,03 zł"), so this stays on the
+ *  proven value rather than guessing a country per wallet. */
 const COUNTRY       = 'DE';
 
 const UA_CHROME  = STEAM_BROWSER_UA;
@@ -17,21 +22,30 @@ const BACKOFF_BASE_MS = 500; // exponential backoff between the two cascade trie
 export type SellStrategy = 'lowest' | 'undercut' | 'custom';
 
 export interface SellInfo {
-  /** Lowest current sell-listing price (buyer-facing EUR cents) or null. MAY be
-   *  median-derived when no live lowest ask existed — see `basis` for provenance. */
-  lowestCents:   number | null;
-  /** Median sell price (buyer-facing EUR cents) or null. */
-  medianCents:   number | null;
+  /** Lowest current sell-listing price, buyer-facing, in MINOR units of `currency`
+   *  (euro-cents for EUR, whole yen for JPY), or null. MAY be median-derived when no
+   *  live lowest ask existed — see `basis` for provenance. */
+  lowestMinor:   number | null;
+  /** Median sale price, buyer-facing, in MINOR units of `currency`, or null. */
+  medianMinor:   number | null;
   volume:        number | null;
   /** True iff at least one cascade try got a HTTP 200 with `success === true` — i.e.
-   *  Steam actually answered. A null `lowestCents` with `authoritative:true` is a
+   *  Steam actually answered. A null `lowestMinor` with `authoritative:true` is a
    *  genuine "no listings"; with `authoritative:false` the price was NEVER read
    *  (all tries threw: 429 storm, proxy reset, 5xx, or a throttled `success:false`)
    *  and must NOT be cached as "no price" for the run (S2 class). */
   authoritative: boolean;
-  /** Provenance of `lowestCents`: `'lowest'` = a real live lowest ask; `'median'` =
+  /** Provenance of `lowestMinor`: `'lowest'` = a real live lowest ask; `'median'` =
    *  the median was substituted because no lowest ask existed; `null` = no price. */
   basis:         'lowest' | 'median' | null;
+  /** Steam ECurrencyCode the two amounts above are denominated in — the currency that
+   *  was REQUESTED and (per the mismatch guard) confirmed in Steam's own price text. A
+   *  caller handing these minor units to market/sellitem must be listing on a wallet of
+   *  exactly this currency. */
+  currency:      number;
+  /** Minor-unit digits of `currency` (2 for €/$/£, 0 for ¥/₩/Rp) — the scale that turns
+   *  the amounts above into major units for display. */
+  decimals:      number;
 }
 
 /** A per-account HTTPS agent (proxy / local-IP bound) used to route a price
@@ -53,9 +67,13 @@ export interface PriceFetchOpts {
    *  background mass-sell path is unchanged). */
   budgetMs?: number;
   /** Steam app the item belongs to — 730 (CS2, default) or 440 (TF2). Selects which market the
-   *  sell price is read from so a TF2 item is NEVER priced off the CS2 market. Steam serves both
-   *  games' prices in EUR at currency=3, so the EUR-wallet guard stays valid for both. */
+   *  sell price is read from so a TF2 item is NEVER priced off the CS2 market. */
   appid?: number;
+  /** Steam ECurrencyCode the price must be READ in — for a sell, the LISTING account's own
+   *  wallet currency, because market/sellitem interprets its `price` field in exactly that
+   *  currency's minor units. Default EUR (3). An unrecognised code is REFUSED rather than
+   *  guessed: assuming 2 decimals for a 0-decimal currency mis-scales the price 100× (S64). */
+  currency?: number;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -74,7 +92,8 @@ function describeErr(err: unknown): string {
 }
 
 /**
- * Live Steam Community Market price reader (EUR / currency=3).
+ * Live Steam Community Market price reader, in ANY Steam wallet currency (`opts.currency`,
+ * default EUR/3).
  *
  * getSellInfo hardens priceoverview — the only Steam endpoint that reliably returns a sell price
  * (listings/render is HTML-walled even when authenticated — verified live). The 2026-07-10 fix: the LEVER
@@ -89,6 +108,20 @@ function describeErr(err: unknown): string {
 export class MarketPricing {
   async getSellInfo(name: string, opts?: PriceFetchOpts): Promise<SellInfo> {
     const short = name.length > 44 ? name.slice(0, 42) + '…' : name;
+    // The currency is resolved ONCE, here, and every parse + log below is scaled by it. An
+    // unrecognised code never reaches a request: we cannot know its minor-unit scale, and a
+    // wrong scale is a 100× mis-price on a real-money path (S64). `authoritative:false` marks
+    // it as "never read" so a mass-sell DEFERS the item instead of failing it as "no price".
+    const currency = opts?.currency ?? EUR_CURRENCY;
+    const cInfo = knownCurrencyInfo(currency);
+    if (!cInfo) {
+      plog(`refusing to price "${short}" in unrecognised currency code ${currency} – minor-unit scale unknowable (add it to STEAM_CURRENCIES)`, 'warn');
+      return { lowestMinor: null, medianMinor: null, volume: null, authoritative: false, basis: null, currency, decimals: 2 };
+    }
+    const empty = (authoritative: boolean): SellInfo =>
+      ({ lowestMinor: null, medianMinor: null, volume: null, authoritative, basis: null, currency, decimals: cInfo.decimals });
+    /** minor units → "12,34 PLN" for the log lines (never a hardcoded €). */
+    const money = (minor: number): string => `${(minor / Math.pow(10, cInfo.decimals)).toFixed(cInfo.decimals)} ${cInfo.iso}`;
     const methods: Array<{ label: string; ua: string; stepTimeout: number; allowMedian: boolean }> = [
       { label: 'priceoverview (lowest)',        ua: UA_CHROME, stepTimeout: 12_000, allowMedian: false },
       { label: 'priceoverview (lowest/median)', ua: UA_CHROME, stepTimeout: 15_000, allowMedian: true  },
@@ -122,19 +155,19 @@ export class MarketPricing {
       // (b) Cap this try's axios timeout to the time left in the budget.
       const timeout = Math.min(m.stepTimeout, deadline - Date.now());
       const ts = Date.now();
-      plog(`[Try ${n}/${methods.length}] "${short}" → trying ${m.label} [${opts?.httpsAgent ? 'proxy' : 'shared IP'}]…`);
+      plog(`[Try ${n}/${methods.length}] "${short}" → trying ${m.label} in ${cInfo.iso} [${opts?.httpsAgent ? 'proxy' : 'shared IP'}]…`);
       try {
-        const info = await this.viaPriceOverview(name, opts, m.ua, timeout, m.allowMedian);
+        const info = await this.viaPriceOverview(name, opts, m.ua, timeout, m.allowMedian, cInfo);
         sawAuthoritative = true;
-        if (info.lowestCents != null) {
-          plog(`[Try ${n}/${methods.length}] ✓ hit via ${m.label}: ${(info.lowestCents / 100).toFixed(2)}€ ` +
+        if (info.lowestMinor != null) {
+          plog(`[Try ${n}/${methods.length}] ✓ hit via ${m.label}: ${money(info.lowestMinor)} ` +
                `(basis ${info.basis}, method ${Date.now() - ts}ms, total ${Date.now() - t0}ms)`);
           return info;
         }
         // H-PRC-004: an allowMedian try that authoritatively returns NEITHER a lowest ask
         // NOR a median cannot be read any more permissively by a later try — return the
         // all-null (authoritative) result now instead of burning try 3 + its backoff.
-        if (m.allowMedian && info.medianCents == null) {
+        if (m.allowMedian && info.medianMinor == null) {
           plog(`[Try ${n}/${methods.length}] authoritative empty — no listings and no median; stopping cascade ` +
                `(${route}, total ${Date.now() - t0}ms)`, 'warn');
           return info;
@@ -159,8 +192,8 @@ export class MarketPricing {
     // BACKOFF line — which never runs on the last try. So the one outcome the operator actually reports
     // ("sell shows no price / 0.00") produced no record of whether the read was even authenticated.
     // Name it on the terminal line too. (v1.4.4 — owner issue 3 diagnostics.)
-    plog(`✗ All methods exhausted for "${short}" – no price (${route}, authoritative=${sawAuthoritative}, total ${Date.now() - t0}ms)`, 'warn');
-    return { lowestCents: null, medianCents: null, volume: null, authoritative: sawAuthoritative, basis: null };
+    plog(`✗ All methods exhausted for "${short}" in ${cInfo.iso} – no price (${route}, authoritative=${sawAuthoritative}, total ${Date.now() - t0}ms)`, 'warn');
+    return empty(sawAuthoritative);
   }
 
   /**
@@ -172,11 +205,13 @@ export class MarketPricing {
    */
   private async viaPriceOverview(
     name: string, opts: PriceFetchOpts | undefined, ua: string, timeout: number, allowMedian: boolean,
+    cInfo: CurrencyInfo,
   ): Promise<SellInfo> {
-    // appid selects the market: 730 CS2 (default) or 440 TF2 (via opts.appid). currency stays EUR(3)
-    // for BOTH — Steam serves TF2 prices in EUR at currency=3, keeping the EUR-wallet guard valid.
+    // appid selects the market (730 CS2 default / 440 TF2 via opts.appid); currency selects the
+    // DENOMINATION, and Steam honours it for both games — so a PLN bot reads PLN prices and lists
+    // PLN minor units, which is precisely what market/sellitem's `price` field means.
     const url = `https://steamcommunity.com/market/priceoverview/` +
-      `?country=${COUNTRY}&currency=${EUR_CURRENCY}&appid=${opts?.appid ?? APPID_CS2}&market_hash_name=${encodeURIComponent(name)}`;
+      `?country=${COUNTRY}&currency=${cInfo.code}&appid=${opts?.appid ?? APPID_CS2}&market_hash_name=${encodeURIComponent(name)}`;
     // Chromium fingerprint (Client Hints + Sec-Fetch) so Steam's bot-check doesn't 429. Spread first;
     // the de-DE Accept-Language (kept — Steam formats EUR prices by locale, the parser depends on it),
     // JSON Accept and optional Cookie win on collision.
@@ -190,17 +225,33 @@ export class MarketPricing {
     });
     if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
     if (!r.data || r.data.success !== true) throw new Error(`success=${r.data?.success}`);
-    const lowest = parseEurCents(r.data.lowest_price);
-    const median = parseEurCents(r.data.median_price);
-    const lowestCents = lowest ?? (allowMedian ? median : null);
+    const lowestText = r.data.lowest_price;
+    const medianText = r.data.median_price;
+    // MONEY SAFETY: priceoverview never echoes the currency it answered in, so a response that
+    // came back in a DIFFERENT currency than requested is invisible in the number alone — and
+    // parsing it against the wallet we're about to list on would mis-price by the whole FX rate
+    // (a PLN wallet quoted EUR numbers is B11's ~99% underprice, silently). Steam's own localized
+    // symbol is the one witness available; a contradiction FAILS this try (→ cascade → "no price"
+    // → item skipped) rather than being priced on a guess.
+    for (const text of [lowestText, medianText]) {
+      const foreign = priceTextForeignCurrency(text, cInfo.iso);
+      if (foreign) {
+        throw new Error(`currency mismatch: asked for ${cInfo.iso} (code ${cInfo.code}) but Steam answered in ${foreign} ("${String(text).slice(0, 24)}")`);
+      }
+    }
+    const lowest = parseSteamMoney(lowestText, cInfo.decimals);
+    const median = parseSteamMoney(medianText, cInfo.decimals);
+    const lowestMinor = lowest ?? (allowMedian ? median : null);
     return {
-      lowestCents,
-      medianCents:   median,
+      lowestMinor,
+      medianMinor:   median,
       volume:        parseVolume(r.data.volume),
       authoritative: true, // reached only on a 200 + success===true response
-      // H-PRC-004: provenance of lowestCents — a real lowest ask, or the median
+      // H-PRC-004: provenance of lowestMinor — a real lowest ask, or the median
       // substituted for it (line above) when no lowest ask existed, else no price.
-      basis:         lowest != null ? 'lowest' : (lowestCents != null ? 'median' : null),
+      basis:         lowest != null ? 'lowest' : (lowestMinor != null ? 'median' : null),
+      currency:      cInfo.code,
+      decimals:      cInfo.decimals,
     };
   }
 
@@ -234,6 +285,13 @@ export class MarketPricing {
     // ONLY an authoritative 200 + success:true with no parseable lowest/median. (S2 parity, matches
     // SteamPriceSource.fetchPriceCents.)
     if (r.status !== 200 || !r.data || r.data.success !== true) throw new Error(`FETCH_FAILED_${r.status}`);
+    // Same wrong-currency witness as the sell path: this number is auto-filled straight into a
+    // real buy order, so a response denominated in something other than the account's wallet
+    // currency must be an honest error, never a silently mis-scaled bid.
+    for (const text of [r.data.lowest_price, r.data.median_price]) {
+      const foreign = priceTextForeignCurrency(text, cInfo.iso);
+      if (foreign) throw new Error(`CURRENCY_MISMATCH: asked for ${cInfo.iso} (code ${cInfo.code}) but Steam answered in ${foreign}`);
+    }
     return parseSteamMoney(r.data.lowest_price, cInfo.decimals) ?? parseSteamMoney(r.data.median_price, cInfo.decimals);
   }
 }
@@ -245,14 +303,6 @@ function parseVolume(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** "1,23€" → 123 · "1.234,56€" → 123456 (EUR format: '.' thousands, ',' decimal). */
-export function parseEurCents(s: unknown): number | null {
-  // Delegate to the robust, separator-detecting parser (#32) instead of a rigid
-  // '.'=thousands / ','=decimal assumption that mis-scales a format deviation by 100×.
-  // EUR is a 2-decimal currency.
-  return parseSteamMoney(s, 2);
-}
-
 // ─── Steam market fee (reverse calculation) ───────────────────────────────────
 
 /**
@@ -261,6 +311,10 @@ export function parseEurCents(s: unknown): number | null {
  *   publisherFee(CS2) = max(1, floor(net·0.10)).
  * The market/sellitem `price` parameter is the seller's `net`, so given a target
  * BUYER price we solve for the largest net whose buyer-facing total ≤ target.
+ *
+ * Currency-agnostic: every amount here is MINOR units of ONE currency (euro-cents,
+ * whole yen, …) and Steam applies the same percentages with a 1-minor-unit floor in
+ * each. Callers must never mix denominations across a single call.
  */
 export function feesForNet(net: number): number {
   const steam = Math.max(1, Math.floor(net * 0.05));
@@ -278,14 +332,16 @@ export function sellerNetFromBuyer(buyerCents: number): number {
 }
 
 /**
- * Resolves the buyer-facing target price (EUR cents) for a market-derived
- * strategy, or null. ('custom' is NOT handled here — its price is a fixed
- * seller-net amount supplied by the operator, applied directly in MarketService.)
+ * Resolves the buyer-facing target price for a market-derived strategy, in MINOR units
+ * of `info.currency`, or null. 'undercut' shaves ONE minor unit off the lowest ask —
+ * a cent in EUR/USD, a whole yen in JPY — which is the smallest step Steam accepts in
+ * each currency. ('custom' is NOT handled here — its price is a fixed seller-net amount
+ * supplied by the operator, scaled into each bot's currency in MarketService.)
  */
-export function targetBuyerCents(info: SellInfo, strategy: SellStrategy): number | null {
+export function targetBuyerMinor(info: SellInfo, strategy: SellStrategy): number | null {
   switch (strategy) {
-    case 'lowest':   return info.lowestCents;
-    case 'undercut': return info.lowestCents != null ? Math.max(1, info.lowestCents - 1) : null;
+    case 'lowest':   return info.lowestMinor;
+    case 'undercut': return info.lowestMinor != null ? Math.max(1, info.lowestMinor - 1) : null;
     default:         return null;
   }
 }

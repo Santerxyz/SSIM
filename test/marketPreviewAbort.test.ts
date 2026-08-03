@@ -22,7 +22,7 @@ function svcWith(info: SellInfo) {
   return { svc, calls: () => calls };
 }
 
-const PRICED: SellInfo = { lowestCents: 1000, medianCents: 1000, volume: 1, authoritative: true };
+const PRICED: SellInfo = { lowestMinor: 1000, medianMinor: 1000, volume: 1, authoritative: true, basis: 'lowest', currency: 3, decimals: 2 };
 
 test('H-TRD-022: shouldStop flipping true after 2 names stops the cascade (≤3 entries)', async () => {
   const { svc, calls } = svcWith(PRICED);
@@ -33,7 +33,7 @@ test('H-TRD-022: shouldStop flipping true after 2 names stops the cascade (≤3 
   const shouldStop = () => fetched >= 2;
   (svc as any).pricing.getSellInfo = async () => { fetched++; return PRICED; };
 
-  const out = await svc.preview(names, 'lowest', { shouldStop });
+  const out = (await svc.preview(names, 'lowest', { shouldStop })).prices;
   const entries = Object.keys(out).length;
   assert.ok(entries <= 3, `expected ≤3 entries after early stop, got ${entries}`);
   assert.ok(entries >= 2, `the 2 pre-stop names must still be priced, got ${entries}`);
@@ -43,15 +43,15 @@ test('H-TRD-022: shouldStop flipping true after 2 names stops the cascade (≤3 
 test('H-TRD-022: without shouldStop the full deduped set is priced', async () => {
   const { svc, calls } = svcWith(PRICED);
   const names = ['A', 'B', 'A', 'C']; // dedupes to 3 unique names
-  const out = await svc.preview(names, 'lowest');
+  const out = (await svc.preview(names, 'lowest')).prices;
   assert.deepEqual(Object.keys(out).sort(), ['A', 'B', 'C']);
   assert.equal(calls(), 3, 'exactly one lookup per unique name');
 });
 
 test('H-TRD-022: custom strategy needs no lookup and ignores shouldStop', async () => {
   const { svc, calls } = svcWith(PRICED);
-  const out = await svc.preview(['A', 'B'], 'custom', { customCents: 500, shouldStop: () => true });
+  const out = await svc.preview(['A', 'B'], 'custom', { customPriceMajor: 5, shouldStop: () => true });
   assert.equal(calls(), 0, 'custom pricing never calls getSellInfo');
-  assert.equal(out['A'].netCents, 500);
-  assert.equal(out['B'].netCents, 500);
+  assert.equal(out.prices['A'].netMinor, 500, '5.00 major → 500 minor units on a 2-decimal wallet');
+  assert.equal(out.prices['B'].netMinor, 500);
 });

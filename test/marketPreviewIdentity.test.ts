@@ -13,7 +13,7 @@ import { type SellInfo } from '../src/pricing/MarketPricing';
 //  never these borrowed preview contexts — verified separately; here we assert egress.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PRICED: SellInfo = { lowestCents: 1000, medianCents: 1000, volume: 1, authoritative: true, basis: 'lowest' };
+const PRICED: SellInfo = { lowestMinor: 1000, medianMinor: 1000, volume: 1, authoritative: true, basis: 'lowest', currency: 3, decimals: 2 };
 
 /** MarketService with a stubbed session layer + pricing that records the cookie each price read used. */
 function makeSvc(o: { getTrader?: () => Promise<any>; identities?: any[] }) {
@@ -37,7 +37,7 @@ test('preview: the LIVE pool is used FIRST — a PARKED login is never even awai
       { username: 'p3', cookieHeader: 'steamLoginSecure=P3', agent: {} },
     ],
   });
-  const out = await svc.preview(Array.from({ length: 12 }, (_, i) => `Item ${i}`), 'lowest', { username: 'wouldHangBot' });
+  const out = (await svc.preview(Array.from({ length: 12 }, (_, i) => `Item ${i}`), 'lowest', { username: 'wouldHangBot' })).prices;
   assert.equal(Object.keys(out).length, 12, 'the preview completed via the pool — it did NOT hang on the login');
   assert.equal(getTraderCalled, false, 'with a full pool, getTrader (which would park in the login queue) is never called');
 });
@@ -59,7 +59,7 @@ test('preview: pool empty + a PARKED login → bounded timeout → anonymous, NO
       identities: [],                              // empty pool
     });
     const t0 = Date.now();
-    const out = await svc.preview(['X', 'Y'], 'lowest', { username: 'parkedBot' });
+    const out = (await svc.preview(['X', 'Y'], 'lowest', { username: 'parkedBot' })).prices;
     const ms = Date.now() - t0;
     assert.equal(Object.keys(out).length, 2, 'the preview completed instead of hanging on the login');
     assert.ok(seen.every((c) => c === undefined), 'it priced ANONYMOUSLY (empty ctx) after abandoning the parked login');
@@ -95,7 +95,7 @@ test('preview: acting bot online is de-duped from the pool (no double-use of one
 
 test('preview: no identity available + offline bot → anonymous last resort still returns rows', async () => {
   const { svc, seen } = makeSvc({ getTrader: async () => { throw new Error('offline'); }, identities: [] });
-  const out = await svc.preview(['X'], 'lowest', { username: 'offlineBot' });
+  const out = (await svc.preview(['X'], 'lowest', { username: 'offlineBot' })).prices;
   assert.deepEqual(seen, [undefined], 'no identity → a single anonymous ctx (empty cookie), not a crash');
   assert.ok('X' in out, 'a row is still produced (the retry affordance covers a 429)');
 });
@@ -109,14 +109,14 @@ test('preview: a SINGLE identity still prices the whole batch (3 workers share i
     identities: [], // pool empty → the acting account is the only identity
   });
   const names = Array.from({ length: 20 }, (_, i) => `Item ${i}`);
-  const out = await svc.preview(names, 'lowest', { username: 'onlyBot' });
+  const out = (await svc.preview(names, 'lowest', { username: 'onlyBot' })).prices;
   assert.equal(Object.keys(out).length, 20, 'all 20 names priced through the single identity');
   assert.ok(seen.length === 20 && seen.every((c) => c === 'steamLoginSecure=ONLY'), 'every read used the one available cookie');
 });
 
 test('preview: custom strategy still needs no price read (money path unchanged)', async () => {
   const { svc, seen } = makeSvc({ identities: [{ username: 'p1', cookieHeader: 'c', agent: {} }] });
-  const out = await svc.preview(['A', 'B'], 'custom', { customCents: 500 });
+  const out = await svc.preview(['A', 'B'], 'custom', { customPriceMajor: 5 });
   assert.equal(seen.length, 0, 'custom pricing never calls getSellInfo');
-  assert.equal(out['A'].netCents, 500);
+  assert.equal(out.prices['A'].netMinor, 500);
 });

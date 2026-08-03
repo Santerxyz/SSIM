@@ -309,6 +309,17 @@ export class TradeService {
     return trader;
   }
 
+  /**
+   * This account's wallet, waiting up to `timeoutMs` for the login 'wallet' event when the CM
+   * hasn't delivered it yet. ensureWebSession resolves on 'webSession', which regularly BEATS
+   * 'wallet' — so a money path that reads `trader.walletCurrency` immediately after it can see
+   * `undefined` on a perfectly good wallet. The sell path needs the currency to know which
+   * denomination to price + list in, so it waits here rather than guessing (OQ-B1).
+   */
+  async awaitWallet(username: string, timeoutMs?: number): Promise<{ hasWallet: boolean; currency: number; balance: number } | undefined> {
+    return this.sessions.awaitWallet(username, timeoutMs);
+  }
+
   // ── New feature: global Trade-Offers manager ─────────────────────────────
 
   /**

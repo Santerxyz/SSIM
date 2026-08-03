@@ -39,7 +39,7 @@ test('H-PRC-002: a budget bounds the cascade to ≤2 HTTP attempts and resolves 
     const info = await mp.getSellInfo(name, { budgetMs: 3_000 });
     const elapsed = Date.now() - t0;
     // No try answered → non-authoritative null (must NOT be cached as "no price", S2 class).
-    assert.equal(info.lowestCents, null);
+    assert.equal(info.lowestMinor, null);
     assert.equal(info.authoritative, false);
     assert.ok(attempts <= 2, `expected ≤2 HTTP attempts under a 3s budget, got ${attempts}`);
     assert.ok(attempts >= 1, `expected at least one attempt inside the budget, got ${attempts}`);
