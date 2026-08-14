@@ -12,7 +12,7 @@
 //     values that MUST survive a reboot (the per-sha self-test failure streak) are
 //     persisted by Updater.ts in data\updates\selftest-state.json and re-projected
 //     into here on every boot's update check, so the heartbeat/status always reflect
-//     THIS run's freshly-derived view. (UPDATE_RELIABILITY.md §6 telemetry rider.)
+//     THIS run's freshly-derived view. (update-reliability telemetry rider.)
 // ════════════════════════════════════════════════════════════════════════════
 
 /**

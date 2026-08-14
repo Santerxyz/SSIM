@@ -5,7 +5,7 @@ import { ProcessHealth } from '../src/core/ProcessHealth';
 import { SessionManager } from '../src/core/SessionManager';
 
 // Four of the six "construction-only" fixes, exercised through their real seams.
-// (G5 and F3 are covered by recorded out-of-process manual smokes — see PHASE4_VERIFICATION.md.)
+// (G5 and F3 are covered by recorded out-of-process manual smokes — recorded separately.)
 
 // A7 / INV-A7 — the unreachable RATE_LIMITED state is gone; every state is reachable.
 test('A7: SessionState has no unreachable RATE_LIMITED member', () => {

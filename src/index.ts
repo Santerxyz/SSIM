@@ -35,8 +35,8 @@ let server: Server | undefined;
 let activePort = PORT; // the actually-bound port (PORT, or the next free one)
 
 // S14 / H-XCT-005: the SINGLE source of truth for "an interruptible real-item op is in
-// flight". The update SWAP defers on this (isBusy below), and so do the graceful-shutdown
-// and the graceful-shutdown path (quiesceMoneyOps), so a buy/sell/trade/craft/move is never
+// flight". The update SWAP defers on this (isBusy below), and so does the graceful-shutdown
+// path (quiesceMoneyOps), so a buy/sell/trade/craft/move is never
 // severed mid-commit by an exit. A mass-sell, trade-up craft or casket move hard-exited mid-
 // flight loses unconfirmed listings / an irreversible craft's outcome / an in-flight move.
 const isBusy = (): boolean => !!deps && (
@@ -207,7 +207,7 @@ async function maybeAutoUpdate(): Promise<boolean> {
  * There is NO licence gate. SSIM is free software (Apache-2.0) — no activation,
  * no key, no HWID, no seat check, no heartbeat, and no call to any server
  * operated by this project. Deleting that gate is the point of the OSS pivot,
- * not an oversight: see docs/OSS_DONATION_MODEL_PLAN.md.
+ * not an oversight: see ARCHITECTURE.md.
  */
 async function bootAndRun(): Promise<void> {
   // If a newer exe is staged the process exits here to be swapped, so we must

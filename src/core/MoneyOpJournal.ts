@@ -10,7 +10,7 @@ import { dataDir } from '../utils/paths';
 //  The in-flight Sets in TradeService/BuyService stop CONCURRENT duplicates, but
 //  they are in-memory: a crash+restart wipes them, and a user who re-clicks a
 //  buy/send that was mid-flight when we died has NO server-side dedup — the
-//  Steam-side order/offer may already exist (BACKEND_RELIABILITY.md F5, residual 1).
+//  Steam-side order/offer may already exist (reliability finding F5, residual 1).
 //
 //  This journal closes that gap WITHOUT changing any success-path behaviour:
 //   • begin(op)   is written BEFORE the commit; resolve(op) removes it on a CLEAN

@@ -11,7 +11,7 @@ import {
 //  updateScheduler.ts — periodic + manual update checks (C5).
 //
 //  The stranded fleet only ever checked for an update ONCE per process launch
-//  (UPDATE_RELIABILITY.md §6.10). A 24/7 operator machine that never restarts
+//  (update-reliability finding 6.10). A 24/7 operator machine that never restarts
 //  therefore never learned a new version existed. This adds:
 //    • a periodic (6h) CHECK — refreshes the "update available" surface + the
 //      heartbeat telemetry, IS_PACKAGED-only, skipped while a money op is in

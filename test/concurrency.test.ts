@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { scaleConcurrency } from '../src/utils/concurrency';
 
-// ─── The ceiling invariant (DIRECTIVES.md #7 — fleet cap 25) ───────────────────
+// ─── The ceiling invariant (owner directive #7 — fleet cap 25) ───────────────────
 // scaleConcurrency is the single computation of the fleet-concurrency ceiling.
 // Every return path — including the empty-batch early exit — must honour `max`,
 // so a caller-supplied `min` above `max` can never leak a pool above the cap.

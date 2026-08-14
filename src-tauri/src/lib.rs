@@ -138,7 +138,7 @@ fn write_crash_marker(version: &str, code: Option<i32>, signal: Option<i32>, log
 }
 
 /// B1 (optional): if SSIM_CRASH_WEBHOOK is set, POST a minimal crash notice so an UNATTENDED operator
-/// machine can phone home instead of silently sitting on a crash screen (BACKEND_RELIABILITY.md F2). OFF
+/// machine can phone home instead of silently sitting on a crash screen (crash-visibility requirement F2). OFF
 /// by default. Fired via the built-in curl.exe (Win10+/11 — no new crate); the body is passed on curl's
 /// stdin (`@-`) so the log tail is never shell-escaped. Detached + best-effort: a webhook failure never blocks
 /// the crash UI, and this NEVER respawns anything — it only notifies (owner directive).
@@ -356,7 +356,7 @@ fn ensure_backend_extracted() -> std::io::Result<std::path::PathBuf> {
 /// A STABLE cache dir for the SELF-TEST's extracted backend (C6). The updater runs the self-test with a
 /// throwaway per-invocation SSIM_HOME (data isolation), so if the backend extracted THERE it would be
 /// re-written 171 MB EVERY self-test and land on a fresh path AV has never scanned — a large part of why
-/// a slow/AV-heavy machine blew its self-test budget (UPDATE_RELIABILITY.md §3.3). Extracting the exe to
+/// a slow/AV-heavy machine blew its self-test budget (the self-test budget rule). Extracting the exe to
 /// ONE stable path instead means a repeated self-test (the C2 timeout escalation, the C1 cross-boot
 /// reuse, the C3 per-boot re-check) SKIPS re-extraction and reuses AV's already-warm scan of that path.
 /// Only the exe is shared (content-addressed by stamp); the child's DATA still uses the isolated SSIM_HOME.

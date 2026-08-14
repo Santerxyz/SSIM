@@ -254,7 +254,7 @@ function updatesStageDir(): string {
  * The DETERMINISTIC staged path for an artifact of this sha256: `ssim_update_<sha256>.exe`. Keying the
  * staged file by its content hash is the crux of C1 — it lets (a) a partial download RESUME across
  * boots, and (b) a verified-complete artifact be REUSED next boot instead of re-downloading ~185 MB
- * after a self-test kept the current version. (UPDATE_RELIABILITY.md §6.4.)
+ * after a self-test kept the current version. (update-reliability finding 6.4.)
  */
 export function stagedArtifactPath(dir: string, sha256: string): string {
   return path.join(dir, `ssim_update_${sha256.toLowerCase()}.exe`);
@@ -444,7 +444,7 @@ export type SelfTestOutcome =
  *     `killed:true` + a kill signal, with NO numeric status) → 'timeout'. A slow/AV-heavy machine may
  *     legitimately need longer than the base budget, so a timeout earns ONE escalation to a 2× budget
  *     (see selfTestNewExe) — it is NOT the hard 'crash' the ≤1.3.3 generation used, which permanently
- *     stranded slow machines. (C2 / UPDATE_RELIABILITY.md §3.3.)
+ *     stranded slow machines. (C2 / the self-test budget rule.)
  *   • the child could not be SPAWNED with EACCES/EBUSY/EPERM/ETXTBSY → a lingering write handle, an AV
  *     scan, or a MOTW/SmartScreen block → 'lock' (RETRYABLE with backoff).
  *   • anything else (ENOENT bad path, a self-inflicted fatal signal like SIGSEGV) → 'crash'.

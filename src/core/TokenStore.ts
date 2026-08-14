@@ -52,7 +52,7 @@ export class TokenStore {
    * .bak) is never clobbered — recover it, then restart. A MISSING file (fresh install) is NOT degraded.
    * This mirrors the CsFloatDeliveredStore DEGRADED pattern (commit 3aad540): the old behaviour silently
    * reset to empty, which — on the shared refresh-token file — would have dropped every stored token and
-   * mass-re-authed the fleet on the next refresh (BACKEND_RELIABILITY.md F8). (B2.)
+   * mass-re-authed the fleet on the next refresh (reliability finding F8). (B2.)
    */
   private degraded = false;
 

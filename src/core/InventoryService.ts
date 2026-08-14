@@ -116,7 +116,7 @@ export class InventoryService {
    * ctx2-only record (`store`, written by forceRefresh/buy-verify) and this complete
    * record never overwrite each other; CS2 reads PREFER this record and fall back to
    * `store` otherwise. The `inventories_gc.json` filename and `source: 'gc'` are legacy
-   * markers kept for cache/dashboard compatibility – the GC stack is retired (DIRECTIVES.md #3).
+   * markers kept for cache/dashboard compatibility – the GC stack is retired (owner directive #3).
    */
   readonly gcStore = new InventoryStore(dataDir('inventories_gc.json'));
   private job: RefreshJob = { running: false, total: 0, done: 0, failed: [] };

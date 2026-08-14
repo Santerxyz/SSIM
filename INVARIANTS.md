@@ -1,8 +1,8 @@
 # SSIM — INVARIANT LEDGER
 
-> ## ⟳ Open-beta hardening pass (2026-07-02) — new invariants enforced this session
-> The Phase-3 rows below still hold. This pass added/strengthened (all test-covered — see
-> `BETA_BLOCKERS.md` + `docs/RELEASE_READINESS_OPENBETA.md`):
+> ## ⟳ Hardening pass (2026-07-02) — new invariants enforced
+> The earlier rows below still hold. This pass added or strengthened the following,
+> all test-covered:
 > - **Teardown quiescence** — no agent is destroyed with in-flight work; a discarded steam-user
 >   client can never resurrect (`neutralizeSteamClient`); a live 'error' listener at every instant.
 > - **Money-safety at the network boundary** — a createbuyorder network error never surfaces as a
@@ -23,14 +23,14 @@
 > The statements that must be true **at all times** for SSIM to be logically sound.
 > Each invariant has: a plain-language statement, the code-level condition, the
 > single source it should derive from, and current status:
-> **HOLDS** · **VIOLABLE** (a code path can break it — see `LOGIC_AUDIT.md`) · **BROKEN** (provably false today).
+> **HOLDS** · **VIOLABLE** (a code path can break it) · **BROKEN** (provably false today).
 >
 > Status is proven from code, not runtime. `▶` links to the audit finding.
 
 Legend for IDs: `INV-<domain><n>` — domains A..G match `FEATURES.md`.
 
-> **Phase-3 status.** The 22 contradictions (`CONTRADICTIONS.md`) all HOLD, plus the
-> remaining VIOLABLE invariants that did not map to a C-number. Covered by tests in
+> **Remediation status.** The 22 recorded contradictions all HOLD, plus the remaining
+> VIOLABLE invariants that did not map to a C-number. Covered by tests in
 > `test/` (`npm test`; `tsc --noEmit` clean). Batches:
 > - **b1 canonical MarketListing model:** INV-B1, B2, B3, B4, B6, B7, B8, D1 + B5-determinism.
 > - **b2 account capability/recovery:** INV-A1, INV-A2.
@@ -41,7 +41,7 @@ Legend for IDs: `INV-<domain><n>` — domains A..G match `FEATURES.md`.
 > - **b7 remaining VIOLABLE invariants:** INV-A4, A7, D2, E2, F3, G5, G6.
 >
 > The per-row statuses below were written at audit time and are NOT rewritten; treat
-> this banner + `CONTRADICTIONS.md` as the current state.
+> this banner as the current state.
 
 ---
 

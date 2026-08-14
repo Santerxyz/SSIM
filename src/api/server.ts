@@ -225,8 +225,8 @@ export function createDeps(): ApiDeps {
   // proxies sails through. The fix: the fill rides real LOGGED-IN identities — each Steam lane sends an
   // account's steamLoginSecure cookie over that account's own egress agent, drawing that account's
   // per-session budget. With no session web-ready yet it DEFERS (never anonymous) and `kick()` restarts it
-  // once a session logs in. (The old proxy-string provider + 60-80s per-name retry + foreground gate are
-  // gone — see RATELIMIT_ROOT_CAUSE_fable5.md.)
+  // once a session logs in. (The old proxy-string provider, its 60-80s per-name retry and the
+  // foreground gate are gone — they were treating the symptom.)
   const pricing   = new PricingService(csfloat, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES));
   // Restart a deferred Steam fill the moment an authenticated session becomes web-ready.
   sessions.on('webSession', () => pricing.kick());
@@ -3038,7 +3038,7 @@ export function createApp(deps: ApiDeps): Express {
   //  Feature 1 – Automated Max-Profit Trade-Ups (single account only)
   //  Calculation + preview are always available; EXECUTION is gated behind the GC
   //  layer's verified flag (SSIM_GC_VERIFIED) and only ever destroys items the owner
-  //  explicitly selected + started. See FEATURES_REPORT.md.
+  //  explicitly selected + started. See FEATURES.md.
   // ════════════════════════════════════════════════════════════════════════
 
   // POST /api/tradeup/candidates { username, all? } — live-refresh + compute trade-ups. `all:true`
