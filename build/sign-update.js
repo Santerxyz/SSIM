@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 // ════════════════════════════════════════════════════════════════════════════
-//  build/sign-update.js — produce a SIGNED /version manifest for the SSIM
-//  auto-updater (the publishing side the license backend serves).
+//  build/sign-update.js — produce the SIGNED version.json manifest + SHA256SUMS
+//  for an SSIM release.
 //
-//  The client (src/licensing/Updater.ts) fetches GET {LICENSE_API_URL}/version,
+//  There is no licence backend any more. The manifest is a static file published
+//  alongside the release (see docs/RELEASING.md); the client fetches it directly
+//  from UPDATE_MANIFEST_URL.
+//
+//  The client (src/licensing/Updater.ts) fetches that URL,
 //  expecting:  { latest, url, sha256, sig, sigKind }
 //  and only runs the new exe if sha256 matches AND `sigKind` is a valid Ed25519
 //  signature over the ASCII string  `${latest}:${sha256}:${kind ?? 'backend'}`
-//  under the baked LICENSE_PUBLIC_KEY. `sig` (LEGACY, kind-less, over `${latest}:${sha256}`)
+//  under the shipped UPDATE_PUBLIC_KEY. `sig` (LEGACY, kind-less, over `${latest}:${sha256}`)
 //  is still emitted for the pre-C14 deployed fleet. This tool produces BOTH, signing with your
 //  PRIVATE key (passed at runtime — NEVER committed; this script never writes/logs it).
 //
@@ -32,6 +36,7 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 
 const argv = process.argv.slice(2);
@@ -63,8 +68,10 @@ if (!fs.existsSync(exe)) die('exe not found: ' + exe);
 if (!/^\d+\.\d+\.\d+$/.test(version)) die('version must be a 3-part numeric semver (e.g. 1.1.6) — the client compares numerically, so pre-release/build tags are silently treated as "not newer"');
 
 const keyFile = arg('key');
-const privPem = keyFile ? fs.readFileSync(keyFile, 'utf8') : (process.env.LICENSE_PRIVATE_KEY || '');
-if (!privPem.trim()) die('no private key — pass --key <private.pem> or set LICENSE_PRIVATE_KEY (PEM). NEVER commit it.');
+const privPem = keyFile
+  ? fs.readFileSync(keyFile, 'utf8')
+  : (process.env.SSIM_UPDATE_PRIVATE_KEY || process.env.LICENSE_PRIVATE_KEY || '');
+if (!privPem.trim()) die('no private key — pass --key <private.pem> or set SSIM_UPDATE_PRIVATE_KEY (PEM). NEVER commit it.');
 let privateKey;
 try { privateKey = crypto.createPrivateKey(normPem(privPem)); } catch (e) { die('bad private key: ' + e.message); }
 
@@ -85,22 +92,48 @@ const manifest = { latest: version, url, sha256, sig, sigKind };
 // emitting kind:'backend' is redundant and would diverge from what the server's finalize stores.
 if (has('kind')) manifest.kind = kindTag;
 
-// Self-check against the public key (if available) so a key mismatch is caught NOW, not by clients.
-const pubPem = (process.env.LICENSE_PUBLIC_KEY || '').trim();
-if (pubPem) {
-  const pub = crypto.createPublicKey(normPem(pubPem));
+// Self-check against the public key the CLIENTS actually ship, so a key mismatch is caught NOW
+// rather than by the fleet. Resolution order: explicit env → the compiled client config. The
+// compiled config is the authoritative source (it is literally the key baked into the exe), which
+// is why we prefer it over nothing and fail loudly when it cannot be found: an unverified manifest
+// signed with the wrong key is a fleet-wide brick with no channel left to push a fix through.
+function resolvePublicKey() {
+  const fromEnv = (process.env.SSIM_UPDATE_PUBLIC_KEY || process.env.LICENSE_PUBLIC_KEY || '').trim();
+  if (fromEnv) return { pem: fromEnv, src: 'env' };
+  try {
+    const cfg = require(path.resolve(__dirname, '..', 'dist', 'licensing', 'config.js'));
+    if (cfg && cfg.UPDATE_PUBLIC_KEY) return { pem: String(cfg.UPDATE_PUBLIC_KEY), src: 'dist/licensing/config.js' };
+  } catch { /* dist not built — fall through */ }
+  return null;
+}
+const resolved = resolvePublicKey();
+if (!resolved) {
+  die('cannot resolve the update public key — run `npm run build` first (so dist/licensing/config.js exists), ' +
+      'or set SSIM_UPDATE_PUBLIC_KEY. Refusing to emit an unverified manifest.');
+}
+{
+  const pub = crypto.createPublicKey(normPem(resolved.pem));
   let ok = false, okKind = false;
   try { ok = crypto.verify(null, Buffer.from(signedString), pub, Buffer.from(sig, 'base64url')); } catch { ok = false; }
   try { okKind = crypto.verify(null, Buffer.from(kindSignedString), pub, Buffer.from(sigKind, 'base64url')); } catch { okKind = false; }
-  if (!ok) die('legacy signature does NOT verify against LICENSE_PUBLIC_KEY — wrong private key for this build?');
-  if (!okKind) die('kind-inclusive signature (sigKind) does NOT verify — the current fleet would REFUSE this update.');
-  console.error('✓ sig + sigKind verify against LICENSE_PUBLIC_KEY');
-} else {
-  console.error('• tip: set LICENSE_PUBLIC_KEY to self-verify sig + sigKind before publishing');
+  if (!ok) die(`legacy signature does NOT verify against the public key from ${resolved.src} — wrong private key for this build?`);
+  if (!okKind) die('kind-inclusive signature (sigKind) does NOT verify — the fleet would REFUSE this update.');
+  console.error(`✓ sig + sigKind verify against the public key from ${resolved.src}`);
 }
 console.error(`• ${exe}  ${(buf.length / 1048576).toFixed(1)} MB  ·  sha256 ${sha256.slice(0, 16)}…  ·  version ${version}`);
 
 const outFile = arg('out');
 const json = JSON.stringify(manifest, null, 2);
 if (outFile) { fs.writeFileSync(outFile, json); console.error('✓ wrote ' + outFile); }
-console.log(json); // ← the GET /version response body; serve verbatim
+
+// SHA256SUMS — the hash users are told to check in the README before running an exe that will
+// ask for their Steam password. Standard coreutils format ("<hash>  <name>"), so `sha256sum -c`
+// and Get-FileHash comparisons both work. The name is the BASENAME users download, not our local
+// build path. Published as a release asset next to the exe.
+const sumsFile = arg('sums') || (outFile ? path.join(path.dirname(outFile), 'SHA256SUMS') : undefined);
+if (sumsFile) {
+  fs.writeFileSync(sumsFile, `${sha256}  ${path.basename(exe)}\n`);
+  console.error('✓ wrote ' + sumsFile);
+}
+
+console.log(json); // ← the contents of version.json; publish verbatim
