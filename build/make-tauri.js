@@ -25,17 +25,17 @@ const ROOT = path.resolve(__dirname, '..');
 const TRIPLE = 'x86_64-pc-windows-msvc';
 const OUT = path.join(ROOT, 'release-tauri', 'SSIM');
 
-// 1. Load the build-time licensing secrets from secrets.local.bat (gitignored) into env — same
-//    values start.bat sets. They get baked into the bytecode by build/pack.js.
+// 1. (removed) loading licensing secrets from secrets.local.bat.
+//
+// The build needs no secrets at all now — clone, `npm install`, `npm run build:tauri`.
+// secrets.local.bat is still read below ONLY for optional publish-time values
+// (SSIM_ADMIN_PASSWORD etc.), and its absence must never fail a build.
 const secretsBat = path.join(ROOT, 'secrets.local.bat');
 if (fs.existsSync(secretsBat)) {
   for (const line of fs.readFileSync(secretsBat, 'utf8').split(/\r?\n/)) {
     const m = line.match(/^\s*set\s+"([^=]+)=(.*)"\s*$/i);
     if (m) process.env[m[1]] = m[2];
   }
-}
-for (const k of ['LICENSE_PEPPER', 'LICENSE_API_URL', 'LICENSE_PUBLIC_KEY']) {
-  if (!process.env[k]) { console.error(`✗ missing required secret ${k} (add it to secrets.local.bat)`); process.exit(1); }
 }
 
 // 1b. ONE version source of truth. package.json is canonical (the backend reads it as pkg.version;

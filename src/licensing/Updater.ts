@@ -8,7 +8,7 @@ import fsExtra from 'fs-extra';
 import axios from 'axios';
 import { logger } from '../utils/logger';
 import { writeJsonAtomic } from '../utils/atomicJson';
-import { LICENSE_API_URL, LICENSE_PUBLIC_KEY, LICENSE_HTTP_TIMEOUT_MS } from './config';
+import { UPDATE_MANIFEST_URL, UPDATE_PUBLIC_KEY, UPDATE_HTTP_TIMEOUT_MS } from './config';
 import { IS_SIDECAR_MODE, dataDir } from '../utils/paths';
 import {
   setUpdateOutcome, setBlockedUpdate, setAvailableUpdate, markChecked,
@@ -69,7 +69,7 @@ interface VersionInfo {
   publishedAt?: string;
 }
 
-const http = axios.create({ timeout: LICENSE_HTTP_TIMEOUT_MS, validateStatus: () => true });
+const http = axios.create({ timeout: UPDATE_HTTP_TIMEOUT_MS, validateStatus: () => true });
 
 /**
  * Emit a machine-readable update marker on stdout so the Tauri shell can reflect the live phase
@@ -156,7 +156,7 @@ async function check(
   get: (url: string) => Promise<{ status: number; data: unknown }> = (url) => http.get(url),
 ): Promise<CheckResult> {
   try {
-    const res = await get(`${LICENSE_API_URL}/version`);
+    const res = await get(UPDATE_MANIFEST_URL);
     if (res.status !== 200) return { status: 'check-failed', error: `HTTP ${res.status}` };
     const info = parseManifest(res.data);
     if (!info) return { status: 'check-failed', error: 'malformed manifest' };
@@ -424,7 +424,7 @@ export async function verify(file: string, info: VersionInfo): Promise<{ ok: boo
     logger.error('update manifest has no kind-inclusive signature (sigKind) – refusing update');
     return { ok: false, shaOk: true }; // S21: sha intact — a re-download yields the identical failure
   }
-  const sigOk = verifyUpdateSignature(info, LICENSE_PUBLIC_KEY);
+  const sigOk = verifyUpdateSignature(info, UPDATE_PUBLIC_KEY);
   if (!sigOk) logger.error('update signature invalid (kind-inclusive) – possible tampering, discarding');
   return { ok: sigOk, shaOk: true };
 }

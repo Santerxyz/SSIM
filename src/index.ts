@@ -7,13 +7,10 @@ import { listenAndAnnounce, clearStalePortFile, clearOwnPortFile } from './utils
 import { logger, LOG_FILE } from './utils/logger';
 import { writeCrash, writeExit, CRASH_FILE } from './utils/crashlog';
 import { startMemHeartbeat, stopMemHeartbeat, HEARTBEAT_FILE } from './utils/memHeartbeat';
-import { HwidService, HwidUnavailableError } from './licensing/HwidService';
-import { LicenseClient } from './licensing/LicenseClient';
 import { Updater } from './licensing/Updater';
 import { consumeCrashMarker } from './utils/crashMarker';
 import { setLastExitClass, setPriorCrash } from './licensing/updateStatus';
 import { startUpdateScheduler, stopUpdateScheduler } from './licensing/updateScheduler';
-import { runActivationPortal } from './licensing/ActivationServer';
 import { printLockScreen } from './licensing/lockscreen';
 import { IS_PACKAGED, IS_SIDECAR_MODE, publicDir, migrateVaultDir } from './utils/paths';
 import { openUiWindow } from './appWindow';
@@ -44,14 +41,15 @@ let activePort = PORT; // the actually-bound port (PORT, or the next free one)
 // flight loses unconfirmed listings / an irreversible craft's outcome / an in-flight move.
 const isBusy = (): boolean => !!deps && (
   deps.trades.busy() || deps.buy.busy() || deps.inventory.busy() ||
-  deps.market.busy() || deps.tradeup.busy() || deps.casket.busy()
+  deps.market.busy() || deps.tradeup.busy() || deps.casket.busy() ||
+  // A manual CSFloat delivery run is a queue of real, 2FA-confirmed Steam offers. Cutting it mid-run
+  // leaves a sale whose offer landed but whose dedup record never reached disk — the one state that
+  // makes a later pass send a SECOND offer for the same sale.
+  deps.csfloatWorker.deliverBusy()
 );
 // Bounded drain budget shared by shutdown() and teardownFullApp(); the hard-exit fallback
 // and the shell close watchdog (lib.rs) both strictly exceed this so the drain has room.
 const QUIESCE_TIMEOUT_MS = 6000;
-// H-BOOT-001: brief pause before the single re-license re-bind retry, giving the OS / an AV hold
-// time to release the previously-bound port before we dead-end.
-const RELICENSE_REBIND_RETRY_MS = 750;
 // H-LIC-016: back-off between retries when the hardware fingerprint is momentarily degraded (a
 // transient machineId read / MAC churn on first boot). We NEVER bind a seat to a degraded id — that
 // burns a second seat on the next healthy boot — so we wait for the factors to recover instead.
@@ -82,8 +80,6 @@ function printBanner(): void {
   );
 }
 
-let licenseHwid = '';
-let relicensing = false; // guard against concurrent re-activation triggers
 // H-BOOT-001: true once the UI port has been bound at least once. FIRST boot dead-ends on a
 // bind failure (nothing to lose); a re-bind during a runtime re-license (onLicenseLost) instead
 // throws BindFailedError so the caller can return to the portal rather than hard-kill the process.
@@ -219,7 +215,6 @@ async function teardownFullApp(): Promise<void> {
   // sessions, so a re-license does not tear a money op's web session out mid-commit.
   const drained = await quiesceMoneyOps(isBusy, { timeoutMs: QUIESCE_TIMEOUT_MS });
   logger.info(`re-license teardown: money-op drain ${drained}`);
-  LicenseClient.stopHeartbeat();
   stopUpdateScheduler();
   stopMemHeartbeat();
   if (deps) {
@@ -273,25 +268,16 @@ async function maybeAutoUpdate(): Promise<boolean> {
 }
 
 /**
- * The gate: validate the license; if invalid, open the activation portal and
- * wait for a valid key. Then check for a newer version, and finally start the
- * full app + runtime heartbeat.
+ * Boot: check for a newer version, unlock the vault, then start the full app.
+ *
+ * There is NO licence gate. SSIM is free software (Apache-2.0) — no activation,
+ * no key, no HWID, no seat check, no heartbeat, and no call to any server
+ * operated by this project. Deleting that gate is the point of the OSS pivot,
+ * not an oversight: see docs/OSS_DONATION_MODEL_PLAN.md.
  */
-async function gateAndRun(): Promise<void> {
-  let result = await LicenseClient.validate(licenseHwid);
-  if (!result.ok) {
-    logger.warn(`not licensed (${result.reason}) – opening activation portal`);
-    await runActivationPortal(licenseHwid, activePort, HOST, pkg.version);
-    result = await LicenseClient.validate(licenseHwid); // uses freshly stored token
-    if (!result.ok) {
-      printLockScreen(result.reason, `HWID ${licenseHwid}`);
-      logger.error(`license still invalid after activation: ${result.reason}`);
-      process.exit(1);
-    }
-  }
-  logger.info(`license gate passed (${result.reason}, tier=${result.payload?.tier ?? '?'})`);
-  // Only licensed clients update. If a newer exe is staged the process exits
-  // here to be swapped, so we must not fall through to startFullApp().
+async function bootAndRun(): Promise<void> {
+  // If a newer exe is staged the process exits here to be swapped, so we must
+  // not fall through to startFullApp().
   if (await maybeAutoUpdate()) return;
   // Unlock (or create) the portable account vault BEFORE constructing anything that touches
   // credentials. Sidecar (Tauri) mode has no console, so it unlocks via the in-window web portal;
@@ -311,7 +297,6 @@ async function gateAndRun(): Promise<void> {
   // H-BOOT-002: a first-boot bind failure returns false (exit already scheduled) — stop here so the
   // heartbeat + update scheduler are NEVER armed against a server that never listened.
   if (!(await startFullApp({ firstBoot: !everBound }))) return;
-  LicenseClient.startHeartbeat(licenseHwid);
   // Periodic (6h) update-availability check + the manual "check/install now" path (C5). CHECK-ONLY on
   // the timer; the only mid-session SWAP is a user-confirmed install, and only while no money op / refresh
   // is in flight (isBusy). Boot-time auto-update above is unchanged.
@@ -322,75 +307,19 @@ async function gateAndRun(): Promise<void> {
   });
 }
 
-/**
- * Runtime revocation/expiry → instead of a dead-end shutdown, gracefully stop
- * the app and return to the activation portal so a NEW key can be entered.
- * (If the backend merely re-activated/extended the SAME key, re-validation
- * succeeds automatically and the app comes straight back up.)
- */
-async function onLicenseLost(reason: string): Promise<void> {
-  if (relicensing) return;
-  relicensing = true;
-  logger.warn(`license lost at runtime: ${reason} – returning to activation portal`);
-  try {
-    await teardownFullApp();
-    LicenseClient.clearToken(); // force a fresh online check / new key
-    try {
-      await gateAndRun();
-    } catch (err) {
-      if (!(err instanceof BindFailedError)) throw err;
-      // H-BOOT-001: the re-bind hit a transient port hold in the sub-second teardown→rebind gap
-      // (OS not yet releasing the listen socket, an AV/EDR briefly holding it). Do NOT dead-end —
-      // that would kill the operator's window on a recoverable re-license. Wait a beat and retry
-      // the bind ONCE (classified failure, not a blind loop — owner no-band-aid rule). If the port
-      // is still held after that, it is a genuine conflict → fall through to the terminal lockscreen.
-      // First tear down the PARTIAL construction the failed startFullApp left armed (createDeps()
-      // already started the exchange + CSFloat workers and built the session manager before the
-      // bind threw) so the retry does not orphan those workers/sockets. teardownFullApp is idempotent.
-      await teardownFullApp();
-      logger.warn(`re-license re-bind failed (${err.code ?? err.message}) – retrying once in ${RELICENSE_REBIND_RETRY_MS}ms`);
-      await new Promise<void>((r) => setTimeout(r, RELICENSE_REBIND_RETRY_MS));
-      try {
-        await gateAndRun();
-      } catch (err2) {
-        if (!(err2 instanceof BindFailedError)) throw err2;
-        printLockScreen('The UI port is still in use.', 'SSIM could not rebind after re-licensing. Free the port (or close the app holding it) and relaunch.');
-        logger.error(`re-license re-bind still failing after retry (${err2.code ?? err2.message}) – dead-ending`);
-        setTimeout(() => process.exit(1), 250);
-      }
-    }
-  } finally {
-    relicensing = false;
-  }
-}
+// onLicenseLost() lived here: a runtime revocation tore the app down and returned
+// the operator to the activation portal. Removed with the licence gate — nothing
+// can revoke a copy of SSIM any more, so there is no runtime path back to a
+// portal that no longer exists.
 
-// ── License gatekeeper ────────────────────────────────────────────────────────
-// HARD BLOCKER: nothing that touches Steam, credentials or items is constructed
-// until the local HWID + license key validate against the remote backend.
-// If unlicensed (or revoked at runtime), we don't dead-end – we run a friendly
-// web portal so the user can paste a key. Once valid, the real app takes over.
-/**
- * H-LIC-016: resolve the licensing HWID, WAITING OUT a transient factor failure rather than binding a
- * seat to a degraded fingerprint. getHwid() throws HwidUnavailableError on the pre-pin path when a live
- * factor read failed (machineId/MAC sentinel); that id would be recomputed on the next healthy boot →
- * HWID mismatch → re-activate → a SECOND seat consumed. So we retry on a short back-off until the
- * fingerprint is healthy enough to also be pinned — never proceeding into the license gate with a
- * degraded id, never exiting, never pinning. A pinned or healthy id returns on the first attempt.
- */
-async function resolveHwid(): Promise<string> {
-  for (;;) {
-    try {
-      return HwidService.getHwid();
-    } catch (err) {
-      if (!(err instanceof HwidUnavailableError)) throw err;
-      // Honest signal: this is a TRANSIENT hardware-read wait, NOT a license failure — do not render the
-      // "LICENSE DENIED" lockscreen (that would mislabel a self-healing condition). The warning below is
-      // the operational trace; the loop recovers automatically the moment the factors read cleanly.
-      logger.warn(`hardware fingerprint unavailable (${err.message}) – waiting ${HWID_RETRY_MS}ms then retrying (a seat is never bound to a degraded id)`);
-      await new Promise<void>((r) => setTimeout(r, HWID_RETRY_MS));
-    }
-  }
-}
+// The licence gatekeeper stood here. It was a hard blocker: nothing touching Steam,
+// credentials or items was constructed until a machine fingerprint (HWID) and a
+// licence key validated against a remote backend, with an activation portal for
+// pasting a key and a 45-minute heartbeat that could revoke a running seat.
+//
+// All of it is gone. SSIM no longer fingerprints the machine, has no notion of a
+// seat, and contacts no server of ours. resolveHwid() went with it — there is no
+// id left to resolve.
 
 async function bootstrap(): Promise<void> {
   // S6: bound steam-totp's getTimeOffset (no vendor timeout) + cache the offset, so a stalled QueryTime
@@ -442,13 +371,10 @@ async function bootstrap(): Promise<void> {
     setPriorCrash({ at: priorCrash.at, code: priorCrash.code, signal: priorCrash.signal });
     logger.warn(`SSIM crashed on the previous run at ${new Date(priorCrash.at).toISOString()} (code=${priorCrash.code ?? '?'}) – surfacing a banner; see logs/shell.log`);
   }
-  // H-LIC-016: wait out a transient factor failure before we ever transact — a degraded, un-pinnable id
-  // must not be bound to a seat (it would burn a second seat on the next healthy boot).
-  licenseHwid = await resolveHwid();
-  logger.info(`license gate: validating seat for hwid ${licenseHwid.slice(0, 12)}…`);
-  // Runtime revocation → re-activation flow instead of hard exit.
-  LicenseClient.onRevocation((reason) => void onLicenseLost(reason));
-  await gateAndRun();
+  // The hardware-fingerprint wait and the licence-seat validation that used to run here are gone
+  // with the gate: nothing binds this install to a machine any more, so there is nothing to resolve
+  // and no seat to burn. Boot goes straight to update-check → vault → app.
+  await bootAndRun();
 }
 
 // ── Live-operation safety net ─────────────────────────────────────────────────
@@ -483,7 +409,6 @@ async function shutdown(signal: string): Promise<void> {
   // its web session — the ambiguous-commit interruption S14 fixed for the update swap, on the exit path.
   const drained = await quiesceMoneyOps(isBusy, { timeoutMs: QUIESCE_TIMEOUT_MS });
   logger.info(`shutdown: money-op drain ${drained}`);
-  LicenseClient.stopHeartbeat();
   stopUpdateScheduler();
   stopMemHeartbeat();
   if (deps) {

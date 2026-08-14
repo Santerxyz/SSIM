@@ -1,0 +1,81 @@
+name: Bug report
+description: Something in SSIM doesn't work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this.
+
+        **Security issue?** Don't file it here — see [SECURITY.md](../blob/main/SECURITY.md).
+
+        **⚠️ Scrub your logs before pasting them.** They can contain account names,
+        Steam IDs, and session tokens.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        I clicked "mass send" across 12 accounts.
+        Expected: all 12 offers sent.
+        Actually: 9 sent, 3 failed with Error 15 and no retry.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: If you can reproduce it, how? "Happens randomly about once a day" is a useful answer too.
+      placeholder: |
+        1. Open the Trading tab
+        2. Select 12 accounts
+        3. ...
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: SSIM version
+      description: Shown in the dashboard, or the filename you downloaded.
+      placeholder: "1.4.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scale
+    attributes:
+      label: Roughly how many accounts?
+      description: A lot of behaviour only shows up at scale, so this genuinely helps.
+      options:
+        - "1–5"
+        - "6–25"
+        - "26–100"
+        - "100+"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        From `logs/` next to the exe. `crash-log.txt` and `shell.log` are usually the
+        useful ones — see docs/BUILD.md for what each file tells you.
+        **Scrub account names, Steam IDs, and tokens first.**
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirms
+    attributes:
+      label: Before you submit
+      options:
+        - label: I scrubbed credentials, account names, and Steam IDs from anything I pasted
+          required: true
+        - label: I downloaded SSIM from the official Releases page
+          required: true

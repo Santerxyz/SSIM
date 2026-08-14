@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🔒 Security vulnerability
+    url: https://github.com/Santerxyz/SSIM/security/advisories/new
+    about: Please report security issues privately, never as a public issue. See SECURITY.md.
+  - name: 💬 Discord
+    url: https://discord.gg/rnDWYtkbxN
+    about: Questions, setup help, and general discussion.
+  - name: ⚠️ Counterfeit or malicious SSIM build
+    url: https://github.com/Santerxyz/SSIM/security/advisories/new
+    about: Found a fake SSIM being distributed somewhere? Tell us privately and urgently.

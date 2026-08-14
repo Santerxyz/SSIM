@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest something SSIM should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maintenance here is best-effort, so be aware that a good idea may sit for a
+        while — or forever — unless someone picks it up. If you'd be willing to
+        build it yourself, say so; that changes the odds enormously.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you hitting?
+      description: Describe the situation, not the solution. What's painful today?
+      placeholder: "Checking which accounts have items coming off trade lock this week means opening each one."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like SSIM to do?
+      validations:
+        required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: How do you work around it now?
+      validations:
+        required: false
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: Would you be up for implementing this?
+      options:
+        - "I'd like to try, with some guidance"
+        - "Yes, I can build it"
+        - "No, just suggesting"
+    validations:
+      required: true

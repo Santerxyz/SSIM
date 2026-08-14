@@ -39,15 +39,15 @@ const DIST = path.join(ROOT, 'dist');
 const SIDECAR = process.env.SSIM_BUILD_SIDECAR === '1';
 const OUT_NAME = SIDECAR ? 'ssim-backend.exe' : 'ssim.exe';
 
-function assertEnv(name) {
-  if (!process.env[name]) {
-    console.error(`✗ missing required build env: ${name}`);
-    process.exit(1);
-  }
-}
-
-// 1. Verify the security anchors are present before we bake anything.
-['LICENSE_PEPPER', 'LICENSE_API_URL', 'LICENSE_PUBLIC_KEY'].forEach(assertEnv);
+// 1. (was: verify the licensing secrets before baking them into the bytecode)
+//
+// SSIM is free software and the build requires NO secrets: no pepper, no API URL,
+// no key material, no secrets.local.bat. The only value the client still needs is
+// the Ed25519 update-verification PUBLIC key, which is public by definition and
+// lives in src/licensing/config.ts in the clear.
+//
+// Do not reintroduce a required build secret. A build a contributor cannot run is
+// a build that gets no contributors — see CONTRIBUTING.md.
 
 // 2. tsc must have produced dist/ already (npm script chains `build` first).
 if (!fs.existsSync(DIST)) {
@@ -55,103 +55,39 @@ if (!fs.existsSync(DIST)) {
   process.exit(1);
 }
 
-// 3. Bake the build-time secrets into dist/licensing/config.js so they live in
-//    the bytecode, not in process.env at runtime. We replace the `?? 'DEV…'`
-//    fallbacks with the real literals.
-function bakeSecret(jsFile, marker, value) {
-  let src = fs.readFileSync(jsFile, 'utf8');
-  // value is JSON-stringified to safely embed newlines / quotes (PEM keys).
-  const literal = JSON.stringify(value);
-  const re = new RegExp(`process\\.env\\.${marker}\\s*\\?\\?\\s*[^;\\n]+`);
-  if (!re.test(src)) {
-    console.error(`  ✗ marker ${marker} did not match – bake did not land`);
-    return false;
-  }
-  src = src.replace(re, literal);
-  fs.writeFileSync(jsFile, src);
-  console.log(`  • baked ${marker}`);
-  return true;
-}
-
+// 3. There is nothing to bake any more — the only build-time constant left is the
+//    Ed25519 update-verification PUBLIC key, and it ships in the clear in
+//    src/licensing/config.ts. But we still VALIDATE it here.
+//
+//    Why keep the check: a mis-typed, truncated, or wrong-curve public key looks
+//    fine to every test (nothing verifies a signature at build time) and then at
+//    runtime rejects EVERY update manifest — a field brick behind a green build
+//    log, with no update channel left to push a fix through. Parse it so the
+//    build fails loudly instead.
 const configJs = path.join(DIST, 'licensing', 'config.js');
-console.log('▸ baking secrets into dist/licensing/config.js');
-const bakeResults = [
-  bakeSecret(configJs, 'LICENSE_PEPPER', process.env.LICENSE_PEPPER),
-  bakeSecret(configJs, 'LICENSE_API_URL', process.env.LICENSE_API_URL),
-  bakeSecret(configJs, 'LICENSE_PUBLIC_KEY', process.env.LICENSE_PUBLIC_KEY),
-];
-// Fail CLOSED: a warn-and-continue on a non-matching marker ships a DEV-placeholder licensing exe
-// that still passes the self-test (it never reads these values) → fleet-wide licensing failure found
-// only in the field, behind a green build log.
-if (bakeResults.some((ok) => !ok)) {
-  console.error('✗ a required secret bake did not land — aborting so no DEV-secret binary ships.');
-  process.exit(1);
-}
-// Catch both a non-matching regex AND any future change to config.ts's fallback text: if a DEV
-// placeholder sentinel survived the bake, abort before producing an artifact.
-const bakedConfig = fs.readFileSync(configJs, 'utf8');
-for (const sentinel of ['DEV_PEPPER_replace_at_build_time', 'license.example.com', 'DEV_PLACEHOLDER_PUBLIC_KEY']) {
-  if (bakedConfig.includes(sentinel)) {
-    console.error(`✗ DEV placeholder "${sentinel}" survived the bake — aborting (no DEV-secret binary ships).`);
-    process.exit(1);
-  }
-}
-// The sentinel scan only catches KNOWN placeholder strings; it does not prove the baked key is a
-// real Ed25519 SPKI key. A mis-typed / truncated / wrong-curve LICENSE_PUBLIC_KEY passes the scan
-// yet at runtime rejects EVERY license token AND every update manifest (config.ts's LICENSE_PUBLIC_KEY
-// verifies both — see DIRECTIVES §5) → a field brick behind a green build log. Parse it here so the
-// build fails LOUDLY instead. The env value is baked verbatim (bakeResults above all landed) and is
-// \n-escaped (see header); normalise to real newlines the way config.ts does before parsing.
+console.log('▸ validating the update-verification public key');
 try {
-  const pubKey = crypto.createPublicKey(process.env.LICENSE_PUBLIC_KEY.replace(/\\n/g, '\n'));
+  const { UPDATE_PUBLIC_KEY } = require(configJs);
+  if (!UPDATE_PUBLIC_KEY) throw new Error('UPDATE_PUBLIC_KEY is empty or not exported');
+  const pubKey = crypto.createPublicKey(UPDATE_PUBLIC_KEY.replace(/\\n/g, '\n'));
   if (pubKey.asymmetricKeyType !== 'ed25519') {
-    console.error(`✗ baked public key is not a valid Ed25519 key (got ${pubKey.asymmetricKeyType}) — aborting.`);
+    console.error(`✗ update public key is not Ed25519 (got ${pubKey.asymmetricKeyType}) — aborting.`);
     process.exit(1);
   }
+  console.log('  • Ed25519 update key OK');
 } catch (e) {
-  console.error(`✗ baked public key is not a valid Ed25519 key — aborting: ${e.message}`);
+  console.error(`✗ update public key is not a valid Ed25519 key — aborting: ${e.message}`);
   process.exit(1);
 }
 
-// 4. Obfuscate the sensitive surface (licensing + entry). Keep it scoped – we do
-//    NOT obfuscate the whole tree (slows boot, breaks some vendor reflection).
-function obfuscate(file) {
-  const JsObf = require('javascript-obfuscator');
-  const code = fs.readFileSync(file, 'utf8');
-  const out = JsObf.obfuscate(code, {
-    compact: true,
-    controlFlowFlattening: true,
-    stringArray: true,
-    stringArrayEncoding: ['base64'],
-    deadCodeInjection: false,
-    // MUST stay false: selfDefending injects anti-tamper code that detects pkg's
-    // later bytecode transformation as "modification" and retaliates with an
-    // infinite loop (runaway CPU + multi-GB RAM at boot). pkg's own V8 bytecode
-    // already provides source protection + tamper resistance.
-    selfDefending: false,
-    // CRITICAL: keep require() specifiers OUT of the string array so pkg can
-    // still statically trace + bundle them (e.g. node-machine-id is only pulled
-    // in by HwidService). Anything matching these stays an inline literal.
-    // NOTE: relocating the OTHER strings (incl. the baked secrets) into the
-    // encoded array is best-effort/probabilistic — governed by the obfuscator's
-    // stringArrayThreshold (default ~0.75), so a baked literal MAY stay inline
-    // in config.js. That is fine: the real protection for the baked secrets is
-    // pkg's V8 bytecode compilation (see file header), and per known-limit #22
-    // the pepper is an accepted, cost-only-protected secret — not unleakable.
-    reservedStrings: [
-      '^os$', '^fs$', '^path$', '^crypto$', '^child_process$',
-      '^fs-extra$', '^axios$', '^node-machine-id$',
-      '^\\.', // every relative require ('./config', '../utils/logger', …)
-    ],
-  }).getObfuscatedCode();
-  fs.writeFileSync(file, out);
-  console.log(`  • obfuscated ${path.relative(ROOT, file)}`);
-}
-console.log('▸ obfuscating licensing surface');
-['config.js', 'HwidService.js', 'LicenseClient.js', 'Updater.js']
-  .map((f) => path.join(DIST, 'licensing', f))
-  .filter(fs.existsSync)
-  .forEach(obfuscate);
+// 4. (removed) javascript-obfuscator pass over the licensing surface.
+//
+// It existed to raise the cost of recovering the baked HWID pepper. There is no
+// pepper any more, and obfuscating open-source code protects nothing — the source
+// is right there. Removing it also drops a significant antivirus false-positive
+// source: control-flow flattening plus base64 string arrays inside a packed exe is
+// a classic heuristic trigger, and "my AV flagged it" is fatal for a tool asking
+// for Steam credentials. Do not add it back.
 
 // 5. Regenerate the icon set via make-ico.js: it refreshes public/favicon.ico
 //    (the dashboard + license-page favicon, which IS consumed) AND build/icon.ico.

@@ -1,82 +1,58 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  Licensing configuration – BUILD-TIME constants
+//  Update configuration.
 //
-//  These values are the security anchor of the whole protection scheme. They are
-//  meant to be INJECTED AT BUILD TIME (see build/pack.js) and baked into the
-//  V8 bytecode (.jsc) so they are not trivially readable in a shipped binary.
+//  SSIM is free software (Apache-2.0). There is NO licence check, no activation,
+//  no HWID, and no telemetry — this file used to hold the anchors for all of
+//  that and now holds only what the auto-updater needs.
 //
-//  The defaults below are DEV placeholders. The build replaces them via
-//  `LICENSE_*` env vars. NEVER commit the production pepper / private material.
-//  Only the PUBLIC key lives here – the matching private key stays on the
-//  license backend and signs tokens. A cracker holding this file still cannot
-//  forge a valid license token.
+//  Nothing here is secret, and NOTHING here is required to build. A contributor
+//  can clone and build with no env vars, no key files, and no secrets.local.bat.
+//  If that ever stops being true, it's a bug — see CONTRIBUTING.md.
+//
+//  TODO(oss): this file (plus Updater/updateScheduler/updateStatus/lockscreen) is
+//  all that remains in src/licensing/. Rename the directory to src/update/ once
+//  the delicensing has settled — kept in place for now to avoid churning imports
+//  across the tree in the same change that removed the gate.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * Secret pepper mixed into the HWID HMAC. Build-injected; never in data/.
+ * Where the updater looks for the signed release manifest.
  *
- * THREAT MODEL / KNOWN LIMIT (#22): this is a SINGLE shared symmetric secret baked
- * into every client binary. Bytecode + obfuscation only RAISE the cost of recovering
- * it (e.g. base64-decoding the obfuscator string array) — they do not make it secret.
- * Consequences and the explicit limit of this protection:
- *   • Token forgery is still impossible (only the Ed25519 PUBLIC key ships; the
- *     signing private key stays on the backend).
- *   • But once one binary is cracked, an attacker can compute valid HWIDs for
- *     arbitrary machines, easing seat-spoofing/bulk activation, and the pepper
- *     cannot be rotated per-seat without a client rebuild.
- * The REAL fix is server-side and out of scope for the client: bind the HWID with a
- * per-seat salt issued by the backend (or HMAC the HWID server-side), so no shared
- * client secret governs anti-sharing. Do NOT claim this client value is unleakable.
+ * The manifest is a small JSON blob — `{ latest, url, sha256, sig }` — hosted as
+ * a static file. It is deliberately NOT the GitHub Releases API: that API has
+ * nowhere to carry our Ed25519 signature, and dropping the signature check on a
+ * ~185 MB executable that handles Steam passwords and maFile secrets would be a
+ * bad trade for a little convenience. So we publish our own signed manifest and
+ * point `url` at the GitHub release asset.
+ *
+ * Overridable so forks can run their own update channel without patching source.
+ * A fork SHOULD do this: builds signed by our key are ours, and yours should be
+ * yours (see TRADEMARK.md).
  */
-export const HWID_PEPPER: string =
-  process.env.LICENSE_PEPPER ?? 'DEV_PEPPER_replace_at_build_time';
-
-/** License backend base URL (REST). Build-injected.
- *  NOTE: the line below MUST stay a bare env-fallback statement (no wrapping
- *  parens, no chained method on the same line) so build/pack.js can string-
- *  replace its literal. The greedy bake regex would otherwise swallow a trailing
- *  call and emit invalid JS into the .jsc. Trailing-slash stripping happens on
- *  the NEXT line, off the bake target. */
-const RAW_API_URL: string = process.env.LICENSE_API_URL ?? 'https://license.example.com';
-export const LICENSE_API_URL: string = RAW_API_URL.replace(/\/+$/, '');
+export const UPDATE_MANIFEST_URL: string =
+  process.env.SSIM_UPDATE_MANIFEST_URL ??
+  'https://raw.githubusercontent.com/Santerxyz/SSIM/main/version.json';
 
 /**
- * Ed25519 PUBLIC key (PEM, SPKI) used to verify signed license + update
- * artifacts locally. The private counterpart never leaves the backend.
+ * Ed25519 PUBLIC key (PEM, SPKI) that update manifests are verified against.
+ *
+ * Public by definition — it verifies signatures, it cannot create them. The
+ * private counterpart never leaves the maintainer's release process. Committing
+ * it in the clear is correct and is what every signed-update scheme does.
+ *
+ * ⚠ DO NOT REGENERATE THIS KEYPAIR. Every deployed client verifies against this
+ * exact key; a new one means no existing install can ever accept another update,
+ * stranding the fleet with no recovery channel. Forks running their own channel
+ * should override the key AND the manifest URL together.
  */
 const RAW_PUBLIC_KEY: string =
-  process.env.LICENSE_PUBLIC_KEY ??
-  `-----BEGIN PUBLIC KEY-----\nDEV_PLACEHOLDER_PUBLIC_KEY\n-----END PUBLIC KEY-----`;
-// Accept the key as a one-liner with literal "\n" (how genkeys / build-bake
-// supply it) OR with real newlines – normalise to a valid PEM either way.
-export const LICENSE_PUBLIC_KEY: string =
+  process.env.SSIM_UPDATE_PUBLIC_KEY ??
+  '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAlZtkREWxSz4Mt9WZVChTdJU+eonO3eCTGFVz/1akAMk=\n-----END PUBLIC KEY-----';
+
+// Accept the key as a one-liner with literal "\n" (how an env override supplies
+// it) OR with real newlines — normalise to a valid PEM either way.
+export const UPDATE_PUBLIC_KEY: string =
   RAW_PUBLIC_KEY.includes('\\n') ? RAW_PUBLIC_KEY.replace(/\\n/g, '\n') : RAW_PUBLIC_KEY;
 
-/**
- * Parse a millisecond env knob, rejecting empty-string / garbage / non-positive
- * values back to the literal default. `Number('')` is 0 and `Number('abc')` is
- * NaN — either would turn the heartbeat interval into a ~1 ms hot loop or zero
- * out the offline grace, so an empty/typo'd `set "LICENSE_HEARTBEAT_MS="` in
- * secrets.local.bat must fall back rather than coerce. The export stays a bare
- * `envMs(...)` call with no `process.env.X ??` literal, so the greedy bake regex
- * in build/pack.js can never target it (see the API_URL note above).
- */
-export function envMs(name: string, def: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return def;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : def; // garbage/empty/0/negative → default
-}
-
-/** How long a signed token is trusted offline before an online re-check is forced. */
-export const OFFLINE_GRACE_MS = envMs('LICENSE_OFFLINE_GRACE_MS', 72 * 60 * 60 * 1000); // 72h
-
-/** Heartbeat interval – server can revoke a seat between beats. */
-export const HEARTBEAT_INTERVAL_MS = envMs('LICENSE_HEARTBEAT_MS', 45 * 60 * 1000); // 45 min
-
-/** Network timeout for every license/update HTTP call. */
-export const LICENSE_HTTP_TIMEOUT_MS = 15_000;
-
-/** Local paths (kept out of git via .gitignore). */
-export const LICENSE_KEY_FILE = 'license.key';     // raw key the operator pastes in
-export const LICENSE_TOKEN_FILE = 'license.token'; // signed token from /activate
+/** Network timeout for every update HTTP call. */
+export const UPDATE_HTTP_TIMEOUT_MS = 15_000;

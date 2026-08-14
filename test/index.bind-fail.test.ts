@@ -34,17 +34,21 @@ test('H-BOOT-002: startFullApp returns a bound-boolean (true on success, false o
   assert.match(body, /return true;/, 'the successful-bind path returns true');
 });
 
-test('H-BOOT-002: gateAndRun stops after a failed startFullApp, before arming post-bind services', () => {
-  const body = /async function gateAndRun\([\s\S]*?\n\}\n/.exec(SRC)?.[0] ?? '';
+// Renamed gateAndRun → bootAndRun when the licence gate was removed; the licence heartbeat
+// that used to be armed here is gone, so startUpdateScheduler is now the only post-bind
+// service. The guarantee under test is unchanged: a failed bind arms nothing.
+test('H-BOOT-002: bootAndRun stops after a failed startFullApp, before arming post-bind services', () => {
+  const body = /async function bootAndRun\([\s\S]*?\n\}\n/.exec(SRC)?.[0] ?? '';
   assert.match(body, /if \(!\(await startFullApp\(\{ firstBoot: !everBound \}\)\)\) return;/,
     'a failed bind (false) returns early so no post-bind services are armed');
-  // The heartbeat + update scheduler must be reached ONLY after the guarded call (never on a
-  // failed bind, where the process is already exiting in 250ms).
+  // The update scheduler must be reached ONLY after the guarded call (never on a failed
+  // bind, where the process is already exiting in 250ms).
   const guardIdx = body.indexOf('if (!(await startFullApp(');
-  const heartbeatIdx = body.indexOf('LicenseClient.startHeartbeat(');
   const schedulerIdx = body.indexOf('startUpdateScheduler(');
-  assert.ok(guardIdx >= 0 && heartbeatIdx > guardIdx,
-    'startHeartbeat is armed only after the bind guard');
+  assert.ok(guardIdx >= 0, 'the bind guard is present');
   assert.ok(schedulerIdx > guardIdx,
     'startUpdateScheduler is armed only after the bind guard');
+  // Regression guard for the delicensing: nothing may reintroduce a licence heartbeat here.
+  assert.doesNotMatch(body, /startHeartbeat|LicenseClient/,
+    'no licence heartbeat may be armed on the boot path');
 });

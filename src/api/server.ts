@@ -13,10 +13,13 @@ import { BatchJobService, JobRegistry } from '../core/BatchJobService';   // W3_
 import { DistributeService } from '../trading/DistributeService';   // W3_33: item distribution
 import { PaysafeService, PAYSAFE_AUTO_POLL_MS, PAYSAFE_MIN_MINOR, PAYSAFE_MAX_MINOR } from '../store/PaysafeService';   // W4_40: paysafecard top-up (Track B, flag-gated)
 import { walletEurMinor, assertSteamHttpsUrl } from '../store/StoreService';      // W4_40: EUR-native wallet + URL guard
+import { performWalletPurchase, ownedPackageIdsFrom, CS2_APP_ID, type WalletPurchaseResult } from '../store/WalletPurchase';   // W4_41: wallet-only CS2 Prime purchase
+import { GamePurchaseJournal, purchaseOpKey } from '../core/GamePurchaseJournal';   // W4_41: purchase double-spend dedup
 import { generateBilling } from '../trading/AccountTrader';                       // W4_40: random billing (shared with market buy)
 import { AccountImportService } from '../core/AccountImportService';
 import { CsFloatService } from '../csfloat/CsFloatService';
 import { CsFloatAutoAcceptWorker } from '../csfloat/CsFloatAutoAcceptWorker';
+import { CsFloatBulkService } from '../csfloat/CsFloatBulkService';
 import type { ListingSearchParams } from '../csfloat/CsFloatClient';
 import { AppSettings } from '../core/AppSettings';
 import { InventoryService } from '../core/InventoryService';
@@ -29,12 +32,11 @@ import { loadMaFileFromDisk, readCredentialsFile } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
 import { loadMaFile, generateTotpCode, msUntilNextTotp, identitySecretPresence } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
-import { LicenseClient } from '../licensing/LicenseClient';
 import { getAvailableUpdate, getBlockedUpdate, getPriorCrash, getUpdateOutcome } from '../licensing/updateStatus';
 import { checkOnly, canInstallNow, installNow, isUpdateOpInFlight } from '../licensing/updateScheduler';
 import { TradeService, type AccountOffers, type OfferAction, type OfferActionTarget } from '../trading/TradeService';
 import { isAmbiguousCommitFailure } from '../trading/commitAmbiguity';
-import { MarketService, type MassSellGroup } from '../trading/MarketService';
+import { MarketService, type MassSellGroup, type CancelOrderTarget } from '../trading/MarketService';
 import { BuyService } from '../trading/BuyService';
 import { BanService } from '../trading/BanService';
 import { TradeUpService } from '../trading/TradeUpService';
@@ -81,10 +83,13 @@ const warnedBadProtectedUntil = new Set<string>();
 // read-ish siblings (buy-price / search / *-status / listings/:id edits) OUT. Exported
 // so the route-set is unit-testable (a new money route must be added here too).
 //   • Steam market/trade: trade send/mass-send/offer-action/offers-batch, market
-//     buy/sell/cancel-listing/cancel-buy-order/folder-buy, tradeup/execute, casket/move.
-//   • CSFloat REAL-CASH ops: csfloat/<user>/{buy, listings (create), buy-orders (create)}.
+//     buy/sell/cancel-listing/cancel-buy-order/folder-buy, tradeup/{execute,auto}, casket/move.
+//   • CSFloat REAL-CASH ops: csfloat/<user>/{buy, listings (create), buy-orders (create),
+//     bulk-list, bulk-delist, bulk-reprice}, and csfloat/<user>/deliver — which SENDS the sold
+//     asset in a real, 2FA-confirmed Steam offer, so it belongs here for the same reason trade/send does.
 //   • Mobile confirmation approval: accounts/<user>/confirmations/respond (finalizes trades).
-export const MONEY_OP_ROUTE = /^\/api\/(?:(?:trade\/(?:send|mass-send|offer-action|offers-batch)|market\/(?:buy|sell|cancel-listing|cancel-buy-order|folder-buy)|tradeup\/execute|casket\/move)(?:\/|$)|(?:csfloat\/[^/]+\/(?:buy|listings|buy-orders)|accounts\/[^/]+\/confirmations\/respond)$)/i;
+//   • Steam STORE spend: steam/<user>/buy-prime (W4_41 — wallet-funded package purchase).
+export const MONEY_OP_ROUTE = /^\/api\/(?:(?:trade\/(?:send|mass-send|offer-action|offers-batch)|market\/(?:buy|sell|cancel-listing|cancel-buy-order|folder-buy)|tradeup\/(?:execute|auto)|casket\/move)(?:\/|$)|(?:csfloat\/[^/]+\/(?:buy|listings|buy-orders|bulk-list|bulk-delist|bulk-reprice|deliver)|accounts\/[^/]+\/confirmations\/respond|steam\/[^/]+\/buy-prime)$)/i;
 
 // ── W2_20 (Accounts module): owned-games / profile / free-license types + helpers ──
 // NOTE: these routes need a LIVE Steam session; their runtime behavior is verified on a
@@ -142,6 +147,7 @@ export interface ApiDeps {
   casket:    CasketService;
   accountImport: AccountImportService;
   csfloat:       CsFloatService;
+  csfloatBulk:   CsFloatBulkService;
   csfloatWorker: CsFloatAutoAcceptWorker;
   /** W4_40. Owns a background credit-poll timer + in-memory run state, so teardown must shut it down
    *  (like csfloatWorker) — otherwise a re-license discards the server while the poll keeps firing. */
@@ -228,7 +234,7 @@ export function createDeps(): ApiDeps {
   // Shared GC action layer (trade-up + casket execution; gated behind SSIM_GC_VERIFIED).
   const gc        = new GcActionLayer(sessions);
   const tradeup   = new TradeUpService(inventory, pricing, cs2Schema, gc);
-  const casket    = new CasketService(gc, inventory);
+  const casket    = new CasketService(gc, inventory, pricing);
   // GC-preferred reader so the worth curve counts GC records (incl. listed items), not just web.
   // peekCached (H-INV-023): clone-free read — the snapshot only sums two numbers per account and
   // treats the record read-only (totalsOf never mutates it), so cloning the fleet per snapshot is
@@ -255,6 +261,7 @@ export function createDeps(): ApiDeps {
   // Feature 1 "Account Login": QR / credentials import → token-first Limited accounts.
   const accountImport = new AccountImportService(accounts, sessions);
   // Feature 2 "CSFloat": auto-accept delivery worker (CsFloatService is built above, before pricing).
+  const csfloatBulk   = new CsFloatBulkService(csfloat);
   const csfloatWorker = new CsFloatAutoAcceptWorker(accounts, trades, csfloat);
   csfloatWorker.start();
 
@@ -336,7 +343,7 @@ export function createDeps(): ApiDeps {
     },
   }, () => Date.now(), PAYSAFE_AUTO_POLL_MS);   // enable the background credit poll (auto-advance)
 
-  return { accounts, sessions, trades, market, buy, bans, inventory, store, pricing, exchange, history, gc, tradeup, casket, accountImport, csfloat, csfloatWorker, paysafe };
+  return { accounts, sessions, trades, market, buy, bans, inventory, store, pricing, exchange, history, gc, tradeup, casket, accountImport, csfloat, csfloatBulk, csfloatWorker, paysafe };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -344,7 +351,7 @@ export function createDeps(): ApiDeps {
 // ════════════════════════════════════════════════════════════════════════════
 
 export function createApp(deps: ApiDeps): Express {
-  const { accounts, sessions, trades, market, buy, bans, inventory, store, pricing, exchange, history, tradeup, casket, accountImport, csfloat, paysafe } = deps;
+  const { accounts, sessions, trades, market, buy, bans, inventory, store, pricing, exchange, history, tradeup, casket, accountImport, csfloat, csfloatBulk, csfloatWorker, paysafe } = deps;
   const app = express();
 
   const VALID_STRATEGIES: SellStrategy[] = ['lowest', 'undercut', 'custom'];
@@ -1260,18 +1267,112 @@ export function createApp(deps: ApiDeps): Express {
   }));
 
   // ════════════════════════════════════════════════════════════════════════
+  //  W4_41 — Buy CS2 Prime with STEAM WALLET BALANCE ONLY.
+  //
+  //  No parameters, by owner decision (2026-08-05): the package id is the same worldwide, and the
+  //  price is whatever Steam quotes for that account's currency — so there is nothing to configure
+  //  and no preview mode. Pick a scope, run, and each account either gets Prime or is told why not.
+  //
+  //  The safety comes from the shape rather than from operator input:
+  //   • Serial. It rides BatchJobService.runInternal (concurrency 1) — one account, one charge, at
+  //     a time. No new fan-out, no new login pressure, and cancel takes effect between accounts.
+  //   • The free CS2 licence is added first (Steam will not sell the Prime UPGRADE without it).
+  //   • Journalled. begin() lands immediately before finalizetransaction; a lingering entry from a
+  //     crash HARD-refuses that account (findUnresolved, not consultRefusal: the 8-second
+  //     "deliberate retry" pause that makes sense for a human clicking Buy means nothing to an
+  //     unattended fleet run). In practice it self-clears — a re-run finds the account already
+  //     has Prime and returns 'owned' long before it reaches the commit.
+  //   • Quarantine-aware, on BOTH entry points (the route via MONEY_OP_ROUTE, and the batch job —
+  //     which does not pass through that middleware — via this helper).
+  //  Every actual money-safety decision lives in performWalletPurchase (unit-tested end to end).
+  // ════════════════════════════════════════════════════════════════════════
+  const purchaseJournal = new GamePurchaseJournal();
+
+  // SHARED helper (route + batch job) so both entry points get identical gates and journalling.
+  const buyPrimeOne = async (username: string, o: { force?: boolean } = {}): Promise<WalletPurchaseResult> => {
+    const account = accounts.get(username);
+    if (!account) throw Object.assign(new Error(`Account "${username}" not found`), { status: 404 });
+    if (ProcessHealth.moneyOpsBlocked())
+      throw Object.assign(new Error(`Money operations are paused: ${ProcessHealth.blockReason()}. Restart SSIM and verify state before buying.`), { status: 503 });
+
+    let opKey = '';
+    const result = await store.withStoreSession(account.username, (ctx, session) =>
+      performWalletPurchase(
+        ctx,
+        {
+          readWallet: () => sessions.awaitWallet(account.username),
+          // Ownership comes from the LOGGED-IN CM connection, never a cookie-authenticated page: a
+          // stale cookie reads as "owns nothing", which is precisely the mistake that buys a 2nd copy.
+          readOwnedPackageIds: () => ownedPackageIdsFrom((session.client as unknown as { licenses?: unknown }).licenses),
+          // Free CS2 into the LIBRARY (never the cart) before the cart exists. Reuses THIS store
+          // session's CM client — no second login — and is idempotent. The grant result is handed back
+          // so the choreography can tell "granted just now" from "nothing happened" while it waits for
+          // Steam's store to catch up.
+          grantFreeBaseGame: async () => {
+            const r = await (session.client as unknown as SteamUserApps).requestFreeLicense([CS2_APP_ID]);
+            gamesCache.delete(account.username);
+            return { grantedPackageIds: r?.grantedPackageIds ?? [], grantedAppIds: r?.grantedAppIds ?? [] };
+          },
+        },
+        ({ subId, totalMinor, currencyIso }) => {
+          const key = purchaseOpKey(account.username, subId);
+          const lingering = o.force === true ? undefined : purchaseJournal.findUnresolved(key);
+          if (lingering) {
+            const mins = Math.max(1, Math.round((Date.now() - lingering.at) / 60_000));
+            return `an earlier purchase attempt for this account died mid-commit ${mins} minute(s) ago and its outcome was never confirmed. SSIM will not fire a second charge until someone has checked this account's Steam purchase history.`;
+          }
+          opKey = key;
+          purchaseJournal.begin(key, 'game-purchase');
+          logger.info(`[prime] ${account.username}: committing ${totalMinor} ${currencyIso} minor units for package ${subId}`);
+          return null;
+        },
+      ));
+
+    // Resolve ONLY when this call actually opened an entry (opKey is set inside beginCommit), and only
+    // on a DEFINITE outcome. A skip or a pre-commit refusal must never clear a lingering entry that
+    // belongs to an earlier crash. And note what is DELIBERATELY missing: there is no try/finally here,
+    // so an exception thrown after the commit leaves the entry behind — an op whose outcome nobody
+    // knows must keep refusing its own re-fire, which is the entire point of the journal.
+    if (opKey) {
+      if (result.status === 'unconfirmed') purchaseJournal.record(opKey, 'game-purchase', 'placed', 'outcome unconfirmed');
+      else purchaseJournal.resolve(opKey);
+    }
+    if (result.status === 'unconfirmed') logger.error(`[prime] ${account.username}: UNCONFIRMED purchase — ${result.detail}`);
+    else logger.info(`[prime] ${account.username}: ${result.status} — ${result.detail}`);
+    return result;
+  };
+
+  app.post('/api/steam/:username/buy-prime', asyncHandler(async (req, res) => {
+    try {
+      res.json(await buyPrimeOne(req.params.username, { force: req.body?.force === true }));
+    } catch (e) {
+      res.status((e as { status?: number }).status ?? 502).json({ error: `Prime purchase failed: ${(e as Error).message}` });
+    }
+  }));
+
+  // ════════════════════════════════════════════════════════════════════════
   //  W3_32 — Batch Jobs engine: scope → job → run w/ progress + history. The engine
   //  is a router — each adapter calls an EXISTING fan-out service, inheriting caps +
   //  money-safety. Refresh + bans ship enabled; money/per-account jobs greyed until wired.
   // ════════════════════════════════════════════════════════════════════════
-  // Batch registry — pruned to LEAN 2026-07-09 (owner). Batch = redeem-codes (bulk wallet codes) +
-  // the dedicated Distribute button (in the scope panel, NOT a registry tile). REMOVED: refresh-inventory,
+  // Batch registry — pruned to LEAN 2026-07-09 (owner). Batch = redeem-codes (bulk wallet codes),
+  // buy-prime (W4_41, wallet-funded CS2 Prime) + the dedicated Distribute button (in the scope panel,
+  // NOT a registry tile). REMOVED: refresh-inventory,
   // check-bans, scan-games, add-free-game, edit-profile, promo-license, mass-buy (covered by Inventories →
   // Mass Buy), and the disabled distribute/mass-sell/offers-batch placeholder tiles. Shared backend helpers
   // are intentionally KEPT — their single-account routes and other UIs still call them.
   const batchRegistry = new JobRegistry()
     .add({ jobType: 'redeem-codes', label: 'Redeem Steam wallet codes', group: 'money', moneySafe: true, enabled: true, experimental: true, paramSchema: [{ key: 'codes', label: 'Codes (one per line)', type: 'multiline', required: true, help: 'Matched 1:1 to the selected accounts, in order' }],
-      adapter: async ({ params, runInternal }) => { const codes = String(params.codes || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean); runInternal(async (u, i) => { const code = codes[i]; if (!code) throw new Error('no code for this account (need one code per line, in order)'); const r = await redeemOne(u, code, false); if (r.status !== 'redeemed') throw new Error(`${r.status}: ${r.detail}`); }); return { source: { kind: 'internal' } }; } });
+      adapter: async ({ params, runInternal }) => { const codes = String(params.codes || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean); runInternal(async (u, i) => { const code = codes[i]; if (!code) throw new Error('no code for this account (need one code per line, in order)'); const r = await redeemOne(u, code, false); if (r.status !== 'redeemed') throw new Error(`${r.status}: ${r.detail}`); }); return { source: { kind: 'internal' } }; } })
+    // W4_41 — Buy CS2 Prime from Steam wallet balance. NO parameters (owner 2026-08-05): the package
+    // id is the same worldwide and the price is whatever Steam quotes in the account's own currency,
+    // so the scope IS the whole input. Serial by construction (runInternal).
+    .add({ jobType: 'buy-prime', label: 'Buy CS2 Prime (Steam balance)', group: 'money', moneySafe: true, enabled: true, experimental: true,
+      paramSchema: [],
+      adapter: async ({ runInternal }) => {
+        runInternal(async (u) => buyPrimeOne(u));
+        return { source: { kind: 'internal' } };
+      } });
   // NOTE: paysafecard is NOT a BatchJobService fan-out job — it is human-in-the-loop (a browser handoff
   // per account). It ships as a CLIENT-ROUTED sequential job (like Distribute) via /api/steam/paysafe/*.
   const batch = new BatchJobService(accounts, batchRegistry);
@@ -1415,7 +1516,10 @@ export function createApp(deps: ApiDeps): Express {
   }));
   app.get('/api/csfloat/:username/listings', asyncHandler(async (req, res) => {
     if (!csAccount(req, res)) return;
-    try { res.json(await csfloat.myListings(req.params.username, { page: numQ(req.query.page), limit: numQ(req.query.limit) })); }
+    // CSFloat caps a page at 50 (documented); a larger ask is rejected upstream, so clamp here
+    // rather than let a stale/hand-built client turn it into an opaque CSFloat error.
+    const limit = Math.min(numQ(req.query.limit) ?? 50, 50);
+    try { res.json(await csfloat.myListings(req.params.username, { page: numQ(req.query.page), limit })); }
     catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
   }));
   app.post('/api/csfloat/:username/listings', asyncHandler(async (req, res) => {
@@ -1494,14 +1598,71 @@ export function createApp(deps: ApiDeps): Express {
   }));
   app.get('/api/csfloat/:username/trades', asyncHandler(async (req, res) => {
     if (!csAccount(req, res) || !requireExperimental(res)) return;
-    try { res.json(await csfloat.trades(req.params.username, { page: numQ(req.query.page), limit: numQ(req.query.limit), state: typeof req.query.state === 'string' ? req.query.state : undefined })); }
-    catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+    try {
+      const raw = await csfloat.trades(req.params.username, { page: numQ(req.query.page), limit: numQ(req.query.limit), state: typeof req.query.state === 'string' ? req.query.state : undefined });
+      // The dashboard has to distinguish "not delivered yet" from "SSIM already sent this" — only the
+      // worker's durable dedup store knows, and without it the UI would offer a Send button that can
+      // only ever refuse. Merged into the same response so the tab needs one round-trip.
+      const rows = Array.isArray(raw) ? raw : (Array.isArray((raw as Record<string, unknown>).trades) ? (raw as { trades: unknown[] }).trades : []);
+      const ids = rows.map((t) => String((t as Record<string, unknown>)?.id ?? '')).filter(Boolean);
+      const ssim = { delivered: csfloatWorker.deliveredAmong(ids) };
+      res.json(Array.isArray(raw) ? { trades: raw, ssim } : { ...(raw as Record<string, unknown>), ssim });
+    } catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
   }));
+  // ── manual delivery of CSFloat sales (REAL Steam offers — a money op) ──
+  // The auto-accept toggle used to be the only trigger, so a sale that landed before it was flipped
+  // sat undelivered until the next 45s poll and could not be sent by hand at all.
+  app.post('/api/csfloat/:username/deliver', (req: Request, res: Response) => {
+    if (!csAccount(req, res) || !requireExperimental(res)) return;
+    const tradeIds = Array.isArray(req.body?.tradeIds) ? req.body.tradeIds.map((v: unknown) => String(v ?? '')) : [];
+    try { res.json(csfloatWorker.startDeliver(req.params.username, tradeIds)); }
+    catch (err) { res.status(409).json({ error: (err as Error).message }); }
+  });
+  app.get('/api/csfloat/deliver-status', (_req: Request, res: Response) => res.json(csfloatWorker.deliverStatus()));
+  app.post('/api/csfloat/deliver-cancel', (_req: Request, res: Response) => res.json(csfloatWorker.cancelDeliver()));
   app.get('/api/csfloat/:username/inventory', asyncHandler(async (req, res) => {
     if (!csAccount(req, res) || !requireExperimental(res)) return;
     try { res.json(await csfloat.inventory(req.params.username)); }
     catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
   }));
+  // ── bulk operations + auto-pricing (many items per click) ──
+  // POST /api/csfloat/:username/price-list { names?: string[] } — CSFloat's lowest buy-now ask
+  // per name, for undercut pricing. One upstream request covers the whole catalog (cached, shared);
+  // `names` narrows the RESPONSE so the browser isn't handed tens of thousands of rows it won't use.
+  app.post('/api/csfloat/:username/price-list', asyncHandler(async (req, res) => {
+    if (!csAccount(req, res)) return;
+    try {
+      const { prices, fetchedAt, stale } = await csfloat.priceCatalog(req.params.username);
+      const names = Array.isArray(req.body?.names) ? req.body.names.filter((n: unknown) => typeof n === 'string') as string[] : null;
+      const out: Record<string, number> = {};
+      if (names) { for (const n of names) { const c = prices.get(n); if (c != null) out[n] = c; } }
+      else { for (const [n, c] of prices) out[n] = c; }
+      res.json({ prices: out, fetchedAt, stale, catalogSize: prices.size });
+    } catch (err) { res.status(csErr(err)).json({ error: (err as Error).message }); }
+  }));
+
+  app.post('/api/csfloat/:username/bulk-list', (req: Request, res: Response) => {
+    if (!csAccount(req, res)) return;
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    try { res.json(csfloatBulk.startList(req.params.username, items)); }
+    catch (err) { res.status(409).json({ error: (err as Error).message }); }
+  });
+  app.post('/api/csfloat/:username/bulk-delist', (req: Request, res: Response) => {
+    if (!csAccount(req, res)) return;
+    const ids = Array.isArray(req.body?.listingIds) ? req.body.listingIds : [];
+    const names = (req.body?.names && typeof req.body.names === 'object') ? req.body.names as Record<string, string> : {};
+    try { res.json(csfloatBulk.startDelist(req.params.username, ids, names)); }
+    catch (err) { res.status(409).json({ error: (err as Error).message }); }
+  });
+  app.post('/api/csfloat/:username/bulk-reprice', (req: Request, res: Response) => {
+    if (!csAccount(req, res)) return;
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    try { res.json(csfloatBulk.startReprice(req.params.username, items)); }
+    catch (err) { res.status(409).json({ error: (err as Error).message }); }
+  });
+  app.get('/api/csfloat/bulk-status', (_req: Request, res: Response) => res.json(csfloatBulk.status()));
+  app.post('/api/csfloat/bulk-cancel', (_req: Request, res: Response) => res.json(csfloatBulk.cancel()));
+
   app.get('/api/csfloat/:username/auto-accept', (req: Request, res: Response) => {
     if (!csAccount(req, res)) return;
     res.json({ enabled: csfloat.getAutoAccept(req.params.username) });
@@ -2497,7 +2658,7 @@ export function createApp(deps: ApiDeps): Express {
 
   // Body: { items: [{username, assetId, marketHashName}], strategy, customPriceMajor?, concurrency?, itemDelayMs? }
   app.post('/api/market/sell', (req: Request, res: Response) => {
-    const { items, strategy, customPriceMajor, concurrency, itemDelayMs, appId } = req.body ?? {};
+    const { items, strategy, customPriceMajor, concurrency, itemDelayMs, itemConcurrency, appId } = req.body ?? {};
     if (!Array.isArray(items) || items.length === 0
       || !items.every(i => i && typeof i.username === 'string' && typeof i.assetId === 'string' && typeof i.marketHashName === 'string')) {
       return res.status(400).json({ error: 'items must be a non-empty array of { username, assetId, marketHashName }' });
@@ -2534,6 +2695,9 @@ export function createApp(deps: ApiDeps): Express {
       const job = market.startMassSell(groups, strategy, {
         concurrency: Number.isFinite(concurrency) ? Number(concurrency) : undefined,
         itemDelayMs: Number.isFinite(itemDelayMs) ? Number(itemDelayMs) : undefined,
+        // Listing lanes per bot (hides Steam's round-trip; the per-bot request cadence is still
+        // itemDelayMs). Clamped in MarketService, like every other client-supplied concurrency.
+        itemConcurrency: Number.isFinite(itemConcurrency) ? Number(itemConcurrency) : undefined,
         customPriceMajor: custom ?? undefined,
       });
       const sellers = groups.map(g => g.username);
@@ -2694,6 +2858,73 @@ export function createApp(deps: ApiDeps): Express {
     }
   }));
 
+  // ── POST /api/market/orders-scan  { usernames: string[], appId } ───────────
+  // Multi-account Active Orders (a folder / a multi-selection). DETACHED like the ban check
+  // (H-TRD-033): a few hundred login-bound account reads run far past the client's 120s budget,
+  // so we start the job and return 202; the view polls /api/market/orders-scan-status with a row
+  // cursor and paints accounts as they land. Single-flight — a second start gets 409.
+  app.post('/api/market/orders-scan', (req: Request, res: Response) => {
+    const { usernames, appId } = req.body ?? {};
+    if (!Array.isArray(usernames) || usernames.length === 0) {
+      return res.status(400).json({ error: 'usernames must be a non-empty array' });
+    }
+    const known = usernames.filter((u: unknown): u is string => typeof u === 'string' && !!accounts.get(u));
+    if (known.length === 0) return res.status(400).json({ error: 'no known accounts in usernames' });
+    const appid = appId == null ? 730 : Number(appId);
+    if (appid !== 730 && appid !== 440) return res.status(400).json({ error: 'appId must be 730 (CS2) or 440 (TF2)' });
+    try {
+      const job = market.startOrdersScan(known, appid);
+      logger.info(`[orders] scan started for ${job.total} account(s) (appid ${appid})`);
+      res.status(202).json({ started: true, total: job.total });
+    } catch (err) {
+      res.status(409).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── GET /api/market/orders-scan-status?since=N ─────────────────────────────
+  // Cursor read: returns only the account rows at index ≥ `since` (the job's `accounts` array is
+  // append-only), so a 1.5s poll over a 500-bot scan never re-sends what the client already has.
+  app.get('/api/market/orders-scan-status', (req: Request, res: Response) => {
+    const job = market.ordersScanStatus();
+    const raw = Number(req.query.since);
+    const since = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), job.accounts.length) : 0;
+    res.json({
+      running: job.running, startedAt: job.startedAt, appId: job.appId,
+      progress: job.progress, cancelling: job.cancelling, cancelled: job.cancelled, error: job.error,
+      accounts: job.accounts.slice(since),
+      nextIndex: job.accounts.length,
+    });
+  });
+
+  // "End Task" for the orders scan: co-operative stop (rows already collected are kept).
+  app.post('/api/market/orders-scan-cancel', (_req: Request, res: Response) => {
+    res.json(market.cancelOrdersScan());
+  });
+
+  // ── POST /api/market/cancel-orders  { items: [{ username, kind, id }] } ────
+  // Bulk cancel that may span MANY accounts (the multi-scope "Cancel selected/all"). Grouped per
+  // account and paced inside each one; per-item failures come back as results, never a 5xx.
+  app.post('/api/market/cancel-orders', asyncHandler(async (req, res) => {
+    const { items } = req.body ?? {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'items must be a non-empty array of { username, kind, id }' });
+    }
+    const targets: CancelOrderTarget[] = [];
+    for (const it of items) {
+      if (!it || typeof it.username !== 'string' || !accounts.get(it.username)) continue;
+      if (it.kind !== 'sell' && it.kind !== 'buy') continue;
+      if (typeof it.id !== 'string' || !it.id.trim()) continue;
+      targets.push({ username: it.username, kind: it.kind, id: it.id.trim() });
+    }
+    if (targets.length === 0) return res.status(400).json({ error: 'no valid { username, kind, id } targets' });
+
+    const results = await market.cancelOrdersBatch(targets);
+    const ok   = results.filter((r) => r.ok).length;
+    const fail = results.length - ok;
+    logger.info(`[orders] bulk cancel: ${ok} ok / ${fail} failed (${results.length} total)`);
+    res.json({ results, ok, fail, total: results.length });
+  }));
+
   // ── POST /api/market/cancel-listing  { username, listingId } ───────────────
   app.post('/api/market/cancel-listing', asyncHandler(async (req, res) => {
     const { username, listingId } = req.body ?? {};
@@ -2827,9 +3058,26 @@ export function createApp(deps: ApiDeps): Express {
   app.post('/api/tradeup/execute', (req: Request, res: Response) => {
     const username = typeof req.body?.username === 'string' ? req.body.username : '';
     if (!accounts.get(username)) return res.status(400).json({ error: 'valid username is required' });
+    // costCents/unpricedInputs ride along purely for the run summary; startExecute validates the
+    // craft-critical fields (10 unique asset ids + rarity) itself and ignores anything else.
     const contracts = Array.isArray(req.body?.contracts) ? req.body.contracts : [];
     try {
       res.json(tradeup.startExecute(username, contracts));
+    } catch (err) {
+      res.status(409).json({ error: (err as Error).message });
+    }
+  });
+  // POST /api/tradeup/auto { username, profitableOnly? } — HIGH RISK + GATED. One click settles the
+  // whole account: plan a disjoint batch → craft it → let the inventory settle → re-plan, until
+  // nothing is left. Shares the single execution job, so /execute-status + /execute-cancel drive it.
+  app.post('/api/tradeup/auto', (req: Request, res: Response) => {
+    const username = typeof req.body?.username === 'string' ? req.body.username : '';
+    if (!accounts.get(username)) return res.status(400).json({ error: 'valid username is required' });
+    // Default TRUE: crafting every computable contract also crafts the value-destroying ones, so
+    // the caller has to ask for that explicitly rather than get it from an omitted field.
+    const profitableOnly = req.body?.profitableOnly !== false;
+    try {
+      res.json(tradeup.startAuto(username, { profitableOnly }));
     } catch (err) {
       res.status(409).json({ error: (err as Error).message });
     }
@@ -2986,17 +3234,114 @@ export function createApp(deps: ApiDeps): Express {
     });
   });
 
-  // ── License/boot status (the dashboard's client-guard polls this on load) ───
-  // The FULL app is constructed ONLY after the license gate passes, so a request reaching
-  // here is licensed by construction — but report the LIVE seat state (LicenseClient's
-  // last-known revoked flag), not a hardcoded true, so a runtime revocation is visible to
-  // the dashboard even in the brief window before the server is torn down. (INV-G1/G-1.)
+  // ════════════════════════════════════════════════════════════════════════
+  //  GET /api/jobs — every long-running job in ONE answer.
+  //
+  //  SSIM has always run these concurrently: a fleet refresh, a mass-sell and a storage move can
+  //  all be in flight at once. Nothing said so. Each job's progress lived only inside the modal
+  //  that started it, so closing that modal made a running job invisible and the operator waited
+  //  for a machine that was already free (owner report 2026-08-12). This is the one place that
+  //  knows what is actually running; the rail's Activity view is its only consumer.
+  //
+  //  Read-only and cheap — every status() below is an in-memory snapshot, no I/O. Jobs that are
+  //  neither running nor recently finished are simply absent, so an idle install answers `[]`.
+  // ════════════════════════════════════════════════════════════════════════
+
+  /** How long a FINISHED job stays in the list, so a run that ended while you were elsewhere is
+   *  still visible when you look. Long enough to notice, short enough not to become a history log
+   *  (Batch Jobs already keeps one). */
+  const JOB_LINGER_MS = 90_000;
+
+  interface JobRow {
+    id: string; label: string; detail?: string; running: boolean; cancelling?: boolean;
+    total: number; done: number; failed?: number; phase?: string;
+    startedAt?: number; finishedAt?: number; cancelPath?: string; nav?: string;
+  }
+
+  /** ISO string | epoch ms | null → epoch ms | undefined. Job services disagree on the encoding. */
+  const jobTime = (v: unknown): number | undefined => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string') { const t = Date.parse(v); return Number.isNaN(t) ? undefined : t; }
+    return undefined;
+  };
+
+  const collectJobs = (): JobRow[] => {
+    const out: JobRow[] = [];
+    /** Adds a job when it is running, or finished recently enough to still be worth showing. */
+    const add = (
+      id: string, label: string, cancelPath: string | undefined, nav: string | undefined,
+      s: Record<string, unknown> | null | undefined,
+      map: (s: Record<string, unknown>) => { detail?: string; total: number; done: number; failed?: number; phase?: string },
+    ): void => {
+      if (!s) return;
+      const running = s.running === true;
+      const finishedAt = jobTime(s.finishedAt);
+      // `finishedAt` is the only honest "it ended" signal. A service that never sets one (a scan, a
+      // ban check) simply drops off the list the moment it stops, rather than lingering forever on
+      // a stale snapshot that would read as "still working".
+      if (!running && !(finishedAt && Date.now() - finishedAt < JOB_LINGER_MS)) return;
+      let m;
+      try { m = map(s); } catch { return; }  // a drifted status shape must never 500 the whole list
+      out.push({
+        id, label, running, cancelling: s.cancelling === true,
+        startedAt: jobTime(s.startedAt), finishedAt,
+        cancelPath: running ? cancelPath : undefined, nav, ...m,
+      });
+    };
+    const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const arr = (v: unknown): number => (Array.isArray(v) ? v.length : 0);
+
+    add('inventory-refresh', 'Inventory refresh', '/api/inventory/refresh-cancel', 'inventories', inventory.status() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: arr(s.failed), detail: s.game ? String(s.game).toUpperCase() : undefined }));
+    add('mass-send', 'Mass send', '/api/trade/mass-cancel', 'inventories', trades.massStatus() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: arr(s.failed) }));
+    add('mass-sell', 'Mass sell', '/api/market/sell-cancel', 'inventories', market.status() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: arr(s.failed), detail: s.strategy ? `${String(s.strategy)} · ${n(s.listed)} listed` : undefined }));
+    add('folder-buy', 'Folder buy', '/api/market/folder-buy-cancel', 'inventories', buy.massBuyStatus() as never,
+      // Two phases over the SAME account list — count whichever one is actually in progress, or the
+      // bar would sit at 0% through the whole balance-refresh half of the run.
+      (s) => ({ total: n(s.total), done: s.phase === 'refreshing' ? n(s.refreshed) : n(s.processed), failed: arr(s.failed), phase: s.phase ? String(s.phase) : undefined, detail: s.marketHashName ? String(s.marketHashName) : undefined }));
+    add('orders-scan', 'Active orders scan', '/api/market/orders-scan-cancel', 'inventories', market.ordersScanStatus() as never,
+      (s) => { const p = (s.progress ?? {}) as Record<string, unknown>; return { total: n(p.total), done: n(p.done), failed: n(p.errors) }; });
+    add('tradeup', 'Trade-up', '/api/tradeup/execute-cancel', 'inventories', tradeup.executeStatus() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: n(s.failed), phase: s.phase ? String(s.phase) : undefined, detail: s.auto ? `auto · round ${n(s.round)}` : undefined }));
+    add('casket-move', 'Storage move', '/api/casket/move-cancel', 'inventories', casket.moveStatus() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: n(s.failed), detail: [s.username, s.direction].filter(Boolean).join(' · ') || undefined }));
+    add('batch', 'Batch job', '/api/batch/cancel', 'batch', batch.status() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: arr(s.failed), detail: s.label ? String(s.label) : undefined }));
+    add('distribute', 'Distribute items', '/api/inventory/distribute/cancel', 'inventories', distribute.status() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: arr(s.failed) }));
+    add('csfloat-bulk', 'CSFloat bulk', '/api/csfloat/bulk-cancel', undefined, csfloatBulk.status() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: n(s.failed), detail: [s.username, s.kind].filter(Boolean).join(' · ') || undefined }));
+    add('csfloat-deliver', 'CSFloat delivery', '/api/csfloat/deliver-cancel', undefined, csfloatWorker.deliverStatus() as never,
+      (s) => ({ total: n(s.total), done: n(s.done), failed: n(s.failed), detail: s.username ? String(s.username) : undefined }));
+    // A ban check reports no finishedAt, so it shows only while genuinely live.
+    add('ban-check', 'Ban check', undefined, 'accounts', bans.status() as never,
+      (s) => { const p = (s.progress ?? {}) as Record<string, unknown>; return { total: n(p.total), done: n(p.checked) }; });
+    // The top-up run is human-in-the-loop (the operator finishes each checkout in a browser), so it
+    // counts the CURRENT account rather than completed work, and offers no cancel — the run is
+    // stopped from its own screen, where the half-finished checkout is visible.
+    add('paysafe', 'Wallet top-up', undefined, 'batch', paysafe.status() as never,
+      (s) => ({ total: n(s.total), done: n(s.index), detail: `account ${n(s.index) + 1} of ${n(s.total)}` }));
+
+    // Longest-running first: the one you are most likely waiting on leads the list.
+    return out.sort((a, b) => Number(b.running) - Number(a.running) || (a.startedAt ?? 0) - (b.startedAt ?? 0));
+  };
+
+  app.get('/api/jobs', (_req: Request, res: Response) => {
+    const jobs = collectJobs();
+    res.json({ jobs, running: jobs.filter((j) => j.running).length });
+  });
+
   app.get('/api/system/status', (_req: Request, res: Response) => {
     const availableUpdate = getAvailableUpdate();
     const blockedUpdate = getBlockedUpdate();
     const priorCrash = getPriorCrash();
     res.json({
-      licensed: !LicenseClient.isRevoked(),
+      // Always true: SSIM is free software with no licence gate. Kept as a compatibility
+      // shim because the dashboard's client-guard in public/app.js still reads this field —
+      // removing it here would lock the UI out. TODO(oss): drop both together.
+      licensed: true,
       version: pkg.version,
       // Money-ops breaker (B3): mirror /api/health's stable/quarantineReason onto the endpoint the
       // dashboard already polls, so the operator SEES a tripped breaker (latch semantics unchanged).

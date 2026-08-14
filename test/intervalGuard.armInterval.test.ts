@@ -50,7 +50,7 @@ test('H-XCT-004: the refit timer owners route through armInterval (no raw setInt
   // Mirror of the S62 asyncHandler source-scan: a regression guard that fails if any
   // of these owners reintroduces a raw `setInterval(` instead of armInterval().
   const owners = [
-    ['licensing', 'LicenseClient.ts'],
+    // (LicenseClient.ts was here — deleted with the licence gate.)
     ['pricing', 'ExchangeRateService.ts'],
     ['licensing', 'updateScheduler.ts'],
     ['utils', 'memHeartbeat.ts'],

@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SessionState } from '../src/types/session';
 import { ProcessHealth } from '../src/core/ProcessHealth';
-import { LicenseClient } from '../src/licensing/LicenseClient';
 import { SessionManager } from '../src/core/SessionManager';
 
 // Four of the six "construction-only" fixes, exercised through their real seams.
@@ -26,11 +25,9 @@ test('G6: ProcessHealth.reset() clears a latched money-ops breaker', () => {
   assert.equal(ProcessHealth.blockReason(), '');
 });
 
-// G1 / INV-G1 — /api/system/status reflects a real revoked flag (default: not revoked).
-test('G1: LicenseClient.isRevoked() exists and defaults to false', () => {
-  assert.equal(typeof LicenseClient.isRevoked, 'function');
-  assert.equal(LicenseClient.isRevoked(), false);
-});
+// G1 removed with the licence gate: /api/system/status used to report a live seat-revocation
+// flag. There is no revocation any more, so the endpoint reports `licensed: true` as a static
+// compatibility shim for the dashboard guard (src/api/server.ts) and there is nothing to assert.
 
 // A4 / INV-A4 — logoutAccount awaits an in-flight login before tearing the session down.
 test('A4: logoutAccount waits for an in-flight login before destroying the session', async () => {
