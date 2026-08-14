@@ -8,12 +8,12 @@
 //  alongside the release (see docs/RELEASING.md); the client fetches it directly
 //  from UPDATE_MANIFEST_URL.
 //
-//  The client (src/licensing/Updater.ts) fetches that URL,
+//  The client (src/update/Updater.ts) fetches that URL,
 //  expecting:  { latest, url, sha256, sig, sigKind }
 //  and only runs the new exe if sha256 matches AND `sigKind` is a valid Ed25519
 //  signature over the ASCII string  `${latest}:${sha256}:${kind ?? 'backend'}`
 //  under the shipped UPDATE_PUBLIC_KEY. `sig` (LEGACY, kind-less, over `${latest}:${sha256}`)
-//  is still emitted for the pre-C14 deployed fleet. This tool produces BOTH, signing with your
+//  is still emitted for the older deployed fleet. This tool produces BOTH, signing with your
 //  PRIVATE key (passed at runtime — NEVER committed; this script never writes/logs it).
 //
 //  USAGE (sign an update):
@@ -21,16 +21,16 @@
 //      --exe release-tauri/SSIM/SSIM.exe \
 //      --version 1.1.6 \
 //      --url https://your-cdn/ssim-backend-1.1.6.exe \
-//      --key path/to/license_private.pem        # or set env LICENSE_PRIVATE_KEY (PEM)
+//      --key path/to/update_private.pem         # or set env SSIM_UPDATE_PRIVATE_KEY (PEM)
 //      [--out version.json]                      # also write the manifest to a file
 //      [--kind single-exe]                       # only for a migration cut; default tag 'backend'
-//    → prints the /version JSON body to stdout (serve it verbatim).
-//    → if env LICENSE_PUBLIC_KEY is set, self-verifies the signature first.
+//    → prints the manifest JSON to stdout, and writes version.json + SHA256SUMS.
+//    → ALWAYS self-verifies against the public key compiled into the client first.
 //
 //  FIRST-TIME SETUP (generate a keypair — only for a fresh deployment):
 //    node build/sign-update.js --genkeys
-//    → PUBLIC key  → bake into the build as LICENSE_PUBLIC_KEY (it ships in every exe)
-//    → PRIVATE key → keep on the backend ONLY; sign updates with it; never commit it
+//    → PUBLIC key  → put in src/update/config.ts (it ships in every exe)
+//    → PRIVATE key → keep offline; sign releases with it; never commit it
 //    ⚠ New keys invalidate every already-shipped client (their baked public key won't match).
 // ════════════════════════════════════════════════════════════════════════════
 'use strict';
@@ -50,9 +50,9 @@ if (has('genkeys')) {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
   const pub = publicKey.export({ type: 'spki', format: 'pem' }).toString().trim();
   const priv = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString().trim();
-  console.log('=== PUBLIC KEY — bake into the build as LICENSE_PUBLIC_KEY ===\n' + pub);
+  console.log('=== PUBLIC KEY — put in src/update/config.ts ===\n' + pub);
   console.log('\nLICENSE_PUBLIC_KEY one-liner (\\n-escaped, for secrets.local.bat):\n' + JSON.stringify(pub).slice(1, -1));
-  console.log('\n=== PRIVATE KEY — keep on the license backend ONLY, never commit ===\n' + priv);
+  console.log('\n=== PRIVATE KEY — keep offline, never commit ===\n' + priv);
   console.error('\n⚠ New keys invalidate every already-shipped client. Use only for a fresh setup.');
   process.exit(0);
 }
@@ -62,7 +62,7 @@ const exe = arg('exe');
 const version = arg('version');
 const url = arg('url');
 if (!exe || !version || !url) {
-  die('usage: node build/sign-update.js --exe <file> --version <semver> --url <download-url> [--key <private.pem> | env LICENSE_PRIVATE_KEY] [--out version.json]');
+  die('usage: node build/sign-update.js --exe <file> --version <semver> --url <download-url> [--key <private.pem> | env SSIM_UPDATE_PRIVATE_KEY] [--out version.json]');
 }
 if (!fs.existsSync(exe)) die('exe not found: ' + exe);
 if (!/^\d+\.\d+\.\d+$/.test(version)) die('version must be a 3-part numeric semver (e.g. 1.1.6) — the client compares numerically, so pre-release/build tags are silently treated as "not newer"');
@@ -101,14 +101,14 @@ function resolvePublicKey() {
   const fromEnv = (process.env.SSIM_UPDATE_PUBLIC_KEY || process.env.LICENSE_PUBLIC_KEY || '').trim();
   if (fromEnv) return { pem: fromEnv, src: 'env' };
   try {
-    const cfg = require(path.resolve(__dirname, '..', 'dist', 'licensing', 'config.js'));
-    if (cfg && cfg.UPDATE_PUBLIC_KEY) return { pem: String(cfg.UPDATE_PUBLIC_KEY), src: 'dist/licensing/config.js' };
+    const cfg = require(path.resolve(__dirname, '..', 'dist', 'update', 'config.js'));
+    if (cfg && cfg.UPDATE_PUBLIC_KEY) return { pem: String(cfg.UPDATE_PUBLIC_KEY), src: 'dist/update/config.js' };
   } catch { /* dist not built — fall through */ }
   return null;
 }
 const resolved = resolvePublicKey();
 if (!resolved) {
-  die('cannot resolve the update public key — run `npm run build` first (so dist/licensing/config.js exists), ' +
+  die('cannot resolve the update public key — run `npm run build` first (so dist/update/config.js exists), ' +
       'or set SSIM_UPDATE_PUBLIC_KEY. Refusing to emit an unverified manifest.');
 }
 {

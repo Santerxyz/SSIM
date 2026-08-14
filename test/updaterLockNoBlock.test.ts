@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selfTestFailureCountsTowardBlock } from '../src/licensing/Updater';
+import { selfTestFailureCountsTowardBlock } from '../src/update/Updater';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  S54 — a transient 'lock' self-test failure (EACCES/EBUSY/MOTW — an AV mid-scan

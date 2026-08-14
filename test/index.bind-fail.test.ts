@@ -39,7 +39,7 @@ test('H-BOOT-002: startFullApp returns a bound-boolean (true on success, false o
 // service. The guarantee under test is unchanged: a failed bind arms nothing.
 test('H-BOOT-002: bootAndRun stops after a failed startFullApp, before arming post-bind services', () => {
   const body = /async function bootAndRun\([\s\S]*?\n\}\n/.exec(SRC)?.[0] ?? '';
-  assert.match(body, /if \(!\(await startFullApp\(\{ firstBoot: !everBound \}\)\)\) return;/,
+  assert.match(body, /if \(!\(await startFullApp\(\)\)\) return;/,
     'a failed bind (false) returns early so no post-bind services are armed');
   // The update scheduler must be reached ONLY after the guarded call (never on a failed
   // bind, where the process is already exiting in 250ms).

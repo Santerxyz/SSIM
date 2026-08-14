@@ -5,7 +5,7 @@ import { AccountVault, VAULT_READ_ERROR_PREFIX, VAULT_NEWER_VERSION_ERROR } from
 import { looksLikeOrphanedVaultInstall, normalizeMasterPassword, unlockExistingVault } from './vaultBoot';
 import { logger } from '../utils/logger';
 import { publicDir } from '../utils/paths';
-import { printLockScreen } from '../licensing/lockscreen';
+import { printLockScreen } from '../utils/startupError';
 import { listenAndAnnounce, SSIM_HEALTH_PATH, SSIM_HEALTH_MARKER } from '../utils/serverPort';
 import { writeCrash } from '../utils/crashlog';
 

@@ -14,7 +14,7 @@ import {
   clearSelfTestState,
   SELFTEST_BLOCK_THRESHOLD,
   type SelfTestOutcome,
-} from '../src/licensing/Updater';
+} from '../src/update/Updater';
 
 const mkdir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'ssim-upd-'));
 const sha256 = (buf: Buffer | string): string => crypto.createHash('sha256').update(buf).digest('hex');

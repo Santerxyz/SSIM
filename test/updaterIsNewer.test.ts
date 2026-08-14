@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isNewer } from '../src/licensing/Updater';
+import { isNewer } from '../src/update/Updater';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  H-LIC-004 — isNewer hardcoded a 3-segment compare, so any 4th version segment

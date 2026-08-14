@@ -4,7 +4,7 @@ For maintainers. Contributors don't need this — see [CONTRIBUTING.md](../CONTR
 
 ## How updates work
 
-SSIM's updater ([`src/licensing/Updater.ts`](../src/licensing/Updater.ts)) fetches a small
+SSIM's updater ([`src/update/Updater.ts`](../src/update/Updater.ts)) fetches a small
 static JSON manifest, verifies it, and only then replaces the running executable:
 
 ```
@@ -22,7 +22,7 @@ Every one of those gates must pass. There is no server involved — the manifest
 > ### ⚠ The signing key is the single point of no return
 >
 > One Ed25519 keypair signs every update. The public half ships inside every exe
-> ([`src/licensing/config.ts`](../src/licensing/config.ts)); the private half must never
+> ([`src/update/config.ts`](../src/update/config.ts)); the private half must never
 > leave your control and must never be committed.
 >
 > **If you regenerate it, every installed copy of SSIM stops accepting updates forever** —

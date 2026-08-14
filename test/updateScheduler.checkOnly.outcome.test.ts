@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkOnly, startUpdateScheduler, stopUpdateScheduler } from '../src/licensing/updateScheduler';
-import { setUpdateOutcome, getUpdateOutcome, setAvailableUpdate } from '../src/licensing/updateStatus';
-import { Updater } from '../src/licensing/Updater';
+import { checkOnly, startUpdateScheduler, stopUpdateScheduler } from '../src/update/updateScheduler';
+import { setUpdateOutcome, getUpdateOutcome, setAvailableUpdate } from '../src/update/updateStatus';
+import { Updater } from '../src/update/Updater';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  H-LIC-007 — checkOnly's outcome telemetry must be symmetric across all three

@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { swapAndRelaunch, parseManifest, type SpawnLauncher } from '../src/licensing/Updater';
-import { getUpdateOutcome, setUpdateOutcome } from '../src/licensing/updateStatus';
+import { swapAndRelaunch, parseManifest, type SpawnLauncher } from '../src/update/Updater';
+import { getUpdateOutcome, setUpdateOutcome } from '../src/update/updateStatus';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  H-LIC-002 — swapAndRelaunch spawned wscript.exe with NO 'error' listener. On

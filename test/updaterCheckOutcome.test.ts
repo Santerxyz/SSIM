@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Updater } from '../src/licensing/Updater';
+import { Updater } from '../src/update/Updater';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  S53 — check() collapsed BOTH "up to date" and "the check failed" into a bare

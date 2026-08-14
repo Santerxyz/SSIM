@@ -1,6 +1,6 @@
 # Contributing to SSIM
 
-SSIM is 32,000 lines of TypeScript across 103 files. That sounds like a lot to walk
+SSIM is 31,000 lines of TypeScript across 99 files. That sounds like a lot to walk
 into, and most projects that size are genuinely hard to contribute to. This one
 isn't, and the reason is that the map already exists — you don't have to reverse
 engineer the architecture from scratch.
@@ -14,11 +14,11 @@ Read these three, in this order. It's about forty minutes and it will save you d
 
 | Read | What it gives you |
 |---|---|
-| **[PROJECT_MAP.md](PROJECT_MAP.md)** | The architecture: boot sequence, subsystems, trust/signing, `file:line` references to the code that matters, and the ranked risk list. |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | How the pieces fit: the single-exe layout, the boot sequence, every subsystem, and the Steam behaviours that explain why parts of this code look strange. |
 | **[INVARIANTS.md](INVARIANTS.md)** | **The things that must never break.** This is money-handling code operating on live accounts. Read this before changing anything in trading, market, or vault paths. |
 | **[FEATURES.md](FEATURES.md)** | The complete feature inventory, each entry citing where it lives. |
 
-Then: **308 test files** in [`test/`](test/). They are your safety net and the best
+Then: **293 test files** in [`test/`](test/). They are your safety net and the best
 documentation of intended behaviour in the repo. If you're not sure what something
 is supposed to do, there is very likely a test that says.
 

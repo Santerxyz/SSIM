@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Updater } from '../src/licensing/Updater';
+import { Updater } from '../src/update/Updater';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  H-LIC-001 — the /version manifest was cast straight to VersionInfo with ZERO

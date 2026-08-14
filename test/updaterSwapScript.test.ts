@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSwapScript } from '../src/licensing/Updater';
+import { buildSwapScript } from '../src/update/Updater';
 
 // Split out of the old licenseUpdate.test.ts when the licence gate was removed: that
 // file mixed licenseClock tests (deleted with the gate) with this updater test, which

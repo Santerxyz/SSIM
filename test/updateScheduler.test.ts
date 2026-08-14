@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   currentView, canInstallNow, startUpdateScheduler, stopUpdateScheduler, installNow, isUpdateOpInFlight,
-} from '../src/licensing/updateScheduler';
-import { setAvailableUpdate, setBlockedUpdate } from '../src/licensing/updateStatus';
-import { Updater } from '../src/licensing/Updater';
+} from '../src/update/updateScheduler';
+import { setAvailableUpdate, setBlockedUpdate } from '../src/update/updateStatus';
+import { Updater } from '../src/update/Updater';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  C5 — periodic/manual update checks + idle-gated swap. (Tests run in-order in a

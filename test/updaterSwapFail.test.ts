@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildSwapScript, consumeSwapFailureMarker, swapFailureMarkerPath, clearSwapFailState } from '../src/licensing/Updater';
+import { buildSwapScript, consumeSwapFailureMarker, swapFailureMarkerPath, clearSwapFailState } from '../src/update/Updater';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  S9 — a persistent SWAP failure (move /Y blocked by AV/EDR or Controlled Folder

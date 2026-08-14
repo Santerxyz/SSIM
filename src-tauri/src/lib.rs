@@ -570,7 +570,7 @@ fn spawn_backend(handle: tauri::AppHandle) {
                     // the backend's server/port exists, so without narration the splash looks frozen for
                     // minutes. Parse per-line so we can read the download percentage and reflect each
                     // phase on the splash via window.__ssimUpd (defined in splash.html). Token spellings
-                    // mirror src/licensing/Updater.ts — keep them in sync.
+                    // mirror src/update/Updater.ts — keep them in sync.
                     for line in chunk.lines() {
                         let line = line.trim();
                         if let Some(rest) = line.strip_prefix("SSIM_UPDATE_PROGRESS::") {

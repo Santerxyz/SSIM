@@ -40,7 +40,7 @@ test('H-LIC-021: a spawn "error" from showLockPage does not become an uncaughtEx
     // Require the COMPILED module after the stub is installed so its
     // `import { spawn } from 'child_process'` resolves to our fake.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { printLockScreen } = require('../src/licensing/lockscreen') as typeof import('../src/licensing/lockscreen');
+    const { printLockScreen } = require('../src/utils/startupError') as typeof import('../src/utils/startupError');
     printLockScreen('LICENSE DENIED', 'synthetic test detail');
     assert.equal(spawned, true, 'showLockPage must reach the spawn (the lock page is written + opened)');
 

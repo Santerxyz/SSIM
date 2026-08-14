@@ -2,24 +2,20 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  build/pack.js – protected-build orchestrator
 //
-//  Pipeline:  tsc (already run) → inject secrets → obfuscate licensing surface
-//             → pkg into a single ssim.exe
+//  Pipeline:  tsc (already run) → validate the update public key → pkg into a
+//             single ssim.exe
 //
 //  pkg ALREADY compiles every bundled .js to V8 bytecode and strips the readable
 //  source from the binary – that is pkg's core protection. We deliberately do
 //  NOT also run bytenode: stacking bytenode's .jsc inside pkg's patched module
 //  loader breaks core-module resolution at runtime (require('path') comes back
-//  without its methods). The obfuscation of the licensing files below is the
-//  extra hardening layer on top of pkg's bytecode.
+//  without its methods).
 //
 //  Run:  npm run build:protected
 //
-//  Required env (baked into the licensing source before bytecode, NEVER committed):
-//    LICENSE_PEPPER        – HWID HMAC pepper
-//    LICENSE_API_URL       – license backend base URL
-//    LICENSE_PUBLIC_KEY    – Ed25519 public key (PEM, \n-escaped)
+//  Required env: NONE. This build takes no secrets and no key material.
 //
-//  Dev deps used here:  javascript-obfuscator  @yao-pkg/pkg
+//  Dev deps used here:  @yao-pkg/pkg
 // ════════════════════════════════════════════════════════════════════════════
 'use strict';
 
@@ -44,7 +40,7 @@ const OUT_NAME = SIDECAR ? 'ssim-backend.exe' : 'ssim.exe';
 // SSIM is free software and the build requires NO secrets: no pepper, no API URL,
 // no key material, no secrets.local.bat. The only value the client still needs is
 // the Ed25519 update-verification PUBLIC key, which is public by definition and
-// lives in src/licensing/config.ts in the clear.
+// lives in src/update/config.ts in the clear.
 //
 // Do not reintroduce a required build secret. A build a contributor cannot run is
 // a build that gets no contributors — see CONTRIBUTING.md.
@@ -57,14 +53,14 @@ if (!fs.existsSync(DIST)) {
 
 // 3. There is nothing to bake any more — the only build-time constant left is the
 //    Ed25519 update-verification PUBLIC key, and it ships in the clear in
-//    src/licensing/config.ts. But we still VALIDATE it here.
+//    src/update/config.ts. But we still VALIDATE it here.
 //
 //    Why keep the check: a mis-typed, truncated, or wrong-curve public key looks
 //    fine to every test (nothing verifies a signature at build time) and then at
 //    runtime rejects EVERY update manifest — a field brick behind a green build
 //    log, with no update channel left to push a fix through. Parse it so the
 //    build fails loudly instead.
-const configJs = path.join(DIST, 'licensing', 'config.js');
+const configJs = path.join(DIST, 'update', 'config.js');
 console.log('▸ validating the update-verification public key');
 try {
   const { UPDATE_PUBLIC_KEY } = require(configJs);

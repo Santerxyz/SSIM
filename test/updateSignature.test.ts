@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { verifyUpdateSignature } from '../src/licensing/Updater';
+import { verifyUpdateSignature } from '../src/update/Updater';
 
 // Throwaway keypair standing in for the prod server-private / client-baked-public pair.
 const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');

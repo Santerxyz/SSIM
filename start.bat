@@ -1,28 +1,22 @@
 @echo off
 REM ============================================================================
-REM  SSIM – Santer Steam Inventory Manager  (the only launcher you need)
-REM  Double-click to start. Opens the dashboard / license page in your browser.
+REM  SSIM - development launcher.
+REM
+REM  This runs SSIM from compiled source, for working ON SSIM. If you just want
+REM  to USE it, download SSIM.exe from the releases page instead - you do not
+REM  need this file, Node, or a checkout.
+REM
+REM  No secrets, keys or config are required. If this ever asks you for one,
+REM  that is a bug - please open an issue.
 REM ============================================================================
-title SSIM - Santer Steam Inventory Manager
+title SSIM - development
 cd /d "%~dp0"
-
-REM --- License backend secrets (kept OUT of this launcher) ---------------------
-REM  Values live in secrets.local.bat (gitignored, never shipped). The packaged
-REM  ssim.exe does not need them – they are baked in at build time.
-if exist "secrets.local.bat" (
-  call secrets.local.bat
-) else (
-  echo [SSIM] WARNING: secrets.local.bat missing - license environment not set.
-  echo [SSIM] Cannot start without license secrets. Create secrets.local.bat ^(set LICENSE_API_URL / LICENSE_PUBLIC_KEY / LICENSE_PEPPER^) and retry.
-  pause
-  exit /b 1
-)
 
 REM --- Local web UI -----------------------------------------------------------
 set "PORT=3000"
 set "HOST=127.0.0.1"
-REM  The app opens the browser ITSELF after the license + vault password succeed and the
-REM  server is listening. (dev/node runs skip auto-open by default, so enable it here.)
+REM  The app opens the browser itself once the vault is unlocked and the server
+REM  is listening. (node runs skip auto-open by default, so enable it here.)
 set "SSIM_OPEN_BROWSER=1"
 
 REM --- Memory ceiling (diagnostic + safety net; see src/bootflags.ts) ---------
@@ -41,18 +35,13 @@ if not exist "dist\index.js" (
   )
 )
 
-REM --- Port + single-instance are handled by the app itself now (lockfile +
+REM --- Port + single-instance are handled by the app itself (lockfile +
 REM     dynamic port). No taskkill here - it would kill an unrelated app on 3000.
 
 echo.
-echo   License server : %LICENSE_API_URL%
-echo   Web UI         : http://%HOST%:%PORT%  ^(if %PORT% is busy the app picks the next free port^)
+echo   Web UI : http://%HOST%:%PORT%  ^(if %PORT% is busy the app picks the next free port^)
 echo.
 
-REM --- Run the server as a clean monitor in this window -----------------------
-REM  The app opens the browser ITSELF, but only AFTER the license check + the vault
-REM  master-password prompt succeed and the server is listening. (No early timer
-REM  open here — it would just show a blank page while the console waits for input.)
 node --max-old-space-size=%SSIM_HEAP_MB% dist\index.js
 
 echo.

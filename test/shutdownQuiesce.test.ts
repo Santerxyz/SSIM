@@ -60,9 +60,12 @@ test('quiesceMoneyOps: an already-idle app drains immediately with no sleep', as
 const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8');
 const LIB_RS = readFileSync(join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8');
 
-test('H-XCT-005: shutdown() and teardownFullApp() both quiesce money ops before teardown', () => {
+// teardownFullApp() was the second drain site; it existed only for the licence-revocation
+// re-activation path and was removed with the licence gate. shutdown() is now the sole exit
+// path, and it must still drain before severing sessions.
+test('H-XCT-005: the exit path quiesces money ops before teardown', () => {
   const calls = SRC.match(/await quiesceMoneyOps\(isBusy,/g) ?? [];
-  assert.ok(calls.length >= 2, 'both exit paths must await the bounded drain before severing sessions');
+  assert.ok(calls.length >= 1, 'the exit path must await the bounded drain before severing sessions');
 });
 
 test('H-XCT-005: shutdown quiesces BEFORE logoutAll severs the web session', () => {

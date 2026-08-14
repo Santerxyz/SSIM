@@ -10,7 +10,7 @@ import {
   classifySpawnError,
   selfTestNewExe,
   type SelfTestOutcome,
-} from '../src/licensing/Updater';
+} from '../src/update/Updater';
 
 const isWin = process.platform === 'win32';
 const tmp = (name: string): string =>

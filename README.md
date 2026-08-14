@@ -12,7 +12,7 @@ and 2FA secrets never leave it.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](#requirements)
-[![Tests](https://img.shields.io/badge/tests-308%20files-green.svg)](test/)
+[![Tests](https://img.shields.io/badge/tests-293%20files-green.svg)](test/)
 
 [Download](#install) · [How it works](#how-it-works) · [Security](#security) · [Contributing](CONTRIBUTING.md)
 
@@ -131,9 +131,9 @@ is rejected.
 precisely why publishing the source costs you nothing: the encryption is standard
 and reviewable, and its strength comes from your password, not from obscurity.
 
-**Read the code.** It's 32k lines of TypeScript across 103 files, with
-[an architecture map](PROJECT_MAP.md), [documented invariants](INVARIANTS.md), and
-308 test files. Start with `src/index.ts`.
+**Read the code.** It is 31k lines of TypeScript across 99 files, with
+[an architecture overview](ARCHITECTURE.md), [documented invariants](INVARIANTS.md), and
+293 test files. Start with `src/index.ts`.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md). Please don't open a public
 issue for it.
@@ -157,7 +157,7 @@ SSIM is not affiliated with, endorsed by, or sponsored by Valve Corporation.
 
 Contributions are genuinely welcome, and the codebase is more approachable than
 its size suggests — start with [CONTRIBUTING.md](CONTRIBUTING.md), which points at
-the architecture map, the invariants you mustn't break, and issues labelled
+the architecture overview, the invariants you mustn't break, and issues labelled
 `good first issue`.
 
 Building it takes two commands and needs no secrets or keys. See

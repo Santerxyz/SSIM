@@ -36,9 +36,9 @@ Legend for IDs: `INV-<domain><n>` — domains A..G match `FEATURES.md`.
 > - **b2 account capability/recovery:** INV-A1, INV-A2.
 > - **b3 CSFloat auto-deliver:** INV-F1, INV-F2.
 > - **b4 inventory/trade integrity:** INV-A3, A5, A6, B9, B10, B13, D3, D4, D6.
-> - **b5 license/update:** INV-G2, INV-G3 (kind-signing is a coordinated server step; the brick is fixed).
+> - **b5 update integrity:** INV-G3.
 > - **b6 pricing/value SSOT:** INV-E3, E5, E6.
-> - **b7 remaining VIOLABLE invariants:** INV-A4, A7, D2, E2, F3, G1, G5, G6.
+> - **b7 remaining VIOLABLE invariants:** INV-A4, A7, D2, E2, F3, G5, G6.
 >
 > The per-row statuses below were written at audit time and are NOT rewritten; treat
 > this banner + `CONTRADICTIONS.md` as the current state.
@@ -121,16 +121,14 @@ Legend for IDs: `INV-<domain><n>` — domains A..G match `FEATURES.md`.
 | **INV-F3** | A key is read from exactly one backend; presence is computed one way. | vault XOR file. | **HOLDS** within a mode; **VIOLABLE** across a mode switch ▶ F-4 (keys in the other backend become invisible). |
 | **INV-F4** | The CSFloat rate limit is never exceeded for one key. | one limiter per key. | **HOLDS** `Client.ts:70` (static per-key map). |
 
-## Domain G — License, update, boot
+## Domain G — Update and boot
 
 | ID | Invariant | Code condition | Status |
 |---|---|---|---|
-| **INV-G1** | "is licensed" is decided in exactly one place. | only `validate()` gates. | **VIOLABLE** ▶ G-1: `/api/system/status` returns `{licensed:true}` positionally; UI trusts which server is bound. |
-| **INV-G2** | A valid offline user is never locked out by a clock change they didn't cause. | grace anchored to server contact, skew-tolerant. | **VIOLABLE** ▶ G-2: `maxSeenMs` advanced from local `Date.now()`; a forward jump poisons it → later lockout. |
 | **INV-G3** | No update is applied unless its artifact is authenticated. | sha256 + Ed25519 verified pre-swap. | **HOLDS** for the artifact; **VIOLABLE** for the swap *shape* ▶ G-3 (`info.kind` unsigned → can mis-place/delete). |
-| **INV-G4** | The dashboard server never serves before license + vault are ready. | ordering in `bootstrap`. | **HOLDS** ▶ G-ok (validate→vault→startFullApp; portals 403/423 all `/api/*`). |
+| **INV-G4** | The dashboard server never serves before the vault is ready. | ordering in `bootstrap`. | **HOLDS** ▶ G-ok (vault→startFullApp; the unlock portal 403/423s all `/api/*`). |
 | **INV-G5** | Exactly one SSIM instance runs; a dead instance's lock never blocks a new one. | PID+image check. | **VIOLABLE** ▶ G-4: non-Windows recycled-PID false-positive; lockfile IO error fails open. |
-| **INV-G6** | The money-ops breaker reflects the **current** process's health. | breaker scoped to live state. | **VIOLABLE** ▶ G-5: `ProcessHealth` latches process-global; survives an in-process re-license with a fresh session map. |
+| **INV-G6** | The money-ops breaker reflects the **current** process's health. | breaker scoped to live state. | **VIOLABLE** ▶ G-5: `ProcessHealth` latches process-global; survives a teardown/rebuild with a fresh session map. |
 
 ---
 

@@ -52,7 +52,7 @@ test('H-XCT-004: the refit timer owners route through armInterval (no raw setInt
   const owners = [
     // (LicenseClient.ts was here — deleted with the licence gate.)
     ['pricing', 'ExchangeRateService.ts'],
-    ['licensing', 'updateScheduler.ts'],
+    ['update', 'updateScheduler.ts'],
     ['utils', 'memHeartbeat.ts'],
     ['csfloat', 'CsFloatAutoAcceptWorker.ts'],
   ];

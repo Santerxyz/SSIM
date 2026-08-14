@@ -8,11 +8,6 @@
 //  Nothing here is secret, and NOTHING here is required to build. A contributor
 //  can clone and build with no env vars, no key files, and no secrets.local.bat.
 //  If that ever stops being true, it's a bug — see CONTRIBUTING.md.
-//
-//  TODO(oss): this file (plus Updater/updateScheduler/updateStatus/lockscreen) is
-//  all that remains in src/licensing/. Rename the directory to src/update/ once
-//  the delicensing has settled — kept in place for now to avoid churning imports
-//  across the tree in the same change that removed the gate.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**

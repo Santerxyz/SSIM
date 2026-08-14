@@ -1,13 +1,15 @@
-# SSIM — FEATURE INVENTORY (Phase 1 map)
+# SSIM — Feature inventory
 
-> Read-only audit map. No correctness judgements here — that is `LOGIC_AUDIT.md`.
-> Every entry cites `file:line`. Line numbers are from the state of the tree on
-> branch `feature/account-login-csfloat` at audit time (v1.3.0).
+> A map of what exists and where. Every entry cites `file:line`.
+>
+> ⚠ **Line numbers drift.** They were accurate when written and are meant as a
+> starting point, not a guarantee — search for the named symbol if a line has
+> moved. The structure and the responsibilities are what this document is for.
 >
 > SSIM = multi-tenant CS2/TF2 Steam inventory, trading & market tool. Express HTTP
 > backend (`src/api/server.ts`, 2063 lines) serves a single-page dashboard
-> (`public/index.html` + `public/app.js`, 6083 lines). Backend boots through a
-> license gate + encrypted account vault before the dashboard server ever listens.
+> (`public/index.html` + `public/app.js`, 6083 lines). The backend unlocks the
+> encrypted account vault before the dashboard server ever listens.
 
 ---
 
@@ -16,7 +18,7 @@
 ```
 Tauri/Edge shell ──stdin/stdout SSIM_PORT──► node backend (src/index.ts boot)
                                                   │
-       boot: lock → port → HWID → LICENSE gate → (auto-update) → VAULT unlock → startFullApp
+       boot: lock → port → (auto-update) → VAULT unlock → startFullApp
                                                   │
                                    Express app (src/api/server.ts)
         ┌───────────────┬───────────────┬───────────────┬──────────────┬────────────┐
@@ -33,7 +35,7 @@ Persistent state (the "data" folder, `dataDir()`):
 `inventories.json` (web cache) · `inventories_gc.json` (full-fetch cache) ·
 `inventories_tf2.json` · `prices.json` · `value_history.json` · `cs2-skins.json` ·
 `refresh_tokens.json` · `app_settings.json` · `csfloat_keys.json` ·
-`license.key/.token/.token.json/.meta.json` · `ssim.lock` · `ssim.port` ·
+`ssim.lock` · `ssim.port` ·
 `Vault/vault.enc` · `Vault/accounts.json`.
 
 ---
@@ -160,20 +162,13 @@ UI rendering (frontend): `renderMain`/`renderAccountView` `app.js:1655`; categor
 |---|---|---|---|---|---|---|
 | G1 | Single-instance lock | One SSIM at a time | `acquireInstanceLock` `index.ts:59` | PID + image-name (`tasklist`) check | `data/ssim.lock` | G11 |
 | G2 | Free-port selection + sidecar publish | Bind free port, announce to shell | `findFreePort` `index.ts:85`; `publishPort` `:124` | stdout `SSIM_PORT=` + `ssim.port` | `data/ssim.port` | shell handshake |
-| G3 | HWID fingerprint | Salted machine id binding a seat | `HwidService.getHwid` `HwidService.ts:65` | HMAC(machine-id+host+mac+cpu, PEPPER) | none | G4-G7 |
-| G4 | License gate (boot) | Allow vs must-(re)activate | `validate` `LicenseClient.ts:199` | token verify + grace math + online recheck | meta | G5-G10 |
-| G5 | Token verify (offline) | Ed25519 sig + shape validation | `verifyToken` `LicenseClient.ts:135` | `LICENSE_PUBLIC_KEY` | none | G4 |
-| G6 | Online recheck + heartbeat (45min) | Revoke/extend between beats | `onlineRecheck` `:249`; `heartbeat` `:283` | `/validate`,`/heartbeat`; `handleRevoked` | `license.token/.meta` | G4, G7 |
-| G7 | Offline-grace + clock-rollback meta | Anchor grace to last contact; refuse rollback | `readMeta/markOnline/bumpClock` `:94-123` | HMAC'd `maxSeenMs`/`lastOnlineMs` | `license.meta.json` | G4 |
-| G8 | Activation portal — `POST /api/license/activate` | License-entry page until valid key | `runActivationPortal` `ActivationServer.ts:28` | `saveKey`; `activate` | `license.key/.token` | G4, boot |
-| G9 | Runtime revocation → re-activate | Teardown + return to portal | `onLicenseLost` `index.ts:275`; `handleRevoked` `:310` | `teardownFullApp`; `clearToken`; `gateAndRun` | clears token; logs out sessions | G6, G8 |
 | G10 | Auto-update (boot gate) | Check/download/verify/self-test/swap | `maybeAutoUpdate` `index.ts:222`→`Updater.runUpdate` | `check/download/verify/selfTestNewExe/swapAndRelaunch` `Updater.ts` | tmp exe, swap `.bat`/`.vbs` | boot, cross-version data |
-| G11 | Boot orchestration / shutdown | Phase ordering; graceful logout | `bootstrap` `index.ts:293`; `shutdown` `:342` | lock→port→hwid→license→update→vault→startFullApp | globals | all |
+| G11 | Boot orchestration / shutdown | Phase ordering; graceful logout | `bootstrap` `index.ts:293`; `shutdown` `:342` | lock→port→update→vault→startFullApp | globals | all |
 | G12 | App window lifecycle | Open dashboard (no-op when packaged) | `openUiWindow` `appWindow.ts:15` | dev browser / Tauri owns window | none | portals, startFullApp |
 | G13 | Crash log + stderr tee + heap report | Synchronous last-words for silent deaths | `writeCrash` `crashlog.ts:44`; `bootflags.ts:14` | append `crash-log.txt`, `exit-trace.log`, `stderr-trace.log` | logs | G11 |
 | G14 | Memory heartbeat | rss/heap/handles sample per 15s | `startMemHeartbeat` `memHeartbeat.ts:100` | fleet counts; loop-stall flag | `mem-heartbeat.log` | startFullApp |
 | G15 | Process-health watchdog (money breaker) | Quarantine money ops after 3 uncaught/60s | `recordUncaught`/`moneyOpsBlocked` `ProcessHealth.ts:30/42` | latches; restart-only reset | RAM | money POST middleware `server.ts:301` |
-| G16 | System/health routes — `/api/system/status`, `/api/health` | Report licensed/version/stable | route `server.ts:1886/1891` | `stable=!moneyOpsBlocked()` | none | UI guard |
+| G16 | System/health routes — `/api/system/status`, `/api/health` | Report version + money-ops health | route `server.ts:1886/1891` | `stable=!moneyOpsBlocked()` | none | UI guard |
 
 ---
 
@@ -220,9 +215,6 @@ Every entity, the full set of states/buckets it can occupy, and the EXACT code t
 ### Refresh job (`RefreshJob`, `InventoryService.ts:66`)
 `running · cancelling · cancelled` + `done/total/failed[]`.
 
-### License (`validate` result, `LicenseClient.ts:199`)
-`token-valid · offline-grace · expired(no-key/activate) · activated · seat-in-use · unknown-key · hwid-mismatch · key-mismatch · revoked · clock-rollback-refused · no-meta-refused` — table of deciders in `LOGIC_AUDIT.md §G`.
-
 ### Import session (`AccountImportService`)
 `waiting · scanned · guard · approved · imported · expired · error` — `wireEvents:199`, `prune:283`.
 
@@ -233,7 +225,7 @@ Every entity, the full set of states/buckets it can occupy, and the EXACT code t
 
 # SOURCES-OF-TRUTH TABLE
 
-For each derived value: the ONE source it should have, and EVERY place it is actually computed. Rows flagged ⚠ are computed in >1 place (single-source-of-truth violations — detailed in `LOGIC_AUDIT.md`).
+For each derived value: the ONE source it should have, and EVERY place it is actually computed. Rows flagged ⚠ are computed in >1 place (single-source-of-truth violations).
 
 | Derived value | Should be | Actually computed in | Flag |
 |---|---|---|---|
@@ -248,12 +240,10 @@ For each derived value: the ONE source it should have, and EVERY place it is act
 | usdToEur FX rate | one source | `ExchangeRateService` (server, value-history `:183`) vs `state.usdToEur` (client snapshot `app.js:451`) | ⚠ |
 | EUR display total | one rounding point | per-item round `app.js:2689` vs whole-total round `app.js:520` (Σround ≠ roundΣ) | ⚠ |
 | CSFloat key presence | `CsFloatKeyStore` | `hasKey` `:31` · `usernamesWithKeys` `:89` · `available` `CsFloatPriceSource:20` (all delegate — OK) | ✓ |
-| "is licensed" (client) | `LicenseClient.validate` | `validate` (crypto) vs `/api/system/status` `{licensed:true}` positional `server.ts:1886` vs portal constructs | ⚠ |
-| `maxSeenMs` (clock anchor) | server time | advanced from local `Date.now()` on every valid boot `LicenseClient.ts:120` | ⚠ |
 | trade-lock truth | Steam owner_descriptions | `parseTradeLock` `:373`; but `now+7d` placeholder on parse-fail `:400` makes it non-deterministic | ⚠ |
 | update swap shape (`kind`) | signed by server | `info.kind` read but **outside** the Ed25519 signature `Updater.ts:48` | ⚠ |
 
 > The single most consequential row is the first: three independent parsers of one
 > Steam endpoint, feeding three different consumers (inventory bucket, Active Orders
 > tab, mass-sell pre-flight), with no shared canonical model. That is the structural
-> root of the field bug. See `CONTRADICTIONS.md` C1/C2 and `LOGIC_AUDIT.md §B/§C`.
+> root of the item-state bugs this project has hit repeatedly.
