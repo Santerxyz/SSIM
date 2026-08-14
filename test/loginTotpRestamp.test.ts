@@ -53,7 +53,7 @@ test('H-ACC-080: restampTotp refreshes a stale-window code to the current window
 });
 
 test('H-ACC-080: SessionManager re-stamps the TOTP inside attemptLogin before every retry', () => {
-  const src = readFileSync(join(__dirname, '..', 'src', 'core', 'SessionManager.ts'), 'utf8');
+  const src = readFileSync(join(__dirname, '..', 'src', 'core', 'SessionManager.ts'), 'utf8').replace(/\r\n/g, '\n');
   const start = src.indexOf('private async attemptLogin(');
   assert.notEqual(start, -1, 'attemptLogin exists');
   // Bound the scan to attemptLogin's body (up to the next private method, performLogin).

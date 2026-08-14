@@ -13,7 +13,7 @@ import { join } from 'node:path';
 //  is untestable in-process; this locks the wiring, verified alongside `tsc`.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n');
 
 test('S51: the backend treats stdin EOF (shell death) as a graceful shutdown', () => {
   assert.match(SRC, /process\.stdin\.on\('end',\s*\(\)\s*=>\s*\{[^}]*void shutdown\(/,

@@ -23,8 +23,8 @@ test('S33: a crashed mass-sell orchestrator releases the job (running reset, no 
 });
 
 test('S33: the mass-send / mass-buy void launches also finalize on rejection', () => {
-  const trade = readFileSync(join(__dirname, '..', 'src', 'trading', 'TradeService.ts'), 'utf8');
-  const buy = readFileSync(join(__dirname, '..', 'src', 'trading', 'BuyService.ts'), 'utf8');
+  const trade = readFileSync(join(__dirname, '..', 'src', 'trading', 'TradeService.ts'), 'utf8').replace(/\r\n/g, '\n');
+  const buy = readFileSync(join(__dirname, '..', 'src', 'trading', 'BuyService.ts'), 'utf8').replace(/\r\n/g, '\n');
   assert.ok(/void this\.runMassSend\([^)]*\)\.catch\(/.test(trade), 'runMassSend void launch has a .catch');
   assert.ok(/void this\.runMassBuy\([^)]*\)\.catch\(/.test(buy), 'runMassBuy void launch has a .catch');
   // Each catch releases its job so a rejection can't latch the job type.

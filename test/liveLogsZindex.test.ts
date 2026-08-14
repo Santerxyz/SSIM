@@ -15,7 +15,7 @@ import { join } from 'node:path';
 // ════════════════════════════════════════════════════════════════════════════
 
 function indexHtml(): string {
-  return readFileSync(join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  return readFileSync(join(__dirname, '..', 'public', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
 }
 
 test('S68: the Live Logs launcher is a real footer control, not a floating overlay', () => {

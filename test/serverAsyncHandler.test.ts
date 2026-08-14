@@ -12,7 +12,7 @@ import { join } from 'node:path';
 // ════════════════════════════════════════════════════════════════════════════
 
 test('S62: every async route handler is wrapped in asyncHandler (no raw async (req,res))', () => {
-  const src = readFileSync(join(__dirname, '..', 'src', 'api', 'server.ts'), 'utf8');
+  const src = readFileSync(join(__dirname, '..', 'src', 'api', 'server.ts'), 'utf8').replace(/\r\n/g, '\n');
   const re = /async\s*\(\s*req/g; // an async handler taking (req, …) — note: won't match "asyncHandler("
   const raw: string[] = [];
   let m: RegExpExecArray | null;

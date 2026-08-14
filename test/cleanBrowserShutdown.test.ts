@@ -13,7 +13,7 @@ import { join } from 'node:path';
 // ════════════════════════════════════════════════════════════════════════════
 
 test('H-TRD-061: cleanBrowser installs no signal handlers (teardown rides the exit hook only)', () => {
-  const src = readFileSync(join(__dirname, '..', 'src', 'trading', 'cleanBrowser.ts'), 'utf8');
+  const src = readFileSync(join(__dirname, '..', 'src', 'trading', 'cleanBrowser.ts'), 'utf8').replace(/\r\n/g, '\n');
   assert.ok(!/process\.once\(\s*sig/.test(src), 'cleanBrowser.ts must not register process.once(sig, …) signal handlers');
   assert.ok(!/SIGINT/.test(src), 'cleanBrowser.ts must not reference SIGINT');
   assert.ok(src.includes("process.once('exit'"), "cleanBrowser.ts must keep the process.once('exit', …) teardown hook");

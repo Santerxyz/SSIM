@@ -30,7 +30,7 @@ function extractFunction(src: string, name: string): string {
   throw new Error(`unbalanced braces extracting ${name}`);
 }
 
-const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 const ctx: any = vm.createContext({});
 vm.runInContext(`${extractFunction(APP_JS, 'compareItems')}\nthis.__compareItems = compareItems;`, ctx);
 const compareItems: (a: any, b: any, key: string) => number = ctx.__compareItems;

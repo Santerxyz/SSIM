@@ -58,12 +58,12 @@ test('H-XCT-004: the refit timer owners route through armInterval (no raw setInt
   ];
   const offenders: string[] = [];
   for (const parts of owners) {
-    const src = readFileSync(join(__dirname, '..', 'src', ...parts), 'utf8');
+    const src = readFileSync(join(__dirname, '..', 'src', ...parts), 'utf8').replace(/\r\n/g, '\n');
     if (/setInterval\s*\(/.test(src)) offenders.push(parts.join('/'));
   }
   assert.deepEqual(offenders, [], `these timer owners must arm via armInterval, not raw setInterval: ${offenders.join(', ')}`);
 
   // armInterval itself is the single home of the setInterval call.
-  const helper = readFileSync(join(__dirname, '..', 'src', 'utils', 'intervalGuard.ts'), 'utf8');
+  const helper = readFileSync(join(__dirname, '..', 'src', 'utils', 'intervalGuard.ts'), 'utf8').replace(/\r\n/g, '\n');
   assert.match(helper, /setInterval\s*\(/, 'intervalGuard.ts must contain the single setInterval call');
 });

@@ -57,8 +57,8 @@ test('quiesceMoneyOps: an already-idle app drains immediately with no sleep', as
 });
 
 // ─── Wiring: both exit paths and the shell watchdog gate on the money-op drain ──
-const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8');
-const LIB_RS = readFileSync(join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8');
+const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n');
+const LIB_RS = readFileSync(join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8').replace(/\r\n/g, '\n');
 
 // teardownFullApp() was the second drain site; it existed only for the licence-revocation
 // re-activation path and was removed with the licence gate. shutdown() is now the sole exit

@@ -13,7 +13,7 @@ import { join } from 'node:path';
 //  this locks the source order, verified alongside `tsc`.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n');
 
 test('H-BOOT-022: migrateVaultDir() runs AFTER acquireInstanceLock() in bootstrap()', () => {
   const boot = /async function bootstrap\(\)[\s\S]*?\n}/.exec(SRC)?.[0] ?? '';

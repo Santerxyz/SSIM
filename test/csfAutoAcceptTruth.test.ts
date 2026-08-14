@@ -25,7 +25,7 @@ function extractFunction(src: string, name: string): string {
   throw new Error(`unbalanced braces extracting ${name}`);
 }
 
-const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 const csfLoadTrades = extractFunction(APP_JS, 'csfLoadTrades');
 // The tab was split into fetch (csfLoadTrades) + paint (csfRenderTrades) when it became the
 // delivery dashboard, so the toggle's markup now lives in the renderer. The invariant is

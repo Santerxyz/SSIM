@@ -24,7 +24,7 @@ function extractFunction(src: string, name: string): string {
   throw new Error(`unbalanced braces extracting ${name}`);
 }
 
-const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 const setGame = extractFunction(APP_JS, 'setGame');
 // H-FE-001 relocated the TF2 first-load body from setGame into a reusable loadTf2Inventories()
 // (so the load-error Retry button can re-run it); setGame now delegates the first load to it.

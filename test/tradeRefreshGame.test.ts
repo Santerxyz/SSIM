@@ -23,7 +23,7 @@ function extractFunction(src: string, name: string): string {
   throw new Error(`unbalanced braces extracting ${name}`);
 }
 
-const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 const submitTrade = extractFunction(APP_JS, 'submitTrade');
 
 test('H-FE-006: the scheduled post-send refresh threads game: state.game', () => {

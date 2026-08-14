@@ -1,0 +1,28 @@
+# Line endings.
+#
+# Several tests are SOURCE SCANS: they read files under src/ as text and assert
+# structural properties with regexes anchored on "\n". Without this file, a clone
+# on a machine with git's Windows default (core.autocrlf=true) checks those files
+# out as CRLF and the scans fail — so a contributor's very first `npm test` after
+# cloning shows failures that have nothing to do with their machine or their work.
+#
+# Pin text files to LF in the repository AND on checkout so every clone is
+# byte-identical regardless of the cloner's git configuration.
+* text=auto eol=lf
+
+# Windows batch files are the exception: cmd.exe can mis-parse an LF-only .bat
+# (notably around multi-line blocks), so these keep CRLF.
+*.bat text eol=crlf
+
+# Binary — never convert, never diff as text.
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.exe  binary
+*.dll  binary
+*.zip  binary
+*.enc  binary

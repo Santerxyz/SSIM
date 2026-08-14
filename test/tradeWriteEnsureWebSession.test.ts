@@ -60,7 +60,7 @@ test('H-TRD-010: offerAction routes accept/decline/cancel WRITES through ensureW
 });
 
 test('H-TRD-010: the READ paths (getOffersForAccounts / getTradeUrl) keep getTrader; only the WRITEs pre-flight', () => {
-  const src = readFileSync(join(__dirname, '..', 'src', 'trading', 'TradeService.ts'), 'utf8');
+  const src = readFileSync(join(__dirname, '..', 'src', 'trading', 'TradeService.ts'), 'utf8').replace(/\r\n/g, '\n');
   // The two money WRITES pre-flight.
   assert.ok(/const trader = await this\.ensureWebSession\(username\);/.test(src), 'offerAction uses ensureWebSession');
   assert.ok(/const trader = await this\.ensureWebSession\(fromUsername\);/.test(src), 'sendTrade uses ensureWebSession');

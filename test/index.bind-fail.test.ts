@@ -23,7 +23,7 @@ import { join } from 'node:path';
 //  this locks the wiring, verified alongside `tsc`.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n');
 
 test('H-BOOT-002: startFullApp returns a bound-boolean (true on success, false on a first-boot bind failure)', () => {
   assert.match(SRC, /async function startFullApp\([^)]*\): Promise<boolean>/,

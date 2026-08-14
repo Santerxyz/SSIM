@@ -47,7 +47,7 @@ function makeSessionStorage(throwing = false) {
   };
 }
 
-const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 const CAP_TOKEN_SRC = extractFunction(APP_JS, 'capToken');
 
 /** Build a fresh sandbox holding the shipped capToken over a given window/sessionStorage. */

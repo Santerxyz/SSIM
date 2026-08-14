@@ -14,7 +14,7 @@ import { redactSecrets } from '../src/utils/logger';
 // ════════════════════════════════════════════════════════════════════════════
 
 test('H-TRD-035: every error string in BanService that interpolates err.message is redacted', () => {
-  const src = readFileSync(join(__dirname, '..', 'src', 'trading', 'BanService.ts'), 'utf8');
+  const src = readFileSync(join(__dirname, '..', 'src', 'trading', 'BanService.ts'), 'utf8').replace(/\r\n/g, '\n');
   const lines = src.split('\n');
   // Any line that (a) builds an error string surfaced to the API — an `info.error =`
   // assignment or a `msg` const written into info.error — AND (b) interpolates the

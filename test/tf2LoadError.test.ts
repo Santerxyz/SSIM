@@ -27,7 +27,7 @@ function extractFunction(src: string, name: string): string {
   throw new Error(`unbalanced braces extracting ${name}`);
 }
 
-const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 const loadTf2 = extractFunction(APP_JS, 'loadTf2Inventories');
 const renderMain = extractFunction(APP_JS, 'renderMain');
 const renderErr = extractFunction(APP_JS, 'renderTf2LoadError');

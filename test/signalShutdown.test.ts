@@ -14,7 +14,7 @@ import { join } from 'node:path';
 //  shellDeathShutdown.test.ts; this locks the wiring, verified alongside `tsc`.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+const SRC = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n');
 
 test('H-XCT-006: SIGHUP/SIGBREAK route through the graceful shutdown() path', () => {
   const loop = /for \(const sig of \['SIGHUP', 'SIGBREAK'\][\s\S]*?\n}/.exec(SRC)?.[0] ?? '';
