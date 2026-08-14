@@ -28,7 +28,7 @@ without external systems or real Steam accounts.
 | 5 | Every store atomic + migration-safe (safe downgrade refusal); single-instance fail-safe | **MET** — vault version gate + preserve-unknown + .bak recovery (B30/B33), atomic writes + org backup (B34), first-mint token sync-save (B32), external token-only import (B35), headless orphan-vault refusal (B36), atomic fail-safe single-instance lock (P4). |
 | 6 | Prices (and derived values) reach the UI without an app restart | **MET** — durable reprice reconciler replaces the 90s cap; handles the fill-generation reset (P6 + AF4). |
 | 7 | Clean release build produced (SSIM.exe self-test OK) — NOT published | **MET** — `build:protected` → `SSIM_SELFTEST_OK v1.3.3 deps=all-loaded`; `release` → `release-tauri/SSIM/SSIM.exe` (self-test gated by make-tauri). NOT published. |
-| 8 | docs/AUDIT_LEDGER.md re-triaged (each item closed/open/n-a) | **MET** — re-triage banner added: ~49/75 FIXED, #6 WONT-FIX (hardened), #22 documented, rest deferred/cosmetic; ~45 NEW blockers fixed this pass. |
+| 8 | the internal audit ledger re-triaged (each item closed/open/n-a) | **MET** — re-triage banner added: ~49/75 FIXED, #6 WONT-FIX (hardened), #22 documented, rest deferred/cosmetic; ~45 NEW blockers fixed this pass. |
 
 ---
 

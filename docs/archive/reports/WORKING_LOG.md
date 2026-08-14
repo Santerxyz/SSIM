@@ -11,7 +11,7 @@ build (NOT published).
 **Known-state absorbed:** INVARIANTS.md (27 invariants, banner says all 22 contradictions
 HOLD post-Phase-3), CONTRADICTIONS.md (C1–C22 all ☑ fixed+tested), docs/REMEDIATION_LOG.md
 (slices A–E + tail F–I + A-to-Z pass), package.json (v1.3.3, node --test harness, 17 test
-files). docs/AUDIT_LEDGER.md (711 lines, 75 items, stale-marked-OPEN) needs re-triage.
+files). the internal audit ledger (711 lines, 75 items, stale-marked-OPEN) needs re-triage.
 
 **Baseline:** `npm test` running in background — must be green before any change.
 
@@ -174,7 +174,7 @@ budget < build budget (AF3), reconciler fetched-reset (AF4), single-trade no re-
 csfloat corrupt-store mass re-delivery (AF6), csfloat icon allow-list bypass (AF7), publish.js
 served-signature gate (AF8), breaker-blind-to-rejections (AF9). Suite 155/155.
 
-**Ledger re-triage:** AUDIT_LEDGER.md 75 items — ~49 FIXED, #6 WONT-FIX (hardened), #22
+**Ledger re-triage:** the internal audit ledger 75 items — ~49 FIXED, #6 WONT-FIX (hardened), #22
 documented, rest deferred/cosmetic; ~45 NEW blockers fixed this pass (BETA_BLOCKERS.md).
 
 **FINAL GATES (all green):**

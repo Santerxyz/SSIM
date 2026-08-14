@@ -10,7 +10,7 @@ invariants re‑proved with an isolated harness. **No live Steam/real‑money op
 ## 1) Executive summary — the codebase's state
 
 SSIM is a **mature, heavily‑hardened, security‑conscious** codebase. It has clearly been through
-extensive prior remediation (the `#NN` markers throughout the source map to `AUDIT_LEDGER.md` /
+extensive prior remediation (the `#NN` markers throughout the source map to the internal audit ledger /
 `REMEDIATION_LOG.md`), and that work holds up under a fresh adversarial read. The money‑safety,
 vault‑crypto, session‑lifecycle, defensive‑parsing, and data‑integrity invariants are **all present
 and correct**. This was an audit of a strong system, not a rescue of a weak one.
@@ -152,7 +152,7 @@ on both portals, gated on `LOOPBACK_BOUND`; verify the local boot reaches the un
 **O‑2 · The loopback API does not authenticate other *local* processes — severity: low (known, #26).**
 The CSRF/origin guard defeats malicious **web pages** the operator visits, but `Origin` is not a
 boundary against a non‑browser local process that sets the header itself. Already documented in
-`AUDIT_LEDGER #26`. *Threat‑model note:* a hostile local process already has filesystem access to
+the internal audit ledger #26`. *Threat‑model note:* a hostile local process already has filesystem access to
 `vault.enc` (though not the master password). **Recommendation (owner, as previously noted):** a
 boot‑token cookie minted at startup and required on mutating routes.
 

@@ -1,6 +1,6 @@
 # SSIM Hardening — Remediation Log (live)
 
-Companion to `AUDIT_LEDGER.md` (the static 75-item audit). This file records every
+Companion to the internal audit ledger (the static 75-item audit). This file records every
 applied fix per Rule R3/R8: **what · why · blast radius · verification**. Scope:
 all critical+high items, autonomous. `tsc --noEmit` is run green after each slice.
 **Extended (operator request) to the medium/low tail — Tail F–I below.**
@@ -167,7 +167,7 @@ refactors and untestable changes are DOCUMENTED, not shipped (see "Deliberately 
   ships; documented designs left for a supervised change to avoid breaking the one final compile.
 - **#31, #36, #41, #42, #43, #45, #47, #62, #64, #67, #71, #73, #75** — low-severity; already mitigated by
   existing guards (WeakMap GC, `Number()||0` coercion, post-license construction, idempotent cancel) or a
-  cosmetic/build-host concern. Listed in `AUDIT_LEDGER.md` for a future pass.
+  cosmetic/build-host concern. Listed in the internal audit ledger for a future pass.
 
 **Tail verification round (3 reviewers + confirmation pass) — 3 real issues found, all fixed:**
 - **[HIGH] #26 regression** — the new CSRF Origin guard rejected the dashboard's OWN origin under a
