@@ -226,7 +226,7 @@ auto-restart (the logic is `cargo check`-clean and code-reviewed).
 
 ---
 
-## 7. Multi-agent line-by-line audit (corroboration)
+## 7. Line-by-line audit (corroboration)
 
 A 12-slice parallel audit (every backend file + the Tauri shell, each hunting emitters-without-error-
 handlers / unbounded growth / listener+timer leaks / GC handles / external-kill vectors), each high-

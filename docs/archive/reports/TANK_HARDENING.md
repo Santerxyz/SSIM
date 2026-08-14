@@ -5,7 +5,7 @@
 process into the `0xC0000409` native fast-fail. Customers must not be forced onto specific "good"
 providers.
 
-## Root cause (multi-agent investigation, 16 agents)
+## Root cause (investigation)
 
 The crash is a Node-core native abort (`STATUS_STACK_BUFFER_OVERRUN` / `__fastfail`) in the
 TLSWrap-over-a-proxied-socket **teardown** path, tripped when hundreds of concurrent half-open TLS

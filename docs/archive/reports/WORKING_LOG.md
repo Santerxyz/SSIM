@@ -91,7 +91,7 @@ against a local RST-storm proxy at concurrency 25–40, sustained soak; then P2 
 
 ## 2026-07-02 — Parallel subsystem audit returned; native-crash root + money blockers
 
-**Audit:** 11 subagents; 5 returned before a session-usage limit (session-teardown,
+**Audit:** a full review pass; 5 areas returned before the session ended (session-teardown,
 inventory-refresh, trading-money, secrets-vault, api-surface); 6 parked to re-run after
 1pm Berlin reset (frontend, licensing-updater, boot-lifecycle, pricing-fx,
 csfloat-cleanbrowser, ledger-parse). All findings captured in BETA_BLOCKERS.md (B01–B48),
