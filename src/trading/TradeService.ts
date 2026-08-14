@@ -21,15 +21,15 @@ const OFFERS_READ_CONCURRENCY = 4;   // parallel account reads (login-bound, not
 const OFFER_ACTION_CONCURRENCY = 2;  // HARD ceiling for batch accept/decline/cancel
 // Batch accept/decline/cancel are per-account Steam WRITES (+ 2FA confirms on accept), so a
 // burst trips Error 15 / rate limits exactly like mass-send. Pace every dispatched action
-// with a jittered global gap, not just cap parallelism (B44). Shorter than the send floor —
+// with a jittered global gap, not just cap parallelism. Shorter than the send floor —
 // these are lighter calls — but never zero. Shared across workers via createDispatchThrottle.
 const OFFER_ACTION_MIN_DELAY_MS = 600;
 const OFFER_ACTION_MAX_DELAY_MS = 1_200;
 
 /**
  * A global dispatch throttle: reserve time slots ≥ a jittered [minGap,maxGap] apart so the gap
- * is between ANY two dispatches across ALL callers/workers, not just two by one worker. Returns
- * an async `pace()` to await BEFORE each dispatch. (Factored out of runMassSend's inline
+ * is between any two dispatches across all callers/workers, not just two by one worker. Returns
+ * an async `pace()` to await before each dispatch. (Factored out of runMassSend's inline
  * throttle; exported for unit testing the reservation math without real timers.)
  */
 export function createDispatchThrottle(
@@ -87,19 +87,19 @@ export interface OfferActionResult {
 //
 // Trades are DELIBERATELY DECOUPLED from the global dynamic concurrency scaler
 // (scaleConcurrency, used by inventory refresh / mass buy / mass sell). Bursting many
-// trade offers at a SINGLE receiving account trips Steam Error 15 (Access Denied) — Steam's
+// trade offers at a single receiving account trips Steam Error 15 (Access Denied) — Steam's
 // per-recipient spam/DDoS protection. So mass-send runs a small FIXED worker pool and paces
 // every dispatch by a jittered gap, regardless of batch size, to protect the receiver.
 
 // v1.4.4: raised 1 → 5 (owner: "one is just waay too slow"). This is safe because the Error-15 guard was
 // never the worker count — it is the GLOBAL dispatch throttle below, which reserves a jittered ≥1–2s slot
-// for every offer across ALL workers. What was serialised at 1 was the EXPENSIVE per-sender preamble (CM
+// for every offer across all workers. What was serialised at 1 was the EXPENSIVE per-sender preamble (CM
 // login, web-session pre-flight, inventory load, 2FA confirm ≈ 10–20s each), which the receiver never sees.
 // Workers now overlap that preamble while `beforeDispatch` still releases the offers themselves one slot at
 // a time — identical offer cadence at the receiver, ~5× the throughput.
 const TRADE_MAX_CONCURRENCY = 5;     // HARD ceiling for trades — never scaled by the dynamic scaler
 /** Sentinel: "End Task" landed while this offer sat in its pacing gap. Nothing was dispatched, so the
- *  worker re-queues the bot and stops — it is deliberately NOT an Error (never logged as a failure). */
+ *  worker re-queues the bot and stops — it is deliberately not an Error (never logged as a failure). */
 const MASS_SEND_ABORTED = Symbol('mass-send-aborted');
 
 const TRADE_MIN_DELAY_MS    = 1_000; // min gap between two dispatched offers (global, not per-worker)
@@ -113,12 +113,12 @@ const TRADE_MAX_DELAY_MS    = 2_000; // max gap (jittered) — lets the receiver
 const WEB_SESSION_MAX_AGE_MS = 25 * 60 * 1000;
 
 // ─── Bulk-read session release (anti-accumulation) ────────────────────────────
-// Loading the global Trade-Offers view logs EVERY account in (getTrader). If those
+// Loading the global Trade-Offers view logs every account in (getTrader). If those
 // sessions are left live, opening offers across a big environment ends with the whole
 // fleet resident (Steam client + proxy sockets + a polling TradeOfferManager each) —
 // the same resident-session storm that the bulk REFRESH path already releases against.
 // So a read fan-out logs out each account IT logged in, right after reading it; an
-// account that was ALREADY live (a trade in progress, or one the user logged in) is
+// account that was already live (a trade in progress, or one the user logged in) is
 // snapshotted and never torn down. Kill switch: SSIM_RELEASE_READ_SESSIONS=0.
 const RELEASE_READ_SESSIONS = process.env.SSIM_RELEASE_READ_SESSIONS !== '0';
 
@@ -129,7 +129,7 @@ export function hasLiveSessionId(session: ManagedSession): boolean {
   const sid = (ws.cookies ?? []).find(c => c.trim().toLowerCase().startsWith('sessionid='));
   const value = sid ? sid.split('=').slice(1).join('=').trim() : '';
   if (!value) return false;
-  // Fail-closed freshness via the canonical policy helper (C16/INV-A5): an absent/corrupt
+  // Fail-closed freshness via the canonical policy helper: an absent/corrupt
   // obtainedAt is UNKNOWN age → stale, so ensureWebSession re-establishes the cookies rather
   // than firing the money op on them. Keeps the deliberately tighter 25-min pre-flight window.
   return webCookiesFresh(ws.obtainedAt, Date.now(), WEB_SESSION_MAX_AGE_MS);
@@ -140,7 +140,7 @@ export interface MassSendGroup {
   username: string;
   assetIds: string[];
   /** App the assets belong to (730 CS2 / 440 TF2, both context 2). A mass-send is uniform —
-   *  it's driven by ONE game tab. Omitted ⇒ CS2 (back-compat). App-agnostic send. */
+   *  it's driven by one game tab. Omitted ⇒ CS2 (back-compat). App-agnostic send. */
   appId?:     number;
   contextId?: string;
 }
@@ -190,9 +190,9 @@ export class TradeService {
     private readonly sessions: SessionManager,
     private readonly accounts: AccountManager,
     /** Optional: lets the send path reject trade-locked / non-tradable assets from
-     *  the cached inventory before an offer is created (INV-D1 / C3). */
+     * the cached inventory before an offer is created. */
     private readonly inventory?: InventoryService,
-    /** Cross-restart money-op journal (B4). Shared with BuyService so a crash mid-send can't be
+    /** Cross-restart money-op journal. Shared with BuyService so a crash mid-send can't be
      *  double-fired by a user retry after restart. Defaults to a no-op (no disk) so direct construction
      *  in tests never contends on the shared journal file; production wires the real one via createDeps. */
     private readonly journal: MoneyOpJournal = MoneyOpJournal.disabled(),
@@ -220,7 +220,7 @@ export class TradeService {
     const key = username.toLowerCase();
     let trader = this.traders.get(key);
 
-    // SESSION ISOLATION: a re-login produces a NEW ManagedSession. A trader
+    // SESSION ISOLATION: a re-login produces a new ManagedSession. A trader
     // still bound to the old one would trade through stale cookies and the OLD
     // network agent (wrong proxy/IP after a change) – rebuild it instead.
     if (trader && !trader.isBoundTo(session)) {
@@ -236,11 +236,11 @@ export class TradeService {
       logger.info(`[${username}] AccountTrader attached`);
     }
 
-    // Do NOT swallow a setCookies failure here: the trader stays !ready, and the
+    // Do not swallow a setCookies failure here: the trader stays !ready, and the
     // awaited getTrader/ensureWebSession callers must see the TRUE cause (e.g. a
     // proxy error during the cookie set) instead of a later misleading "trader not
     // ready" / raw auth error. The 'webSession' event path (constructor) keeps the
-    // log-and-continue via its own .catch (H-TRD-009).
+    // log-and-continue via its own .catch.
     await trader.setCookies(session.webSession.cookies);
   }
 
@@ -276,10 +276,10 @@ export class TradeService {
   }
 
   /**
-   * Session-readiness PRE-FLIGHT for money ops (buy / sell). Unlike getTrader, this does NOT
-   * trust a cached "ready" trader: it verifies the account has a LIVE web session with a valid
+   * Session-readiness PRE-FLIGHT for money ops (buy / sell). Unlike getTrader, this does not
+   * trust a cached "ready" trader: it verifies the account has a live web session with a valid
    * `sessionid` cookie and, if it's missing or stale, refreshes the web session in place (same
-   * proxy IP) — or re-logs-in if the CM session itself died — BEFORE returning the trader.
+   * proxy IP) — or re-logs-in if the CM session itself died — before returning the trader.
    * This is the fix for "no sessionid cookie - cannot place order" during mass buy / sell.
    */
   async ensureWebSession(username: string): Promise<AccountTrader> {
@@ -292,7 +292,7 @@ export class TradeService {
     if (!session || session.state !== SessionState.LOGGED_IN) {
       session = await this.sessions.loginAccount(account);
     }
-    // Logged in but the sessionid cookie is missing / empty / stale → refresh cookies WITHOUT a
+    // Logged in but the sessionid cookie is missing / empty / stale → refresh cookies without a
     // full re-login (keeps the same proxy exit IP, avoids Steam's IP-change security filter).
     if (!hasLiveSessionId(session)) {
       logger.info(`[${username}] pre-flight: web session not ready (no/stale sessionid) – refreshing`);
@@ -341,7 +341,7 @@ export class TradeService {
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const username = queue.shift()!;
-        // Snapshot live-ness BEFORE we touch the account so we only release sessions WE create —
+        // Snapshot live-ness before we touch the account so we only release sessions WE create —
         // never one the user already had live (e.g. mid-trade) or logged in concurrently.
         const wasLiveBefore = this.sessions.isLive(username);
         try {
@@ -369,8 +369,8 @@ export class TradeService {
     return results;
   }
 
-  /** Performs ONE offer action (accept / decline / cancel) for `username`.
-   *  Wraps the whole body in the busy() counter (covers the single-action route AND every
+  /** Performs one offer action (accept / decline / cancel) for `username`.
+   *  Wraps the whole body in the busy() counter (covers the single-action route and every
    *  batch worker with one site). The `return await`s are load-bearing: returning the bare
    *  promise would run the finally (decrement) the moment the promise is created, making the
    *  gate false during the very accept+2FA window it exists to cover. */
@@ -378,8 +378,8 @@ export class TradeService {
     this.offerActionsInFlight++;
     try {
       // Money-op WRITE: use the session-readiness PRE-FLIGHT (in-place cookie refresh on a stale
-      // sessionid), NOT getTrader's trust-the-cached-ready path — a resident account whose proactive
-      // cookie refresh stalled would otherwise fire the accept/decline/cancel on dead cookies. (H-TRD-010)
+      // sessionid), not getTrader's trust-the-cached-ready path — a resident account whose proactive
+      // cookie refresh stalled would otherwise fire the accept/decline/cancel on dead cookies.
       const trader = await this.ensureWebSession(username);
       // A two-sided accept COMMITS on Steam even when its 2FA confirmation later fails; the trader
       // reports that as 'unconfirmed' (never rethrown) so the offer is not shown as "failed" — it
@@ -425,7 +425,7 @@ export class TradeService {
    *
    * Like every other fleet-wide login fan-out, this releases the sessions it CREATES: targets
    * are grouped by account and each worker takes one account's group, snapshots its live-ness
-   * BEFORE the first action, runs that account's actions sequentially, and logs the session out
+   * before the first action, runs that account's actions sequentially, and logs the session out
    * in a `finally` iff we created it (same guard as the offers read at 323-325). Without this a
    * "decline/cancel all" across a big environment logs in one session per account and keeps them
    * all resident until the reaper — the one bulk path that used to leave the fleet accumulating.
@@ -436,7 +436,7 @@ export class TradeService {
   ): Promise<OfferActionResult[]> {
     const concurrency = Math.min(OFFER_ACTION_CONCURRENCY, Math.max(1, opts?.concurrency ?? OFFER_ACTION_CONCURRENCY));
     const results: OfferActionResult[] = [];
-    // Group targets by account, preserving first-seen order, so a worker owns ALL of one
+    // Group targets by account, preserving first-seen order, so a worker owns all of one
     // account's actions — same-account writes serialize (strictly safer for Error 15) and the
     // session is released exactly once, only if this batch created it. ≤2 accounts in flight ⇒
     // ≤2 actions in flight, so OFFER_ACTION_CONCURRENCY (2) still hard-caps action parallelism.
@@ -448,7 +448,7 @@ export class TradeService {
       else groups.set(key, [t]);
     }
     const queue = [...groups.values()];
-    // Global dispatch pacing (B44): a jittered gap between ANY two actions across both
+    // Global dispatch pacing: a jittered gap between any two actions across both
     // workers, so a large batch of accepts/declines/cancels never bursts a single
     // account's Steam write endpoints (Error-15 / rate-limit guard) — the same reasoning
     // as mass-send, which this previously lacked entirely.
@@ -458,7 +458,7 @@ export class TradeService {
       while (queue.length > 0) {
         const group = queue.shift()!;
         const username = group[0].username;
-        // Snapshot live-ness BEFORE we touch the account so we only release sessions WE create —
+        // Snapshot live-ness before we touch the account so we only release sessions WE create —
         // never one the user already had live (e.g. mid-trade) or logged in concurrently.
         const wasLiveBefore = this.sessions.isLive(username);
         try {
@@ -497,7 +497,7 @@ export class TradeService {
   // release. (batchOfferAction releases inline per-account rather than via snapshotLive/releaseCreatedSessions,
   // mirroring the offers-read fan-out it shares its per-account structure with.)
 
-  /** Snapshot of which of `usernames` are ALREADY live — captured BEFORE a bulk op so it only
+  /** Snapshot of which of `usernames` are already live — captured before a bulk op so it only
    *  ever releases sessions it itself creates (never one the user had live, e.g. mid-trade). */
   snapshotLive(usernames: string[]): Set<string> {
     const set = new Set<string>();
@@ -506,7 +506,7 @@ export class TradeService {
   }
 
   /**
-   * Releases the sessions a bulk op CREATED: logs out each listed account that was NOT already
+   * Releases the sessions a bulk op CREATED: logs out each listed account that was not already
    * live before the op (per `wasLiveBefore`) and is live now, so a fleet-wide send/sell/buy/offers
    * pass returns to the pre-op session baseline instead of leaving the fleet resident. Sequential
    * + best-effort (a logout never throws here); honours SSIM_RELEASE_READ_SESSIONS=0. Returns count.
@@ -538,7 +538,7 @@ export class TradeService {
    * Strips trade-locked / non-tradable assets (per the cached inventory) from a send.
    * Returns params with `myItems` reduced to the sellable subset; throws if that subset
    * is empty. No cache (or no inventory dep) ⇒ pass through unchanged — Steam stays the
-   * backstop. (INV-D1 / C3.)
+   * backstop.
    */
   private filterSendable(username: string, params: SendTradeParams): SendTradeParams {
     const items = params.myItems ?? [];
@@ -568,7 +568,7 @@ export class TradeService {
   }
 
   /**
-   * `hooks.beforeDispatch` is awaited AFTER the (slow) web-session pre-flight and IMMEDIATELY BEFORE the
+   * `hooks.beforeDispatch` is awaited after the (slow) web-session pre-flight and IMMEDIATELY before the
    * offer is handed to Steam. Mass-send uses it to hold the global dispatch throttle at the one point that
    * actually matters for Steam Error 15 — the moment the offer reaches the receiver — so several senders
    * can log in and prepare concurrently while the offers themselves still leave ≥1–2s apart. Throwing from
@@ -579,12 +579,12 @@ export class TradeService {
     params: SendTradeParams,
     hooks?: { beforeDispatch?: () => Promise<void> },
   ): Promise<SendTradeResult> {
-    // Guard (INV-D1 / C3): a trade-locked or non-tradable asset can never go into an
+    // Guard: a trade-locked or non-tradable asset can never go into an
     // offer. Drop such assets up front (Steam rejects the whole offer otherwise) and
     // proceed with the sellable remainder; throw only if nothing tradable is left.
     params = this.filterSendable(fromUsername, params);
     // Idempotency guard: an identical (account + destination + item-set) send that is
-    // already in flight must NOT fire a second real-asset offer on a double-click or
+    // already in flight must not fire a second real-asset offer on a double-click or
     // client retry. Mirrors BuyService's per-item in-flight Set. The destination and
     // the sorted asset id list make two genuinely-distinct sends hash differently.
     const assetKey = [...(params.myItems ?? []).map((i) => i.assetId)].sort().join(',');
@@ -604,7 +604,7 @@ export class TradeService {
       this.inFlight.delete(guardKey);
       throw new Error('An asset in this trade is already in another money operation (sell) – try again shortly');
     }
-    // B4/S15: cross-restart dedup. A LINGERING journal entry means an identical send died mid-flight
+    // Cross-restart dedup. A LINGERING journal entry means an identical send died mid-flight
     // last run (Steam-side outcome unknown). consultRefusal REFUSES it (KEEPING the entry, so a rapid
     // double-click is refused too) until a deliberate-pause min-age elapses, then ALLOWS + consumes it.
     // A cleanly-completed send leaves no entry, so a legitimate sequential repeat is never affected.
@@ -612,23 +612,23 @@ export class TradeService {
     if (priorSend) {
       this.inFlight.delete(guardKey);
       MoneyOps.releaseAll(moneyKeys);
-      // S15: do NOT resolve here — consultRefusal KEEPS the entry so a rapid re-fire is refused too.
+      // Do not resolve here — consultRefusal KEEPS the entry so a rapid re-fire is refused too.
       // Marker so the send endpoint answers 409 (honest duplicate-precondition), not a retryable 502.
       const e = new Error(`An identical trade was interrupted before it finished (${new Date(priorSend.at).toISOString()}) and may already exist on Steam — check this account's trade offers, then retry in a few seconds to proceed.`) as Error & { moneyOpRefused?: true };
       e.moneyOpRefused = true;
       throw e;
     }
     this.journal.begin(guardKey, 'send');
-    // S3: set when offer.send fails TRANSPORT-AMBIGUOUSLY (the offer may already exist on Steam). The
+    // Set when offer.send fails TRANSPORT-AMBIGUOUSLY (the offer may already exist on Steam). The
     // finally then SKIPS journal.resolve so a retry hits the refuse-once gate instead of duplicating it.
     let commitMayHaveLanded = false;
     try {
       // Money-op WRITE: use the session-readiness PRE-FLIGHT (in-place cookie refresh on a stale
       // sessionid) rather than getTrader's trust-the-cached-ready path — mass-send skips re-login for
       // an account that's already live, so a stalled proactive cookie refresh would send on dead
-      // cookies without this. Buys/sells already pre-flight; this closes the send asymmetry. (H-TRD-010)
+      // cookies without this. Buys/sells already pre-flight; this closes the send asymmetry.
       const trader = await this.ensureWebSession(fromUsername);
-      // Dispatch gate: the login above is the slow, parallelisable part; THIS is the moment the receiver
+      // Dispatch gate: the login above is the slow, parallelisable part; this is the moment the receiver
       // feels. Pacing here (not around the whole call) is what lets mass-send run several senders at once
       // without bursting the receiver. Runs before the journal records anything — a throw here means the
       // offer was never sent.
@@ -638,7 +638,7 @@ export class TradeService {
         this.journal.record(guardKey, 'send', 'sent'); // the offer now exists on Steam (survives a post-commit crash)
         return result;
       } catch (err) {
-        // S3: an ECONNRESET/timeout on offer.send's response leg means the offer MAY have landed — keep
+        // An ECONNRESET/timeout on offer.send's response leg means the offer MAY have landed — keep
         // the journal entry so a retry is refused once. A definite Steam rejection (eresult) is not
         // ambiguous → the entry resolves normally. Classify the RAW error before it is re-shaped below.
         if (isAmbiguousCommitFailure(err)) commitMayHaveLanded = true;
@@ -651,7 +651,7 @@ export class TradeService {
         if (parsed.cause) clean.cause = parsed.cause;
         if (parsed.code) clean.code = parsed.code;
         clean.inventoryFull = parsed.inventoryFull;
-        // S3/H-FLT-001: carry the transport-ambiguity verdict on the re-thrown error. parseSteamTradeError
+        // Carry the transport-ambiguity verdict on the re-thrown error. parseSteamTradeError
         // reshapes the message, so a caller (the CSFloat auto-accept worker) cannot re-classify reliably —
         // it reads this flag to know the offer MAY exist on Steam and must never be auto-resent.
         clean.commitMayHaveLanded = commitMayHaveLanded;
@@ -660,7 +660,7 @@ export class TradeService {
     } finally {
       this.inFlight.delete(guardKey);
       MoneyOps.releaseAll(moneyKeys);
-      // S3: consume the entry on a clean resolution (success OR a definite failure), but KEEP it when the
+      // Consume the entry on a clean resolution (success OR a definite failure), but KEEP it when the
       // commit failed transport-ambiguously — so the next attempt is refused once, not duplicated.
       if (!commitMayHaveLanded) this.journal.resolve(guardKey);
     }
@@ -673,7 +673,7 @@ export class TradeService {
   }
 
   /**
-   * Starts a paced mass-send: each group is ONE bot sending all its selected
+   * Starts a paced mass-send: each group is one bot sending all its selected
    * assets to `tradeUrl` in a single offer, auto-confirmed via 2FA. Runs in the
    * background through a small worker pool so we never burst-spam Steam. Returns
    * the initial job state immediately; poll massStatus() for progress.
@@ -689,7 +689,7 @@ export class TradeService {
       running: true, cancelling: false, cancelled: false, total: groups.length, done: 0, sent: 0, confirmed: 0, unconfirmed: 0,
       failed: [], results: [], startedAt: new Date().toISOString(),
     };
-    // S33: finalize a fire-and-forget orchestrator on rejection — reset running + log — so it never
+    // Finalize a fire-and-forget orchestrator on rejection — reset running + log — so it never
     // escapes `void` as an unhandledRejection (breaker tick) nor latches the job type until restart.
     void this.runMassSend(groups, tradeUrl, opts).catch((err) => {
       this.massJob.running = false;
@@ -699,7 +699,7 @@ export class TradeService {
   }
 
   /**
-   * Requests a co-operative stop of the live mass-send. Does NOT abort the offer
+   * Requests a co-operative stop of the live mass-send. Does not abort the offer
    * already in flight — workers simply stop pulling new bots off the queue, so the
    * remaining accounts are skipped cleanly. No-op when nothing is running.
    */
@@ -730,11 +730,11 @@ export class TradeService {
     let wasLiveBefore: Set<string> | undefined;
     try {
       const queue  = [...groups];
-      // Snapshot which senders were ALREADY live so we release ONLY the sessions this send creates.
+      // Snapshot which senders were already live so we release ONLY the sessions this send creates.
       wasLiveBefore = this.snapshotLive(groups.map((g) => g.username));
 
-      // Global dispatch throttle (shared across ALL workers): reserve time slots `gap` apart so the gap is
-      // between ANY two offers, not just two sends by the same worker. This — not the worker count — is the
+      // Global dispatch throttle (shared across all workers): reserve time slots `gap` apart so the gap is
+      // between any two offers, not just two sends by the same worker. This — not the worker count — is the
       // Steam Error 15 guard, and it holds for any ceiling: N workers reserve N distinct increasing slots
       // (reserveWaitMs advances nextSlotAt synchronously, so the reservation cannot race).
       const throttle = createDispatchThrottle(minGap, maxGap);
@@ -772,7 +772,7 @@ export class TradeService {
             if (err === MASS_SEND_ABORTED) { aborted = true; queue.unshift(group); break; }
             this.massJob.failed.push({ username: group.username, error: (err as Error).message });
             logger.error(`[mass] ${group.username} failed: ${(err as Error).message}`);
-            // Every group targets the SAME receiver, so a full-inventory rejection dooms every
+            // Every group targets the same receiver, so a full-inventory rejection dooms every
             // remaining bot (login + pacing gap + a refused offer each). Stop the run at the first
             // one, exactly as an operator "End Task" does — the cooperative-cancel checks (667/670)
             // drain the queue and the epilogue marks cancelled:true. Remedy is free space + re-run.
@@ -797,7 +797,7 @@ export class TradeService {
       // contradictory half-dead state (cancelling with no finishedAt) and created sessions are freed.
       // Guard: an undefined wasLiveBefore means the snapshot never completed ⇒ the pool never ran ⇒
       // this run created no sessions; releasing with an empty set would wrongly tear down accounts
-      // that were live before (INV-A6). The .catch keeps a release failure from skipping the state writes.
+      // that were live before. The .catch keeps a release failure from skipping the state writes.
       if (wasLiveBefore) await this.releaseCreatedSessions(groups.map((g) => g.username), wasLiveBefore).catch(() => undefined);
       this.massJob.running = false;
       this.massJob.cancelling = false;
@@ -829,15 +829,15 @@ export class TradeService {
     // entry so a 30-min-idle receiver can't be reaped mid accept+2FA.
     this.sessions.markUsed(receiver.username);
     // Staleness guard: the bulk-read fan-out releases each session the moment getTradeOffers returns,
-    // while an early poll may have ALREADY dispatched this accept. A detached/replaced trader (its
+    // while an early poll may have already dispatched this accept. A detached/replaced trader (its
     // session being torn down) must not fire a write — the next attach re-emits the offer as new.
     if (this.traders.get(receiver.username.toLowerCase()) !== receiver) return;
     // busy() visibility: this accept clears a mobile 2FA confirmation, so count it in the same
     // in-flight gauge as offer actions (the return await requirement keeps the finally off the
-    // freshly-created promise). Then an update swap (S14) defers between accept and confirmation.
+    // freshly-created promise). Then an update swap defers between accept and confirmation.
     this.offerActionsInFlight++;
     // Cross-service asset guard (D2 / INV-D2): this path holds the full offer and calls acceptOffer
-    // directly (it does NOT go through acceptTradeOffer), so guard it inline. Receiver-side
+    // directly (it does not go through acceptTradeOffer), so guard it inline. Receiver-side
     // itemsToGive is normally empty (a storage transfer) — claimAll([]) claims nothing and returns
     // true, so this is a no-op there; on a genuine give it refuses rather than let an asset already
     // busy in another money op leave the account.
@@ -890,7 +890,7 @@ export class TradeService {
   isAutoAccept(): boolean          { return this.autoAcceptInternal; }
 
   /** True while a send is in flight, an offer action (single or batch accept/decline/cancel) is
-   *  running, or a mass-send job is running — the update scheduler (C5) checks this so a mid-session
+   * running, or a mass-send job is running — the update scheduler checks this so a mid-session
    *  update never hard-exits into a swap while real trades or 2FA confirmations are being dispatched. */
   busy(): boolean { return this.inFlight.size > 0 || this.offerActionsInFlight > 0 || this.massJob.running; }
 

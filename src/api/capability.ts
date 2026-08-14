@@ -40,16 +40,16 @@ export function verifyCapability(provided: unknown): boolean {
 // carry the token too, not just mutating methods.
 const SECRET_GET = /^\/api\/(?:accounts\/[^/]+\/(?:proxy|otp)|environments\/[^/]+\/proxy)$/i;
 
-// Side-effect-trivial diagnostic POSTs that must stay reachable WITHOUT the capability token —
+// Side-effect-trivial diagnostic POSTs that must stay reachable without the capability token —
 // they carry no money/vault/config action. `open-logs` only asks the shell to open a READ-ONLY
 // logs window (the log stream itself is already public), the operator's primary diagnostics surface
 // needed exactly during incidents when the token may be missing — gating it only broke the button
 // (window.open is also blocked in the webview). `client-error` is the frontend crash sink whose whole
-// job is to work when the UI is broken (possibly capless). (S20, S30)
+// job is to work when the UI is broken (possibly capless).
 const OPEN_POST_EXEMPT = /^\/api\/app\/(?:open-logs|client-error)$/i;
 
 /**
- * Is this request one that a random local process must NOT be able to make without the
+ * Is this request one that a random local process must not be able to make without the
  * token? Every mutating /api call (money, vault, config) plus the secret-returning GETs.
  * Plain reads (inventories, pricing, health, the SSE log stream) stay open so the UI's
  * initial load and the logs window work without the token.

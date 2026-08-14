@@ -51,7 +51,7 @@ function idleJob(): DistributeJob {
   return { running: false, cancelling: false, cancelled: false, total: 0, done: 0, sent: 0, confirmed: 0, unconfirmed: 0, failed: [], results: [], startedAt: null, finishedAt: null };
 }
 
-/** Belt-and-suspenders lock check: trust both the re-derived category AND a future tradeLockExpiry. */
+/** Belt-and-suspenders lock check: trust both the re-derived category and a future tradeLockExpiry. */
 function isLocked(it: CS2Item, now: number): boolean {
   if (it.category === 'tradelocked') return true;
   return it.tradeLockExpiry != null && new Date(it.tradeLockExpiry).getTime() > now;
@@ -185,7 +185,7 @@ export class DistributeService {
         const res = await this.deps.trades.sendTrade(t.source, { tradeUrl: url, myItems: t.assetIds.map((id) => ({ assetId: id, appId: t.appId, contextId: '2' })), message });
         const status = res.status ?? 'sent';
         if (status === 'confirmed') this.job.confirmed++;
-        else if (status === 'unconfirmed') this.job.unconfirmed++;   // offer EXISTS, awaiting 2FA — NOT a failure, NOT retried
+        else if (status === 'unconfirmed') this.job.unconfirmed++;   // offer EXISTS, awaiting 2FA — not a failure, not retried
         else this.job.sent++;
         this.job.results.push({ source: t.source, target: t.target, offerId: String(res.offerId ?? ''), status, escrowEndsAt: res.escrowEndsAt ? new Date(res.escrowEndsAt).toISOString() : undefined });
       } catch (e) {

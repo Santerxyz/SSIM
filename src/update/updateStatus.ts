@@ -12,12 +12,12 @@
 //     values that MUST survive a reboot (the per-sha self-test failure streak) are
 //     persisted by Updater.ts in data\updates\selftest-state.json and re-projected
 //     into here on every boot's update check, so the heartbeat/status always reflect
-//     THIS run's freshly-derived view. (update-reliability telemetry rider.)
+//     this run's freshly-derived view. (update-reliability telemetry rider.)
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
  * The coarse outcome of the last update attempt, sent verbatim on the license
- * heartbeat (C4) so the server can size the stranded fleet by failure class.
+ * heartbeat so the server can size the stranded fleet by failure class.
  * The value set is FIXED (the server stores it as an opaque string; keep it stable):
  *   ok               – an update was applied (rarely seen: the process then exits to swap)
  *   up-to-date       – checked, already newest
@@ -26,9 +26,9 @@
  *   selftest-eacces  – the new exe could not be spawned (lock/permission) after retries
  *   selftest-timeout – the self-test exceeded even the escalated budget
  *   selftest-no-marker – the new exe ran but did not confirm a healthy boot (crash / no marker)
- *   check-failed     – the version CHECK itself failed (network/server); distinct from up-to-date (S53)
- *   deferred-busy    – verified + self-tested, but a money/item op started → swap deferred (S14)
- *   swap-blocked     – the swap (move) failed ≥N times on this machine (AV/EDR / CFA) (S9)
+ * check-failed – the version CHECK itself failed (network/server); distinct from up-to-date
+ * deferred-busy – verified + self-tested, but a money/item op started → swap deferred
+ * swap-blocked – the swap (move) failed ≥N times on this machine (AV/EDR / CFA)
  */
 export type UpdateOutcome =
   | 'ok'
@@ -43,13 +43,13 @@ export type UpdateOutcome =
   | 'deferred-busy'  // S14: verified+self-tested, but a money/item op started during the window → swap deferred
   | 'swap-blocked';  // S9: the swap (move) itself failed ≥N times on this machine (AV/EDR / Controlled Folder Access)
 
-/** A newer version exists but its self-test has failed enough times on THIS machine that we have
- *  surfaced it (C3). The swap is still refused (keep-current guard) — this only makes it visible. */
+/** A newer version exists but its self-test has failed enough times on this machine that we have
+ * surfaced it. The swap is still refused (keep-current guard) — this only makes it visible. */
 export interface BlockedUpdate {
   version: string;
   sha256: string;
   kind: string;      // the self-test failure classification: 'crash' | 'no-marker' | 'timeout' | 'lock'
-  failures: number;  // consecutive self-test failures of THIS artifact on THIS machine
+  failures: number;  // consecutive self-test failures of this artifact on this machine
   since: number;     // epoch ms of the first failure in the streak
 }
 
@@ -82,7 +82,7 @@ export function getLastCheckedAt(): number | undefined { return lastCheckedAt; }
 export function setLastExitClass(c: string | undefined): void { lastExitClass = c; }
 export function getLastExitClass(): string | undefined { return lastExitClass; }
 
-/** A crash the shell recorded on the PRIOR run's UNEXPECTED backend death (B1). Read once on the next
+/** A crash the shell recorded on the PRIOR run's UNEXPECTED backend death. Read once on the next
  *  boot to (a) classify the prior exit for telemetry (C4 lastExitClass) and (b) surface a dismissible
  *  "SSIM crashed last run" banner in the dashboard. Notify-only — nothing is ever respawned. */
 export interface PriorCrash {

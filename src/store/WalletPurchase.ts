@@ -6,9 +6,9 @@
 //  No price parameter either — Steam quotes the price in the account's own currency, we
 //  check the wallet covers THAT, and we buy.
 //
-//  The design rests on ONE structural fact about Steam's checkout:
+//  The design rests on one structural fact about Steam's checkout:
 //
-//        inittransaction and getfinalprice DO NOT CHARGE.
+//        inittransaction and getfinalprice DO not CHARGE.
 //        finalizetransaction is the ONLY step that moves money.
 //
 //  Which is what makes a price-parameter-free flow safe: the authoritative price arrives from
@@ -30,12 +30,12 @@
 //      a 0-decimal wallet (JPY/KRW/IDR/CLP/VND…) the unit is UNVERIFIED (ManagedSession.wallet,
 //      B18). Comparing an unverified balance against Steam's total could clear a purchase 100×
 //      the real price, so those accounts are skipped and reported. Same fail-closed call
-//      BuyService makes for an unrecognised currency code (S64).
+// BuyService makes for an unrecognised currency code.
 //   3. AN UNVERIFIABLE TOTAL IS A REFUSAL. Nobody is watching this checkout, so a total we
 //      cannot parse — or one above the absolute ceiling — stops the purchase.
-//   4. NEVER BUY WHAT IS ALREADY OWNED — and an ownership signal we cannot READ counts as
+//   4. NEVER BUY WHAT IS already OWNED — and an ownership signal we cannot READ counts as
 //      "do not buy". Skipping is free and re-runnable; a duplicate purchase is not.
-//   5. THE COMMIT IS NEVER AUTO-RETRIED. A transport fault on finalize is ambiguous by
+//   5. the COMMIT IS NEVER AUTO-RETRIED. A transport fault on finalize is ambiguous by
 //      construction; the caller keeps its journal entry and the operator verifies on Steam.
 // ════════════════════════════════════════════════════════════════════════════
 import {
@@ -53,7 +53,7 @@ export const CS2_APP_ID = 730;
 /** CS2 Prime Status Upgrade. */
 export const CS2_PRIME_APP_ID = 624820;
 
-// THE PACKAGE ID: A CONSTANT AGAIN, BUT NEVER TRUSTED (2026-08-05, fourth field test).
+// the PACKAGE ID: A CONSTANT again, BUT NEVER TRUSTED (2026-08-05, fourth field test).
 //
 // Three attempts got here. (1) Hard-coded 298963 — which is COUNTER-STRIKE 2, the free base game, so
 // every run put an unbuyable free item in the cart and Steam refused the order (EResult 2 / detail 7).
@@ -61,7 +61,7 @@ export const CS2_PRIME_APP_ID = 624820;
 // "not sold here". (3) Scraping the id off `/app/624820/` — that page NO LONGER EXISTS; it 302s to the
 // Steam front page, so there was no purchase area to scrape. Prime is sold from the CS2 page now.
 //
-// The id below came from a live account's OWN CART (see CS2_PRIME_SUB_ID). It is evidence, not a guess.
+// The id below came from a live account's own CART (see CS2_PRIME_SUB_ID). It is evidence, not a guess.
 // And it is still not trusted: after adding it, SSIM reads the cart back out of Steam's embedded
 // `data-store_user_config` and refuses unless the cart holds exactly that package, valid and priced.
 // A wrong id can therefore cost a refusal — never a charge.
@@ -76,7 +76,7 @@ const PM_WALLET = 128;
 const isExternalPaymentMethod = (m: number): boolean => Number.isInteger(m) && m >= 2 && m < PM_WALLET;
 
 /**
- * Absolute ceiling on a single purchase, in the wallet's minor units. NOT an operator setting —
+ * Absolute ceiling on a single purchase, in the wallet's minor units. not an operator setting —
  * there is no price parameter by design. This is the one backstop that does not depend on knowing
  * the price in advance: Prime is ~16.24 EUR / ~14.99 USD, so 200.00 is an order of magnitude of
  * headroom and still catches the case this flow cannot otherwise see — an account whose STANDING
@@ -85,11 +85,11 @@ const isExternalPaymentMethod = (m: number): boolean => Number.isInteger(m) && m
 export const MAX_PURCHASE_MINOR = 20_000;
 
 export type PurchaseStatus =
-  | 'purchased'      // the charge landed AND a read-back confirmed it
+  | 'purchased'      // the charge landed and a read-back confirmed it
   | 'owned'          // already had Prime — nothing to do (a success, not a failure)
   | 'skipped'        // a stated reason not to buy (wallet short, currency unsupported) — nothing charged
   | 'refused'        // fail-closed: something could not be verified, so nothing was bought
-  | 'unconfirmed';   // the commit went out but the outcome is NOT confirmed — verify on Steam
+  | 'unconfirmed';   // the commit went out but the outcome is not confirmed — verify on Steam
 
 export interface WalletPurchaseResult {
   username: string;
@@ -129,8 +129,8 @@ export interface WalletPurchaseEnv {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Steam wallet → minor units of ITS OWN currency, or null when that cannot be done SAFELY.
- *  Deliberately narrower than a generic converter: an unknown code (S64) or a non-2-decimal
+/** Steam wallet → minor units of ITS own currency, or null when that cannot be done SAFELY.
+ * Deliberately narrower than a generic converter: an unknown code or a non-2-decimal
  *  currency (B18 — steam-user's ÷100 makes the unit unverified) yields null, and null means the
  *  account is skipped rather than charged against a guessed scale. */
 export function walletNativeMinor(w?: { hasWallet: boolean; currency: number; balance: number }): { minor: number; iso: string } | null {
@@ -175,7 +175,7 @@ export async function readStoreOwnedPackages(ctx: StoreContext): Promise<{ apps:
 }
 
 /**
- * THE PRIME PACKAGE — 54029, and this one is EVIDENCE, not a guess.
+ * the PRIME PACKAGE — 54029, and this one is EVIDENCE, not a guess.
  *
  * It was read out of a live account's own Steam cart (2026-08-05):
  *   {"packageid":54029,"is_valid":1,"price_when_added":{"amount_in_cents":"1329","currency_code":3,
@@ -220,10 +220,10 @@ function unescapeHtmlAttr(s: string): string {
 }
 
 /**
- * The account's REAL cart, out of the `data-store_user_config` blob Steam embeds on its store pages.
+ * The account's real cart, out of the `data-store_user_config` blob Steam embeds on its store pages.
  *
  * This is the single most useful thing the 2026-08-05 page dump turned up. Steam ships the live cart as
- * JSON on the page — `line_items[]` with `packageid` AND `line_item_id` (needed to remove one), each
+ * JSON on the page — `line_items[]` with `packageid` and `line_item_id` (needed to remove one), each
  * item's `is_valid`, the cart-level `is_valid`, and a `subtotal` with `amount_in_cents` + `currency_code`.
  *
  * That replaces three separate guesses at once: scraping line-item ids out of markup, scraping a price
@@ -311,7 +311,7 @@ export function purchaseDetailHint(detail: number): string {
 }
 
 /**
- * Make sure the STORE sees Counter-Strike 2 in this account's library BEFORE anything goes in the cart.
+ * Make sure the STORE sees Counter-Strike 2 in this account's library before anything goes in the cart.
  *
  * This is the 2026-08-05 field bug, and the ordering is the whole fix. Adding Prime to the cart while
  * Steam thinks the account lacks CS2 makes Steam drop the free base game into the cart alongside it
@@ -363,7 +363,7 @@ export async function ensureBaseGameInLibrary(
  * EMPTY the account's Steam cart, and PROVE it is empty.
  *
  * This is a hard precondition, not tidying (owner 2026-08-05). A Prime line left over from an earlier
- * run made the next run's cart hold TWO Prime lines: 26,58 € against a 13,34 € wallet, so the account
+ * run made the next run's cart hold two Prime lines: 26,58 € against a 13,34 € wallet, so the account
  * was skipped as "not enough" even though it could well afford one. Every leftover is somebody's money
  * problem later, so the cart must be provably empty before anything is added.
  *
@@ -415,7 +415,7 @@ function done(base: Partial<WalletPurchaseResult>, username: string, status: Pur
 /**
  * Buy CS2 Prime for the account behind `ctx`, from its wallet balance.
  *
- * Steps 1-3 are reads and refusals. Steps 4-6 build a cart and open a transaction — which STILL
+ * Steps 1-3 are reads and refusals. Steps 4-6 build a cart and open a transaction — which still
  * charges nothing, and is where Steam finally quotes the price. Step 7 is the only charge, guarded
  * by `beginCommit` (the caller's double-spend journal) and never retried.
  */
@@ -432,7 +432,7 @@ export async function performWalletPurchase(
   const warnings: string[] = [];
   const money = (m: number, iso: string): string => `${(m / 100).toFixed(2)} ${iso}`;
 
-  // ── 1) The wallet. Read FIRST: it decides the currency everything else is measured in, and an
+  // ── 1) The wallet. Read first: it decides the currency everything else is measured in, and an
   //       account we cannot price safely must be skipped before we touch its store at all. ──
   const wallet = await env.readWallet();
   const native = walletNativeMinor(wallet);
@@ -466,14 +466,14 @@ export async function performWalletPurchase(
   if (storeOwned?.packages.includes(CS2_PRIME_SUB_ID))
     return done(base, username, 'owned', 'already has CS2 Prime (the Steam store reports the package on the account) — nothing bought.', warnings);
 
-  // ── 3) The free base game, IN THE LIBRARY AND CONFIRMED THERE, before the cart is touched. Getting
+  // ── 3) The free base game, IN the LIBRARY and CONFIRMED THERE, before the cart is touched. Getting
   //       this order wrong is what made Steam drop an unbuyable "Counter-Strike 2" line into every
   //       cart and refuse the lot (EResult 2 / detail 7). See ensureBaseGameInLibrary. ──
   const baseGameRefusal = await ensureBaseGameInLibrary(ctx, env, storeOwned, warnings);
   if (baseGameRefusal) return done(base, username, 'refused', baseGameRefusal, warnings);
 
-  // ── 4) Cart: EMPTY IT FIRST (proven empty), add Prime, then verify against Steam's own view. ──
-  //       A leftover Prime line from an earlier run is what made a later run hold TWO of them —
+  // ── 4) Cart: EMPTY IT first (proven empty), add Prime, then verify against Steam's own view. ──
+  //       A leftover Prime line from an earlier run is what made a later run hold two of them —
   //       26,58 € against a 13,34 € wallet, skipped as "not enough". Emptying is a precondition now.
   if (!(await emptyCart(ctx, warnings)))
     return done(base, username, 'refused', 'this account\'s Steam cart could not be emptied, so SSIM will not add to it — a leftover item would be paid for or would block the order. Empty it at store.steampowered.com/cart/ and re-run. Nothing was charged.', warnings);
@@ -481,8 +481,8 @@ export async function performWalletPurchase(
   const add = await ctx.post('/cart/', { action: 'add_to_cart', subid: String(CS2_PRIME_SUB_ID), sessionid: ctx.sessionid, originating_snr: '' }, { referer: `${STORE_ORIGIN}/app/${CS2_APP_ID}/` });
   if (add.status >= 400) throw new StoreHttpError(add.status, `add-to-cart(${CS2_PRIME_SUB_ID}) → ${add.status}`);
 
-  // THE VERIFICATION. Steam publishes the live cart, so we do not hope the cart holds what we put in
-  // it — we read it back and require EXACTLY ONE line, exactly the Prime package, valid, priced, in
+  // the VERIFICATION. Steam publishes the live cart, so we do not hope the cart holds what we put in
+  // it — we read it back and require exactly one line, exactly the Prime package, valid, priced, in
   // this wallet's currency. "Exactly one" is load-bearing: checking only for FOREIGN packages let two
   // Prime lines through, and two Prime lines is a doubled bill.
   const cart = await readAccountCart(ctx);
@@ -558,7 +558,7 @@ export async function performWalletPurchase(
     return done({ ...base, transid }, username, 'refused', `Steam selected payment method ${echoed} instead of the Steam wallet. SSIM aborted before paying — nothing was charged, and no card was used.`, warnings);
   }
 
-  // ── 6) getfinalprice — Steam quotes the price, in THIS account's currency. This is the only
+  // ── 6) getfinalprice — Steam quotes the price, in this account's currency. This is the only
   //       authoritative price there is, and it arrives while everything is still free to abort. ──
   const fp = await ctx.post(`${CHECKOUT_ORIGIN}/checkout/getfinalprice/`, { count: '1', transid, purchasetype: 'self', microtxnid: '-1', cart: gidShoppingCart, gidReplayOfTransID: '-1', bUseAccountCart, sessionid: checkoutSid }, { referer: checkoutUrl });
   if (fp.status !== 200) throw new StoreHttpError(fp.status, `getfinalprice → ${fp.status}`);
@@ -576,17 +576,17 @@ export async function performWalletPurchase(
     return done(priced, username, 'refused', `Steam priced this order at ${money(total, iso)}, which cannot be right for CS2 Prime. Nothing was charged.`, warnings);
   }
   // Now that the store page told us what Prime actually costs here, a total ABOVE it means the cart
-  // holds something else. Steam charging LESS is a sale and fine; charging more is not.
+  // holds something else. Steam charging less is a sale and fine; charging more is not.
   // The cart said what this costs; the checkout must not exceed it. Less is a sale and fine.
   if (total > cartMinor || total > MAX_PURCHASE_MINOR) {
     logger.error(`[prime] ${username}: REFUSED — order total ${total} exceeds the cart price ${cartMinor} / ceiling ${MAX_PURCHASE_MINOR}`);
     return done(priced, username, 'refused', `Steam's order total (${money(total, iso)}) is more than the ${money(cartMinor, iso)} its own cart quoted for CS2 Prime. Nothing was charged.`, warnings);
   }
-  // THE coverage check the owner asked for: Steam's real price against this account's real balance.
+  // the coverage check the owner asked for: Steam's real price against this account's real balance.
   if (total > walletBefore)
     return done(priced, username, 'skipped', `not bought — CS2 Prime costs ${money(total, iso)} for this account and its wallet holds ${money(walletBefore, iso)}. Top it up and re-run. Nothing was charged.`, warnings);
 
-  // ── 7) THE CHARGE. Journalled first, never retried. ──
+  // ── 7) the CHARGE. Journalled first, never retried. ──
   const refusal = beginCommit?.({ subId: CS2_PRIME_SUB_ID, totalMinor: total, currencyIso: iso });
   if (refusal) return done(priced, username, 'refused', refusal, warnings);
 
@@ -619,7 +619,7 @@ export async function performWalletPurchase(
   // ── 8) Read back the TRUTH: Steam's own transaction status, then the wallet. ──
   const status = await pollTransactionStatus(ctx, transid, checkoutUrl, env.sleep ?? sleep);
   if (status.paymentMethod != null && isExternalPaymentMethod(status.paymentMethod)) {
-    // Loud: the money is already gone and it did NOT come out of the wallet. Not recoverable here —
+    // Loud: the money is already gone and it did not come out of the wallet. Not recoverable here —
     // but it must never be silent.
     logger.error(`[prime] ${username}: PAID WITH PAYMENT METHOD ${status.paymentMethod} (not the Steam wallet) on transaction ${transid} — STOP AND CHECK THIS ACCOUNT`);
     warnings.push(`Steam recorded payment method ${status.paymentMethod}, not the wallet — check this account's payment history immediately.`);

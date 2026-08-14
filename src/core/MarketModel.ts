@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  MarketModel — the SINGLE source of truth for "what is on the market" and for
+//  MarketModel — the single source of truth for "what is on the market" and for
 //  "which bucket an item belongs to". Pure (no network, no heavy imports) so it is
 //  trivially unit-testable and can be imported anywhere.
 //
@@ -31,7 +31,7 @@ export interface MarketListing {
   pricePerItemMinor: number;
   /** The seller-net half of `pricePerItemMinor` (Steam's `price`). 0 when unknown. */
   netPerItemMinor:   number;
-  /** The fee half of `pricePerItemMinor` (Steam's `fee`) — Steam's OWN arithmetic on this
+  /** The fee half of `pricePerItemMinor` (Steam's `fee`) — Steam's own arithmetic on this
    *  listing, so it is the ground truth our fee model is checked against. 0 when unknown. */
   feePerItemMinor:   number;
   currency:          number;   // Steam ECurrencyCode (0 = unknown)
@@ -75,7 +75,7 @@ function addId(map: Map<number, Set<string>>, appId: number, id: string): void {
 }
 
 /**
- * Parse ONE `market/mylistings/render` page payload into the canonical model.
+ * Parse one `market/mylistings/render` page payload into the canonical model.
  * INCLUSIVE by design: every listing object with an asset id is kept; a missing
  * description only degrades the name to "Unknown", it never drops the listing.
  */
@@ -83,9 +83,9 @@ export function parseMyListings(d: any): ParsedMyListings {
   const out: ParsedMyListings = { listings: [], assetIdsByApp: new Map() };
   if (!d || typeof d !== 'object') return out;
   // A non-listings payload (Steam error body such as {"success":false} — served
-  // HTTP 200 on market-subsystem hiccups — or any shapeless JSON) must NOT parse
+  // HTTP 200 on market-subsystem hiccups — or any shapeless JSON) must not parse
   // to "successfully empty", which would wipe the Listed bucket. Reject unless the
-  // body carries a listings-shaped key. Accept boolean success (market) AND numeric
+  // body carries a listings-shaped key. Accept boolean success (market) and numeric
   // 1 (inventory) — see DEDUP baseline §D. A legit empty account keeps parsing.
   const structural =
     ('listings' in d) || ('assets' in d) || ('total_count' in d) ||
@@ -126,7 +126,7 @@ export function parseMyListings(d: any): ParsedMyListings {
       name:              str(desc.name) || str(desc.market_hash_name) || unknownName,
       iconUrl:           iconUrlOf(desc),
       pricePerItemMinor: price + fee,
-      /** Seller-net and the fee Steam ACTUALLY charged on it — the two halves of
+      /** Seller-net and the fee Steam actually charged on it — the two halves of
        *  `pricePerItemMinor`, kept so a consumer can check our fee model against Steam's own
        *  arithmetic (see AccountTrader.getMarketOrders' fee-floor check). 0 when unknown. */
       netPerItemMinor:   price,
@@ -149,7 +149,7 @@ export function parseMyListings(d: any): ParsedMyListings {
   }
   // On-hold listings ARE confirmed sells — Steam is holding the item (device-change
   // window etc.), the hold is server-side, not an awaiting-2FA state. Keep them in the
-  // Listed bucket so the operator can see/cancel them; do NOT overload confirmed:false.
+  // Listed bucket so the operator can see/cancel them; do not overload confirmed:false.
   for (const l of Array.isArray(d.listings_on_hold) ? d.listings_on_hold : []) {
     const ml = toListing(l, true);
     if (ml) out.listings.push(ml);
@@ -209,7 +209,7 @@ export function listedAssetIdsForApp(p: ParsedMyListings, appId: number): Set<st
 }
 
 /**
- * The subset of this app's listed assets STILL AWAITING a mobile 2FA confirmation — Steam's
+ * The subset of this app's listed assets still AWAITING a mobile 2FA confirmation — Steam's
  * `pending_listings` / `listings_to_confirm`, which parseMyListings already tags `confirmed: false`.
  *
  * A mass-sell re-run must confirm exactly these, and nothing else. Gating the confirm phase on "any
@@ -234,7 +234,7 @@ export interface BucketInput {
 }
 
 /**
- * THE item-state classifier. Four states, because an item can be un-sellable for four different reasons
+ * the item-state classifier. Four states, because an item can be un-sellable for four different reasons
  * and the operator needs to tell them apart:
  *
  *   listed      — on the Steam Community Market right now

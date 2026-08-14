@@ -13,17 +13,17 @@ interface TokenFile {
   tokens:  Record<string, string>;
 }
 
-// S36: a FACTORY, not a shared singleton. `{ ...EMPTY }` was a SHALLOW copy — every fresh/degraded load
-// aliased the SAME `EMPTY.tokens` object, so the first `set()` mutated the module singleton and leaked
+// A FACTORY, not a shared singleton. `{ ...EMPTY }` was a SHALLOW copy — every fresh/degraded load
+// aliased the same `EMPTY.tokens` object, so the first `set()` mutated the module singleton and leaked
 // that token into every later TokenStore (two live instances: SessionManager + BanService). Return a
 // brand-new object with its own empty map each time.
-// H-ACC-061: null-prototype map so a prototype-key username ("__proto__", "constructor" — both valid Steam
+// Null-prototype map so a prototype-key username ("__proto__", "constructor" — both valid Steam
 // login charset) is stored/read/deleted as an ordinary entry instead of colliding with Object.prototype
 // (which made get() return a non-string and set()/delete() silently no-op).
 const emptyFile = (): TokenFile => ({ version: 1, tokens: Object.create(null) as Record<string, string> });
 
-// H-ACC-055: a millisecond-scale AV/handle lock at boot (EBUSY/EPERM/EACCES/EMFILE/ENFILE) is a TRANSIENT
-// fault, NOT corruption — routing it to the degraded latch makes the whole intact fleet-token file invisible
+// A millisecond-scale AV/handle lock at boot (EBUSY/EPERM/EACCES/EMFILE/ENFILE) is a TRANSIENT
+// fault, not corruption — routing it to the degraded latch makes the whole intact fleet-token file invisible
 // for the entire run (F8 mass re-auth). Retry the synchronous read a few times with a real window (S59
 // precedent) before classifying the file as unreadable. A genuine parse error / any other code still falls
 // straight through to the .bak-or-degrade path.
@@ -39,7 +39,7 @@ function sleepSync(ms: number): void {
 // ════════════════════════════════════════════════════════════════════════════
 //  TokenStore – persists Steam Auth-v2 refresh tokens to disk per account
 //
-//  A refresh token lets us log in WITHOUT the password + maFile 2FA, and it
+//  A refresh token lets us log in without the password + maFile 2FA, and it
 //  survives PC/server restarts and IP changes – exactly like a browser session.
 //  These tokens are sensitive (full account access) → file is gitignored.
 // ════════════════════════════════════════════════════════════════════════════
@@ -47,12 +47,12 @@ function sleepSync(ms: number): void {
 export class TokenStore {
   private file: TokenFile;
   /**
-   * True when the file EXISTS but could NOT be read/parsed → the on-disk token memory is untrustworthy.
+   * True when the file EXISTS but could not be read/parsed → the on-disk token memory is untrustworthy.
    * In this state we (a) surface it, and (b) REFUSE to write, so a present-but-corrupt file (and its
-   * .bak) is never clobbered — recover it, then restart. A MISSING file (fresh install) is NOT degraded.
+   * .bak) is never clobbered — recover it, then restart. A MISSING file (fresh install) is not degraded.
    * This mirrors the CsFloatDeliveredStore DEGRADED pattern (commit 3aad540): the old behaviour silently
    * reset to empty, which — on the shared refresh-token file — would have dropped every stored token and
-   * mass-re-authed the fleet on the next refresh (reliability finding F8). (B2.)
+   * mass-re-authed the fleet on the next refresh (reliability finding F8).
    */
   private degraded = false;
 
@@ -62,9 +62,9 @@ export class TokenStore {
     this.file = this.load();
   }
 
-  /** True when the file is present-but-unreadable AND we are in plaintext mode → persistence is
+  /** True when the file is present-but-unreadable and we are in plaintext mode → persistence is
    *  unavailable. In VAULT MODE tokens live in the vault, so a corrupt leftover plaintext file is
-   *  irrelevant and must NOT raise a false DEGRADED alarm (S35b, also silences BanService's 2nd instance). */
+   *  irrelevant and must not raise a false DEGRADED alarm (S35b, also silences BanService's 2nd instance). */
   isDegraded(): boolean { return this.degraded && !AccountVault.isEnabled(); }
 
   /** H-ACC-055: readJsonSync with a bounded retry on TRANSIENT fs codes only (AV/handle lock at boot). A
@@ -92,7 +92,7 @@ export class TokenStore {
   private missingMain(): TokenFile {
     if (fsExtra.existsSync(`${this.filePath}.bak`)) return this.recoverFromBakOrDegrade('is missing');
     fsExtra.ensureDirSync(path.dirname(this.filePath));
-    return emptyFile(); // fresh install → empty is correct, NOT degraded
+    return emptyFile(); // fresh install → empty is correct, not degraded
   }
 
   private load(): TokenFile {
@@ -105,12 +105,12 @@ export class TokenStore {
       // Present but wrong SHAPE → try the .bak before degrading (S35a).
       return this.recoverFromBakOrDegrade('is present but malformed');
     } catch (err) {
-      // H-ACC-055: the existsSync→read TOCTOU window can vanish the file (ENOENT). A missing file is a fresh
-      // install, NOT corruption (the file's own contract) — load fresh without degrading, exactly like the
+      // The existsSync→read TOCTOU window can vanish the file (ENOENT). A missing file is a fresh
+      // install, not corruption (the file's own contract) — load fresh without degrading, exactly like the
       // missing-at-boot branch above. Every other throw (incl. transient codes that survived the retry above)
       // is unreadable → try the .bak before degrading (S35a).
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return this.missingMain(); // H-ACC-059: same .bak check as the missing-at-boot branch
+        return this.missingMain(); // Same .bak check as the missing-at-boot branch
       }
       return this.recoverFromBakOrDegrade(`unreadable (${(err as Error).message})`);
     }
@@ -119,16 +119,16 @@ export class TokenStore {
   /** Parse the tokens map out of a loaded file object, or null when the shape is untrustworthy.
    *  #37: keep only string→non-empty-string entries; a per-entry glitch is not whole-file corruption. */
   private static readTokens(parsed: Partial<TokenFile> | null): Record<string, string> | null {
-    // H-ACC-060: `typeof [] === 'object'`, so an array-shaped tokens map (hand-edit / foreign tool /
+    // `typeof [] === 'object'`, so an array-shaped tokens map (hand-edit / foreign tool /
     // partial restore) would otherwise slip through as a VALID empty (or index-keyed) store instead of
     // being routed to .bak recovery — this is exactly the "wrong SHAPE" case. Reject arrays explicitly.
     if (!parsed || typeof parsed.tokens !== 'object' || parsed.tokens === null || Array.isArray(parsed.tokens)) return null;
-    // H-ACC-056: refuse a FORWARD-format file (version > 1) rather than consume its entries as raw v1
+    // Refuse a FORWARD-format file (version > 1) rather than consume its entries as raw v1
     // tokens and rewrite it as v1 (B30 vault parity — AccountVault.parseAndVersionCheck does the same).
     // Returning null routes it to the .bak-or-degrade path → write-refusal protects the newer store.
     if (parsed.version !== undefined && Number(parsed.version) > 1) return null;
-    const tokens: Record<string, string> = Object.create(null) as Record<string, string>; // H-ACC-061: null-proto (prototype-key usernames)
-    // H-ACC-062: the per-entry tolerance itself is deliberate (#37 — a glitched entry is not whole-file
+    const tokens: Record<string, string> = Object.create(null) as Record<string, string>; // Null-proto (prototype-key usernames)
+    // The per-entry tolerance itself is deliberate (#37 — a glitched entry is not whole-file
     // corruption), but dropping the sole credential of a token-only account SILENTLY leaves the operator with
     // "token missing → needs re-import" and nothing in the log. Name the dropped KEYS (usernames aren't secrets)
     // so the loss is timestamped and diagnosable. Token VALUES must never be logged.
@@ -143,7 +143,7 @@ export class TokenStore {
 
   /**
    * S35a: before declaring the store degraded, try the sibling .bak (the vault does this in B33). If the
-   * backup is a valid token file, recover its tokens AND repair the corrupt main from it — writing with
+   * backup is a valid token file, recover its tokens and repair the corrupt main from it — writing with
    * backup:false so the corrupt main is never copied over the good .bak (the S5 clobber). Only when the
    * .bak is missing/invalid (or the repair write itself fails) do we degrade.
    */
@@ -152,7 +152,7 @@ export class TokenStore {
     const base = path.basename(this.filePath);
     try {
       if (fsExtra.existsSync(bakPath)) {
-        // H-ACC-055: same transient-lock retry — an AV sweep that holds the main typically holds the .bak too.
+        // Same transient-lock retry — an AV sweep that holds the main typically holds the .bak too.
         const tokens = TokenStore.readTokens(TokenStore.readJsonWithRetry(bakPath) as Partial<TokenFile> | null);
         if (tokens) {
           const recovered: TokenFile = { version: 1, tokens };
@@ -177,7 +177,7 @@ export class TokenStore {
   private save(): boolean {
     if (this.degraded) {
       // Writing now would copy the corrupt file to .bak (clobbering the last-good backup) and overwrite
-      // it — destroying the very data an operator needs to recover. Skip it. (B2.)
+      // it — destroying the very data an operator needs to recover. Skip it.
       logger.warn(`refresh token store is DEGRADED – NOT persisting (would clobber the corrupt ${path.basename(this.filePath)} + its .bak). Fix the file and restart.`);
       return false;
     }
@@ -207,11 +207,11 @@ export class TokenStore {
   set(username: string, token: string): boolean {
     let persisted: boolean;
     if (AccountVault.isEnabled()) {
-      // S24: the vault's setToken → synchronous save() → writeJsonAtomic can THROW (disk full / EACCES /
+      // The vault's setToken → synchronous save() → writeJsonAtomic can THROW (disk full / EACCES /
       // AV lock). This runs INSIDE steam-user's `refreshToken` emit, so an escaping throw becomes a global
       // uncaughtException → ProcessHealth.recordUncaught; during a mass first-login (fresh vault) with a
       // disk problem, ≥3 in 60s LATCH the money breaker until restart. Degrade to the plaintext path's
-      // warn-and-continue contract: the token is live for THIS session, just not persisted this attempt.
+      // warn-and-continue contract: the token is live for this session, just not persisted this attempt.
       try {
         AccountVault.setToken(username, token);
         persisted = true;
@@ -220,10 +220,10 @@ export class TokenStore {
         persisted = false;
       }
     } else {
-      this.file.tokens[this.key(username)] = token; // in-memory for THIS run
+      this.file.tokens[this.key(username)] = token; // in-memory for this run
       persisted = this.save();                      // false while degraded / on write failure (see save())
     }
-    // H-ACC-057: log the ACTUAL outcome — the old line logged "persisted" unconditionally, so a vault
+    // Log the ACTUAL outcome — the old line logged "persisted" unconditionally, so a vault
     // setToken throw or a plaintext save() failure both printed success right after their own warn.
     if (persisted) logger.info(`[${username}] refresh token persisted`);
     else logger.info(`[${username}] refresh token held in memory only (NOT persisted this attempt)`);

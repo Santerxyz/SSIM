@@ -1,16 +1,16 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  steamHeaders — one browser fingerprint for EVERY Steam community request.
+//  steamHeaders — one browser fingerprint for every Steam community request.
 //
 //  ROOT CAUSE (2026-07-10, corrected): the wave of HTTP 429s across the community
 //  endpoints (market/priceoverview, inventory, market/mylistings, mobileconf) was
 //  Steam's newly-deployed bot-detection rejecting requests that DON'T look like a
 //  real browser — requests carrying only a User-Agent + Accept were flagged. It was
-//  NOT (primarily) a per-IP volume budget. The fix is to make every request carry a
+//  not (primarily) a per-IP volume budget. The fix is to make every request carry a
 //  full Chromium fingerprint: the sec-ch-ua Client Hints (the single strongest "I am
 //  a real Chrome" signal — non-browser HTTP clients never send them), the Sec-Fetch
 //  metadata, Accept-Language, and a browser-grade Accept-Encoding.
 //
-//  SSIM reaches Steam two ways, so the fingerprint is applied at BOTH:
+//  SSIM reaches Steam two ways, so the fingerprint is applied at both:
 //   1. Direct axios calls (priceoverview, inventory, mylistings, sellitem,
 //      createbuyorder, …) — spread STEAM_XHR_HEADERS into the request headers.
 //   2. The vendored `steamcommunity` library (mobileconf/confirmations, profile) —
@@ -18,14 +18,14 @@
 //      STEAM_BROWSER_UA as the constructor's userAgent (see AccountTrader).
 //
 //  Every SSIM community request is an XHR/fetch issued (in a real browser) by the
-//  market/community page's own JS to its OWN origin. So the Sec-Fetch values below
-//  are the XHR set (dest:empty, mode:cors, site:same-origin) — NOT a navigation set
+//  market/community page's own JS to its own origin. So the Sec-Fetch values below
+//  are the XHR set (dest:empty, mode:cors, site:same-origin) — not a navigation set
 //  (dest:document, Sec-Fetch-User, Upgrade-Insecure-Requests), which a real browser
 //  never sends on these endpoints and which would itself read as inconsistent.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * Canonical Chrome-on-Windows User-Agent. SINGLE SOURCE so the UA and the sec-ch-ua
+ * Canonical Chrome-on-Windows User-Agent. single SOURCE so the UA and the sec-ch-ua
  * Client Hints below always agree on the browser + major version — a UA/hint mismatch
  * is itself a bot tell. Bump the version here and in CLIENT_HINTS together.
  */
@@ -51,11 +51,11 @@ const FETCH_METADATA: Record<string, string> = {
 
 /**
  * Browser-grade Accept-Encoding for the AXIOS paths only. axios (Node) transparently
- * decodes gzip, deflate AND brotli, so advertising `br` is safe and drops the
+ * decodes gzip, deflate and brotli, so advertising `br` is safe and drops the
  * non-browser `compress` token axios would otherwise send by default. Real Chrome also
  * offers `zstd`, which axios cannot decode — so we stop at `br`.
  *
- * NOT exported for the vendored `request` library: it has no brotli decoder, so telling
+ * not exported for the vendored `request` library: it has no brotli decoder, so telling
  * Steam it may send brotli there would yield an undecodable (garbled) body. The library
  * keeps its own `gzip, deflate` (which it CAN decode) — see STEAM_LIBRARY_HEADERS.
  */
@@ -64,7 +64,7 @@ export const STEAM_ACCEPT_ENCODING = 'gzip, deflate, br';
 /**
  * The fingerprint bundle to spread into a DIRECT axios community request, e.g.
  *   headers: { ...STEAM_XHR_HEADERS, Cookie: …, 'User-Agent': STEAM_BROWSER_UA, Accept: … }
- * Spread it FIRST so the call's own Cookie / User-Agent / Accept / (any endpoint-specific)
+ * Spread it first so the call's own Cookie / User-Agent / Accept / (any endpoint-specific)
  * Accept-Language win on collision — this bundle only contributes the browser-look headers
  * a bare HTTP client omits, and never overrides a caller's money-relevant value.
  */
@@ -99,7 +99,7 @@ export const STEAM_LIBRARY_HEADERS: Record<string, string> = {
 /**
  * XHR fingerprint headers appropriate for a request that sends User-Agent `ua`.
  * The sec-ch-ua Client Hints are Chrome-version-specific and only coherent with STEAM_BROWSER_UA — so a
- * request that overrides the UA (e.g. a per-account Firefox / older-Chrome / mobile UA) must NOT carry the
+ * request that overrides the UA (e.g. a per-account Firefox / older-Chrome / mobile UA) must not carry the
  * Chrome-124 hints: a UA/hint MISMATCH is itself a bot tell (the very thing this module exists to avoid).
  * For such a UA we drop ONLY the Client Hints and keep the UA-agnostic Sec-Fetch + Accept-Language/Encoding
  * (a real non-Chromium browser sends those and no sec-ch-ua at all). The canonical UA gets the full bundle.

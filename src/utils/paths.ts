@@ -4,14 +4,14 @@ import fs from 'fs';
 // ════════════════════════════════════════════════════════════════════════════
 //  paths.ts – the single source of truth for on-disk locations.
 //
-//  WHY THIS EXISTS:
-//  When SSIM ships as a packaged exe (@yao-pkg/pkg), the code AND the bundled
+//  WHY this EXISTS:
+//  When SSIM ships as a packaged exe (@yao-pkg/pkg), the code and the bundled
 //  frontend (public/, shipped as a pkg "assets" entry) live in a read-only
 //  virtual filesystem inside the binary. Everything we READ-WRITE at runtime
 //  (accounts, maFiles, tokens, inventories, logs, license files) cannot live in
 //  that read-only image — it must live NEXT TO the exe on the real disk instead.
 //
-//  process.cwd() is NOT a safe anchor for a shipped exe: it is wherever the
+//  process.cwd() is not a safe anchor for a shipped exe: it is wherever the
 //  process was launched from (a desktop shortcut with a different "Start in",
 //  a parent script, %SystemRoot% …), not necessarily the exe's folder. The
 //  stable anchor is the directory that physically contains the exe:
@@ -101,7 +101,7 @@ export const logsDir = (...segs: string[]): string => path.join(BASE_DIR, 'logs'
 /**
  * Frontend (Dashboard HTML/JS/CSS + license.html). As of v1.0.4 it is BUNDLED
  * INTO the exe (pkg "assets"), so it is read from the binary's read-only snapshot
- * — NOT from disk next to the exe. We anchor it to __dirname (this module's own
+ * — not from disk next to the exe. We anchor it to __dirname (this module's own
  * location) instead of BASE_DIR so it resolves to the payload in every mode:
  *   packaged → <snapshot>/dist/utils → ../../public = <snapshot>/public  (VFS)
  *   dev/tsc  → <repo>/{src|dist}/utils → ../../public = <repo>/public     (disk)
@@ -113,7 +113,7 @@ export const publicDir = (...segs: string[]): string =>
   path.join(__dirname, '..', '..', 'public', ...segs);
 
 /**
- * Steam maFiles directory (repo/zip root). THE single home for ALL maFiles:
+ * Steam maFiles directory (repo/zip root). the single home for all maFiles:
  * registered accounts reference files in here (by bare filename), and the
  * bulk-import flow scans this same folder for not-yet-registered files.
  * (Formerly split across maFiles/ and data/mafiles_unlinked/ – consolidated.)

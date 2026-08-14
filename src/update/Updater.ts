@@ -16,15 +16,15 @@ import {
 } from './updateStatus';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Updater — signed, self-replacing auto-update for the SINGLE self-contained SSIM.exe.
+//  Updater — signed, self-replacing auto-update for the single self-contained SSIM.exe.
 //
-//  SSIM now ships as ONE binary: the Tauri shell with the Node backend embedded inside it. The
+//  SSIM now ships as one binary: the Tauri shell with the Node backend embedded inside it. The
 //  backend (this code) runs as the shell's child; the shell passes its own path as SSIM_SHELL_EXE.
 //  So an update is a ONE-FILE swap: download the new SSIM.exe → verify (sha256 + Ed25519) → prove it
 //  boots (anti-brick self-test) → swap SSIM_SHELL_EXE → relaunch it. The new shell re-extracts its
 //  (new) embedded backend on next launch.
 //
-//  Flow:  GET /version → download to the app DATA dir (NOT %TEMP%) → verify sha256 + Ed25519 sig over
+//  Flow:  GET /version → download to the app DATA dir (not %TEMP%) → verify sha256 + Ed25519 sig over
 //         `${latest}:${sha256}` → self-test the new exe → write updater.bat → spawn detached → emit
 //         SSIM_UPDATING → exit
 //         → bat waits for backend + shell to die, swaps SSIM.exe, relaunches it, self-cleans.
@@ -33,13 +33,13 @@ import {
 //  batch launched via a hidden VBScript (so it survives our exit). The Ed25519 signature is what makes
 //  this safe: a hijacked update URL can't ship a payload we'll execute, because it can't sign it.
 //
-//  DUAL-MODE (this client runs in BOTH the still-deployed two-file fleet AND the single-exe build):
+//  DUAL-MODE (this client runs in both the still-deployed two-file fleet and the single-exe build):
 //  the verify + self-test gates are identical; only the final swap shape differs, chosen at runtime:
 //    • SINGLE-EXE  (SSIM_SHELL_EXE set)  → replace + relaunch the consolidated SSIM.exe.
 //    • TWO-FILE    (sidecar, no SSIM_SHELL_EXE) → swap ssim-backend.exe in place; relaunch the existing
 //      shell, which respawns the new sidecar. This keeps the deployed 1.2.x fleet auto-updatable.
 //    • MIGRATION   (manifest kind:'single-exe' on a two-file install) → the artifact is the consolidated
-//      SSIM.exe: replace the OLD shell (folder SSIM.exe) with it AND delete the orphaned ssim-backend.exe,
+//      SSIM.exe: replace the OLD shell (folder SSIM.exe) with it and delete the orphaned ssim-backend.exe,
 //      then relaunch — a seamless two-file→single-exe cutover with no folder reinstall.
 //    • STANDALONE  (headless ssim.exe) → swap + relaunch our own exe.
 //  Every shape still passes the same sha256 + Ed25519 + boot self-test before anything touches disk.
@@ -50,10 +50,10 @@ interface VersionInfo {
   url:    string;   // download URL of the artifact (consolidated SSIM.exe, or two-file ssim-backend.exe)
   sha256: string;   // hex digest of that file
   sig:    string;   // base64url Ed25519 over `${latest}:${sha256}` — LEGACY (kind-less). Still emitted by
-                    // the server for the deployed fleet; THIS client verifies `sigKind` instead.
+                    // the server for the deployed fleet; this client verifies `sigKind` instead.
   /**
    * base64url Ed25519 over `${latest}:${sha256}:${kind ?? 'backend'}` — the KIND-INCLUSIVE signature.
-   * This client verifies THIS, so a tampered `kind` (the swap-shape selector) is rejected, not just the
+   * This client verifies this, so a tampered `kind` (the swap-shape selector) is rejected, not just the
    * artifact bytes. (C14 integrity fix.) Required: an update without it is refused.
    */
   sigKind?: string;
@@ -61,7 +61,7 @@ interface VersionInfo {
   // delete ssim-backend.exe). Absent / 'backend' → normal in-place swap. NOW COVERED by `sigKind`, so it
   // can no longer be forged to force the destructive migration shape on a victim.
   kind?:  'single-exe' | 'backend';
-  // OPTIONAL, server-set DISPLAY metadata (NOT signed). Present since the Discord-announce feature:
+  // OPTIONAL, server-set DISPLAY metadata (not signed). Present since the Discord-announce feature:
   // `notes` = this release's changelog text, `publishedAt` = ISO publish time. The update/verify path
   // ignores both; surfaced only for a possible future in-app changelog. Extra fields are tolerated,
   // so their presence never affects signature verification or the swap.
@@ -108,10 +108,10 @@ export function isNewer(remote: string, local: string): boolean {
 
 /**
  * Validate the untrusted `/version` body into a VersionInfo, or `null` if it is malformed. This runs
- * BEFORE isNewer / download / verify, so a hijacked-manifest / MITM attacker (the exact adversary the
+ * before isNewer / download / verify, so a hijacked-manifest / MITM attacker (the exact adversary the
  * header threat model names) can never drive an unvalidated field into a filesystem path (`sha256` →
  * stagedArtifactPath) or the shell's version eval (`latest` → SSIM_UPDATE_DOWNLOADING → lib.rs w.eval)
- * BEFORE the sha256/Ed25519 gate — signature verification happens too late to guard those sinks.
+ * before the sha256/Ed25519 gate — signature verification happens too late to guard those sinks.
  * Forward-compat: unknown extra fields are tolerated (matching the VersionInfo comment); only the
  * KNOWN fields are shape-checked. `sha256` is normalized to lowercase here so the whole file carries a
  * single canonical representation (folds in the case-inconsistency H-LIC-003 guards against).
@@ -143,7 +143,7 @@ export function parseManifest(raw: unknown): VersionInfo | null {
 }
 
 /** The three outcomes of a version check, kept DISTINCT so the caller never mistakes a failed check for
- *  "up to date" (S53) — 'current' and 'check-failed' both used to collapse to a bare `null`. */
+ * "up to date" — 'current' and 'check-failed' both used to collapse to a bare `null`. */
 type CheckResult =
   | { status: 'update'; info: VersionInfo }
   | { status: 'current' }
@@ -168,18 +168,18 @@ async function check(
 }
 
 /**
- * Stream `src` to `dest`, resolving ONLY after the file descriptor is fsync'd AND CLOSED.
+ * Stream `src` to `dest`, resolving ONLY after the file descriptor is fsync'd and CLOSED.
  *
- * THE FIX (Windows EACCES on self-test): the previous code resolved on the writable stream's `finish`
- * event, which fires when the bytes have been handed to the OS but BEFORE the fd is closed (Node closes
+ * the FIX (Windows EACCES on self-test): the previous code resolved on the writable stream's `finish`
+ * event, which fires when the bytes have been handed to the OS but before the fd is closed (Node closes
  * it asynchronously via autoClose, emitting `close` afterwards). Because runUpdate() runs
- * download→verify→self-test synchronously within ONE event-loop turn (microtasks), the libuv fd-close
+ * download→verify→self-test synchronously within one event-loop turn (microtasks), the libuv fd-close
  * macrotask had not yet run — so we still held an OPEN WRITABLE HANDLE to the .exe when execFileSync
  * asked Windows to CreateProcess it. Windows can't load an image that another handle still has open for
  * write → ERROR_ACCESS_DENIED / sharing violation → `spawnSync … EACCES`. (Reads still worked, so
  * verify()'s sha256 passed, because libuv opens the write stream with FILE_SHARE_READ — execution does
  * not share with a writer.) Resolving on `close` (after an fsync for durability) guarantees the handle
- * is released AND the bytes are on disk before anyone executes the file.
+ * is released and the bytes are on disk before anyone executes the file.
  *
  * KEEPS whatever is already on disk on error (the download loop resumes from the partial). Exported for
  * tests.
@@ -199,7 +199,7 @@ export function pipeToFile(
       settled = true;
       if (idle) clearTimeout(idle);
       if (err) {
-        // Tear down BOTH streams but KEEP whatever is on disk — the next attempt resumes from it.
+        // Tear down both streams but KEEP whatever is on disk — the next attempt resumes from it.
         try { out.destroy(); } catch { /* noop */ }
         try { (src as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.(); } catch { /* noop */ }
         reject(err);
@@ -235,7 +235,7 @@ export function pipeToFile(
  *     Attachment Manager on managed machines → CreateProcess of the self-test exe returns
  *     ERROR_ACCESS_DENIED (EACCES). The app's data dir is already trusted + writable by the running
  *     app, so executing the staged exe from there is not blocked by those %TEMP%-scoped rules.
- *   • it sits on the SAME volume as the install target, so the swap's `move /Y` is an atomic rename
+ *   • it sits on the same volume as the install target, so the swap's `move /Y` is an atomic rename
  *     rather than a cross-volume copy (faster, and far less exposed to an AV scan mid-copy).
  * Falls back to os.tmpdir() only if the data dir can't be created (a broken SSIM_HOME), preserving the
  * previous behaviour rather than dead-ending the update.
@@ -276,7 +276,7 @@ export function sha256File(file: string): Promise<string> {
 }
 
 /**
- * Best-effort sweep of staged artifacts from OTHER (superseded) offers so data\updates never
+ * Best-effort sweep of staged artifacts from other (superseded) offers so data\updates never
  * accumulates multiple ~185 MB files. Keeps ONLY the artifact for the CURRENT offer's sha256. Because
  * the filename ENCODES the sha, this is a cheap name comparison — the stale files are never re-hashed.
  * The selftest-state.json sidecar (a .json, not .exe) is untouched. (C1: "sweep only artifacts whose
@@ -307,8 +307,8 @@ export function sweepStaleStaged(dir: string, keepSha256: string): void {
 async function download(info: VersionInfo): Promise<string> {
   const stageDir = updatesStageDir();
   const tmp = stagedArtifactPath(stageDir, info.sha256); // sha-keyed → resumes/reuses across boots (C1)
-  sweepStaleStaged(stageDir, info.sha256); // clear artifacts from OTHER offers (keeps this sha)
-  // C1: if a COMPLETE, byte-intact artifact for this sha is already staged from a prior boot, REUSE it —
+  sweepStaleStaged(stageDir, info.sha256); // clear artifacts from other offers (keeps this sha)
+  // If a COMPLETE, byte-intact artifact for this sha is already staged from a prior boot, REUSE it —
   // skip the ~185 MB re-download entirely. verify() re-hashes as the authoritative gate; this cheap
   // pre-check just avoids touching the network when we already hold the exact bytes.
   if (fs.existsSync(tmp) && (await sha256File(tmp)) === info.sha256.toLowerCase()) {
@@ -387,7 +387,7 @@ async function download(info: VersionInfo): Promise<string> {
  * server (`signing.js`), so both sides sign/verify the same bytes. Returns false if `sigKind`
  * is absent or doesn't verify — a tampered `kind` changes the payload, so the signature no
  * longer matches and the destructive swap-shape cannot be forced. Pure (key passed in) so it
- * is unit-testable with a throwaway keypair. (C14.)
+ * is unit-testable with a throwaway keypair.
  */
 export function verifyUpdateSignature(
   info: { latest: string; sha256: string; kind?: string; sigKind?: string },
@@ -419,7 +419,7 @@ export async function verify(file: string, info: VersionInfo): Promise<{ ok: boo
   // Authenticity gate: require the KIND-INCLUSIVE signature so a forged swap-shape `kind`
   // (the migration/delete selector) is rejected — not just the artifact bytes. An update
   // manifest without `sigKind` is refused (the server must dual-sign first; that is why the
-  // server rollout ships BEFORE this client). (C14.)
+  // server rollout ships before this client).
   if (!info.sigKind) {
     logger.error('update manifest has no kind-inclusive signature (sigKind) – refusing update');
     return { ok: false, shaOk: true }; // S21: sha intact — a re-download yields the identical failure
@@ -439,11 +439,11 @@ export type SelfTestOutcome =
  * Classify a thrown execFileSync error so we retry ONLY a transient permission/lock condition or a
  * timeout, and NEVER a genuine failure (which must keep the current version — the anti-brick guard):
  *   • the child RAN and exited non-zero (self-test FAIL = 2) → numeric `.status`, no spawn errno →
- *     'crash'. REAL failure: keep current, do NOT retry. This is what preserves the guard.
+ *     'crash'. real failure: keep current, do not retry. This is what preserves the guard.
  *   • WE killed the child because it exceeded the time budget (Node marks it `code:'ETIMEDOUT'` and/or
  *     `killed:true` + a kill signal, with NO numeric status) → 'timeout'. A slow/AV-heavy machine may
- *     legitimately need longer than the base budget, so a timeout earns ONE escalation to a 2× budget
- *     (see selfTestNewExe) — it is NOT the hard 'crash' the ≤1.3.3 generation used, which permanently
+ *     legitimately need longer than the base budget, so a timeout earns one escalation to a 2× budget
+ *     (see selfTestNewExe) — it is not the hard 'crash' the ≤1.3.3 generation used, which permanently
  *     stranded slow machines. (C2 / the self-test budget rule.)
  *   • the child could not be SPAWNED with EACCES/EBUSY/EPERM/ETXTBSY → a lingering write handle, an AV
  *     scan, or a MOTW/SmartScreen block → 'lock' (RETRYABLE with backoff).
@@ -460,7 +460,7 @@ export function classifySpawnError(err: unknown): Extract<SelfTestOutcome, { ok:
   // Only a STRING `.code` is a spawn errno (EACCES/ETIMEDOUT/…); a numeric one was the exit code above.
   const errno = typeof e.code === 'string' ? e.code : undefined;
   // A budget timeout: we killed the child (no exit status). `killed:true` means WE killed it (the
-  // timeout), distinct from a child that died on its OWN fatal signal (killed:false → 'crash').
+  // timeout), distinct from a child that died on its own fatal signal (killed:false → 'crash').
   if (errno === 'ETIMEDOUT' || e.killed === true) {
     return { ok: false, kind: 'timeout', errno: errno ?? undefined, detail: `self-test exceeded its time budget (${errno || e.signal || 'ETIMEDOUT'})` };
   }
@@ -487,15 +487,15 @@ export function stripMarkOfTheWeb(file: string): boolean {
 }
 
 /** Base self-test time budget. MUST be >= the build/publish self-test budget (~180-200s) so a slow or
- *  AV-heavy machine that self-tested fine at build time is not rejected here. A TIMEOUT escalates ONCE
- *  to SELFTEST_TIMEOUT_ESCALATION× this before keeping current (C2). */
+ *  AV-heavy machine that self-tested fine at build time is not rejected here. A TIMEOUT escalates once
+ * to SELFTEST_TIMEOUT_ESCALATION× this before keeping current. */
 const SELFTEST_BUDGET_MS = 240_000;
 const SELFTEST_TIMEOUT_ESCALATION = 2; // one retry at 2× budget on a timeout (240s → 480s)
 
 /**
  * One self-test spawn → a classified outcome. Boots the new exe with SSIM_SELFTEST=1 in an ISOLATED temp
  * home (its extraction + logs never touch the live install) and exit 0 (ok) / 2 (fail). `timeoutMs` is
- * injected so selfTestNewExe can escalate the budget on a timeout (C2).
+ * injected so selfTestNewExe can escalate the budget on a timeout.
  *
  * DUAL: the OK marker arrives by a DIFFERENT channel per artifact, so we accept EITHER —
  *   • console ssim-backend.exe (two-file fleet artifact) prints `SSIM_SELFTEST_OK` to STDOUT, and
@@ -507,10 +507,10 @@ const execFileAsync = promisify(execFile);
 async function runSelfTestOnce(file: string, timeoutMs: number = SELFTEST_BUDGET_MS): Promise<SelfTestOutcome> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ssim_selftest_'));
   try {
-    // S8: ASYNC execFile (not execFileSync) so the ~240–480s self-test NEVER freezes the event loop of a
-    // LIVE, session-carrying process (C5's mid-session "Install now") — a sync spawn stalled every HTTP
+    // ASYNC execFile (not execFileSync) so the ~240–480s self-test NEVER freezes the event loop of a
+    // live, session-carrying process (C5's mid-session "Install now") — a sync spawn stalled every HTTP
     // request, Steam CM keepalive and confirmation poll for minutes, dropping the resident fleet. Capture
-    // stdout (NOT 'ignore') so a console artifact's marker is visible; a GUI artifact yields empty stdout
+    // stdout (not 'ignore') so a console artifact's marker is visible; a GUI artifact yields empty stdout
     // and we fall back to the file report. execFile throws on a non-zero exit or a `timeout` kill
     // (→ classifySpawnError → 'crash'/'timeout'). The keep-current guard is unchanged (still per-outcome).
     const { stdout } = await execFileAsync(file, [], {
@@ -533,19 +533,19 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * 4. ANTI-BRICK: prove the new artifact boots + loads all bundled deps (incl. the globaloffensive +
- * steam stack) BEFORE we replace the working one — with a bounded retry-with-backoff so a transient
+ * steam stack) before we replace the working one — with a bounded retry-with-backoff so a transient
  * EACCES/EBUSY (a not-yet-released handle, an AV mid-scan, a MOTW tag) doesn't strand the update, and a
  * ONE-SHOT budget escalation so a slow/AV-heavy machine's legitimately-long boot isn't misread as a
- * failure (C2). A GENUINE failure still keeps the current version. The artifact is already authentic
+ * failure. A GENUINE failure still keeps the current version. The artifact is already authentic
  * (sha256 + Ed25519).
  *
  * KEEP-CURRENT GUARD INTACT — the ONLY outcomes that lead to another spawn are:
  *   • 'lock'    → bounded retry with backoff (transient handle/AV/MOTW), then keep current.
- *   • 'timeout' → exactly ONE retry at 2× the budget (slow machine), then keep current.
- * A 'crash' (non-zero exit) or 'no-marker' boot returns immediately and we do NOT swap. Even after every
+ *   • 'timeout' → exactly one retry at 2× the budget (slow machine), then keep current.
+ * A 'crash' (non-zero exit) or 'no-marker' boot returns immediately and we do not swap. Even after every
  * retry is exhausted we still return the failing outcome — never a weakening. Returns the classified
- * SelfTestOutcome (not a bare bool) so the caller can record WHY it failed for telemetry (C4) and the
- * per-sha failure streak (C3). `runOnce`/`backoffMs`/`baseBudgetMs` are injectable for tests.
+ * SelfTestOutcome (not a bare bool) so the caller can record WHY it failed for telemetry and the
+ * per-sha failure streak. `runOnce`/`backoffMs`/`baseBudgetMs` are injectable for tests.
  */
 export async function selfTestNewExe(
   file: string,
@@ -563,9 +563,9 @@ export async function selfTestNewExe(
       logger.info(`update self-test passed – new artifact boots + loads its deps${lockAttempt ? ` (after ${lockAttempt} retr${lockAttempt === 1 ? 'y' : 'ies'})` : ''}`);
       return r;
     }
-    // A TIMEOUT earns ONE escalation to a 2× budget (a slow/AV-heavy machine may legitimately need
+    // A TIMEOUT earns one escalation to a 2× budget (a slow/AV-heavy machine may legitimately need
     // longer), then keeps current. Counted separately from the lock backoff so neither consumes the
-    // other's budget. This is the ≤1.3.3 permanent-strand fix — a timeout was hard-'crash'ed before. (C2.)
+    // other's budget. This is the ≤1.3.3 permanent-strand fix — a timeout was hard-'crash'ed before.
     if (r.kind === 'timeout') {
       if (!timeoutEscalated) {
         timeoutEscalated = true;
@@ -577,7 +577,7 @@ export async function selfTestNewExe(
       logger.error(`update self-test still exceeded its budget after escalating to ${Math.round(budget / 1000)}s – not swapping (keeping current): ${file}`);
       return r;
     }
-    // A REAL failure (ran and failed, or produced no OK marker) is NOT retried — keep the current
+    // A real failure (ran and failed, or produced no OK marker) is not retried — keep the current
     // version. This IS the anti-brick guard; do not weaken it.
     if (r.kind !== 'lock') {
       logger.error(`update self-test failed – not swapping [${r.kind}]: ${r.detail}`);
@@ -591,7 +591,7 @@ export async function selfTestNewExe(
       lockAttempt++;
       continue;
     }
-    // Exhausted retries on a PERSISTENT lock → STILL keep the current version (guard intact), but say so.
+    // Exhausted retries on a PERSISTENT lock → still keep the current version (guard intact), but say so.
     logger.error(`update self-test still locked (${r.detail}) after ${backoffMs.length} retries – not swapping: ${file}`);
     return r;
   }
@@ -614,7 +614,7 @@ export function buildSwapScript(o: {
   relaunchUpdatedFlag?: boolean; // pass --ssim-updated (single-exe shell shows the "Update installed" splash)
   backendPid: number;          // our PID — always waited for
   shellPid?: number;           // parent shell PID; omit for headless standalone
-  deletePaths?: string[];      // extra files to remove AFTER the swap (e.g. orphaned ssim-backend.exe on migration)
+  deletePaths?: string[];      // extra files to remove after the swap (e.g. orphaned ssim-backend.exe on migration)
   vbsPath: string;             // deleted by the bat
   selfPath?: string;           // what the bat deletes last; defaults to %~f0 (itself) in production
   markerPath?: string;         // S9: file the bat writes on a FAILED move so the next boot counts it
@@ -629,11 +629,10 @@ export function buildSwapScript(o: {
   const dels = (o.deletePaths ?? []).map((p) => `del /F /Q "${p}" >nul 2>&1\r\n`).join('');
   // The orphan-delete (e.g. deleting the running ssim-backend.exe on a migration) MUST run
   // ONLY after a CONFIRMED successful swap. Before, `dels` ran unconditionally after the
-  // move loop, so a move that never succeeded (AV/file lock) still deleted the orphan AND
+  // move loop, so a move that never succeeded (AV/file lock) still deleted the orphan and
   // relaunched the un-swapped target → a bricked install. Now a successful `move` jumps to
   // :swapped (→ dels), and an exhausted retry jumps to :swapfail (skips dels). Both paths
   // still relaunch + self-clean, so a failed swap degrades to a no-op update, never a brick.
-  // (C14 / INV-G3.)
   return (
     `@echo off\r\n` +
     waitOrKill(o.backendPid, 'wbk') +                          // our backend
@@ -645,13 +644,13 @@ export function buildSwapScript(o: {
     `goto swapfail\r\n` +                                       // move never succeeded → SKIP the delete
     `:swapped\r\n` +
     dels +                                                     // orphan delete — ONLY after a confirmed swap
-    // SUCCESS: relaunch the NEW exe with --ssim-updated (the "Update installed" splash is now honest).
+    // SUCCESS: relaunch the new exe with --ssim-updated (the "Update installed" splash is now honest).
     `start "" "${o.relaunch}"${o.relaunchUpdatedFlag ? ' --ssim-updated' : ''}\r\n` +
     `goto done\r\n` +
     `:swapfail\r\n` +
-    // S9: RECORD the swap failure so the next boot can count it and, after N, BLOCK the swap instead of
-    // looping boot→self-test→swap→relaunch forever. And relaunch the OLD exe WITHOUT --ssim-updated (the
-    // swap did NOT happen, so do not claim "Update installed").
+    // RECORD the swap failure so the next boot can count it and, after N, BLOCK the swap instead of
+    // looping boot→self-test→swap→relaunch forever. And relaunch the OLD exe without --ssim-updated (the
+    // swap did not happen, so do not claim "Update installed").
     (o.markerPath ? `echo ${o.markerSha ?? ''}>"${o.markerPath}"\r\n` : '') +
     `start "" "${o.relaunch}"\r\n` +
     `:done\r\n` +
@@ -677,7 +676,7 @@ export function swapAndRelaunch(newExe: string, info: VersionInfo, launcher: Spa
   const shellExe = process.env.SSIM_SHELL_EXE;            // set ONLY by the single-exe shell
   const installDir = path.dirname(process.execPath);
   const siblingShell = path.join(installDir, 'SSIM.exe'); // the two-file GUI shell next to ssim-backend.exe
-  // S9: every swap shape records a failed move to this marker so the next boot counts it (→ block after N).
+  // Every swap shape records a failed move to this marker so the next boot counts it (→ block after N).
   const swapMarker = { markerPath: swapFailureMarkerPath(), markerSha: info.sha256 };
 
   let script: string;
@@ -720,7 +719,7 @@ export function swapAndRelaunch(newExe: string, info: VersionInfo, launcher: Spa
   // S9/hardening: WSH (wscript.exe) is disabled/removed on hardened & EDR-managed fleets (the same class
   // this app already fights). A ChildProcess whose image can't launch emits an async 'error' with NO
   // listener → uncaughtException → false crash marker + a money-ops breaker tick for a benign "your OS
-  // blocks WSH" condition. So attach 'error'/'spawn' BEFORE unref and only take the exit path once the
+  // blocks WSH" condition. So attach 'error'/'spawn' before unref and only take the exit path once the
   // launcher is KNOWN to have started; a failed launch means no swap happens → keep-current (no exit,
   // no SSIM_UPDATING), classified as swap-blocked.
   return new Promise((resolve) => {
@@ -736,7 +735,7 @@ export function swapAndRelaunch(newExe: string, info: VersionInfo, launcher: Spa
       // shell acts on this; the old two-file shell ignores it (it already follows its sidecar out on exit).
       emitUpdate('SSIM_UPDATING');
       logger.info(`update staged (${mode}) – swap script launched, exiting for replacement`);
-      // Give WScript a moment to spin the bat up as an independent process before we vanish (do NOT unref).
+      // Give WScript a moment to spin the bat up as an independent process before we vanish (do not unref).
       setTimeout(() => process.exit(0), 800);
       resolve({ updated: true, reason: 'swapping' });
     });
@@ -746,9 +745,9 @@ export function swapAndRelaunch(newExe: string, info: VersionInfo, launcher: Spa
 // ── C3: per-artifact self-test failure streak (never pin silently) ────────────
 /**
  * Persisted so the streak — and the "update blocked on this machine" surface — survives a reboot. The
- * whole point of C3 is that the SAME artifact failing its self-test on the SAME machine every boot is
+ * whole point of C3 is that the same artifact failing its self-test on the same machine every boot is
  * now VISIBLE + bounded (logged with a stable marker, exposed to the UI, sent in telemetry), never an
- * infinite silent keep-current loop as it was for the stranded fleet. Keyed by sha256 so a NEW published
+ * infinite silent keep-current loop as it was for the stranded fleet. Keyed by sha256 so a new published
  * artifact always starts a fresh streak.
  */
 export interface SelfTestState {
@@ -767,7 +766,7 @@ export const SELFTEST_BLOCK_THRESHOLD = 3;
 // ── S9: swap-failure marker + per-sha streak (a MOVE that never succeeds must not loop forever) ───────
 const SWAP_FAIL_MARKER = 'swap-failed.marker'; // written by the swap bat on :swapfail (contains the sha)
 const SWAP_FAIL_STATE  = 'swap-fail-state.json';
-/** Block re-attempting the SWAP after this many identical-sha move failures on this machine. */
+/** Block re-attempting the swap after this many identical-sha move failures on this machine. */
 export const SWAP_BLOCK_THRESHOLD = 3;
 interface SwapFailState { sha256: string; count: number; }
 /** Absolute path of the marker file the swap bat writes on a failed move (consumed next boot). */
@@ -780,7 +779,7 @@ function readSwapFailState(dir: string): SwapFailState | undefined {
   return undefined;
 }
 /**
- * S9: consume a swap-failure marker the bat wrote last boot. If present, fold it into a per-sha streak
+ * Consume a swap-failure marker the bat wrote last boot. If present, fold it into a per-sha streak
  * (a new sha starts a fresh streak of 1); delete the marker. Returns the current streak (or the existing
  * one when there is no new marker) so the caller can block after SWAP_BLOCK_THRESHOLD. Injectable dir.
  */
@@ -791,7 +790,7 @@ export function consumeSwapFailureMarker(dir: string = updatesStageDir()): SwapF
     if (fs.existsSync(markerPath)) { markerSha = (fs.readFileSync(markerPath, 'utf8') || '').trim() || undefined; fs.rmSync(markerPath, { force: true }); }
   } catch { /* best-effort */ }
   const prev = readSwapFailState(dir);
-  if (!markerSha) return prev; // no NEW failure this boot → return the existing streak for the block check
+  if (!markerSha) return prev; // no new failure this boot → return the existing streak for the block check
   const same = prev && prev.sha256 === markerSha;
   const next: SwapFailState = { sha256: markerSha, count: same ? prev!.count + 1 : 1 };
   try { writeJsonAtomic(path.join(dir, SWAP_FAIL_STATE), next, { spaces: 0 }); } catch { /* best-effort */ }
@@ -822,9 +821,9 @@ export function readSelfTestState(dir: string = updatesStageDir()): SelfTestStat
 }
 
 /**
- * Record a self-test failure for `sha256`. Increments the streak if this is the SAME artifact, otherwise
+ * Record a self-test failure for `sha256`. Increments the streak if this is the same artifact, otherwise
  * starts a fresh streak of 1 (a new offer clears the old one). Persisted atomically. Returns the new
- * state so the caller can decide whether the threshold is reached. Injectable dir for tests. (C3.)
+ * state so the caller can decide whether the threshold is reached. Injectable dir for tests.
  */
 export function recordSelfTestFailure(sha256: string, version: string, kind: string, dir: string = updatesStageDir()): SelfTestState {
   const now = Date.now();
@@ -842,13 +841,13 @@ export function recordSelfTestFailure(sha256: string, version: string, kind: str
   return next;
 }
 
-/** Clear the self-test failure state (a self-test passed, or the artifact is gone). (C3.) */
+/** Clear the self-test failure state (a self-test passed, or the artifact is gone). */
 export function clearSelfTestState(dir: string = updatesStageDir()): void {
   try { fsExtra.removeSync(selfTestStatePath(dir)); } catch { /* best-effort */ }
 }
 
 /**
- * S54: does a self-test failure of this KIND count toward the persistent C3 per-sha block?
+ * Does a self-test failure of this KIND count toward the persistent C3 per-sha block?
  * A 'lock' (EACCES/EBUSY/MOTW — an AV mid-scan or a Controlled-Folder handle) is ENVIRONMENTAL, not an
  * artifact defect; the classifier itself calls it retryable and its backoff ladder (~7s) is far shorter
  * than a real AV scan. Counting it meant three cold-AV boots permanently BLOCKED a perfectly good update.
@@ -869,9 +868,9 @@ function selfTestOutcomeFor(kind: string | undefined): UpdateOutcome {
 }
 
 /**
- * Surface a persistently-failing update so it is NEVER silently pinned (C3): a STABLE, greppable log
+ * Surface a persistently-failing update so it is NEVER silently pinned: a STABLE, greppable log
  * marker (`SSIM_UPDATE_BLOCKED` — keep the spelling stable for field log searches), a status field the
- * dashboard reads (updateStatus), and the telemetry outcome (C4). The swap is still refused — this only
+ * dashboard reads (updateStatus), and the telemetry outcome. The swap is still refused — this only
  * makes the block visible so the operator can do the manual reinstall (STRANDED_FLEET_RESCUE).
  */
 function surfaceBlockedUpdate(info: VersionInfo, state: SelfTestState): void {
@@ -890,16 +889,16 @@ function surfaceBlockedUpdate(info: VersionInfo, state: SelfTestState): void {
  * Full orchestration; safe to call on boot or from a manual/periodic trigger.
  *
  * `opts.force` (a manual "Check for updates now") re-attempts an artifact that has been marked blocked
- * (C3). The boot + periodic paths RESPECT the block so they don't re-run the ~200s self-test that has
+ *. The boot + periodic paths RESPECT the block so they don't re-run the ~200s self-test that has
  * already failed N times on this machine on every single launch — they surface it and keep current
- * fast. A NEW published sha always resets the streak, so a genuine new release is never suppressed.
+ * fast. A new published sha always resets the streak, so a genuine new release is never suppressed.
  */
 export async function runUpdate(currentVersion: string, opts?: { force?: boolean; isBusy?: () => boolean }): Promise<{ updated: boolean; reason: string }> {
   markChecked(Date.now());
   const checked = await check(currentVersion);
   if (checked.status === 'check-failed') {
-    // S53: the CHECK itself failed (network/server) — record it distinctly so the stranded-fleet histogram
-    // counts this cohort. Do NOT clear the last-known available-update or the swap-fail streak: we learned
+    // The CHECK itself failed (network/server) — record it distinctly so the stranded-fleet histogram
+    // counts this cohort. Do not clear the last-known available-update or the swap-fail streak: we learned
     // nothing about the current published sha, so keep whatever the last successful check surfaced.
     setUpdateOutcome('check-failed');
     return { updated: false, reason: `update check failed: ${checked.error}` };
@@ -916,7 +915,7 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   printUpdateBanner(currentVersion, info.latest);
   logger.info(`update available: ${currentVersion} → ${info.latest}`);
 
-  // C3: if THIS exact artifact has already failed its self-test ≥N times on THIS machine, don't re-run
+  // If this exact artifact has already failed its self-test ≥N times on this machine, don't re-run
   // the expensive self-test on every boot/periodic tick — surface the block and keep current fast. A
   // manual `force` re-attempts (the user explicitly asked); a new sha resets the streak.
   const prior = readSelfTestState();
@@ -925,10 +924,10 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
     return { updated: false, reason: `update v${info.latest} blocked on this machine (self-test failed ${prior.consecutiveFailures}× [${prior.lastKind}]) – keeping current` };
   }
 
-  // S9: consume the swap-failure marker the bat wrote on a FAILED move last boot, and fold it into a
+  // Consume the swap-failure marker the bat wrote on a FAILED move last boot, and fold it into a
   // per-sha streak. A persistent MOVE failure (AV/EDR lock, or Controlled Folder Access on a Desktop
   // install) used to loop boot→self-test→swap→relaunch FOREVER with nothing recorded. After N such
-  // failures for THIS artifact, BLOCK the swap (surface it) instead of re-attempting. `force` overrides.
+  // failures for this artifact, BLOCK the swap (surface it) instead of re-attempting. `force` overrides.
   const swapFail = consumeSwapFailureMarker();
   if (!opts?.force && swapFail && swapFail.sha256 === info.sha256 && swapFail.count >= SWAP_BLOCK_THRESHOLD) {
     logger.error(`SSIM_UPDATE_BLOCKED v${info.latest} sha=${info.sha256.slice(0, 12)} SWAP (move) failed ${swapFail.count}× on this machine – keeping current; likely AV/EDR or Controlled Folder Access on the install path. A manual reinstall (or an install-path exclusion) is needed.`);
@@ -938,7 +937,7 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   }
 
   // Tell the shell to show "Downloading update…" on its splash — the download can be ~175 MB and runs
-  // BEFORE our server starts, so without this the launch window would just look frozen. The version
+  // before our server starts, so without this the launch window would just look frozen. The version
   // rides along so the splash can name what it's installing ("Downloading update v1.2.3…").
   emitUpdate(`SSIM_UPDATE_DOWNLOADING::${info.latest}`);
 
@@ -955,7 +954,7 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   const v = await verify(file, info);
   if (!v.ok) {
     setUpdateOutcome('sig-fail');
-    // S21: delete ONLY on a sha MISMATCH (corrupt/tampered bytes → re-fetching is worth it). A
+    // Delete ONLY on a sha MISMATCH (corrupt/tampered bytes → re-fetching is worth it). A
     // signature-only failure (sha intact — a key-divergent or unsigned manifest) KEEPS the artifact:
     // re-downloading yields the identical bytes + the identical failure, so deleting just triggered a
     // 185 MB re-download every boot forever. The sha-keyed pre-check reuses the kept file → network-free.
@@ -966,13 +965,13 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   const selfTest = await selfTestNewExe(file);
   if (!selfTest.ok) {
     setUpdateOutcome(selfTestOutcomeFor(selfTest.kind));
-    // S54: a transient 'lock' (AV mid-scan / MOTW / Controlled-Folder handle) must NOT be folded into the C3
+    // A transient 'lock' (AV mid-scan / MOTW / Controlled-Folder handle) must not be folded into the C3
     // per-sha streak — three cold-AV boots would otherwise permanently BLOCK a good update. Keep current
     // this boot and retry fresh next boot; the keep-current guard is unchanged (still no swap).
     if (!selfTestFailureCountsTowardBlock(selfTest.kind)) {
       return { updated: false, reason: `new exe self-test locked [${selfTest.kind}] – kept current; retrying next boot (transient, not counted toward the C3 block)` };
     }
-    // C1: KEEP the verified artifact staged (do NOT remove it) so the next boot resumes at verify+self-test
+    // KEEP the verified artifact staged (do not remove it) so the next boot resumes at verify+self-test
     // without re-downloading ~185 MB. C3: record the streak; surface once it crosses the threshold — never a silent keep.
     const state = recordSelfTestFailure(info.sha256, info.latest, selfTest.kind);
     if (state.consecutiveFailures >= SELFTEST_BLOCK_THRESHOLD) surfaceBlockedUpdate(info, state);
@@ -984,7 +983,7 @@ export async function runUpdate(currentVersion: string, opts?: { force?: boolean
   // S14 (TOCTOU): the busy-gate was checked minutes ago at the endpoint; the download+self-test window is
   // long enough for the operator to have STARTED a mass-sell / trade-up craft / casket move since. Re-check
   // immediately before the swap — a swap hard-exits the process and would interrupt an in-flight real-item
-  // op. Defer instead: the verified, self-tested artifact is KEPT (C1) so the next attempt swaps without
+  // op. Defer instead: the verified, self-tested artifact is KEPT so the next attempt swaps without
   // re-downloading. This is ADDED after the selfTest.ok gate — swapAndRelaunch's single call site is still
   // reached only on a passed self-test (keep-current guard intact).
   if (opts?.isBusy?.()) {

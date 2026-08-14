@@ -3,7 +3,7 @@ import type { HttpAgent } from '../network/AgentFactory';
 import { RateLimiter } from './RateLimiter';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  CsFloatClient — typed client for ONE CSFloat account's API key (Feature 2).
+//  CsFloatClient — typed client for one CSFloat account's API key (Feature 2).
 //
 //  Base: https://csfloat.com/api/v1 · Auth: raw key in the Authorization header.
 //  Requests route through the account's per-account httpsAgent (proxy/IP isolation)
@@ -76,7 +76,7 @@ export interface PriceListRow {
 type Dict = Record<string, unknown>;
 
 export class CsFloatClient {
-  // CSFloat rate-limits per API key (and IP), so EVERY client built from the same key shares one
+  // CSFloat rate-limits per API key (and IP), so every client built from the same key shares one
   // limiter — interactive tabs + the background pricing fill can't independently double the rate.
   private static readonly limiters = new Map<string, RateLimiter>();
   private static limiterFor(apiKey: string): RateLimiter {
@@ -111,7 +111,7 @@ export class CsFloatClient {
   searchListings(params: ListingSearchParams = {}): Promise<{ data: Dict[]; cursor?: string }> {
     return this.req({ method: 'GET', url: '/listings', params });
   }
-  /** Bulk lowest buy-now ask for the WHOLE CS2 catalog in ONE request (min_price in cents).
+  /** Bulk lowest buy-now ask for the whole CS2 catalog in one request (min_price in cents).
    *  Undocumented but live-verified 2026-07-10; the pricing fill uses it to warm every CS2 name at
    *  once instead of hundreds of per-name searches. Shares the key's limiter + 429 backoff like any req. */
   priceList(): Promise<PriceListRow[]> {
@@ -127,10 +127,10 @@ export class CsFloatClient {
   // ── UNDOCUMENTED endpoints (verify against a live key) ──────────────────────
   me(): Promise<Dict> { return this.req({ method: 'GET', url: '/me' }); }
   /**
-   * A seller's own listings = their STALL. `/me/listings` does NOT exist (verified live 2026-08-11:
+   * A seller's own listings = their STALL. `/me/listings` does not exist (verified live 2026-08-11:
    * CSFloat's Go router answers a plain-text "404 page not found", which surfaced to operators as
    * "CSFloat HTTP 404" on every My-Listings open). Probing under `/me/` is misleading because the
-   * auth middleware runs BEFORE routing there — every `/me/<anything>` returns 401 unauthenticated,
+   * auth middleware runs before routing there — every `/me/<anything>` returns 401 unauthenticated,
    * including paths that do not exist — so the 401 was never evidence the route was real.
    * `/users/<steam_id>/stall` is the endpoint that actually resolves (it answers a typed JSON error
    * for a private stall rather than a 404), which is why this takes a steam_id.
@@ -175,14 +175,14 @@ export class CsFloatClient {
         } catch (e) {
           throw new CsFloatError((e as AxiosError).message || 'CSFloat request failed (transport)');
         }
-        // S45: on a 429, DON'T sleep here — the backoff would hold the single-flight slot (maxConcurrent=1)
+        // On a 429, DON'T sleep here — the backoff would hold the single-flight slot (maxConcurrent=1)
         // for its whole duration, so interactive requests can't preempt a background pricing storm. Throw a
         // sentinel so this task RESOLVES and frees the slot; the backoff + re-schedule happen in .catch below.
         if (res.status === 429 && attempt < 3) throw new RateLimitRetry();
         if (res.status >= 200 && res.status < 300) {
           const d = res.data as unknown;
           // CSFloat endpoints answer JSON (objects/arrays); DELETEs may answer empty (204/no body).
-          // A non-empty STRING body on a 2xx is an HTML interstitial / wrapper page, NOT a success payload.
+          // A non-empty STRING body on a 2xx is an HTML interstitial / wrapper page, not a success payload.
           if (typeof d === 'string' && d.trim() !== '') {
             throw new CsFloatError('CSFloat returned a non-JSON body on a 2xx (edge/interstitial page) — treat as a transient failure', res.status, undefined);
           }

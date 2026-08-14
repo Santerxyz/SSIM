@@ -4,16 +4,16 @@ import { writeJsonAtomic } from '../utils/atomicJson';
 import { dataDir } from '../utils/paths';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  MoneyOpJournal (B4) — a small, bounded, cross-restart guard against firing the
-//  SAME money op twice after a crash.
+// MoneyOpJournal — a small, bounded, cross-restart guard against firing the
+//  same money op twice after a crash.
 //
 //  The in-flight Sets in TradeService/BuyService stop CONCURRENT duplicates, but
 //  they are in-memory: a crash+restart wipes them, and a user who re-clicks a
 //  buy/send that was mid-flight when we died has NO server-side dedup — the
 //  Steam-side order/offer may already exist (reliability finding F5, residual 1).
 //
-//  This journal closes that gap WITHOUT changing any success-path behaviour:
-//   • begin(op)   is written BEFORE the commit; resolve(op) removes it on a CLEAN
+//  This journal closes that gap without changing any success-path behaviour:
+//   • begin(op)   is written before the commit; resolve(op) removes it on a CLEAN
 //     resolution — success or a DEFINITE (non-transport-ambiguous, S3) caught
 //     failure; callers skip resolve when the commit was transport-ambiguous
 //     (`commitMayHaveLanded`) or the call was refused (BuyService via its `refused`
@@ -22,7 +22,7 @@ import { dataDir } from '../utils/paths';
 //   • A HARD crash between begin() and resolve(), OR a transport-ambiguous commit
 //     failure (S3, commitAmbiguity.ts), leaves a LINGERING entry — an op whose
 //     Steam-side outcome is unknown. On the next run a matching retry is REFUSED
-//     and the entry KEPT (S15); after an 8s min-age a deliberate retry is allowed
+// and the entry KEPT; after an 8s min-age a deliberate retry is allowed
 //     and consumes it (see consultRefusal), with a "verify on Steam" message.
 //   • TTL-bounded (24h): an entry older than the TTL is swept. The window must
 //     outlive a crash-overnight → retry-next-morning cycle; post-S15 a lingering
@@ -42,8 +42,8 @@ export interface MoneyOpEntry {
   phase: MoneyOpPhase;
   at: number;        // epoch ms of begin()/record()
   detail?: string;
-  /** S15: epoch ms this lingering entry was FIRST refused this run. Set on the first refusal so a rapid
-   *  re-fire (double-click after a crash-restart) is refused AGAIN until a deliberate-pause min-age
+  /** S15: epoch ms this lingering entry was first refused this run. Set on the first refusal so a rapid
+   *  re-fire (double-click after a crash-restart) is refused again until a deliberate-pause min-age
    *  elapses — a synchronous consume-on-refuse could not enforce that pause. */
   refusedAt?: number;
 }
@@ -71,10 +71,10 @@ export class MoneyOpJournal {
   private lastWarnAt = 0;
 
   /**
-   * Surface a persistent read/write fs failure ONCE per minute — a persistently unwritable/unreadable data/
+   * Surface a persistent read/write fs failure once per minute — a persistently unwritable/unreadable data/
    * (EPERM/EACCES after an AV or permissions change, disk full, read-only volume) silently drops the money
    * path back to pre-B4 behaviour with no cross-restart dedup. A rate-limited warn turns that invisible loss
-   * of the S3/S15 guarantee into a diagnosable one-liner. Uses the REAL clock (not this.now) so injected test
+   * of the S3/S15 guarantee into a diagnosable one-liner. Uses the real clock (not this.now) so injected test
    * clocks neither suppress nor spam it; self-catching so it never breaks the never-throw contract.
    */
   private warn(kind: 'read' | 'write', err: unknown): void {
@@ -100,7 +100,7 @@ export class MoneyOpJournal {
       raw = fs.readFileSync(this.filePath, 'utf8');
     } catch (err) {
       // ENOENT (raced deletion) is authoritative-empty; any other fs error (EBUSY/EPERM/EACCES/EIO…) is a
-      // transient failure on an existing file — degrade to empty for THIS call but never persist it.
+      // transient failure on an existing file — degrade to empty for this call but never persist it.
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { map: {}, unreliable: false };
       this.warn('read', err);
       return { map: {}, unreliable: true };
@@ -136,7 +136,7 @@ export class MoneyOpJournal {
     if (!this.enabled) return;
     try {
       const { map, unreliable } = this.read();
-      if (unreliable) return; // a transient read blip — do NOT clobber the whole file to this one entry (the op proceeds unjournaled, as it does today on a failed write)
+      if (unreliable) return; // a transient read blip — do not clobber the whole file to this one entry (the op proceeds unjournaled, as it does today on a failed write)
       const swept = this.sweep(map);
       swept[opHash] = { op, phase: 'initiated', at: this.now() };
       this.write(swept);
@@ -146,7 +146,7 @@ export class MoneyOpJournal {
   /** Advance the phase after the commit (so a post-commit crash records it was actually placed/sent).
    *  UPSERT: if a transient begin() write failed (blip) or the entry was clobbered, record() is the one
    *  call made with CERTAIN knowledge the op landed on Steam — so it CREATES the entry when absent rather
-   *  than silently no-op'ing away the highest-value crash-protection window (H-TRD-110). */
+   * than silently no-op'ing away the highest-value crash-protection window. */
   record(opHash: string, op: string, phase: MoneyOpPhase, detail?: string): void {
     if (!this.enabled) return;
     try {
@@ -158,7 +158,7 @@ export class MoneyOpJournal {
     } catch { /* never throw */ }
   }
 
-  /** Remove the entry — call in the finally on a CLEAN resolution (success or a DEFINITE, non-transport-ambiguous caught failure; callers skip this on a transport-ambiguous commit (S3) or a refusal (S15)). */
+  /** Remove the entry — call in the finally on a CLEAN resolution (success or a DEFINITE, non-transport-ambiguous caught failure; callers skip this on a transport-ambiguous commit or a refusal). */
   resolve(opHash: string): void {
     if (!this.enabled) return;
     try {
@@ -178,7 +178,7 @@ export class MoneyOpJournal {
     if (!this.enabled) return undefined;
     try {
       const { map, unreliable } = this.read();
-      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do NOT persist the fabricated-empty sweep
+      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do not persist the fabricated-empty sweep
       const swept = this.sweep(map);
       this.write(swept); // persist the sweep
       return swept[opHash];
@@ -188,18 +188,18 @@ export class MoneyOpJournal {
   }
 
   /**
-   * S15: decide REFUSE vs ALLOW for a lingering entry, enforcing a "check on Steam, then retry" PAUSE
+   * Decide REFUSE vs ALLOW for a lingering entry, enforcing a "check on Steam, then retry" PAUSE
    * that a synchronous consume-on-refuse could not. Returns the entry to REFUSE (and KEEPS it on disk),
-   * or undefined to ALLOW (consuming the entry). The FIRST encounter is refused and stamped `refusedAt`;
-   * a re-attempt within `minRefuseMs` (a double-click / rapid re-fire) is refused AGAIN and the entry is
-   * NOT consumed; a DELIBERATE re-attempt after `minRefuseMs` — or `force` — is allowed and consumes the
+   * or undefined to ALLOW (consuming the entry). The first encounter is refused and stamped `refusedAt`;
+   * a re-attempt within `minRefuseMs` (a double-click / rapid re-fire) is refused again and the entry is
+   * not consumed; a DELIBERATE re-attempt after `minRefuseMs` — or `force` — is allowed and consumes the
    * entry so the caller proceeds. Best-effort; a journal error degrades to ALLOW (today's no-dedup).
    */
   consultRefusal(opHash: string, opts?: { force?: boolean; minRefuseMs?: number }): MoneyOpEntry | undefined {
     if (!this.enabled) return undefined;
     try {
       const { map, unreliable } = this.read();
-      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do NOT write/delete over an unread file (would erase other accounts' lingering entries)
+      if (unreliable) return undefined; // a transient read blip — allow (today's degrade), and do not write/delete over an unread file (would erase other accounts' lingering entries)
       this.sweep(map);
       const entry = map[opHash];
       if (!entry) { this.write(map); return undefined; } // no lingering op → allow (persist the sweep)
@@ -210,7 +210,7 @@ export class MoneyOpJournal {
         this.write(map);
         return undefined;
       }
-      if (typeof entry.refusedAt !== 'number') entry.refusedAt = this.now(); // stamp the FIRST refusal
+      if (typeof entry.refusedAt !== 'number') entry.refusedAt = this.now(); // stamp the first refusal
       this.write(map); // keep the entry so a rapid re-fire is refused too
       return entry;
     } catch {

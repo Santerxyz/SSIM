@@ -9,8 +9,8 @@ import { logger } from '../utils/logger';
 // ════════════════════════════════════════════════════════════════════════════
 //  AccountImportService — Feature 1 "Account Login"
 //
-//  Imports an account WITHOUT a maFile, via QR or credentials, using steam-session
-//  ONLY to negotiate a refresh token. The token is persisted through the SAME
+//  Imports an account without a maFile, via QR or credentials, using steam-session
+//  ONLY to negotiate a refresh token. The token is persisted through the same
 //  TokenStore the SessionManager reads (vault in vault-mode, refresh_tokens.json
 //  otherwise), so the account then logs in TOKEN-FIRST with no further prompts.
 //
@@ -91,7 +91,7 @@ export class AccountImportService {
     this.assertCapacity();
 
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
-    // loginTimeout must be set BEFORE polling begins (i.e. before startWithQR resolves).
+    // loginTimeout must be set before polling begins (i.e. before startWithQR resolves).
     session.loginTimeout = LOGIN_TIMEOUT_MS;
 
     const id = uuidv4();
@@ -123,7 +123,7 @@ export class AccountImportService {
   // ── Credentials login ─────────────────────────────────────────────────────────
 
   /**
-   * Starts a credentials login attempt. The password is used ONCE to negotiate the
+   * Starts a credentials login attempt. The password is used once to negotiate the
    * token and is NEVER persisted (the refresh token is the durable credential).
    * Returns the sessionId and whether a Steam Guard code is now required.
    */
@@ -136,7 +136,7 @@ export class AccountImportService {
     if (this.accounts.get(accountName)) throw new Error(`Account "${accountName}" already exists`);
 
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
-    // loginTimeout must be set BEFORE polling begins — confirmation-only guards start
+    // loginTimeout must be set before polling begins — confirmation-only guards start
     // polling via setImmediate as soon as startWithCredentials resolves, and the setter
     // throws once polling has started. Without this the credentials path silently used
     // the library's 30s default while expiresAt advertised the full window below.
@@ -209,7 +209,7 @@ export class AccountImportService {
     this.prune();
     const rec = this.active.get(sessionId);
     if (!rec) return;
-    // Mark terminal BEFORE deleting so a poll response that lands mid-cancel (steam-session
+    // Mark terminal before deleting so a poll response that lands mid-cancel (steam-session
     // emits 'authenticated' after its network await with no post-await cancel re-check) cannot
     // finalize on a rec we've already discarded — the 'authenticated'/'error' guards observe finishedAt.
     rec.state = 'error';
@@ -265,8 +265,8 @@ export class AccountImportService {
 
     // 2) Org record. Token-only ⇒ no password, no maFile ⇒ LIMITED. accounts.json stays secret-free.
     const existing = this.accounts.get(username);
-    // INV-A2: a NEW token-only account whose ONLY credential never reached disk (vault/disk problem, the
-    // S24/B2 swallow) would become a permanently login-less record after restart. Abort BEFORE creating it
+    // A new token-only account whose ONLY credential never reached disk (vault/disk problem, the
+    // S24/B2 swallow) would become a permanently login-less record after restart. Abort before creating it
     // so no org record exists without a login path; the wireEvents .catch surfaces this as state 'error' and
     // a retry after fixing storage re-mints cleanly. An existing account keeps whatever login path it had.
     if (!existing && !persisted) throw new Error('refresh token could not be persisted (vault/disk problem) — import aborted; fix storage and retry');
@@ -295,7 +295,7 @@ export class AccountImportService {
   }
 
   /** Maps the environment's proxy (or none) to steam-session network options.
-   *  Normalizes via the same normalizeProxy every other network path applies (B24),
+   * Normalizes via the same normalizeProxy every other network path applies,
    *  so legacy non-URL env proxies (host:port:user:pass etc.) work here too; reads the
    *  B20 single-source envProxyFor so vault mode never uses a stale in-memory copy. */
   private networkOptions(environmentId: string): { localAddress?: string; httpProxy?: string; socksProxy?: string } {

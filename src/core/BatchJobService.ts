@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  W3_32 — BatchJobService: the canonical fan-out. Pick a scope (→ usernames[]),
-//  pick a job, run it, watch ONE progress surface, keep a history.
+//  pick a job, run it, watch one progress surface, keep a history.
 //
 //  The engine is a ROUTER, not a worker. Each JobDef's adapter is a CLOSURE (built in
 //  server.ts over the real services) that either (a) kicks an EXISTING fan-out service

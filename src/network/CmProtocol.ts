@@ -1,7 +1,7 @@
 /**
  * Per-proxy Steam CM protocol selection with automatic TCP → WebSocket demotion.
  *
- * WHY THIS EXISTS (owner report 2026-07-09: "3 proxy providers used to work, now only one"):
+ * WHY this EXISTS (owner report 2026-07-09: "3 proxy providers used to work, now only one"):
  * the proxy tank (b58002a) forces steam-user `protocol: TCP` to remove the wss-TLS-over-proxy
  * teardown primitive behind the 0xC0000409 native fast-fail. Under an HTTP proxy, TCP CM
  * connections are tunneled via HTTP CONNECT to the CM's raw TCP ports (27017-27050) — but many
@@ -11,7 +11,7 @@
  * worked everywhere — which is why the breakage is provider-dependent.
  *
  * POLICY: TCP-first (keeps the tank's anti-crash win wherever the provider allows it); after
- * TCP_FAILURES_TO_DEMOTE consecutive connection-class TCP failures on the SAME proxy
+ * TCP_FAILURES_TO_DEMOTE consecutive connection-class TCP failures on the same proxy
  * (host:port — shared across all accounts on it, so a fleet converges after the first two
  * failures, not two per account), that proxy is demoted to WebSocket for the process lifetime.
  * WebSocket re-accepts the wss-TLS primitive for that one proxy — a working-but-riskier
@@ -46,7 +46,7 @@ const REPROBE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 // Keyed by provider HOST (not host:port) — the "provider blocks CONNECT to the CM ports" policy is a
 // host-wide firewall rule, so all ports of one provider share the verdict (a fleet on a rotating pool
-// converges after the first two failures on ANY of its ports, not two per port). Value = demotedAt (ms).
+// converges after the first two failures on any of its ports, not two per port). Value = demotedAt (ms).
 const demoted = new Map<string, number>();
 const tcpFailStreak = new Map<string, number>();
 
@@ -66,7 +66,7 @@ export function envCmProtocolOverride(raw: string | undefined = process.env.SSIM
 }
 
 /**
- * Load persisted demotions at boot so a known-CONNECT-blocked provider is NOT re-learned (two failed
+ * Load persisted demotions at boot so a known-CONNECT-blocked provider is not re-learned (two failed
  * logins) on every run. Only demotions FRESHER than REPROBE_AFTER_MS are trusted; older ones are left
  * out of the live set so the next login re-probes TCP (and re-persists fresh if it still fails, or
  * promotes if it now works). Best-effort — a missing/corrupt file just means an empty learning slate.
@@ -78,7 +78,7 @@ export function loadPersisted(path: string = dataDir('cm-protocol.json')): void 
     const data = JSON.parse(fs.readFileSync(path, 'utf8')) as { demoted?: Record<string, { demotedAt?: string }> };
     const now = Date.now();
     let loaded = 0, stale = 0;
-    // Seed EVERY persisted demotion (fresh AND stale) with its timestamp. The age check lives in
+    // Seed every persisted demotion (fresh and stale) with its timestamp. The age check lives in
     // chooseCmProtocol: a fresh (<24h) demotion is trusted (WebSocket, no re-learning across restarts);
     // a stale one is re-probed on TCP and then either promoted (removed) or re-demoted (clock refreshed) —
     // so a genuinely-blocked provider re-probes at most once per 24h, not every run.
@@ -149,7 +149,7 @@ export function noteCmOutcome(pkey: string | null, used: CmProtocolLabel, ok: bo
   return null;
 }
 
-/** Test hook: forget all demotions/streaks AND disable persistence (so tests never write data/). */
+/** Test hook: forget all demotions/streaks and disable persistence (so tests never write data/). */
 export function resetCmProtocolLearning(): void {
   demoted.clear();
   tcpFailStreak.clear();

@@ -26,7 +26,7 @@ const SCHEMA_MAX_AGE_MS = 14 * 24 * 3600 * 1000;
 /**
  * The WEAPON trade-up ladder: each rarity tier → the tier a contract of it PRODUCES.
  * Terminal tiers are absent (Covert produces nothing tradeable; Contraband is unobtainable).
- * Knife/glove 'rarity_ancient' (note: NO '_weapon' suffix) is deliberately NOT a ladder member —
+ * Knife/glove 'rarity_ancient' (note: NO '_weapon' suffix) is deliberately not a ladder member —
  * those are not trade-up inputs or outputs.
  */
 const RARITY_LADDER: Record<string, string> = {
@@ -133,7 +133,7 @@ export class Cs2SchemaService {
     } catch (e) {
       if (staleRaw) {
         // Refresh failed but we hold a usable dated cache — serve it (stale-but-usable beats empty;
-        // keep-current policy, not a retry wrapper). Do NOT touch the file.
+        // keep-current policy, not a retry wrapper). Do not touch the file.
         const dated = staleMtime ? new Date(staleMtime).toISOString() : 'unknown';
         logger.warn(`[schema] refresh failed (${(e as Error).message}) — serving cached schema from ${dated}`);
         this.index(staleRaw);
@@ -141,7 +141,7 @@ export class Cs2SchemaService {
         logger.info(`[schema] loaded ${this.byBaseName.size} skins across ${this.byCollectionRarity.size} collections`);
         return;
       }
-      // No usable cache at all — a well-formed but empty/drifted 200 must NOT be persisted (the
+      // No usable cache at all — a well-formed but empty/drifted 200 must not be persisted (the
       // infinite-TTL poison). Clear the indexes, stay unloaded, and surface a visible, retryable error.
       this.byBaseName.clear();
       this.byCollectionRarity.clear();
@@ -203,7 +203,7 @@ export class Cs2SchemaService {
   }
 
   /** OutputProvider.outputsFor — next-rarity skins in `collection` above `inputRarityId`, DEDUPED
-   *  by market name. Steam treats same-named variants (e.g. a Gamma Doppler's phases) as ONE
+   *  by market name. Steam treats same-named variants (e.g. a Gamma Doppler's phases) as one
    *  tradeable item, so the trade-up output pool must count each name once — otherwise that
    *  outcome's probability is doubled and the EV skews. (Found in the 2021 Train Collection.) */
   outputsFor(collection: string, inputRarityId: string): Array<{ name: string; minFloat: number; maxFloat: number }> {
@@ -220,7 +220,7 @@ export class Cs2SchemaService {
     return out;
   }
 
-  /** A skin is a valid trade-up INPUT iff it's a weapon tier with a next tier AND its collection
+  /** A skin is a valid trade-up INPUT iff it's a weapon tier with a next tier and its collection
    *  actually has ≥1 next-tier skin to produce. */
   isEligibleInput(def: SkinDef): boolean {
     const next = RARITY_LADDER[def.rarityId];
@@ -234,7 +234,7 @@ export class Cs2SchemaService {
   }
 }
 
-// Type-honest: a null/'' field must yield the declared default, NOT Number(null)===0.
+// Type-honest: a null/'' field must yield the declared default, not Number(null)===0.
 // ByMykel emits floats as JSON numbers, so numeric-string tolerance is not needed.
 function numOr(v: unknown, d: number): number { return typeof v === 'number' && Number.isFinite(v) ? v : d; }
 

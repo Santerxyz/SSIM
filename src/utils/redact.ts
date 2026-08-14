@@ -1,14 +1,14 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  redact.ts – the ONE canonical secret redactor for every log / crash / API sink.
+//  redact.ts – the one canonical secret redactor for every log / crash / API sink.
 //
 //  Two proxy-credential shapes can carry a user:pass into a sink:
 //    • URL userinfo   scheme://user:pass@host:port   (a failed proxied request puts
 //                     the whole URL, creds included, into Error.message/stack).
 //    • legacy formats host:port:user:pass, user:pass@host:port, etc. — a value stored
 //                     by a pre-normalizeProxy version, or a bare proxy value logged raw.
-//  `redactSecrets` masks BOTH so the proxy path is fully covered wherever it is applied.
+//  `redactSecrets` masks both so the proxy path is fully covered wherever it is applied.
 //
-//  SCOPE — what this does NOT do: it does not scrub non-proxy secret VALUES
+//  SCOPE — what this does not do: it does not scrub non-proxy secret VALUES
 //  (identity_secret / shared_secret / revocation_code / refresh_token / access_token /
 //  account password / license key). Those must never be passed to a log/crash sink in
 //  the first place — that "no secret value at a sink" rule is enforced by
@@ -26,7 +26,7 @@ function isPort(x: string): boolean { return /^\d{1,5}$/.test(x) && +x >= 1 && +
 interface ParsedProxy { scheme: string; host: string; port: string; username?: string; password?: string; }
 
 /**
- * Parses a WHOLE string that is a bare proxy value (any accepted format) into its parts,
+ * Parses a whole string that is a bare proxy value (any accepted format) into its parts,
  * or null if the whole string doesn't look like a proxy. Mirrors AgentFactory.parseProxy;
  * kept local to keep this module dependency-free (see header). Because it only matches a
  * whole bare value — never a proxy-shaped substring inside a longer log line — it is safe
@@ -76,7 +76,7 @@ function parseProxy(raw: string): ParsedProxy | null {
 /**
  * Strips proxy credentials from a string before it is logged, written to a crash file,
  * or returned over the API. First masks any URL-userinfo token embedded anywhere in the
- * text; then, if the WHOLE string is a bare legacy-form proxy value that carries creds,
+ * text; then, if the whole string is a bare legacy-form proxy value that carries creds,
  * masks that too. Non-proxy text is returned unchanged.
  */
 export function redactSecrets(input: string): string {
@@ -84,7 +84,7 @@ export function redactSecrets(input: string): string {
   // W3_31: mask Steam wallet-code shapes (a bearer secret) anywhere in the text — XXXXX-XXXXX-XXXXX.
   let s = input.replace(/[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}/gi, '«wallet-code»');
   // W4_40: mask paysafecard PINs (a 16-digit bearer secret) — as one run "1234567890123456" or in the
-  // common 4×4 grouped forms "1234 5678 9012 3456" / "1234-5678-9012-3456". Runs BEFORE the URL/proxy
+  // common 4×4 grouped forms "1234 5678 9012 3456" / "1234-5678-9012-3456". Runs before the URL/proxy
   // masks so a PIN pasted anywhere near a proxy string is still scrubbed. (\D-anchored so it never eats a
   // digit off a longer number.)
   s = s.replace(/(?<!\d)\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}(?!\d)/g, '«paysafe-pin»');

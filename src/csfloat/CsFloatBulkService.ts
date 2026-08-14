@@ -5,7 +5,7 @@ import { logger } from '../utils/logger';
 // ════════════════════════════════════════════════════════════════════════════
 //  CsFloatBulkService — many-at-once CSFloat listing operations.
 //
-//  The workspace could only ever act on ONE item per click (type a price, press List,
+//  The workspace could only ever act on one item per click (type a price, press List,
 //  repeat), which is unusable against a real stall. This runs the same verified
 //  single-item endpoints in a paced loop with live progress and cancel-after-current,
 //  mirroring how CasketService/TradeUpService already model long jobs.
@@ -131,7 +131,7 @@ export class CsFloatBulkService {
 
   // ── internals ───────────────────────────────────────────────────────────────
 
-  /** Shared up-front validation: refuse the WHOLE batch on a malformed row rather than
+  /** Shared up-front validation: refuse the whole batch on a malformed row rather than
    *  discovering it mid-run, by which point real listings already exist at real prices. */
   private validateStart<T>(
     username: string,
@@ -167,7 +167,7 @@ export class CsFloatBulkService {
       running: true, cancelling: false, cancelled: false, cancelRequested: false,
       kind, username, total, done: 0, ok: 0, failed: 0, failures: [], startedAt: new Date().toISOString(),
     };
-    const job = this.job; // bind THIS job so a late write can never land in the NEXT one
+    const job = this.job; // bind this job so a late write can never land in the NEXT one
     // S33 shape: a fire-and-forget worker that rejects must still release the job, or `running`
     // latches true forever and every later start 409s until restart.
     void body(job)

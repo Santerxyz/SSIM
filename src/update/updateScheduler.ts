@@ -8,9 +8,9 @@ import {
 } from './updateStatus';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  updateScheduler.ts — periodic + manual update checks (C5).
+// updateScheduler.ts — periodic + manual update checks.
 //
-//  The stranded fleet only ever checked for an update ONCE per process launch
+//  The stranded fleet only ever checked for an update once per process launch
 //  (update-reliability finding 6.10). A 24/7 operator machine that never restarts
 //  therefore never learned a new version existed. This adds:
 //    • a periodic (6h) CHECK — refreshes the "update available" surface + the
@@ -19,7 +19,7 @@ import {
 //      surprise-restart a running session.
 //    • a manual "check / install now" path (the authenticated endpoint) — the
 //      only way an update is APPLIED mid-session, and only on explicit user
-//      confirmation AND when no trade/buy/refresh is in flight.
+//      confirmation and when no trade/buy/refresh is in flight.
 //
 //  This is the "gate the swap on idle OR user confirmation" rule from C5: no
 //  mid-session swap is ever automatic. Boot-time auto-update (index.ts) is
@@ -28,7 +28,7 @@ import {
 
 export interface UpdateSchedulerDeps {
   currentVersion: string;
-  /** True when a trade / buy / mass-job / refresh is in flight → do NOT touch the swap path. */
+  /** True when a trade / buy / mass-job / refresh is in flight → do not touch the swap path. */
   isBusy: () => boolean;
 }
 
@@ -96,7 +96,7 @@ export function currentView(current: string): UpdateCheckView {
 }
 
 /**
- * CHECK-ONLY: refresh the available-update surface + telemetry WITHOUT downloading or swapping. Safe
+ * CHECK-ONLY: refresh the available-update surface + telemetry without downloading or swapping. Safe
  * mid-session. Returns the view for the manual endpoint. Single-flight (a periodic tick and a manual
  * check can't stack).
  */
@@ -112,7 +112,7 @@ export async function checkOnly(source: string): Promise<UpdateCheckView> {
       // S53 residue: a successful check that FINDS a newer version proves the server was reachable, so a
       // lingering 'check-failed' is now stale. Overwrite ONLY that poisoned marker (guard), so a real boot-time
       // swap outcome (swap-blocked / deferred-busy / selftest-* / ok) still riding the heartbeat is never clobbered.
-      // 'up-to-date' is the least-wrong STABLE value: it means "reachable, NOT stranded by a check failure" — the
+      // 'up-to-date' is the least-wrong STABLE value: it means "reachable, not stranded by a check failure" — the
       // only thing the C4 stranded-fleet histogram sizes (runUpdate's 'update' branch records no outcome either).
       if (getUpdateOutcome() === 'check-failed') setUpdateOutcome('up-to-date');
       logger.info(`[update] ${source} check: v${checked.info.latest} available (current v${current})`);
@@ -120,7 +120,7 @@ export async function checkOnly(source: string): Promise<UpdateCheckView> {
       setAvailableUpdate(undefined);
       setUpdateOutcome('up-to-date'); // symmetric with runUpdate: a successful check clears any stale 'check-failed'
     } else {
-      // S53: a failed CHECK is NOT "up to date". Keep the last-known available-update (don't clear it) and
+      // A failed CHECK is not "up to date". Keep the last-known available-update (don't clear it) and
       // record the distinct outcome so telemetry / the stranded-fleet histogram counts this check.
       setUpdateOutcome('check-failed');
       logger.warn(`[update] ${source} check failed: ${checked.error}`);
@@ -135,9 +135,9 @@ export async function checkOnly(source: string): Promise<UpdateCheckView> {
 
 /**
  * USER-CONFIRMED install (from the dashboard's "Install now"). Refuses while a money op is in flight
- * (a swap exits the process). Otherwise runs the FULL update (download → verify → self-test → swap),
+ * (a swap exits the process). Otherwise runs the full update (download → verify → self-test → swap),
  * which exits the process on success — so this is fire-and-forget from the endpoint's perspective.
- * `force:true` re-attempts an artifact previously marked blocked (C3), because the user explicitly asked.
+ * `force:true` re-attempts an artifact previously marked blocked, because the user explicitly asked.
  */
 export function canInstallNow(): { ok: boolean; reason: string } {
   if (!deps) return { ok: false, reason: 'not-ready' };
@@ -155,11 +155,11 @@ export async function installNow(): Promise<{ updated: boolean; reason: string }
   inFlight = true;
   try {
     logger.info('[update] user-confirmed install starting (force) – will restart on success');
-    // S14: pass the live busy-check so runUpdate can RE-CHECK immediately before the swap (the endpoint's
+    // Pass the live busy-check so runUpdate can RE-CHECK immediately before the swap (the endpoint's
     // canInstallNow ran minutes ago — the download/self-test window is long enough to start a mass op).
     return await Updater.runUpdate(deps.currentVersion, { force: true, isBusy: deps.isBusy });
   } catch (err) {
-    // S33: runUpdate can still throw (verify / self-test spawn / swapAndRelaunch). Catch it here so it
+    // RunUpdate can still throw (verify / self-test spawn / swapAndRelaunch). Catch it here so it
     // never escapes the `void installNow()` call site as an unhandledRejection (which would writeCrash +
     // tick the money breaker). runUpdate already set the specific failure outcome for its known paths;
     // return a normal failure result rather than rejecting.

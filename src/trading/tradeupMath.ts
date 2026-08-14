@@ -2,7 +2,7 @@
 //  tradeupMath.ts — PURE trade-up contract math (no I/O, fully unit-testable).
 //
 //  Implements the CS2 trade-up rules exactly as specified:
-//   • A contract = 10 inputs of the SAME rarity tier and SAME StatTrak status, each
+//   • A contract = 10 inputs of the same rarity tier and same StatTrak status, each
 //     a trade-up-eligible skin from a collection that has a next-rarity tier.
 //   • Outcome pool = all next-rarity skins from the COLLECTIONS of the 10 inputs.
 //     Each input lends 1/10 weight to its own collection's output pool; each outcome's

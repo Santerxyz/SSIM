@@ -6,7 +6,7 @@
 //   account (tier 3)  ▸  folder (tier 2, deeper folder wins)  ▸  environment (tier 1)  ▸  global (tier 0)
 //
 // then, within the winning rule, picks a proxy from the pool — either STABLE per account
-// (rendezvous/HRW, when pinPerAccount) or a NEW proxy each login (round-robin cursor).
+// (rendezvous/HRW, when pinPerAccount) or a new proxy each login (round-robin cursor).
 //
 // Everything here is a PURE function of its inputs (rules, folders, and an injected cursor Map) —
 // no Date.now / Math.random / vault / disk — so it is unit-testable with tsx and safe to re-run.
@@ -114,8 +114,8 @@ function hrwPick(usernameLower: string, pool: string[]): string {
 }
 
 /** Rotation pick. The cursor stores the LAST-USED pool index. A login ADVANCES-then-picks (stores &
- *  returns the new index); a peek returns the stored index WITHOUT writing — so a peek reports the
- *  SAME exit the last login used (not the next one), and CSFloat/open-browser/preview never split
+ *  returns the new index); a peek returns the stored index without writing — so a peek reports the
+ *  same exit the last login used (not the next one), and CSFloat/open-browser/preview never split
  *  egress from the live Steam session (F4). Seeded by fnv1a(username). */
 function rotatePick(usernameLower: string, pool: string[], ctx: ResolveCtx): string {
   if (ctx.atLogin) {
@@ -182,7 +182,7 @@ function pickFromRule(rule: ProxyRule, uname: string, ctx: ResolveCtx): NetworkC
 /**
  * Resolve an account's effective network via the rule set. ALWAYS returns an outcome (never throws).
  * The MOST-SPECIFIC matched rule DECIDES — there is NO fall-through: a matched pool rule with a lost
- * pool refuses (`pool-lost`), it does NOT silently drop to a broader rule or the host IP. Only when
+ * pool refuses (`pool-lost`), it does not silently drop to a broader rule or the host IP. Only when
  * NO rule matches at all does it fall to LOCAL_IP (today's default for unproxied accounts).
  */
 export function resolveViaRules(account: AccountConfig, ctx: ResolveCtx): ResolveOutcome {
@@ -198,7 +198,7 @@ export interface ResolveExplain {
   ruleId: string | null;           // the winning rule (null when no rule matched → default local IP)
   scope: ProxyScope | null;
   poolLost: boolean;
-  /** Rules at the SAME (tier, folderDepth) as the winner — an ambiguous overlap resolved only by
+  /** Rules at the same (tier, folderDepth) as the winner — an ambiguous overlap resolved only by
    *  priority/id. Surfaced so the operator can spot conflicting rules. */
   overlaps: string[];
 }

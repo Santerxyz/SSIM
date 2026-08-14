@@ -20,7 +20,7 @@ export interface CurrencyInfo {
   decimals: number;
   /**
    * MINIMUM Steam fee per side (Steam's `wallet_fee_minimum`), in MINOR units of this
-   * currency. Steam charges `max(percent · net, feeMinimum)` for BOTH the Steam cut and
+   * currency. Steam charges `max(percent · net, feeMinimum)` for both the Steam cut and
    * the publisher cut, so on a CHEAP item the floor — not the percentage — decides what
    * the buyer pays. It is 1 minor unit in the "expensive" currencies (EUR/USD/GBP…) but
    * LARGER where a minor unit is worth far less, and assuming 1 everywhere is exactly the
@@ -29,7 +29,7 @@ export interface CurrencyInfo {
    * Only values PROVEN against a real listing are recorded here. Everything else omits the
    * field and falls back to `DEFAULT_FEE_MINIMUM` (1) — the pre-1.4.7 assumption, so no
    * currency changes behaviour without evidence. `AccountTrader.getMarketOrders` compares
-   * this model against the fee Steam reports on the account's OWN live listings and warns
+   * this model against the fee Steam reports on the account's own live listings and warns
    * when they disagree, so a wrong floor announces itself instead of silently mispricing.
    */
   feeMinimum?: number;
@@ -102,14 +102,14 @@ export const STEAM_CURRENCIES: Record<number, CurrencyInfo> = {
 
 /** Currency info for a Steam code; an unknown/absent code falls back to the EUR record (code 3, 2 decimals) —
  *  the input code is discarded, not preserved. For DISPLAY only — a money path must
- *  use {@link knownCurrencyInfo} instead (see S64). */
+ * use {@link knownCurrencyInfo} instead. */
 export function currencyInfo(code: number | undefined): CurrencyInfo {
   return (code != null && STEAM_CURRENCIES[code]) || { code: 3, iso: 'EUR', decimals: 2 };
 }
 
 /** Currency info for a KNOWN Steam code, or null when the code is unrecognised. MONEY paths MUST use this
  *  (never currencyInfo's 2-decimal fallback): an unknown code could be a 0-decimal currency, and assuming
- *  2 decimals would mis-scale a per-item price 100× — spending real money at the wrong amount. (S64.) */
+ * 2 decimals would mis-scale a per-item price 100× — spending real money at the wrong amount. */
 export function knownCurrencyInfo(code: number | undefined): CurrencyInfo | null {
   return (code != null && STEAM_CURRENCIES[code]) || null;
 }
@@ -117,7 +117,7 @@ export function knownCurrencyInfo(code: number | undefined): CurrencyInfo | null
 /**
  * Parses one of Steam's localized money strings ("2,14€", "$1,234.56", "¥150",
  * "1.234,56 zł") into MINOR units for the given currency decimals. The fractional
- * part is the group after the LAST '.'/',' when that group is NOT a 3-digit
+ * part is the group after the LAST '.'/',' when that group is not a 3-digit
  * thousands group and is no longer than `decimals` — an under-padded fraction
  * ("1,5" → 150) is right-padded rather than mis-read as an integer 10×/100× too
  * large. All other separators are thousands groupings. A trailing group longer
@@ -138,7 +138,7 @@ export function parseSteamMoney(s: unknown, decimals: number): number | null {
     // `lowest_price` was the plain "¥ 6,685". Blindly stripping every separator reads
     // that as 670904 — 100× the real price (a 100× overbid on the buy path). So apply
     // the same last-separator test as the fractional branch below: a trailing group
-    // that is NOT a 3-digit thousands group is a fraction, and is ROUNDED away.
+    // that is not a 3-digit thousands group is a fraction, and is ROUNDED away.
     const sep = Math.max(cleaned.lastIndexOf('.'), cleaned.lastIndexOf(','));
     const frac = sep >= 0 ? cleaned.slice(sep + 1) : '';
     if (frac.length > 0 && frac.length !== 3) {
@@ -173,7 +173,7 @@ export function parseSteamMoney(s: unknown, decimals: number): number | null {
 // ─── Currency-mismatch detection on Steam's localized price strings ───────────
 
 /**
- * Symbols/abbreviations Steam puts in a localized price string, each mapped to EVERY
+ * Symbols/abbreviations Steam puts in a localized price string, each mapped to every
  * Steam currency that can legitimately produce it. Deliberately INCOMPLETE: a currency
  * whose marker is absent (AED, SAR, QAR, KWD, ZAR, TRY-as-"TL", PEN…) simply produces
  * no verdict, which is the safe direction — this table may only ever REFUSE a response,

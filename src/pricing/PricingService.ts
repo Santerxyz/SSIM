@@ -14,7 +14,7 @@ const ERROR_MISS_TTL_MS    = 10 * 60 * 1000;      // a transient error-miss expi
 const FETCH_DELAY_MS       = 3_500;               // ~17 req/min PER lane — gentle, well inside a logged-in budget
 const MAX_PRICE_LANES      = 8;                   // hard cap on parallel identity lanes
 const CSFLOAT_LANES        = 1;                   // CsFloatClient's per-key limiter is single-flight → 1 lane suffices
-// The 2026-07-10 failure model: a 429 is "this identity's budget is spent", NOT "sleep and retry the same
+// The 2026-07-10 failure model: a 429 is "this identity's budget is spent", not "sleep and retry the same
 // request" (the old 6×60-80s per-name stall turned a degraded endpoint into a ~day-long zombie grind that
 // re-armed Steam's rolling lockout). Two consecutive 429s retire the lane; when every lane retires the fill
 // aborts and the names are cached as SHORT soft-misses (re-tried in ~10min, not hammered).
@@ -24,7 +24,7 @@ const LANE_RETIRE_AFTER_429 = 2;
 // is logged in (e.g. a dashboard showing cached inventories with all sessions idle-reaped). We still
 // PREFER authenticated identity lanes when they exist (they spread volume across the accounts' proxies
 // and are the most robust), so the fill first DEFERS for a short grace to let a login arrive; only if
-// none does within the grace does it fall back to ONE anonymous lane. A login during the grace cancels
+// none does within the grace does it fall back to one anonymous lane. A login during the grace cancels
 // the fallback (kick → the preferred authenticated fill runs instead).
 const ANON_FALLBACK_GRACE_MS = 25_000;
 const APPID_CS2            = 730;
@@ -41,7 +41,7 @@ export interface PricingStatus {
   degradedReason?: string;    // set when selected ≠ effective (e.g. CSFloat chosen but no key) — surface it, never silent
 }
 
-/** One background fill job, pinned to its ENQUEUE-time cache key + source (S13). */
+/** One background fill job, pinned to its ENQUEUE-time cache key + source. */
 interface Job { name: string; appid: number; key: string; sourceId: PriceSourceId; }
 /** Per-lane instrumentation — printed once per lane so a fill's egress + status mix is greppable. */
 interface LaneStat { label: string; requests: number; ok: number; rl: number; err: number; consecutive429: number; }
@@ -58,7 +58,7 @@ interface LaneStat { label: string; requests: number; ok: number; rl: number; er
  * (spreads volume across the accounts' proxies — the most robust path). With no identity web-ready
  * (boot, or a logged-out dashboard on cached inventories) the fill DEFERS for a short grace and
  * `kick()` starts it the moment a session logs in; only if none arrives within the grace does it
- * fall back to ONE ANONYMOUS lane (P1) — now safe because that call, too, carries the fingerprint,
+ * fall back to one ANONYMOUS lane (P1) — now safe because that call, too, carries the fingerprint,
  * so valuations are never stranded. CSFloat (keyed) prices off Steam entirely and needs no identity.
  *
  * The cache is SEGMENTED by source so switching never serves a cross-source price: Steam
@@ -70,7 +70,7 @@ interface LaneStat { label: string; requests: number; ok: number; rl: number; er
  */
 export class PricingService {
   private cache = new PriceCache();
-  // S13: each job carries its ENQUEUE-time cache key + source, so a mid-fill effective-source flip (a
+  // Each job carries its ENQUEUE-time cache key + source, so a mid-fill effective-source flip (a
   // CSFloat key added/removed at runtime) cannot leave a stale key in `queued` forever.
   private queue: Job[] = [];
   private queued = new Set<string>(); // cache keys queued or in-flight (dedup across loads)
@@ -102,7 +102,7 @@ export class PricingService {
     this.anonFallbackGraceMs = opts?.anonFallbackGraceMs ?? ANON_FALLBACK_GRACE_MS;
   }
 
-  /** The EFFECTIVE source: CSFloat only when selected AND a key exists; else Steam (fallback). */
+  /** The EFFECTIVE source: CSFloat only when selected and a key exists; else Steam (fallback). */
   private activeSource(): PriceSource {
     if (AppSettings.getPriceSource() === 'csfloat' && this.csfloatSource && this.csfloatSource.available()) {
       return this.csfloatSource;
@@ -121,7 +121,7 @@ export class PricingService {
   getSource(): PriceSourceId { return this.activeSource().id; }
 
   /** Switches the app-wide source. Clears pending fetches so queued names re-price from the
-   *  NEW source; already-cached prices for that source serve instantly (cache is segmented). */
+   *  new source; already-cached prices for that source serve instantly (cache is segmented). */
   setSource(source: PriceSourceId): void {
     AppSettings.setPriceSource(source === 'csfloat' ? 'csfloat' : 'steam');
     this.queue = [];
@@ -145,7 +145,7 @@ export class PricingService {
 
   /** An entry is fresh for 24h (minus a deterministic per-name jitter, to break a cohort's TTL cliff),
    *  but only ERROR_MISS_TTL_MS if it is a transient error-miss (soft) — so a network blip is retried in
-   *  minutes, never served as a 24h "no price" (S2). */
+   * minutes, never served as a 24h "no price". */
   private isFresh(e: PriceEntry, key: string): boolean {
     const m = new Date(e.fetchedAt).getTime();
     if (!Number.isFinite(m)) return false;
@@ -193,7 +193,7 @@ export class PricingService {
    * aggregation callers that must not mutate the cached record. Returns the priced total plus the
    * honesty signals the snapshot needs: `missing` = names with no fresh cache entry (unpriced/stale,
    * must be queued), `softNull` = names whose fresh cache hit is a transient error-miss (soft, cents
-   * null — S2) so the total silently undercounts them. (H-INV-022.)
+   * null — S2) so the total silently undercounts them.
    */
   totalsOf(inv: AccountInventory): { totalCents: number; missing: Array<{ name: string; appid: number }>; softNull: number } {
     const appid = inv.game === 'tf2' ? APPID_TF2 : APPID_CS2;
@@ -258,7 +258,7 @@ export class PricingService {
    * The run splits by SOURCE. CSFloat jobs (keyed, off-Steam) drain through one lane on the shared
    * per-key limiter. Steam jobs ride up to MAX_PRICE_LANES authenticated identity lanes. If NO identity
    * is web-ready yet, the run DEFERS and arms a short grace timer (preferring an imminent login); only
-   * when invoked as the fallback (`opts.allowAnonymous`, from the grace timer) does it run ONE anonymous
+   * when invoked as the fallback (`opts.allowAnonymous`, from the grace timer) does it run one anonymous
    * lane instead — safe post header-fix, since every price call carries the browser fingerprint.
    */
   private async run(opts?: { allowAnonymous?: boolean }): Promise<void> {
@@ -267,7 +267,7 @@ export class PricingService {
     this.processedThisRun = 0;
     try {
       const steamPending   = this.queue.some((j) => j.sourceId === 'steam');
-      // CSFloat (keyed, off-Steam) warms the WHOLE CS2 catalog in ONE request, then only stragglers need a
+      // CSFloat (keyed, off-Steam) warms the whole CS2 catalog in one request, then only stragglers need a
       // per-name lane. This is the highest-certainty unblock: it never touches Steam's exhausted anonymous budget.
       if (this.queue.some((j) => j.sourceId === 'csfloat') && this.csfloatSource) await this.csfloatBulkWarm();
       const csfloatPending = this.queue.some((j) => j.sourceId === 'csfloat'); // recompute: bulk warm pruned the fresh ones
@@ -278,7 +278,7 @@ export class PricingService {
         catch (e) { logger.warn(`[pricing] identity provider failed (${(e as Error).message})`); }
       }
 
-      // This run prices Steam names anonymously only when it IS the fallback (opts.allowAnonymous) AND no
+      // This run prices Steam names anonymously only when it IS the fallback (opts.allowAnonymous) and no
       // identity turned up in the meantime (a login during the grace would have won via kick()).
       const anonymous = steamPending && identities.length === 0 && !!opts?.allowAnonymous;
 
@@ -299,7 +299,7 @@ export class PricingService {
 
       const lanes: Array<Promise<void>> = [];
       // Authenticated identity lanes when we have them (preferred — spreads volume across the accounts'
-      // proxies); otherwise ONE anonymous lane when this is the fallback run.
+      // proxies); otherwise one anonymous lane when this is the fallback run.
       const steamLaneCount = identities.length > 0 ? identities.length : (anonymous ? 1 : 0);
       const steamLaneDesc = identities.length > 0 ? `${identities.length} steam identity lane(s)`
         : anonymous ? '1 anonymous steam lane (fallback)' : '0 steam lanes';
@@ -315,7 +315,7 @@ export class PricingService {
           lanes.push(this.laneWorker('steam', (name, appid) => this.steamSource.fetchPriceCents(name, appid, route), stat));
         }
       } else if (anonymous) {
-        // Fallback: NO route → egresses the host IP with the browser fingerprint (header fix). ONE lane only
+        // Fallback: NO route → egresses the host IP with the browser fingerprint (header fix). one lane only
         // (single IP — don't fan a large fill across the host IP). Same 429 → retire → soft-miss semantics.
         const stat: LaneStat = { label: 'steam:anonymous', requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0 };
         steamStats.push(stat);
@@ -367,14 +367,14 @@ export class PricingService {
   }
 
   /** Arm the anonymous-fallback grace timer if not already armed (idempotent). A login (kick) or teardown
-   *  (shutdown) cancels it; the callback prices the deferred Steam names with ONE anonymous lane. */
+   *  (shutdown) cancels it; the callback prices the deferred Steam names with one anonymous lane. */
   private armAnonymousFallback(): void {
     if (this.fallbackTimer || this.stopped) return;
     this.fallbackTimer = setTimeout(() => { this.fallbackTimer = undefined; this.runAnonymousFallback(); }, this.anonFallbackGraceMs);
     this.fallbackTimer.unref?.();
   }
 
-  /** Grace-timer callback: with STILL no authenticated identity, run ONE anonymous fallback lane so a
+  /** Grace-timer callback: with still no authenticated identity, run one anonymous fallback lane so a
    *  logged-out dashboard isn't left without valuations. If a fill is already in progress (a login-driven
    *  authenticated fill, OR an overlapping csfloat run), RE-ARM and retry after the grace instead of dropping
    *  the fallback — otherwise the deferred Steam names would be stranded. No-op when nothing steam-side
@@ -387,7 +387,7 @@ export class PricingService {
   }
 
   /**
-   * Hydrate the csfloat-namespaced cache from ONE bulk price-list request, then PRUNE every queued CSFloat
+   * Hydrate the csfloat-namespaced cache from one bulk price-list request, then PRUNE every queued CSFloat
    * job the warm just satisfied (so the per-name lane only handles stragglers not in the catalog). Best-
    * effort: a failure logs and leaves the per-name lane to do the work. Only CS2 jobs are csfloat-pinned.
    */
@@ -425,8 +425,8 @@ export class PricingService {
    *  • success/authoritative      → cache the price, reset the lane's 429 streak.
    *  • RATE_LIMIT (429)           → cache a SHORT soft-miss IMMEDIATELY (no per-name stall), bump the streak;
    *                                 two consecutive 429s RETIRE the lane (its identity/key is out of budget).
-   *  • other (transport/5xx/…)    → cache a SHORT soft-miss, reset the streak (not a rate-limit signal). (S2)
-   * Every terminal outcome bumps `processed` (S19) and clears the `queued` dedup entry.
+   * • other (transport/5xx/…) → cache a SHORT soft-miss, reset the streak (not a rate-limit signal).
+   * Every terminal outcome bumps `processed` and clears the `queued` dedup entry.
    */
   private async laneWorker(sourceId: PriceSourceId, fetch: (name: string, appid: number) => Promise<number | null>, stat: LaneStat): Promise<void> {
     while (!this.stopped) {
@@ -454,8 +454,8 @@ export class PricingService {
           }
         } else {
           // A thrown fetch failure (transport ECONNRESET/timeout/DNS, or a Steam 5xx/403/non-success now
-          // surfaced as FETCH_FAILED) is NOT authoritative — cache a SHORT miss so it retries in minutes
-          // and never survives restart as a fake "no price". (S2)
+          // surfaced as FETCH_FAILED) is not authoritative — cache a SHORT miss so it retries in minutes
+          // and never survives restart as a fake "no price".
           stat.err++;
           stat.consecutive429 = 0;
           logger.warn(`[pricing] ${job.key}: ${(err as Error).message}`);

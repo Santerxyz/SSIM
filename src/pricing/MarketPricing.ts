@@ -7,7 +7,7 @@ const APPID_CS2     = 730;
 /** Steam currency code for EUR — the DEFAULT when a caller names no currency (dev reads,
  *  the dashboard's EUR-denominated summaries). It is no longer the only sellable currency:
  *  getSellInfo reads in whatever `PriceFetchOpts.currency` asks for, and MarketService
- *  passes each selling bot's OWN wallet currency so the number it hands market/sellitem
+ *  passes each selling bot's own wallet currency so the number it hands market/sellitem
  *  is already in the minor units Steam will interpret it as. */
 export const EUR_CURRENCY  = 3;
 /** priceoverview `country` param. Verified live 2026-08-03: `currency` is authoritative
@@ -33,7 +33,7 @@ export interface SellInfo {
    *  Steam actually answered. A null `lowestMinor` with `authoritative:true` is a
    *  genuine "no listings"; with `authoritative:false` the price was NEVER read
    *  (all tries threw: 429 storm, proxy reset, 5xx, or a throttled `success:false`)
-   *  and must NOT be cached as "no price" for the run (S2 class). */
+   *  and must not be cached as "no price" for the run (S2 class). */
   authoritative: boolean;
   /** Provenance of `lowestMinor`: `'lowest'` = a real live lowest ask; `'median'` =
    *  the median was substituted because no lowest ask existed; `null` = no price. */
@@ -59,11 +59,11 @@ export interface PriceFetchOpts {
    *  the shared rotating pool is routinely exhausted and 429s cold. Absent → an anonymous call (dev/no
    *  session), which the sell path only reaches when no account context is available. */
   cookieHeader?: string;
-  /** Wall-clock budget (ms) for the WHOLE getSellInfo cascade. When set, the loop
+  /** Wall-clock budget (ms) for the whole getSellInfo cascade. When set, the loop
    *  stops before a try it can't finish inside the budget, caps each try's axios
    *  timeout to the remaining time, and skips a backoff that would cross the
    *  deadline — so an interactive caller (sell-preview) can RESPOND before its own
-   *  120s client abort under a throttle storm (H-PRC-002). Unset = unbounded (the
+   * 120s client abort under a throttle storm. Unset = unbounded (the
    *  background mass-sell path is unchanged). */
   budgetMs?: number;
   /** Steam app the item belongs to — 730 (CS2, default) or 440 (TF2). Selects which market the
@@ -72,7 +72,7 @@ export interface PriceFetchOpts {
   /** Steam ECurrencyCode the price must be READ in — for a sell, the LISTING account's own
    *  wallet currency, because market/sellitem interprets its `price` field in exactly that
    *  currency's minor units. Default EUR (3). An unrecognised code is REFUSED rather than
-   *  guessed: assuming 2 decimals for a 0-decimal currency mis-scales the price 100× (S64). */
+   * guessed: assuming 2 decimals for a 0-decimal currency mis-scales the price 100×. */
   currency?: number;
 }
 
@@ -92,7 +92,7 @@ function describeErr(err: unknown): string {
 }
 
 /**
- * Live Steam Community Market price reader, in ANY Steam wallet currency (`opts.currency`,
+ * Live Steam Community Market price reader, in any Steam wallet currency (`opts.currency`,
  * default EUR/3).
  *
  * getSellInfo hardens priceoverview — the only Steam endpoint that reliably returns a sell price
@@ -108,9 +108,9 @@ function describeErr(err: unknown): string {
 export class MarketPricing {
   async getSellInfo(name: string, opts?: PriceFetchOpts): Promise<SellInfo> {
     const short = name.length > 44 ? name.slice(0, 42) + '…' : name;
-    // The currency is resolved ONCE, here, and every parse + log below is scaled by it. An
+    // The currency is resolved once, here, and every parse + log below is scaled by it. An
     // unrecognised code never reaches a request: we cannot know its minor-unit scale, and a
-    // wrong scale is a 100× mis-price on a real-money path (S64). `authoritative:false` marks
+    // wrong scale is a 100× mis-price on a real-money path. `authoritative:false` marks
     // it as "never read" so a mass-sell DEFERS the item instead of failing it as "no price".
     const currency = opts?.currency ?? EUR_CURRENCY;
     const cInfo = knownCurrencyInfo(currency);
@@ -128,7 +128,7 @@ export class MarketPricing {
     ];
 
     const t0 = Date.now();
-    // H-PRC-002: an optional wall-clock budget lets an interactive caller (sell-preview)
+    // An optional wall-clock budget lets an interactive caller (sell-preview)
     // bound the cascade so it RESPONDS before the 120s client abort under a throttle storm.
     // deadline is Infinity when no budget is set → every gate below is a no-op (background
     // mass-sell path unchanged).
@@ -137,7 +137,7 @@ export class MarketPricing {
     // (viaPriceOverview throws on any non-200 or success!==true). Track it so an
     // exhausted-with-no-price result is still authoritative if any try was answered.
     let sawAuthoritative = false;
-    // H-PRC-003: name the egress route honestly. The lever is the account's cookie (authenticated
+    // Name the egress route honestly. The lever is the account's cookie (authenticated
     // → its own per-session budget); the agent is that account's exit. An agentless / cookieless call
     // egresses anonymously from the shared IP and is what 429s — the log must not hide that.
     const route = opts?.cookieHeader
@@ -164,7 +164,7 @@ export class MarketPricing {
                `(basis ${info.basis}, method ${Date.now() - ts}ms, total ${Date.now() - t0}ms)`);
           return info;
         }
-        // H-PRC-004: an allowMedian try that authoritatively returns NEITHER a lowest ask
+        // An allowMedian try that authoritatively returns NEITHER a lowest ask
         // NOR a median cannot be read any more permissively by a later try — return the
         // all-null (authoritative) result now instead of burning try 3 + its backoff.
         if (m.allowMedian && info.medianMinor == null) {
@@ -247,7 +247,7 @@ export class MarketPricing {
       medianMinor:   median,
       volume:        parseVolume(r.data.volume),
       authoritative: true, // reached only on a 200 + success===true response
-      // H-PRC-004: provenance of lowestMinor — a real lowest ask, or the median
+      // Provenance of lowestMinor — a real lowest ask, or the median
       // substituted for it (line above) when no lowest ask existed, else no price.
       basis:         lowest != null ? 'lowest' : (lowestMinor != null ? 'median' : null),
       currency:      cInfo.code,
@@ -256,7 +256,7 @@ export class MarketPricing {
   }
 
   /**
-   * Lowest current ASK for ANY appid + currency, in MINOR units of that currency.
+   * Lowest current ASK for any appid + currency, in MINOR units of that currency.
    * Powers the buy modal's live-price auto-fill (CS2 730 / TF2 440, native wallet
    * currency). One direct priceoverview call; null when Steam returns no price.
    */
@@ -265,7 +265,7 @@ export class MarketPricing {
   ): Promise<number | null> {
     // Derive the minor-unit scale from `currency` INSIDE the module (fail closed) — never
     // trust a caller-supplied `decimals` sourced from the DISPLAY-grade currencyInfo fallback,
-    // which guesses 2 for an unknown code and would mis-scale a real 0-decimal ask 100× (S64/B18).
+    // which guesses 2 for an unknown code and would mis-scale a real 0-decimal ask 100×.
     const cInfo = knownCurrencyInfo(currency);
     if (!cInfo) return null;
     const url = `https://steamcommunity.com/market/priceoverview/` +
@@ -279,7 +279,7 @@ export class MarketPricing {
       headers,
     });
     // A non-200 (5xx/403/429/login-wall) or Steam-level failure (missing body / success !== true) is
-    // NOT an authoritative "no price" — it's a transient fetch failure (`success:false` is served under
+    // not an authoritative "no price" — it's a transient fetch failure (`success:false` is served under
     // throttle). THROW so the buy-modal autofill surfaces an honest, retryable error instead of a silent
     // empty field; the route's asyncHandler converts it to a 500 → the FE error toast. `null` then means
     // ONLY an authoritative 200 + success:true with no parseable lowest/median. (S2 parity, matches
@@ -312,7 +312,7 @@ function parseVolume(v: unknown): number | null {
  * The market/sellitem `price` parameter is the seller's `net`, so given a target
  * BUYER price we solve for the largest net whose buyer-facing total ≤ target.
  *
- * Every amount here is MINOR units of ONE currency (euro-cents, grosz, whole yen, …) and
+ * Every amount here is MINOR units of one currency (euro-cents, grosz, whole yen, …) and
  * callers must never mix denominations across a single call. The PERCENTAGES are the same
  * everywhere, but the FLOOR is not: it is Steam's per-currency `wallet_fee_minimum`
  * (`CurrencyInfo.feeMinimum`), 1 in EUR/USD but 4 in PLN. On a cheap item the floor is the
@@ -348,9 +348,9 @@ function normalizeFeeMinimum(feeMinimum: number): number {
 
 /**
  * Resolves the buyer-facing target price for a market-derived strategy, in MINOR units
- * of `info.currency`, or null. 'undercut' shaves ONE minor unit off the lowest ask —
+ * of `info.currency`, or null. 'undercut' shaves one minor unit off the lowest ask —
  * a cent in EUR/USD, a whole yen in JPY — which is the smallest step Steam accepts in
- * each currency. ('custom' is NOT handled here — its price is a fixed seller-net amount
+ * each currency. ('custom' is not handled here — its price is a fixed seller-net amount
  * supplied by the operator, scaled into each bot's currency in MarketService.)
  */
 export function targetBuyerMinor(info: SellInfo, strategy: SellStrategy): number | null {

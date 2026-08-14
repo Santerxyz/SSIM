@@ -26,10 +26,10 @@ class AppSettingsImpl {
   private file: SettingsFile;
   /** True when app_settings.json EXISTS but could not be read/parsed → the on-disk settings are
    *  untrustworthy. We surface it and REFUSE to write, so the present-but-corrupt file is never
-   *  clobbered by a later toggle — recover it, then restart. A MISSING file (fresh install) is NOT
+   *  clobbered by a later toggle — recover it, then restart. A MISSING file (fresh install) is not
    *  degraded. Mirrors CsFloatKeyStore's S12 pattern; the OLD code silently reset to defaults, and
    *  the next set() then persisted that empty state over the good file → csfloatExperimental flips
-   *  OFF and every account's auto-accept map is lost. (H-BOOT-012.) */
+   * OFF and every account's auto-accept map is lost. */
   private degraded = false;
 
   // Path injectable for tests; production uses the module SETTINGS_PATH default.
@@ -45,7 +45,7 @@ class AppSettingsImpl {
       const p = fsExtra.readJsonSync(this.filePath) as Partial<SettingsFile> | null;
       if (!p || typeof p !== 'object' || (p.csfloatAutoAccept !== undefined && (typeof p.csfloatAutoAccept !== 'object' || p.csfloatAutoAccept === null))) {
         // Present but wrong SHAPE → untrustworthy. DEGRADE instead of silently resetting to defaults
-        // (which the next save() would persist, clobbering the good file). (H-BOOT-012)
+        // (which the next save() would persist, clobbering the good file).
         this.degraded = true;
         logger.error(`${this.filePath} is present but malformed – refusing to overwrite it. Settings will NOT persist; restore ${path.basename(this.filePath)} from a backup (or delete it) and restart.`);
         return { ...DEFAULTS, csfloatAutoAccept: {} };
@@ -63,7 +63,7 @@ class AppSettingsImpl {
   }
 
   /** Persist to disk. Returns false (and logs) when the write was refused/failed — the mutation is
-   *  memory-only and will NOT survive a restart; callers surface this instead of reporting success. */
+   *  memory-only and will not survive a restart; callers surface this instead of reporting success. */
   private save(): boolean {
     if (this.degraded) {
       logger.warn('app_settings.json is degraded — refusing to overwrite; per-account auto-accept toggles will not persist until the file is restored and the app restarted');

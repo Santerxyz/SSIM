@@ -3,13 +3,13 @@ import { logsDir } from './paths';
 import { logger } from './logger';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  crashMarker.ts — the shell→backend "prior run crashed" handoff (B1).
+// crashMarker.ts — the shell→backend "prior run crashed" handoff.
 //
-//  On an UNEXPECTED backend death (NOT a clean window-close, NOT an update swap),
+//  On an UNEXPECTED backend death (not a clean window-close, not an update swap),
 //  the Tauri shell writes logs/last-crash.json with the exit code/signal + a tail
 //  of shell.log (see src-tauri/src/lib.rs). The backend reads + CONSUMES it once on
-//  the next boot to classify the prior exit for telemetry (C4) and to raise a
-//  dismissible "SSIM crashed last run" banner in the dashboard (B1).
+// the next boot to classify the prior exit for telemetry and to raise a
+// dismissible "SSIM crashed last run" banner in the dashboard.
 //
 //  VISIBILITY ONLY — reading this NEVER respawns anything (owner directive: a crash
 //  must be fixed, not hidden by an auto-restart band-aid). Keep this shape in sync
@@ -38,7 +38,7 @@ export function consumeCrashMarker(file: string = crashMarkerFile()): CrashMarke
     return undefined;
   };
   if (!fs.existsSync(file)) return undefined;
-  // A transient read failure (EBUSY/EPERM/EACCES from an AV lock, EMFILE at boot) must NOT
+  // A transient read failure (EBUSY/EPERM/EACCES from an AV lock, EMFILE at boot) must not
   // destroy a real crash banner — leave the file in place so it re-fires next boot.
   let text: string;
   try {

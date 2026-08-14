@@ -2,7 +2,7 @@ import path from 'path';
 import fs from 'fs';
 import fsExtra from 'fs-extra';
 
-// Monotonic per-process counter so two writes to the SAME target (even from the same
+// Monotonic per-process counter so two writes to the same target (even from the same
 // PID, e.g. a debounced store flush racing a force-flush) never share a temp filename
 // and clobber each other's half-written temp (#18). Combined with a random suffix.
 let tmpSeq = 0;
@@ -35,7 +35,7 @@ function renameOverLockedTarget(tmp: string, file: string): void {
 
 /**
  * Crash-safe JSON persistence: writes to a sibling temp file first and renames
- * it over the target. A plain writeJsonSync truncates the target BEFORE writing,
+ * it over the target. A plain writeJsonSync truncates the target before writing,
  * so a crash/power loss mid-write would destroy the file – fatal for
  * accounts.json (all credentials) or refresh_tokens.json (all sessions).
  * rename() on the same volume is atomic on Windows and POSIX. On Windows the
@@ -52,7 +52,7 @@ export function writeJsonAtomic(
 
   // Optional one-generation backup of the previous good state (.bak). Written
   // through a fsync'd temp + rename so a crash mid-copy can't tear the existing
-  // .bak, and copied with the SAME mode as the main write so a secret file's
+  // .bak, and copied with the same mode as the main write so a secret file's
   // backup inherits its owner-only perms rather than defaulting world-readable.
   if (opts?.backup && fs.existsSync(file)) {
     const bak = `${file}.bak`;
@@ -74,7 +74,7 @@ export function writeJsonAtomic(
   const tmp = `${file}.${uniqueTmpSuffix()}.tmp`;
   try {
     fsExtra.writeJsonSync(tmp, data, { spaces: opts?.spaces, mode: opts?.mode });
-    // Flush the temp file's data to disk BEFORE the rename, so a hard power loss
+    // Flush the temp file's data to disk before the rename, so a hard power loss
     // can't leave the renamed target pointing at a zero-length / partial file
     // (a torn inode on POSIX; a partially-written entry on NTFS).
     // Best-effort: a fsync failure must never abort an otherwise-good write.

@@ -2,8 +2,8 @@
 //  W3_30 — StoreService: money-safe HTTP client for store.steampowered.com.
 //
 //  No code hit the store domain before this. The trick (cleanBrowser.ts:32-42):
-//  `steamLoginSecure` is a JWT whose audience is "web" — the SAME value is accepted
-//  by EVERY Steam web domain; we just send it (plus `sessionid`) in the Cookie header
+//  `steamLoginSecure` is a JWT whose audience is "web" — the same value is accepted
+//  by every Steam web domain; we just send it (plus `sessionid`) in the Cookie header
 //  of a request whose URL is the store host. No cookie jar, no CDP, no second login.
 //
 //  Transport only. Every store JSON payload is UNDOCUMENTED and can change, so the
@@ -39,7 +39,7 @@ export const PAYSAFE_CURRENCY_ISO = 'EUR';
 const STORE_ORIGIN = 'https://store.steampowered.com';
 const STORE_UA = MARKET_UA;                 // the desktop UA the market path already uses
 const STORE_TIMEOUT_MS = 20_000;            // matches community call timeouts; well under the agent 120s force-retire
-const MAX_GET_REDIRECTS = 3;                // bounded, and EVERY hop is re-checked against the host allowlist
+const MAX_GET_REDIRECTS = 3;                // bounded, and every hop is re-checked against the host allowlist
 
 /** A 200-OK body that isn't the JSON object we expected (e.g. an HTML login page from a stale session). */
 export class StoreShapeError extends Error { constructor(msg: string) { super(msg); this.name = 'StoreShapeError'; } }
@@ -56,7 +56,7 @@ export function describe(v: unknown): string {
   return typeof v;
 }
 
-/** THE most important money-safety guard: a store endpoint returns an HTML login/error page
+/** the most important money-safety guard: a store endpoint returns an HTML login/error page
  *  (as a string, 200 OK) when the session is stale — this fails closed instead of a caller
  *  reading `undefined.success` and treating "unknown" as "success". */
 export function requireJsonObject(data: unknown, ctxLabel: string): Record<string, unknown> {
@@ -72,14 +72,14 @@ export function requireEResult(obj: Record<string, unknown>, field = 'success'):
 }
 // The authenticated Cookie (steamLoginSecure = a cross-domain "web" JWT) may go ONLY to these exact Steam
 // hosts. `checkout.steampowered.com` is where the wallet-recharge checkout (inittransaction/getfinalprice)
-// lives — the SAME JWT authenticates it; the store cart just hands off to it.
+// lives — the same JWT authenticates it; the store cart just hands off to it.
 const STEAM_WEB_HOSTS = new Set(['store.steampowered.com', 'checkout.steampowered.com']);
 const CHECKOUT_ORIGIN = 'https://checkout.steampowered.com';
-/** The token-auth WebAPI host. DELIBERATELY NOT in STEAM_WEB_HOSTS: nothing that carries the
+/** The token-auth WebAPI host. DELIBERATELY not in STEAM_WEB_HOSTS: nothing that carries the
  *  authenticated Cookie may go here. `webapiPost` sends no cookies at all (see there). */
 const STEAM_WEBAPI_HOST = 'api.steampowered.com';
 /** SSRF/typo guard: never send the authenticated Cookie to anything but an allowlisted Steam web host.
- *  Called before EVERY request AND before every redirect hop — `maxRedirects: 0` on the axios config means
+ *  Called before every request and before every redirect hop — `maxRedirects: 0` on the axios config means
  *  nothing is ever followed behind our back, so this is a real invariant and not just an entry check. */
 export function assertStoreHost(url: string): void {
   let host: string;
@@ -99,7 +99,7 @@ export function assertSteamHttpsUrl(url: string, label: string): void {
   if (!isSteamHttpsUrl(url)) throw new StoreShapeError(`${label}: refusing to open non-Steam URL`);
 }
 
-/** Steam returns money as minor-unit strings ("500") or numbers. Anything else is NOT a verified amount. */
+/** Steam returns money as minor-unit strings ("500") or numbers. Anything else is not a verified amount. */
 export function parseMinorUnits(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v) && v >= 0) return v;
   if (typeof v === 'string' && /^\d{1,12}$/.test(v.trim())) return Number(v.trim());
@@ -119,7 +119,7 @@ export interface StoreContext {
   /** Token-authenticated Steam WebAPI call (`IAccountCartService/…`), for the operations Steam's own
    *  store JS does that way. `method` is e.g. "IAccountCartService/DeleteCart/v1".
    *
-   *  This request carries NO Cookie header AT ALL — the `access_token` Steam publishes in the store
+   *  This request carries NO Cookie header AT all — the `access_token` Steam publishes in the store
    *  page's `data-store_user_config` is the whole credential. That is what lets it reach a host outside
    *  STEAM_WEB_HOSTS without weakening the invariant that list exists for: the authenticated
    *  `steamLoginSecure` JWT still never leaves the store/checkout hosts. */
@@ -134,7 +134,7 @@ export class StoreService {
   constructor(private sessions: SessionManager, private accounts: AccountManager) {}
 
   /** The ONLY entry point dependents use. Ensures a live+fresh session, binds a StoreContext to
-   *  that account's cookies+resolved-proxy agent, runs `fn`, and releases the session ONLY if THIS
+   *  that account's cookies+resolved-proxy agent, runs `fn`, and releases the session ONLY if this
    *  call created it (mirrors InventoryService ownership — never logs off an already-live account).
    *
    *  `opts.keepSession` suppresses that release so the CALLER owns the session's lifetime (W4_40: the
@@ -170,7 +170,7 @@ export class StoreService {
       handedOff = !!opts.keepSession;        // ONLY a successful fn hands the session to the caller
       return out;
     } finally {
-      // Release ONLY a session THIS call created (public path = logoutAccount, gated by isLive —
+      // Release ONLY a session this call created (public path = logoutAccount, gated by isLive —
       // destroySession is private; InventoryService.ts:823 uses exactly this). A keepSession call that
       // THREW never hands off: we release, so a failed init can't strand a resident session.
       if (createdByCall && !handedOff) {
@@ -185,13 +185,13 @@ export class StoreService {
    *
    *  `maxRedirects: 0` — axios NEVER follows a redirect on our behalf. Whether the authenticated Cookie
    *  survives a cross-host hop would otherwise be decided by follow-redirects' internal header-stripping
-   *  rather than by `assertStoreHost`. A GET follows redirects HERE, re-asserting the host on every hop
+   *  rather than by `assertStoreHost`. A GET follows redirects here, re-asserting the host on every hop
    *  and bounded by MAX_GET_REDIRECTS; a POST never follows at all, so a money POST's outcome is exactly
    *  the response Steam gave us (its Location is handed to the caller). */
   private async raw(agent: unknown, cookies: string[], method: 'GET' | 'POST', path: string, form: Record<string, string> | undefined, opts: StoreReqOpts | undefined): Promise<StoreResponse> {
     let url = path.startsWith('http') ? path : STORE_ORIGIN + path;
     for (let hop = 0; ; hop++) {
-      assertStoreHost(url);                  // re-checked EVERY hop — the cookie cannot leave the allowlist
+      assertStoreHost(url);                  // re-checked every hop — the cookie cannot leave the allowlist
       const origin = new URL(url).origin;    // store OR checkout — Origin/Referer must match the target host
       const headers: Record<string, string> = {
         Cookie: cookies.join('; '),          // steamLoginSecure (cross-domain JWT) + sessionid (CSRF)
@@ -218,7 +218,7 @@ export class StoreService {
   }
 
   /** GET is idempotent → bounded retry (2 retries) on transient transport faults / 502-504 only.
-   *  A 200-with-bad-shape or a definitive 4xx is NOT retried (that's the caller's fail-closed check). */
+   *  A 200-with-bad-shape or a definitive 4xx is not retried (that's the caller's fail-closed check). */
   private async retryGet(agent: unknown, cookies: string[], path: string, opts?: StoreReqOpts): Promise<StoreResponse> {
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -307,7 +307,7 @@ export class StoreService {
     });
   }
 
-  /** Activate a promo / limited-time-free license (subId). NOT money-in, no journal. Best-effort
+  /** Activate a promo / limited-time-free license (subId). not money-in, no journal. Best-effort
    *  classification of the store's response. ⚠ Endpoint shape is undocumented — verify live. */
   async addFreeLicense(username: string, subId: number): Promise<{ status: 'added' | 'already-owned' | 'unavailable'; detail: string }> {
     return this.withStoreSession(username, async (ctx) => {
@@ -351,7 +351,7 @@ export class StoreService {
       if (!iso) { const cm = html.match(/id="input_currency"[^>]*value="([A-Za-z]{3})"/i) ?? html.match(/name="currency"[^>]*value="([A-Za-z]{3})"/i); if (cm) iso = cm[1]; }
       iso = iso.toUpperCase();
       const currency = isoToCurrencyCode(iso) || (session.wallet?.currency ?? 0);
-      // `supported` must mirror EXACTLY what initPaysafeCheckout will accept — the currency read off the
+      // `supported` must mirror exactly what initPaysafeCheckout will accept — the currency read off the
       // addfunds PAGE. Falling back to the session's wallet currency here would light up an "Open checkout"
       // button that the backend then refuses (it cannot read the page ISO either). An unreadable currency is
       // unsupported, not assumed-EUR; `iso: ''` tells the UI to say so honestly.
@@ -368,15 +368,15 @@ export class StoreService {
    * paysafecard's page; this just prepares the transaction.
    *
    * MONEY-SAFETY (fail-closed at every step — a throw means no browser opens, so no charge can occur):
-   *  • EUR-only. A non-EUR addfunds page or wallet is refused BEFORE a cart is built.
-   *  • The cart gid is taken from THIS submit's redirect, never a pre-existing cart, so an abandoned
+   *  • EUR-only. A non-EUR addfunds page or wallet is refused before a cart is built.
+   *  • The cart gid is taken from this submit's redirect, never a pre-existing cart, so an abandoned
    *    earlier top-up cannot silently ride along.
    *  • getfinalprice's EResult must be OK, and the order amount Steam reports back must EQUAL the amount
    *    the operator confirmed. Verifying "what we asked for" and "what arrived" is not enough — this is
    *    the only step that checks what Steam is about to actually CHARGE.
    *  • `externalurl` is validated as an https Steam host before it is ever handed to a browser.
    *
-   * On success the account's session is left LIVE (`sessionOwned` tells the caller whether it now owns it):
+   * On success the account's session is left live (`sessionOwned` tells the caller whether it now owns it):
    * Steam pushes wallet updates to a resident session, so the credit poll never needs to re-login.
    */
   async initPaysafeCheckout(
@@ -421,7 +421,7 @@ export async function performPaysafeCheckout(
     throw new StoreShapeError(`paysafecard top-ups are EUR-only — this account's Steam wallet is ${currencyIso}`);
 
   // 1b) The wallet itself must be EUR too (an empty wallet reports currency 0 + hasWallet:false, which
-  //     is fine: it is 0 €). Checked BEFORE any cart exists, so a mismatch never leaves state behind.
+  //     is fine: it is 0 €). Checked before any cart exists, so a mismatch never leaves state behind.
   const wallet = await readWallet();
   if (wallet?.hasWallet && wallet.currency !== PAYSAFE_CURRENCY_CODE)
     throw new StoreShapeError(`paysafecard top-ups are EUR-only — this account's Steam wallet is currency ${wallet.currency}`);
@@ -433,14 +433,14 @@ export async function performPaysafeCheckout(
 
   // 2) POST /steamaccount/addfundssubmit (action=add_to_cart) → puts the recharge IN the cart. Not
   //    following the redirect (raw() never follows a POST) is deliberate: its Location carries the gid
-  //    of the cart THIS submit created, which is what step 3 must use.
+  //    of the cart this submit created, which is what step 3 must use.
   const submit = await ctx.post('/steamaccount/addfundssubmit', { action: 'add_to_cart', currency: PAYSAFE_CURRENCY_ISO, amount: String(amountMinor), sessionID, mtreturnurl: '' }, { referer: `${STORE_ORIGIN}/steamaccount/addfunds` });
   // A 3xx is the SUCCESS shape here (Steam redirects to the checkout it just built); a 4xx/5xx must not
   // fall through to the /cart/ fallback, which would quietly check out whatever the standing cart holds.
   if (submit.status >= 400) throw new StoreHttpError(submit.status, `addfundssubmit → ${submit.status}`);
   const submitBody = typeof submit.data === 'string' ? submit.data : JSON.stringify(submit.data ?? '');
 
-  // 3) Resolve the cart gid: THIS submit's redirect first, then its body. Falling back to the standing
+  // 3) Resolve the cart gid: this submit's redirect first, then its body. Falling back to the standing
   //    /cart/ page is a last resort and is WARNED, because that cart may still hold an abandoned
   //    recharge — the amount assertion in step 6 is what actually catches that.
   let gidShoppingCart = '-1', bUseAccountCart = '1';
@@ -455,7 +455,7 @@ export async function performPaysafeCheckout(
   }
   if (gm) { gidShoppingCart = gm[1]; bUseAccountCart = '0'; }
 
-  // 4) The checkout (inittransaction/getfinalprice) lives on checkout.steampowered.com, NOT the store
+  // 4) The checkout (inittransaction/getfinalprice) lives on checkout.steampowered.com, not the store
   //    host. GET the authenticated checkout page first — the same steamLoginSecure JWT authenticates it,
   //    it sets up the transaction context, and it carries the checkout-domain sessionid (g_sessionID).
   const checkoutUrl = `${CHECKOUT_ORIGIN}/checkout/?cart=${gidShoppingCart}&purchasetype=self`;
@@ -466,7 +466,7 @@ export async function performPaysafeCheckout(
   const checkoutSid = coSidM ? coSidM[1] : ctx.sessionid;
 
   // 5) POST inittransaction to the CHECKOUT host with paysafecard forced. NB the token Steam expects is
-  //    'paysafe' (verified from the live checkout page's PaymentMethodProperties) — NOT 'paysafecard';
+  //    'paysafe' (verified from the live checkout page's PaymentMethodProperties) — not 'paysafecard';
   //    that mismatch was the last EResult 2 (paymentmethod echoed back 0 = unrecognized).
   const initForm: Record<string, string> = {
     gidShoppingCart, gidReplayOfTransID: '-1', bUseAccountCart, PaymentMethod: 'paysafe', abortPendingTransactions: '1',
@@ -517,7 +517,7 @@ export async function performPaysafeCheckout(
 }
 
 /** Steam wallet → EUR minor units (euro-cents), or null when it is not a readable EUR balance.
- *  `hasWallet:false` is a REAL zero (a wallet with no funds reports currency 0), which is what lets a
+ *  `hasWallet:false` is a real zero (a wallet with no funds reports currency 0), which is what lets a
  *  first-ever top-up be confirmed. A non-EUR wallet returns null and therefore classifies as
  *  `unconfirmed` — never a guessed credit. steam-user hands `balance` in MAJOR units for 2-dp currencies. */
 export function walletEurMinor(w?: { hasWallet: boolean; currency: number; balance: number }): number | null {

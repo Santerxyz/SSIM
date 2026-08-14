@@ -40,18 +40,18 @@ export function shouldBlockTtyEmptyCreate(): boolean {
   return looksLikeOrphanedVaultInstall() && process.env.SSIM_VAULT_CREATE !== '1';
 }
 
-/** H-ACC-024: THE single master-password normalization rule. Every input path (headless env, the
- *  CLI prompt, the windowed unlock portal) must key the scrypt derivation off the SAME normalized
+/** H-ACC-024: the single master-password normalization rule. Every input path (headless env, the
+ *  CLI prompt, the windowed unlock portal) must key the scrypt derivation off the same normalized
  *  form, or a vault created with a trailing/leading space (a classic paste artifact) can never be
  *  reopened from a path that trims — a hard, "wrong password" lockout with the correct password. */
 export function normalizeMasterPassword(pw: string): string { return pw.trim(); }
 
 /** H-ACC-024: the shared UNLOCK entry every path uses. Derives the key off `normalizeMasterPassword`
  *  (matching every CREATE path), so a normalized vault opens from any input path. COMPATIBILITY BRIDGE
- *  (a one-time data-migration for divergent historical normalization, NOT a band-aid retry): a vault
+ *  (a one-time data-migration for divergent historical normalization, not a band-aid retry): a vault
  *  created by the OLD windowed portal — which keyed off the raw string — was salted with the padded
  *  password. So if the trimmed form is exactly WRONG_PASSWORD and trimming actually changed the input,
- *  retry ONCE with the verbatim string to open that legacy vault. Any other error (newer-version,
+ *  retry once with the verbatim string to open that legacy vault. Any other error (newer-version,
  *  transient read error, corrupt file) is rethrown unchanged; two failed forms → WRONG_PASSWORD, so a
  *  genuine bad password is unaffected apart from one extra scrypt only when the input carries whitespace.
  *  The vault instance is injectable so tests can drive an isolated AccountVaultImpl. */
@@ -81,14 +81,14 @@ const MAX_ATTEMPTS = 5;
 
 // Set once a headless unlock succeeds via SSIM_VAULT_PASSWORD. We cache the password
 // in-process so a runtime license re-gate (which calls unlockVault again) still works
-// AFTER we have deleted the env var — the deletion removes it from the externally
+// after we have deleted the env var — the deletion removes it from the externally
 // readable environment block, shrinking its exposure to the few seconds before unlock.
 let headlessPwCache: string | undefined;
 
 /** Reads a line from stdin, echoing '*' per typed character (so the operator can SEE that
  *  input is registering). Handles Backspace and Ctrl-C. TTY only; uses char codes so no
  *  control characters are embedded in the source. stdin/stdout are injectable (a PassThrough)
- *  so the escape-swallow logic is unit-testable (H-ACC-023). Exported for tests only. */
+ * so the escape-swallow logic is unit-testable. Exported for tests only. */
 export function maskedQuestion(
   query: string,
   stdin: NodeJS.ReadStream = process.stdin,
@@ -108,8 +108,8 @@ export function maskedQuestion(
       try { stdin.setRawMode?.(wasRaw); } catch { /* noop */ }
       stdin.pause();
     };
-    // H-ACC-023: swallow VT escape sequences so a cursor/function key press (↑ = ESC [ A,
-    // Delete = ESC [ 3 ~) does NOT get its ANSI body appended to the password and echoed as
+    // Swallow VT escape sequences so a cursor/function key press (↑ = ESC [ A,
+    // Delete = ESC [ 3 ~) does not get its ANSI body appended to the password and echoed as
     // stars. The state persists across `data` chunks (a sequence may straddle a chunk boundary).
     let esc = false;    // one ESC byte seen; the next byte decides bare-ESC vs. a CSI/SS3 lead
     let escCsi = false; // inside a CSI ([) / SS3 (O) sequence — consume until its final byte
@@ -135,8 +135,8 @@ export function maskedQuestion(
   });
 }
 
-/** Reads a single line from stdin with normal echo (NOT masked) — used for typed confirmations
- *  the operator SHOULD see, e.g. the H-ACC-026 orphan-vault "CREATE NEW VAULT" acknowledgement. */
+/** Reads a single line from stdin with normal echo (not masked) — used for typed confirmations
+ *  the operator SHOULD see, e.g. the H-ACC-026 orphan-vault "CREATE new VAULT" acknowledgement. */
 function plainQuestion(query: string): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -160,14 +160,14 @@ export async function unlockVault(): Promise<void> {
   // Master Password comes from SSIM_VAULT_PASSWORD (or the in-process cache on a re-gate).
   if (!process.stdin.isTTY) {
     // Keep the RAW env value (no pre-trim) so unlockExistingVault can key off both the normalized
-    // form and, for a legacy padded-portal vault, the verbatim string (H-ACC-024). Guard on the
+    // form and, for a legacy padded-portal vault, the verbatim string. Guard on the
     // NORMALIZED form being non-empty (an all-whitespace value is still "no password").
     const envPw = process.env.SSIM_VAULT_PASSWORD || headlessPwCache;
     if (!envPw || !normalizeMasterPassword(envPw)) {
       logger.error('[vault] no interactive terminal and no SSIM_VAULT_PASSWORD set – a Master Password is required');
       process.exit(1);
     }
-    // B36: refuse to CREATE a fresh empty vault over an existing farm whose vault.enc is merely
+    // Refuse to CREATE a fresh empty vault over an existing farm whose vault.enc is merely
     // missing (mis-set SSIM_HOME / partial restore) — that would orphan every account. Require an
     // explicit opt-in to start anew.
     if (!existing && looksLikeOrphanedVaultInstall() && process.env.SSIM_VAULT_CREATE !== '1') {
@@ -176,8 +176,8 @@ export async function unlockVault(): Promise<void> {
     }
     try {
       // createEmptyAnyway mirrors the B36 override: SSIM_VAULT_CREATE=1 skips the vault.enc.bak
-      // recovery probe and starts a NEW empty vault; otherwise a missing vault.enc self-heals from
-      // a matching .bak instead of orphaning the farm (H-ACC-039).
+      // recovery probe and starts a new empty vault; otherwise a missing vault.enc self-heals from
+      // a matching .bak instead of orphaning the farm.
       unlockExistingVault(envPw, { createEmptyAnyway: process.env.SSIM_VAULT_CREATE === '1' });
       headlessPwCache = envPw;                       // remember for runtime re-gates
       const viaDetached = process.env.SSIM_DETACHED === '1';
@@ -186,7 +186,7 @@ export async function unlockVault(): Promise<void> {
       return;
     }
     catch (e) {
-      // H-ACC-025: name the real cause instead of collapsing every failure into "wrong password".
+      // Name the real cause instead of collapsing every failure into "wrong password".
       const msg = (e as Error).message;
       if (msg === VAULT_NEWER_VERSION_ERROR) logger.error('[vault] vault.enc was written by a NEWER SSIM version – update SSIM first, do not recreate the vault');
       else if (msg === 'WRONG_PASSWORD') logger.error('[vault] SSIM_VAULT_PASSWORD did not unlock the existing vault – aborting');
@@ -195,7 +195,7 @@ export async function unlockVault(): Promise<void> {
     }
   }
 
-  // Make the prompt unmissable (the launcher opens the browser only AFTER this succeeds).
+  // Make the prompt unmissable (the launcher opens the browser only after this succeeds).
   // eslint-disable-next-line no-console
   console.log(
     '\n  ════════════════════════════════════════════════════════════════\n' +
@@ -205,9 +205,9 @@ export async function unlockVault(): Promise<void> {
   );
 
   if (!existing) {
-    // H-ACC-026: same B36 orphan guard the headless (l.102) and windowed (unlockPortal.ts) paths hold —
+    // Same B36 orphan guard the headless (l.102) and windowed (unlockPortal.ts) paths hold —
     // if accounts.json holds registered accounts but vault.enc is missing (partial restore / AV quarantine
-    // / mis-set SSIM_HOME), creating a fresh empty vault would orphan every account AND destroy the only
+    // / mis-set SSIM_HOME), creating a fresh empty vault would orphan every account and destroy the only
     // signal that vault.enc is merely missing. Refuse unless the operator TYPES an explicit acknowledgement
     // (or set SSIM_VAULT_CREATE=1 for the non-interactive bypass, parity with l.102).
     if (shouldBlockTtyEmptyCreate()) {
@@ -236,7 +236,7 @@ export async function unlockVault(): Promise<void> {
       try {
         AccountVault.unlockOrCreate(pw);
       } catch (e) {
-        // H-ACC-027: a create-time throw (writeJsonAtomic rethrows EPERM/EBUSY/disk-full when
+        // A create-time throw (writeJsonAtomic rethrows EPERM/EBUSY/disk-full when
         // writing vault.enc into an AV-locked or read-only Vault/ dir) must be classified here,
         // not left to escape into the bootstrap catch that paints "License check failed." —
         // the license gate already passed. Mirrors the unlock loop's local catch below.
@@ -267,7 +267,7 @@ export async function unlockVault(): Promise<void> {
       const msg = (e as Error).message;
       // eslint-disable-next-line no-console
       if (msg === 'WRONG_PASSWORD') console.error('  Incorrect Master Password. Try again.\n');
-      // H-ACC-025: a newer-vault refusal must not print the bare VAULT_NEWER_VERSION token.
+      // A newer-vault refusal must not print the bare VAULT_NEWER_VERSION token.
       // eslint-disable-next-line no-console
       else if (msg === VAULT_NEWER_VERSION_ERROR) { console.error('  vault.enc was written by a NEWER SSIM version — update SSIM first, do not recreate the vault.'); process.exit(1); }
       // eslint-disable-next-line no-console
@@ -290,11 +290,11 @@ function resolveTargetFolder(accounts: AccountManager, envId: string, folderId?:
 
 /**
  * BOOT-ONLY migration (the "upgrade from a no-vault version" path — scenario 1). Absorbs
- * credentials that are ALREADY registered in accounts.json plus the legacy refresh_tokens.json
+ * credentials that are already registered in accounts.json plus the legacy refresh_tokens.json
  * into the freshly-unlocked vault, then blanks the now-vaulted plaintext out of accounts.json.
  *
  * It DELIBERATELY NEVER scans the mafiles/ drop zone. Dropping loose maFiles into mafiles/ and
- * starting the app must NOT move anything into the vault or accounts.json — loose maFiles are
+ * starting the app must not move anything into the vault or accounts.json — loose maFiles are
  * imported ONLY by an explicit user action in the "Import Bots" UI (see importDropZoneIntoVault).
  *
  * Idempotent + non-destructive: only absorbs usernames not already vaulted; never deletes any
@@ -316,7 +316,7 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
   if (!AccountVault.isEnabled()) return { migrated: 0 };
   let migrated = 0;
 
-  // 1) Migrate accounts that are ALREADY registered in accounts.json (plaintext password +
+  // 1) Migrate accounts that are already registered in accounts.json (plaintext password +
   //    on-disk maFile) into the vault. This is the legitimate upgrade path; these accounts were
   //    already chosen by the user in a previous version, so absorbing them is consented-to.
   for (const acc of accounts.getAllRaw()) {
@@ -360,12 +360,12 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
 
   AccountVault.save();
 
-  // 3) SELF-HEAL the vault→org direction (H-ACC-011). accounts.json can be lost while vault.enc
+  // 3) SELF-HEAL the vault→org direction. accounts.json can be lost while vault.enc
   //    survives (partial restore, AV quarantine of the JSON, an EBUSY strand in migrateVaultDir).
   //    load() then boots a fresh empty database, and — because every import path refuses an
   //    already-vaulted username (hasAccount → skipped) — the surviving credentials are unreachable
   //    from the UI forever. Since the vault holds only ALREADY-CONSENTED accounts, re-registering
-  //    an org record for any vault username with no accounts.json entry is safe (does NOT scan the
+  //    an org record for any vault username with no accounts.json entry is safe (does not scan the
   //    drop zone). Accepted side effect: a crash in the delete route between accounts.remove() and
   //    AccountVault.removeAccount() (server.ts:1047-1048) resurrects that account here on next boot
   //    — non-destructive, visible in the warn below, the operator simply deletes it again.
@@ -385,9 +385,9 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
 
   accounts.enterVaultMode(); // blank the now-vaulted secrets (incl. env proxies) out of accounts.json
   // Hydrate in-memory env proxies from the vault so every reader (list/edit/resolveNetwork)
-  // sees the effective value on THIS and every SUBSEQUENT boot (when the disk copy is blank). B20.
+  // sees the effective value on this and every SUBSEQUENT boot (when the disk copy is blank). B20.
   accounts.hydrateEnvProxies();
-  // Quarantine the now-dead plaintext token/key files (B21). In vault mode TokenStore /
+  // Quarantine the now-dead plaintext token/key files. In vault mode TokenStore /
   // CsFloatKeyStore read ONLY the vault, so any entry provably in the vault is dead cleartext.
   quarantineMigratedPlaintext();
 
@@ -399,10 +399,10 @@ export function migrateAccountsIntoVault(accounts: AccountManager): { migrated: 
 
 /**
  * Removes plaintext secrets from data/refresh_tokens.json + data/csfloat_keys.json (and their
- * .bak siblings) ONCE they are provably in the encrypted vault (B21 / INV-A3). In vault mode
+ * .bak siblings) once they are provably in the encrypted vault. In vault mode
  * those stores read only the vault, so a vaulted entry left in the plaintext file is a pure
  * at-rest leak that a backup would carry. SAFETY: gated on verifyDiskRoundTrip() (never delete
- * the last copy of a secret on an unverified vault), and an entry whose plaintext value is NOT
+ * the last copy of a secret on an unverified vault), and an entry whose plaintext value is not
  * byte-equal to the vault copy is LEFT UNTOUCHED (recoverable). A file emptied of all migrated
  * entries — and its .bak — is deleted.
  */
@@ -448,10 +448,10 @@ export function quarantinePlaintextFile(
       try { fsExtra.removeSync(`${file}.bak`); } catch { /* best-effort */ }
       logger.warn(`[vault] quarantined ${removed} plaintext ${label}(s): deleted ${path.basename(file)} (+ .bak) — all copies are now in the encrypted vault`);
     } else {
-      // S37: ATOMIC write — this module's contract is "never delete the last copy", so a power-cut
+      // ATOMIC write — this module's contract is "never delete the last copy", so a power-cut
       // mid-rewrite must not tear the kept-secrets file (temp→fsync→rename).
       writeJsonAtomic(file, { ...parsed, [section]: kept }, { spaces: 2, mode: 0o600 });
-      // H-ACC-035: the pre-existing .bak is a one-generation copy of the LAST full write, so it still
+      // The pre-existing .bak is a one-generation copy of the LAST full write, so it still
       // holds the just-quarantined secrets. Rewrite it to the same kept-only map (no nested backup)
       // so the delete branch's "no vaulted secret survives in plaintext at rest" contract also holds
       // here. Best-effort — the main file is already clean.
@@ -475,7 +475,7 @@ export function quarantinePlaintextFile(
  *
  *   - targetEnvId     REQUIRED; the caller (route) has already validated it is a real environment.
  *   - targetFolderId  the modal's folder choice; null == the env root (a legitimate user choice).
- *   - selectedFiles   the ticked *.maFile filenames; an entry NOT in this set is never imported.
+ *   - selectedFiles   the ticked *.maFile filenames; an entry not in this set is never imported.
  */
 export function importDropZoneIntoVault(
   accounts: AccountManager,
@@ -547,11 +547,11 @@ export function importCsvIntoVault(accounts: AccountManager, csvText: string, ta
   const env = targetEnvId; // STRICT: the explicitly-chosen target env — never a guessed default
   const folderId = resolveTargetFolder(accounts, env, targetFolderId);
   let imported = 0;
-  let skipped = rejected.length; // parser-dropped rows are lost input — count them (H-ACC-078)
+  let skipped = rejected.length; // parser-dropped rows are lost input — count them
   for (const r of rows) {
     // Skip if already vaulted OR if the username is already an accounts.json record —
     // INCLUDING an un-vaulted "orphan" (maFile failed to load at boot) whose recoverable
-    // plaintext must NOT be silently overwritten/blanked by an arbitrary CSV row. CSV only
+    // plaintext must not be silently overwritten/blanked by an arbitrary CSV row. CSV only
     // ADDS brand-new bots; it never touches an existing account's credentials.
     if (AccountVault.hasAccount(r.username) || accounts.existsRaw(r.username)) { skipped++; continue; }
     const maFile: MaFile = { account_name: r.username, shared_secret: r.shared_secret, identity_secret: r.identity_secret };
@@ -601,7 +601,7 @@ function folderPathsFromAccountsJson(raw: string): Map<string, string[]> {
 }
 
 /**
- * Merges ANOTHER device's vault.enc (raw file content + its own master password) into THIS
+ * Merges ANOTHER device's vault.enc (raw file content + its own master password) into this
  * vault. Only brand-new usernames are added (never overwrites an existing account), so it is
  * non-destructive. When the source's accounts.json is also supplied (rawAccountsJson), each
  * imported bot is placed into its ORIGINAL folder path (recreated by name in the target env),
@@ -626,7 +626,7 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
   for (const [k, acc] of Object.entries(ext.accounts)) {
     // decryptExternalVault CASTS payload.accounts verbatim (AccountVault.ts:497) — an entry may be
     // null / a non-object / carry a non-string username or password (a hand-edited, corrupt or
-    // crafted source vault). Guard the shape BEFORE any deref: the map KEY is the canonical username
+    // crafted source vault). Guard the shape before any deref: the map KEY is the canonical username
     // and is used only when the entry omits its own; a PRESENT non-string username is a corrupt row
     // (it would otherwise win the old `acc?.username || k` fallback and TypeError at
     // hasAccount(u).toLowerCase()), so it is rejected as unusable rather than silently key-renamed.
@@ -646,7 +646,7 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
       if (typeof acc.proxy === 'string' && acc.proxy.trim()) proxyEntries.push({ username, proxy: acc.proxy.trim() }); // F3
       const tok = ext.tokens[k];
       if (typeof tok === 'string' && tok) AccountVault.setToken(username, tok); // carry over the refresh token too
-      // H-ACC-044: carry over the source's per-account CSFloat key (its marketplace credential),
+      // Carry over the source's per-account CSFloat key (its marketplace credential),
       // non-destructively — never overwrite a key already local to this farm.
       const csKey = ext.csfloatKeys[k];
       if (typeof csKey === 'string' && csKey.trim() && !AccountVault.getCsFloatKey(username)) AccountVault.setCsFloatKey(username, csKey.trim());
@@ -656,7 +656,7 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
   }
   // Token-only (LIMITED / QR-imported) accounts exist in the source vault ONLY as a payload.tokens
   // entry with no accounts record, so the loop above never sees them and they were silently dropped
-  // — the merge looked complete while a farm's QR accounts went missing (B35). Carry them over: a
+  // — the merge looked complete while a farm's QR accounts went missing. Carry them over: a
   // registered org record (limited tier) + the refresh token (its sole credential).
   for (const [k, tok] of Object.entries(ext.tokens)) {
     if (typeof tok !== 'string' || !tok) continue;
@@ -666,7 +666,7 @@ export function importExternalVault(accounts: AccountManager, rawVaultContent: s
     const folderId = explicitFolder ?? ((folderNamePath && folderNamePath.length) ? accounts.ensureFolderPath(env, folderNamePath) : null);
     accounts.addImportedAccount({ username: k, maFilePath: '', environmentId: env, folderId, tier: 'limited' });
     AccountVault.setToken(k, tok);
-    // H-ACC-044: token-only (QR/LIMITED) accounts carry their dedicated egress proxy ONLY in the
+    // Token-only (QR/LIMITED) accounts carry their dedicated egress proxy ONLY in the
     // source's accountProxies map (no VaultAccount.proxy) — without this carry-over the migrated bot
     // next logs in over the target's env default / local IP, the exact ban-risk B42 exists to prevent.
     // Same non-destructive CSFloat-key carry-over as the full-account loop.

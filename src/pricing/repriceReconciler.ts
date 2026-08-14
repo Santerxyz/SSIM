@@ -9,7 +9,7 @@
 //  count ADVANCES and keeps going until the fill queue DRAINS (no deadline), with a
 //  single no-progress safety stop so a wedged backend can't spin forever. The pure
 //  step is here so it is unit-testable; public/app.js (watchPriceFill) is a hand-copy
-//  that mirrors it — the same drain/progress/no-progress state machine AND the same
+//  that mirrors it — the same drain/progress/no-progress state machine and the same
 //  S10 re-pull coalescing (MIN_REPULL_MS below == app.js REPRICE_MIN_REPULL_MS): while
 //  a fill is busy, re-pull at most once per MIN_REPULL_MS even as `fetched` advances on
 //  every poll; the drain always re-pulls immediately. Keep the two in sync.
@@ -20,7 +20,7 @@ export interface RepriceState {
   lastPulled: number;
   /** Timestamp (ms) of the last observed progress — drives the no-progress stop. */
   lastProgressAt: number;
-  /** Highest `processed` count seen — liveness by ANY terminal resolution, not just a fetch (S19). */
+  /** Highest `processed` count seen — liveness by any terminal resolution, not just a fetch. */
   lastProcessed?: number;
   /** Timestamp (ms) of the last re-pull we emitted — gates the S10 re-pull coalescing.
    *  Optional (mirrors `lastProcessed?`): a state that predates this field reads as 0. */
@@ -66,7 +66,7 @@ export interface PriceFillIndicator {
   long: boolean;
 }
 
-// Prices fill one name at a time from a SINGLE IP, throttled to PricingService.FETCH_DELAY_MS
+// Prices fill one name at a time from a single IP, throttled to PricingService.FETCH_DELAY_MS
 // (~17 names/min). Keep this constant in sync with public/app.js (FILL_MS_PER_NAME).
 const FILL_MS_PER_NAME = 3500;
 
@@ -117,13 +117,13 @@ export function repriceDecision(state: RepriceState, status: PricingStatus | nul
   if (processed < lastProcessed) { lastProcessed = 0; }
   let progressed = false;
   let fetchedAdvanced = false;
-  if (fetched > lastPulled) { lastPulled = fetched; fetchedAdvanced = true; progressed = true; } // NEW PRICES available
-  // S19: a name resolved via the error/429-exhaustion path advances `processed` but NOT `fetched`, so in a
+  if (fetched > lastPulled) { lastPulled = fetched; fetchedAdvanced = true; progressed = true; } // new PRICES available
+  // A name resolved via the error/429-exhaustion path advances `processed` but not `fetched`, so in a
   // 429/error storm `fetched` stalls while the fill IS alive. Count `processed` as progress too, or the
   // no-progress safety would terminally stop the watch (and hide the badge) mid-fill.
   if (processed > lastProcessed) { lastProcessed = processed; progressed = true; }
   if (progressed) lastProgressAt = now;
-  // S10: while busy, re-pull on a NEW-prices advance but at most once per minRepullMs — a whole-/api/inventory
+  // While busy, re-pull on a NEW-prices advance but at most once per minRepullMs — a whole-/api/inventory
   // re-pull is expensive, and `fetched` can advance on every poll. (Mirrors app.js shouldRepullFill.) The drain
   // below always re-pulls immediately.
   if (fetchedAdvanced && now - lastRepulledAt >= minRepullMs) repull = true;

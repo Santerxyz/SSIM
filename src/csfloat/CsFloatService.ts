@@ -28,7 +28,7 @@ const PRICE_LIST_TTL_MS = 5 * 60 * 1000;
 /**
  * F1: thrown when an account's proxy pool is lost (a rule matched a pool that hydrated empty).
  * AccountManager.withNetwork attaches `network: undefined` in that state so SessionManager refuses the
- * Steam login; CSFloat has no Steam session (pure API-key auth) so it must refuse egress the SAME way —
+ * Steam login; CSFloat has no Steam session (pure API-key auth) so it must refuse egress the same way —
  * NEVER default to the host IP (a host-IP login on this fleet = ban risk). Callers skip/park the account.
  */
 export class PoolLostError extends Error {
@@ -52,8 +52,8 @@ export class CsFloatService {
   // ── key management ──────────────────────────────────────────────────────────
   hasKey(username: string): boolean { return this.keys.has(username); }
 
-  /** True when csfloat_keys.json is present-but-corrupt in plaintext mode → keys are NOT persisting
-   *  and are silently absent; surfaced on /api/system/status so the operator restores it (S12). */
+  /** True when csfloat_keys.json is present-but-corrupt in plaintext mode → keys are not persisting
+   * and are silently absent; surfaced on /api/system/status so the operator restores it. */
   isKeyStoreDegraded(): boolean { return this.keys.isDegraded(); }
 
   keyInfo(username: string): { configured: boolean; tail?: string } {
@@ -126,7 +126,7 @@ export class CsFloatService {
   /**
    * This account's own CSFloat listings (its stall).
    *
-   * Needs the steam_id of whoever OWNS THE API KEY — which is not necessarily the SSIM account's
+   * Needs the steam_id of whoever OWNS the API KEY — which is not necessarily the SSIM account's
    * own steamId (an operator can paste any key onto any account), so it is read from CSFloat's
    * /me rather than assumed from AccountConfig. Cached per username because it never changes for a
    * given key, and dropped by invalidate() when the key does.
@@ -157,7 +157,7 @@ export class CsFloatService {
    * The CSFloat lowest-buy-now-ask catalog, as name → cents.
    *
    * Backs auto-pricing ("undercut the lowest ask by 2%") for bulk listing and repricing. It is
-   * ONE request for the whole CS2 catalog (the live-verified /listings/price-list), so pricing a
+   * one request for the whole CS2 catalog (the live-verified /listings/price-list), so pricing a
    * 200-item stall costs a single call instead of 200 searches.
    *
    * The catalog is GLOBAL market data, not per-account, so the cache is shared across accounts and
@@ -206,7 +206,7 @@ export class CsFloatService {
    *  a truthful "not saved" error instead of echoing the optimistic value). */
   setAutoAccept(u: string, on: boolean): boolean { return AppSettings.setAutoAccept(u, on); }
 
-  // ── F3: a client for app-wide pricing, using ANY account that has a key ──────
+  // ── F3: a client for app-wide pricing, using any account that has a key ──────
   /** Side-effect-free probe: true when at least one account has a CSFloat key, so the
    *  pricing source can serve. Unlike pricingClient() this neither builds/caches nor
    *  disposes an agent — usernamesWithKeys() is a pure vault/file read (CsFloatKeyStore). */
@@ -267,7 +267,7 @@ export class CsFloatService {
   }
 
   /** Release the shared per-key RateLimiter for a key no live account holds any more (INV-F4: a key
-   *  still configured on ANY account keeps its limiter, so the per-key CSFloat rate cap is never doubled).
+   *  still configured on any account keeps its limiter, so the per-key CSFloat rate cap is never doubled).
    *  A shared-key account keeps the limiter alive; a returning key just rebuilds one via limiterFor. */
   private releaseLimiterIfUnused(key: string | undefined): void {
     if (key && !this.keys.usernamesWithKeys().some((u) => this.keys.get(u) === key)) {

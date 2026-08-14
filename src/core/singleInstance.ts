@@ -77,8 +77,8 @@ function readLockPid(): number | null {
   catch { return null; }
 }
 
-/** Error codes that mean the lock file can NEVER be created HERE — a permissions/filesystem fault
- *  (data/ read-only, access-denied, or a bad path), NOT a transient AV/handle hold. Retrying is
+/** Error codes that mean the lock file can NEVER be created here — a permissions/filesystem fault
+ *  (data/ read-only, access-denied, or a bad path), not a transient AV/handle hold. Retrying is
  *  pointless and would hide the real cause behind the generic "could not acquire after retries"
  *  message. (The `open` EPERM here is distinct from the liveness EPERM in isProcessAlive.) */
 const PERMANENT_LOCK_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'EISDIR', 'ENOTDIR']);
@@ -134,7 +134,7 @@ export function acquireInstanceLock(): boolean {
       }
       const alive = isProcessAlive(pid);
       const disp = lockHolderDisposition(alive, alive ? processImageName(pid) : '', ourImageName());
-      if (disp === 'refuse') return false;          // genuine second instance → do NOT start
+      if (disp === 'refuse') return false;          // genuine second instance → do not start
       if (disp === 'retry') {                       // S59: holder alive but image undeterminable (tasklist
         // blocked/timeout) — sleep and retry the whole check instead of an immediate residual lockout; if
         // it stays undeterminable across all attempts we still fail safe (the loop exits → refuse below).

@@ -5,13 +5,13 @@ export type PriceSourceId = 'steam' | 'csfloat';
 //  fetchPriceCents returns USD cents, or null ONLY for an AUTHORITATIVE "no price"
 //  (the source answered successfully and the item has no market price). THROW for a
 //  transient fetch failure (transport error / 5xx / non-success) so PricingService
-//  caches only a short-lived miss, not a 24h "no price" (S2). Throw Error('RATE_LIMIT')
+// caches only a short-lived miss, not a 24h "no price". Throw Error('RATE_LIMIT')
 //  on a 429 so PricingService's failure model (soft-miss + lane retire) kicks in.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
  * Egress + identity for one price request. The 2026-07-10 root-cause fix: a Steam price
- * request must ride a LOGGED-IN identity (its `cookieHeader`) over that account's OWN
+ * request must ride a LOGGED-IN identity (its `cookieHeader`) over that account's own
  * `agent`, so it draws that account's per-session budget instead of the anonymous per-IP
  * budget that the shared rotating pool leaves perpetually exhausted. Sources with their own
  * egress + auth (CSFloat, keyed) ignore this.

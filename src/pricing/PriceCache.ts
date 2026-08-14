@@ -9,9 +9,9 @@ export interface PriceEntry {
   /** Lowest market price in USD cents; null = no market price found. */
   cents:     number | null;
   fetchedAt: string; // ISO
-  /** True when this null is a TRANSIENT fetch error (proxy/DNS/5xx/429-exhaustion), NOT an
+  /** True when this null is a TRANSIENT fetch error (proxy/DNS/5xx/429-exhaustion), not an
    *  authoritative "no market price". The reader gives soft misses a short TTL so a network blip
-   *  is retried in minutes instead of being cached as a 24h "no price" that survives restart (S2). */
+   * is retried in minutes instead of being cached as a 24h "no price" that survives restart. */
   soft?:     boolean;
 }
 
@@ -41,7 +41,7 @@ export class PriceCache {
         }
         logger.info(`PriceCache loaded (${this.map.size} entries)`);
         // A persisted file can predate the set() unit guard, or be hand-edited / written by an old
-        // mis-scaled source (S64). Whatever the file holds is trusted verbatim on READ otherwise, so a
+        // mis-scaled source. Whatever the file holds is trusted verbatim on READ otherwise, so a
         // bad cents (negative, non-finite, a string) would poison totalValueUsd. Enforce INV-E2 on load
         // too — one aggregate warn, not one per key (this is a warm-start hot path over up to MAX_ENTRIES).
         if (dropped) logger.warn(`PriceCache: dropped ${dropped} invalid persisted entr${dropped === 1 ? 'y' : 'ies'} on load`);
@@ -80,7 +80,7 @@ export class PriceCache {
    *  bound. The real key space is the Steam item universe (tens of thousands of
    *  names), so this ceiling is never reached in practice; it only guards against
    *  a pathological runaway. Eviction is insertion-order (oldest first) and only
-   *  triggers for a genuinely NEW key, so updating an existing price never drops
+   *  triggers for a genuinely new key, so updating an existing price never drops
    *  anything. */
   private static readonly MAX_ENTRIES = 100_000;
 
@@ -99,15 +99,15 @@ export class PriceCache {
     }
     const entry: PriceEntry = { cents: v, fetchedAt: new Date().toISOString() };
     // A soft flag only applies to a null miss; a real price is always authoritative (and overwrites
-    // any prior soft miss for the key, so a recovered fetch clears the short-TTL marking). (S2)
+    // any prior soft miss for the key, so a recovered fetch clears the short-TTL marking).
     if (v == null && opts?.soft) entry.soft = true;
     this.map.set(name, entry);
     this.scheduleFlush();
   }
 
-  // S43: during a background fill a new price arrives about every 3.5s (PricingService.FETCH_DELAY_MS) —
+  // During a background fill a new price arrives about every 3.5s (PricingService.FETCH_DELAY_MS) —
   // LONGER than the old 2s window — so each set() landed after its own window elapsed and rewrote the
-  // WHOLE prices.json (up to MAX_ENTRIES) once per fetch, for the whole fill. Coalesce with a longer
+  // whole prices.json (up to MAX_ENTRIES) once per fetch, for the whole fill. Coalesce with a longer
   // max-delay window, plus a burst cap so a fast bulk warm-up still persists promptly. Prices are
   // non-sensitive and re-fetchable, so a few tens of seconds at risk on a hard crash is acceptable.
   private static readonly FLUSH_MAX_DELAY_MS = 30_000;

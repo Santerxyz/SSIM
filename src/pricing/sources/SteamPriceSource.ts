@@ -36,15 +36,15 @@ export class SteamPriceSource implements PriceSource {
       validateStatus: () => true,
       // proxy:false ALWAYS — never let an ambient HTTP(S)_PROXY env var silently re-route the call. With a
       // route we pin the account's own agent; without one (the anonymous fallback) we egress the host IP
-      // directly, as the P1 design intends — NOT the shared env-proxy pool the fingerprint fix escapes.
+      // directly, as the P1 design intends — not the shared env-proxy pool the fingerprint fix escapes.
       proxy: false as const,
       ...(route?.agent ? { httpsAgent: route.agent } : {}),
     });
     if (resp.status === 429) throw new Error('RATE_LIMIT');
-    // A non-200 (5xx/403/…) or Steam-level failure (missing body / success !== true) is NOT an
+    // A non-200 (5xx/403/…) or Steam-level failure (missing body / success !== true) is not an
     // authoritative "no price" — it's a transient fetch failure. THROW so PricingService caches only
     // a short-lived miss, instead of a 24h "no price" that survives restart. Authoritative "no price"
-    // is a 200 + success:true with no lowest/median → the null returned below. (S2)
+    // is a 200 + success:true with no lowest/median → the null returned below.
     if (resp.status !== 200 || !resp.data || resp.data.success !== true) {
       throw new Error(`FETCH_FAILED_${resp.status}`);
     }

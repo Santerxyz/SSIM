@@ -60,7 +60,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const MASS_BUY_ACCOUNT_DELAY_MS    = 1_500; // pause between two consecutive accounts' orders within one worker
 
 /** Parameters for a folder-wide mass-buy. `pricePerItemMajor` is a MAJOR amount
- *  (e.g. 2.05) applied in EACH account's OWN wallet currency – a region-homogeneous
+ *  (e.g. 2.05) applied in each account's own wallet currency – a region-homogeneous
  *  farm shares one currency, and per-account conversion keeps mixed folders correct. */
 export interface MassBuyParams {
   usernames:         string[];
@@ -120,12 +120,12 @@ function ownedCount(inv: AccountInventory | undefined, marketHashName: string): 
 
 /**
  * Places Steam Community Market BUY ORDERS and VERIFIES the real outcome. Steam's
- * create response — even a "success-ish" one — is NOT proof a buy filled, so after
+ * create response — even a "success-ish" one — is not proof a buy filled, so after
  * placing we re-fetch the bot's inventory + wallet and report the actual delta.
- * Each bot buys in its OWN native wallet currency through its isolated session.
+ * Each bot buys in its own native wallet currency through its isolated session.
  *
  * Money-safety invariants:
- *  - ONE in-flight buy per (account,item,appid) — no double-click / retry duplicate.
+ *  - one in-flight buy per (account,item,appid) — no double-click / retry duplicate.
  *  - Currency must be KNOWN (never guessed) — wrong scale = wrong real-money amount.
  *  - Order total is capped (ceiling + wallet balance) before committing.
  *  - After the order is placed we NEVER throw — a thrown post-order error would
@@ -146,7 +146,7 @@ export class BuyService {
   constructor(
     private readonly trades: TradeService,
     private readonly inventory: InventoryService,
-    /** Cross-restart money-op journal (B4), shared with TradeService — see MoneyOpJournal. Defaults to a
+    /** Cross-restart money-op journal, shared with TradeService — see MoneyOpJournal. Defaults to a
      *  no-op so direct construction in tests doesn't touch the shared journal file; createDeps wires the real one. */
     private readonly journal: MoneyOpJournal = MoneyOpJournal.disabled(),
   ) {}
@@ -158,9 +158,9 @@ export class BuyService {
     const game: GameId = p.appId === 440 ? 'tf2' : 'cs2';
     const qty = Math.floor(Number(p.quantity));            // replaces the Math.max(1, …) up-coercion
     const perItem = Math.round(p.pricePerItemMinor);
-    // H-TRD-039: fail CLOSED on non-finite/non-positive caller input BEFORE any guard/journal state is
+    // Fail CLOSED on non-finite/non-positive caller input before any guard/journal state is
     // touched (this throw predates wasLiveBefore/inFlight.add below). Without it a NaN perItem makes
-    // priceTotalMinor NaN and BOTH pre-commit ceilings compare false (NaN comparisons) → the caps fail
+    // priceTotalMinor NaN and both pre-commit ceilings compare false (NaN comparisons) → the caps fail
     // OPEN; the old Math.max(1, …) also up-coerced a quantity-0 request into a real 1-item buy. "invalid"
     // in both messages keys the /api/market/buy classifier to 400 (bad request), not a retryable 502.
     if (!Number.isInteger(perItem) || perItem < 1) throw new Error(`invalid pricePerItemMinor ${p.pricePerItemMinor} – must resolve to an integer ≥ 1 (wallet minor units)`);
@@ -170,45 +170,45 @@ export class BuyService {
     if (this.inFlight.has(guardKey)) {
       throw new Error('A buy for this item on this account is already running');
     }
-    // Snapshot live-ness BEFORE we touch the account so we only release a session WE create.
+    // Snapshot live-ness before we touch the account so we only release a session WE create.
     const wasLiveBefore = this.trades.snapshotLive([p.username]);
     this.inFlight.add(guardKey);
-    // S3: set when the commit fails TRANSPORT-AMBIGUOUSLY (the order may already be on Steam). The finally
+    // Set when the commit fails TRANSPORT-AMBIGUOUSLY (the order may already be on Steam). The finally
     // then SKIPS journal.resolve so a retry hits the refuse-once gate instead of double-spending.
     let commitMayHaveLanded = false;
-    // S15: set when this call was REFUSED (a lingering entry). The finally must NOT resolve the entry it
+    // Set when this call was REFUSED (a lingering entry). The finally must not resolve the entry it
     // just kept, or a double-click's 2nd click would find nothing and fire the possibly-duplicate op.
     let refused = false;
     try {
-      // B4/S15: cross-restart dedup. A LINGERING journal entry means an identical buy died mid-flight
+      // Cross-restart dedup. A LINGERING journal entry means an identical buy died mid-flight
       // last run (Steam-side outcome unknown). consultRefusal REFUSES it (KEEPING the entry, so a rapid
       // double-click is refused too) until a deliberate-pause min-age elapses, then ALLOWS + consumes it.
       // A cleanly-completed buy leaves no entry, so legitimate repeats are unaffected.
       const priorBuy = this.journal.consultRefusal(guardKey);
       if (priorBuy) {
         refused = true;
-        // S15: a machine-readable marker so the money endpoint answers 409 (a honest
+        // A machine-readable marker so the money endpoint answers 409 (a honest
         // duplicate-precondition), not a retryable 502 an HTTP client would blindly re-fire.
         const e = new Error(`A matching buy was interrupted before it finished (${new Date(priorBuy.at).toISOString()}) and may already be placed on Steam — check this account's buy orders / inventory, then retry in a few seconds to proceed.`) as Error & { moneyOpRefused?: true };
         e.moneyOpRefused = true;
         throw e;
       }
       this.journal.begin(guardKey, 'buy');
-      // SESSION PRE-FLIGHT: guarantee a live web session with a valid sessionid cookie BEFORE
+      // SESSION PRE-FLIGHT: guarantee a live web session with a valid sessionid cookie before
       // committing money — otherwise the order POST fails with "no sessionid cookie". Refreshes
       // (or re-logs-in) the account if its cached cookies are missing/stale.
       const trader = await this.trades.ensureWebSession(p.username);
 
-      // Baseline: a FRESH (non-coalesced) inventory + wallet BEFORE buying.
+      // Baseline: a FRESH (non-coalesced) inventory + wallet before buying.
       const before = await this.inventory.forceRefresh(p.username, game);
       const ownedBefore = ownedCount(before, p.marketHashName);
       const walletBefore = before.wallet?.balance;
-      // C11 symmetry (B15): if the BASELINE read was page-cap TRUNCATED, ownedBefore is
+      // C11 symmetry: if the BASELINE read was page-cap TRUNCATED, ownedBefore is
       // under-counted, so the later `ownedAfter - ownedBefore` fill diff is unreliable
-      // (it would over-report the fill). The AFTER read already guards this; the BEFORE
+      // (it would over-report the fill). The after read already guards this; the before
       // read must too. Remember it so the post-order verification reports "unverified"
       // instead of a wrong fill count — the order still proceeds (money unaffected).
-      // H-TRD-041: a stale-fallback baseline (B31 suspect-read substitution) is a failed fresh read,
+      // A stale-fallback baseline (B31 suspect-read substitution) is a failed fresh read,
       // so it mis-anchors ownedBefore the same way a page-capped one does → also unverified.
       const baselinePartial = !!before.partial || !!before.staleReadFallback;
       if (baselinePartial) {
@@ -221,8 +221,8 @@ export class BuyService {
       if (currency == null) {
         throw new Error(`wallet currency unknown for ${p.username} – refresh the account (await wallet event) and retry`);
       }
-      // S64: a code we don't recognise could be a 0-decimal currency; scaling with the 2-decimal fallback
-      // would mis-price the order 100×. Fail closed BEFORE placement — never guess the scale on a money path.
+      // A code we don't recognise could be a 0-decimal currency; scaling with the 2-decimal fallback
+      // would mis-price the order 100×. Fail closed before placement — never guess the scale on a money path.
       const info = knownCurrencyInfo(currency);
       if (!info) {
         throw new Error(`unrecognised wallet currency code ${currency} for ${p.username} – refusing to price the order (would risk a 100× mis-scale); update STEAM_CURRENCIES`);
@@ -230,7 +230,7 @@ export class BuyService {
       const iso = info.iso;
       const priceTotalMinor = perItem * qty;
 
-      // Safety ceilings BEFORE committing real money.
+      // Safety ceilings before committing real money.
       if (priceTotalMinor > MAX_ORDER_TOTAL_MINOR) {
         throw new Error(`order total ${priceTotalMinor} exceeds the safety ceiling ${MAX_ORDER_TOTAL_MINOR} (minor units)`);
       }
@@ -250,7 +250,7 @@ export class BuyService {
         billing:           p.billing,
         retryAfterConfirm: p.retryAfterConfirm,
       }).catch((err: unknown) => {
-        // S3: a transport-ambiguous commit failure (ECONNRESET/timeout on the response leg, or the
+        // A transport-ambiguous commit failure (ECONNRESET/timeout on the response leg, or the
         // explicit verifyBeforeRetry from the resting-order probe) means the order MAY already exist.
         // Flag it so the finally keeps the journal entry → a retry is refused once, not double-spent.
         if (isAmbiguousCommitFailure(err)) commitMayHaveLanded = true;
@@ -263,8 +263,8 @@ export class BuyService {
       await sleep(FILL_SETTLE_MS);
       let ownedAfter = ownedBefore;
       let walletAfter = walletBefore;
-      // A truncated BASELINE already makes the fill diff unreliable (B15), independent of
-      // the AFTER read below.
+      // A truncated BASELINE already makes the fill diff unreliable, independent of
+      // the after read below.
       let verifyFailed = baselinePartial;
       try {
         const after = await this.inventory.forceRefresh(p.username, game);
@@ -272,7 +272,7 @@ export class BuyService {
           // The verification read was TRUNCATED (page cap) or a B31 stale-fallback substitution
           // (H-TRD-041: a suspect after-read hands back the pre-buy snapshot) → ownedAfter would
           // reflect an incomplete / stale inventory, so the fill diff is unreliable. Don't report a
-          // possibly wrong fill; mark unverified instead. (C11 / INV-D3.)
+          // possibly wrong fill; mark unverified instead.
           verifyFailed = true;
           logger.warn(`[${p.username}] post-buy verification read was ${after.partial ? 'PARTIAL (page-capped)' : 'a stale-fallback substitution'} – fill count unreliable; order WAS placed, check manually`);
         } else {
@@ -328,15 +328,15 @@ export class BuyService {
     } finally {
       this.inFlight.delete(guardKey);
       // Release the session this direct buy created (mass-buy opts out — its batch releases once). This
-      // runs BEFORE journal.resolve so the refuse-once memory survives a crash inside the release await
-      // (H-TRD-042): the outcome has not reached the operator until Express writes the response AFTER this
+      // runs before journal.resolve so the refuse-once memory survives a crash inside the release await
+      //: the outcome has not reached the operator until Express writes the response after this
       // finally, so consuming the entry any earlier would let a post-restart re-fire double-spend a buy the
       // operator never saw complete. releaseCreatedSessions is best-effort (never throws), so resolve is
       // always reached when the process lives; if release ever hangs the entry lingers and the next
       // identical buy is refused once — safe friction consistent with the S15 contract.
       if (release) await this.trades.releaseCreatedSessions([p.username], wasLiveBefore);
-      // S3/S15: consume the entry on a clean resolution (success OR a definite/pre-commit failure), but
-      // KEEP it when the commit failed transport-ambiguously (S3) or when THIS call was a refusal (S15).
+      // Consume the entry on a clean resolution (success OR a definite/pre-commit failure), but
+      // KEEP it when the commit failed transport-ambiguously or when this call was a refusal.
       if (!commitMayHaveLanded && !refused) this.journal.resolve(guardKey);
     }
   }
@@ -348,12 +348,12 @@ export class BuyService {
     return { ...this.massJob, results: this.massJob.results.map((r) => ({ ...r })) };
   }
 
-  /** True while a buy is in flight or a mass-buy job is running — the update scheduler (C5) checks this
+  /** True while a buy is in flight or a mass-buy job is running — the update scheduler checks this
    *  so a mid-session update never hard-exits into a swap while real orders are being placed. */
   busy(): boolean { return this.inFlight.size > 0 || this.massJob.running; }
 
   /**
-   * Starts a folder-wide mass-buy: every account is balance-refreshed FIRST, then
+   * Starts a folder-wide mass-buy: every account is balance-refreshed first, then
    * each maxes out its purchase of `marketHashName` at `pricePerItemMajor` (applied
    * in the account's own currency). Returns the initial job status; poll
    * massBuyStatus(). One run at a time (the money path is deliberately serialized).
@@ -372,7 +372,7 @@ export class BuyService {
       total: usernames.length, refreshed: 0, processed: 0, placed: 0, filled: 0, skipped: 0, failed: 0,
       startedAt: new Date().toISOString(), results: [],
     };
-    // S33: finalize a fire-and-forget orchestrator on rejection — reset running + log — so it never
+    // Finalize a fire-and-forget orchestrator on rejection — reset running + log — so it never
     // escapes `void` as an unhandledRejection (breaker tick) nor latches the job type until restart.
     void this.runMassBuy({ ...p, usernames }).catch((err) => {
       this.massJob.running = false;
@@ -400,12 +400,12 @@ export class BuyService {
     // Dynamic scaling across DISTINCT accounts (5→25). An explicit p.concurrency is honoured
     // but CLAMPED to the 25 ceiling so no caller can exceed the intentional proxy/socket cap.
     const concurrency = clampConcurrency(p.concurrency, scaleConcurrency(p.usernames.length));
-    // Snapshot which accounts were ALREADY live so we release ONLY the sessions this mass-buy
+    // Snapshot which accounts were already live so we release ONLY the sessions this mass-buy
     // creates (phase 1 logs every account in to read its live balance) — so a folder-wide buy
     // doesn't leave the whole folder resident afterwards.
     const wasLiveBefore = this.trades.snapshotLive(p.usernames);
 
-    // ── PHASE 1 (CRITICAL SAFETY): refresh EVERY account's balance live BEFORE any
+    // ── PHASE 1 (CRITICAL SAFETY): refresh every account's balance live before any
     //    plan or spend. The budget math must run on real-time funds, never a stale
     //    cache, so a doomed (insufficient-funds) order is never even attempted.
     const wallets = new Map<string, { currency: number; walletMinor: number } | null>();
@@ -424,7 +424,7 @@ export class BuyService {
               wallets.set(u, null);
               logger.warn(`[mass-buy] ${u}: wallet still unknown after refresh – skipped`);
             } else if (!cInfo) {
-              // S64: unrecognised currency code → could be 0-decimal; skip rather than risk a 100× mis-scale.
+              // Unrecognised currency code → could be 0-decimal; skip rather than risk a 100× mis-scale.
               wallets.set(u, null);
               logger.warn(`[mass-buy] ${u}: unrecognised wallet currency code ${currency} – skipped for safety (S64)`);
             } else {
@@ -442,7 +442,7 @@ export class BuyService {
     }
 
     // ── PHASE 2: per-account max-affordable plan + execute. buy() re-verifies funds
-    //    against its OWN fresh refresh and is money-safe (ceiling, in-flight guard,
+    //    against its own fresh refresh and is money-safe (ceiling, in-flight guard,
     //    never-throw-after-placed), so this is a second safety layer over the plan.
     this.massJob.phase = 'buying';
     {
@@ -475,7 +475,7 @@ export class BuyService {
     this.massCancel = false;
   }
 
-  /** Plans + executes ONE account's slice of a folder mass-buy from its fresh wallet. */
+  /** Plans + executes one account's slice of a folder mass-buy from its fresh wallet. */
   private async massBuyOne(
     username: string,
     p: MassBuyParams,
@@ -490,7 +490,7 @@ export class BuyService {
       return;
     }
 
-    // S64: defence-in-depth — the wallet-setup above already nulls unrecognised codes, but never scale a
+    // Defence-in-depth — the wallet-setup above already nulls unrecognised codes, but never scale a
     // real per-item price on a fallback guess. Skip if the code isn't known (a 0-decimal currency would 100×).
     const info = knownCurrencyInfo(wallet.currency);
     if (!info) {
@@ -510,7 +510,7 @@ export class BuyService {
       return;
     }
 
-    // Max out, bounded by BOTH the live balance AND the per-order safety ceiling.
+    // Max out, bounded by both the live balance and the per-order safety ceiling.
     const byBalance = Math.floor(wallet.walletMinor / perItem);
     const byCeiling = Math.floor(MAX_ORDER_TOTAL_MINOR / perItem);
     const qty = Math.max(0, Math.min(byBalance, byCeiling));

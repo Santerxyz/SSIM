@@ -98,7 +98,7 @@ export class MobileConfGate {
     }
   }
 
-  /** A rate-limit error the classifier recognizes (message carries 429) AND that carries the exact
+  /** A rate-limit error the classifier recognizes (message carries 429) and that carries the exact
    *  remaining wait, so the route's Retry-After is honest instead of a hardcoded 60s. */
   private rateLimitError(retryAfterSeconds: number): Error {
     const err = new Error(`HTTP error 429 (mobileconf cooling down for ${this.username}, retry in ~${retryAfterSeconds}s)`);

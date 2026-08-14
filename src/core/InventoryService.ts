@@ -20,7 +20,7 @@ import { classifyNetworkError } from '../utils/errorClass';
 // on the account's own IP / the local-IP throttle), so no special low cap is needed.
 
 // ── Local-IP (no-proxy) rate limiting ───────────────────────────────────────────
-// Every no-proxy account egresses from the SAME host IP, so a bulk refresh that
+// Every no-proxy account egresses from the same host IP, so a bulk refresh that
 // fetches them concurrently hammers Steam from one IP and trips the per-IP rate
 // limit (HTTP 429) fast. The LocalIpThrottle serializes
 // these accounts and spaces their fetches by a randomized cooldown; proxied accounts
@@ -43,14 +43,14 @@ const REFRESH_RETRIES        = 2;
 const RETRY_PAUSE_RATELIMIT  = 35_000;
 const RETRY_PAUSE_TRANSIENT  = 8_000;
 
-// H-XCT-003: ctx2 and ctx16 are read from the SAME Steam per-IP endpoint, so they share ONE
+// Ctx2 and ctx16 are read from the same Steam per-IP endpoint, so they share one
 // rate-limit window. A per-account ThrottleState carries the moment ctx2's last 35s rate-limit
 // wait ended; if ctx16 hits the identical window ctx2 just waited out, it serves only the
 // REMAINDER of that window instead of a fresh full 35s — halving the ~140s worst-case per account.
 // It is per-invocation (allocated in doRefreshOneViaGc), NEVER shared across accounts.
 interface ThrottleState { lastRateLimitWaitEndedAt?: number; }
 
-// H-XCT-001: both verdicts now come from the ONE shared taxonomy (src/utils/errorClass)
+// Both verdicts now come from the one shared taxonomy (src/utils/errorClass)
 // so a broken-pipe/aborted-connection blip is classified identically on refresh, sell,
 // and the money-commit path. The per-bucket ACTION (long 429 pause vs short transient
 // pause, retry-vs-fail) below is unchanged.
@@ -71,7 +71,7 @@ const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 // kills the process. With release ON (default), the bulk refresh logs out each account
 // IT logged in, right after caching that account's inventory, so live sessions stay
 // bounded to ~the worker count during the pass and return to the pre-refresh baseline
-// after. Accounts that were ALREADY live before the refresh (e.g. one the user is
+// after. Accounts that were already live before the refresh (e.g. one the user is
 // trading with) are snapshotted and never touched. The inventory is cached before
 // logout, so nothing is lost; any later action re-logs the account in on demand.
 // Set SSIM_REFRESH_RELEASE_SESSIONS=0 to keep the old "stay logged in" behaviour.
@@ -83,7 +83,7 @@ export interface RefreshJob {
   cancelling?: boolean;
   /** The run ended because it was cancelled. */
   cancelled?:  boolean;
-  /** The game TAB the job was started from (labels the run; the bulk refresh now fetches BOTH
+  /** The game TAB the job was started from (labels the run; the bulk refresh now fetches both
    *  games per account on the same login/throttle slot). */
   game?:       GameId;
   total:       number;
@@ -100,7 +100,7 @@ export interface RefreshJob {
  * Trade-lock policy (deliberately simple & trustworthy): an item is marked
  * locked ONLY when Steam's own inventory API says so – i.e. its `tradable` flag
  * is 0 or it carries an explicit hold date (cache_expiration / "Tradable After"),
- * both parsed in InventoryManager. SSIM does NOT guess locks from trade history
+ * both parsed in InventoryManager. SSIM does not guess locks from trade history
  * or snapshot diffs anymore (those produced false positives on freely-tradable
  * items). The only non-API source is the per-account MANUAL `protectedUntil`
  * override the operator sets by hand, applied at read-time in the API layer.
@@ -124,7 +124,7 @@ export class InventoryService {
   private refreshCancel = false;
   /** H-INV-007: post-trade refresh passes in flight. `refreshAfterTrade` sets no job flag and its
    *  local-IP accounts sit in the LocalIpThrottle queue with NOTHING in `inFlight`, so busy() was
-   *  blind to them and the update swap gate (C5) could fire mid-pass. Counted so busy() sees them. */
+   * blind to them and the update swap gate could fire mid-pass. Counted so busy() sees them. */
   private bgRefreshPasses = 0;
   private onCompleteCb?: (reason: string, game?: GameId) => void;
   /** Serializes + spaces out fetches for no-proxy (local IP) accounts (rate-limit guard). */
@@ -159,10 +159,10 @@ export class InventoryService {
   }
 
   /**
-   * Clone-free read for AGGREGATION only (H-INV-023) — mirrors getCached's gc-preferred
+   * Clone-free read for AGGREGATION only — mirrors getCached's gc-preferred
    * fallback but via InventoryStore.peek (no structuredClone, no LRU touch). The value-history
    * snapshot only sums two numbers per account, so cloning the whole fleet's records per snapshot
-   * is pure event-loop stall. The caller MUST treat the result as read-only (INV-B12).
+   * is pure event-loop stall. The caller MUST treat the result as read-only.
    */
   peekCached(username: string, game: GameId = 'cs2'): Readonly<AccountInventory> | undefined {
     if (game === 'cs2') return this.gcStore.peek(username) ?? this.store.peek(username);
@@ -182,21 +182,21 @@ export class InventoryService {
 
   // ── Single refresh ───────────────────────────────────────────────────────────
 
-  /** In-flight dedup: concurrent refreshes of the SAME account+game (e.g. a
+  /** In-flight dedup: concurrent refreshes of the same account+game (e.g. a
    *  manual refresh while refresh-all is running) would race their logins and
    *  kill each other's session – share one promise per account instead. */
   private readonly inFlight = new Map<string, Promise<AccountInventory>>();
 
-  /** S25: PER-INVOCATION ownership context — did THIS refresh's ensureSession create the live session
+  /** S25: PER-INVOCATION ownership context — did this refresh's ensureSession create the live session
    *  (true) or reuse one another op owns (false)? Was a service-level Map keyed by ACCOUNT, which two
    *  concurrent flows on the same account (a fleet refresh + a post-trade refresh) clobbered — one could
    *  log the shared session out mid-fetch, or neither release it (leaked to the reaper). AsyncLocalStorage
    *  scopes ownership to each per-account refresh call instead, so concurrent flows never collide. Each
-   *  worker runs its refresh inside `ownershipCtx.run(store, …)` and reads its OWN `store` for release. */
+   *  worker runs its refresh inside `ownershipCtx.run(store, …)` and reads its own `store` for release. */
   private readonly ownershipCtx = new AsyncLocalStorage<{ createdByCall?: boolean }>();
 
   refreshOne(username: string, game: GameId = 'cs2'): Promise<AccountInventory> {
-    // CS2 has ONE refresh and it is the COMPLETE one: the full pure-web fetch
+    // CS2 has one refresh and it is the COMPLETE one: the full pure-web fetch
     // (context 2 + 16 + market listings, fully categorised). The quick single-context
     // fetch (doRefreshOne) now serves only TF2 and the buy-verification path
     // (forceRefresh), where a context-2 read is exactly what's needed and must stay fast.
@@ -231,7 +231,7 @@ export class InventoryService {
   // ── CS2 full refresh (the single CS2 refresh: context 2 + 16 + market listings) ──
 
   /**
-   * THE CS2 refresh: assembles an account's COMPLETE inventory from PURE WEB requests
+   * the CS2 refresh: assembles an account's COMPLETE inventory from PURE WEB requests
    * — context 2 (owned + market-bought holds) + context 16 (trade-received trade-locked
    * + listed) + the market listings — fully categorised (listed / tradelocked / tradable).
    * No Game Coordinator / game-client connection. Stored in its own cache (source='gc', a
@@ -251,7 +251,7 @@ export class InventoryService {
   }
 
   /**
-   * S50 / H-TRD-123: run ONE leg of a refresh under the SAME bounded transient/429 retry the TF2 & quick
+   * Run one leg of a refresh under the same bounded transient/429 retry the TF2 & quick
    * paths already have (see the fetchInventoryOnly loop below). Without it a single 429/proxy blip on a
    * leg threw straight out and failed the whole account for the pass → inflated `failed` counts at fleet
    * scale. A non-transient error (auth, private inventory) still throws immediately. `label` names the leg
@@ -267,7 +267,7 @@ export class InventoryService {
         const rateLimited = isRateLimited(err);
         if (attempt >= REFRESH_RETRIES || (!rateLimited && !isTransientRefreshError(err))) throw err;
         let pause = rateLimited ? RETRY_PAUSE_RATELIMIT : RETRY_PAUSE_TRANSIENT;
-        // H-XCT-003: ctx2 and ctx16 share ONE per-IP window. If a sibling context just waited a
+        // Ctx2 and ctx16 share one per-IP window. If a sibling context just waited a
         // full RETRY_PAUSE_RATELIMIT moments ago, that window is still fresh, so this context need
         // wait only the time that has ELAPSED since — ≈0 right after the sibling's wait, decaying
         // back to the full window as that credit ages out. Never a duplicate fresh 35s.
@@ -276,7 +276,7 @@ export class InventoryService {
         } else if (!rateLimited) {
           // TANK: full-jitter the TRANSIENT (reset-class) backoff so a fleet's worth of proxied
           // accounts failing the same storming proxy in the same tick don't retry in lockstep and
-          // reconcentrate the TLS create/destroy churn. Decorrelated to [50%,100%]. NOT applied to the
+          // reconcentrate the TLS create/destroy churn. Decorrelated to [50%,100%]. not applied to the
           // RATELIMIT branch — that must never drop below Steam's per-IP 429 window (H-XCT-003 intact).
           pause = Math.round(pause * (0.5 + Math.random() * 0.5));
         }
@@ -291,8 +291,8 @@ export class InventoryService {
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
-  /** S50: fetch ONE CS2 web-inventory context under the shared retry policy (see `retrying`).
-   *  H-XCT-003: `throttle` is shared across an account's ctx2/ctx16 fetches so ctx16 does not
+  /** S50: fetch one CS2 web-inventory context under the shared retry policy (see `retrying`).
+   * `throttle` is shared across an account's ctx2/ctx16 fetches so ctx16 does not
    *  re-serve a per-IP rate-limit window ctx2 already waited out. */
   private fetchRawRetrying(
     session: ManagedSession, ctx: number, username: string, throttle?: ThrottleState,
@@ -309,7 +309,7 @@ export class InventoryService {
 
     const steamId = String(session.steamId ?? '');
 
-    // 1) Market listings FIRST. Their asset ids are excluded below so a listed item is
+    // 1) Market listings first. Their asset ids are excluded below so a listed item is
     //    NEVER also counted as owned/locked (one asset = one bucket). Best-effort —
     //    `listingsOk` tracks whether the fetch SUCCEEDED so a transient hiccup is never
     //    mistaken for "no listings" (which would wipe the listed bucket from the cache).
@@ -318,8 +318,8 @@ export class InventoryService {
     let listingsOk = true;
     let listedTruncated = false;
     try {
-      // H-TRD-123: the listings leg gets the SAME bounded transient/429 retry as the ctx2/ctx16
-      // fetches (S50) so one proxy/429 blip no longer leaves a stale listed bucket for the pass.
+      // The listings leg gets the same bounded transient/429 retry as the ctx2/ctx16
+      // fetches so one proxy/429 blip no longer leaves a stale listed bucket for the pass.
       // Read-only re-reads (≤MAX_PAGES GETs); non-transient errors still fail fast into the catch.
       const fetched = await this.retrying(() => fetchListedItems(session), 'mylistings', username);
       listed = InventoryManager.stack(fetched.items);
@@ -334,11 +334,11 @@ export class InventoryService {
     }
 
     // 2) The complete inventory from PURE WEB (no Game Coordinator): context 2 holds
-    //    owned + market-bought holds; context 16 holds trade-received trade-locked AND
+    //    owned + market-bought holds; context 16 holds trade-received trade-locked and
     //    currently-listed items. Names + exact unlock dates come straight from Steam's
     //    own descriptions (owner_descriptions "Tradable/Marketable After …"), so no
     //    schema resolver and no game-client connection are needed.
-    // H-XCT-003: ctx2 and ctx16 share ONE per-IP rate-limit window; this per-account marker lets
+    // Ctx2 and ctx16 share one per-IP rate-limit window; this per-account marker lets
     // ctx16 serve only the REMAINDER of a window ctx2 already waited out (not a fresh full 35s).
     const throttle: ThrottleState = {};
     let raw2  = await this.fetchRawRetrying(session, 2, username, throttle);  // S50: bounded transient/429 retry
@@ -346,15 +346,15 @@ export class InventoryService {
     let ctx2  = InventoryManager.parse(raw2,  steamId, 'cs2');
     let ctx16 = InventoryManager.parse(raw16, steamId, 'cs2');
 
-    // H-INV-005: Steam's OWN total is the empty/partial disambiguator. A strict 0 on BOTH
+    // Steam's own total is the empty/partial disambiguator. A strict 0 on both
     // contexts means the account is AUTHORITATIVELY empty (converge the cache); an ABSENT
     // field (undefined) keeps full protection. fetchRaw now returns undefined when the field
     // was omitted, so `=== 0` never fires on an unknown read.
     let authoritativeEmpty = raw2.total_inventory_count === 0 && raw16.total_inventory_count === 0;
 
-    // Genuine retry on a suspicious empty read: if BOTH inventory contexts came back
+    // Genuine retry on a suspicious empty read: if both inventory contexts came back
     // with zero assets while the cache holds owned/locked items, Steam very likely served
-    // a partial/empty page (total_inventory_count disagreeing with reality). Give it ONE
+    // a partial/empty page (total_inventory_count disagreeing with reality). Give it one
     // more chance before we trust the empty read — far better than accepting the first bad
     // page and then having the partial-read path kick in. (One re-fetch, bounded.)
     // Skip entirely when Steam already DECLARED the account empty (authoritativeEmpty): there
@@ -365,8 +365,8 @@ export class InventoryService {
       if (cachedOwned) {
         logger.warn(`[${username}] inventory contexts returned 0 assets while cache holds items – retrying inventory read once`);
         await sleep(2_000);
-        // H-INV-004: the confirmation re-read gets the SAME bounded transient/429 retry as the
-        // primary fetches (S50) — a single blip here (likely mid-429-storm) no longer fails the
+        // The confirmation re-read gets the same bounded transient/429 retry as the
+        // primary fetches — a single blip here (likely mid-429-storm) no longer fails the
         // whole account for the pass; a non-transient error still throws immediately.
         raw2  = await this.fetchRawRetrying(session, 2, username);
         raw16 = await this.fetchRawRetrying(session, 16, username);
@@ -380,7 +380,7 @@ export class InventoryService {
     //    categorise: a future trade-lock → 'tradelocked', otherwise → 'tradable'.
     const now = Date.now();
     const ownedLockedRaw = [...ctx2, ...ctx16].filter(i => !listedAssetIds.has(i.assetId));
-    const gcOwnedLockedCount = ownedLockedRaw.length; // owned+locked count, BEFORE listed are merged in
+    const gcOwnedLockedCount = ownedLockedRaw.length; // owned+locked count, before listed are merged in
     const partial = !!(raw2.truncated || raw16.truncated || listedTruncated); // page-capped read → INCOMPLETE (C12)
     const inv: AccountInventory = {
       username, steamId, game: 'cs2', source: 'gc',
@@ -418,7 +418,7 @@ export class InventoryService {
         balance:  session.wallet.hasWallet ? session.wallet.balance : 0,
       };
     } else {
-      // S41: the 'wallet' event can fire AFTER this refresh commits (a login whose inventory read
+      // The 'wallet' event can fire after this refresh commits (a login whose inventory read
       // finishes before the wallet arrives). Writing the new record with no wallet would flip a
       // previously-funded account back to the "—" tri-state on every such pass. Carry the last-known
       // wallet forward instead — a real balance is only ever replaced by a newer real balance.
@@ -438,8 +438,8 @@ export class InventoryService {
     //     `mylistings` set into it (Owned→Listed) so just-listed items don't freeze as Owned.
     //   • rawCount  >  0  → the read succeeded; owned/locked is 0 only because EVERYTHING the
     //     account holds is now listed/sold. That is the TRUTH and MUST overwrite the cache.
-    // (`gcOwnedLockedCount` = ctx2+ctx16 AFTER removing listed; `rawCount` = before removing.)
-    //   • authoritativeEmpty (H-INV-005) → Steam ITSELF reported total_inventory_count:0 on BOTH
+    // (`gcOwnedLockedCount` = ctx2+ctx16 after removing listed; `rawCount` = before removing.)
+    // • authoritativeEmpty → Steam ITSELF reported total_inventory_count:0 on both
     //     contexts; the account is genuinely empty (traded/consolidated away). Fall through to the
     //     normal commit so the cache CONVERGES to empty instead of freezing phantom items forever.
     const rawCount = ctx2.length + ctx16.length;
@@ -458,9 +458,9 @@ export class InventoryService {
     }
 
     // A TRUNCATED (page-capped) read is PARTIAL, not authoritative. If the cache already
-    // holds MORE owned/locked than this partial read returned, do not let the smaller set
+    // holds more owned/locked than this partial read returned, do not let the smaller set
     // clobber it — keep the fuller cache and only reconcile listings (same protection as an
-    // empty read, but for the "too-big-to-page" case). (C12 / INV-B10.)
+    // empty read, but for the "too-big-to-page" case).
     if (partial) {
       const prev = this.gcStore.get(username);
       const prevOwnedLocked = prev
@@ -488,7 +488,7 @@ export class InventoryService {
    * `mylistings` read: any cached asset now in `listedAssetIds` is moved Owned→Listed, and
    * the listed bucket is replaced with the freshly-fetched listings. This is what stops a
    * just-listed item from being frozen as Owned across refreshes. If the listings fetch
-   * ALSO failed this pass (`listingsOk=false`), the cached listed bucket is kept untouched
+   * also failed this pass (`listingsOk=false`), the cached listed bucket is kept untouched
    * (we never wipe listed items on a double miss).
    */
   private reconcilePartialRead(
@@ -529,7 +529,7 @@ export class InventoryService {
       totalItems: ownedLocked.reduce((n, i) => n + i.quantity, 0)
                 + listedBucket.reduce((n, i) => n + (i.quantity || 0), 0),
     };
-    // H-INV-006: the `{...prev}` spread carried `prev.wallet` forward; when this pass captured a
+    // The `{...prev}` spread carried `prev.wallet` forward; when this pass captured a
     // fresher wallet (live 'wallet' event, else S41 carry) commit THAT instead so a protected read
     // no longer persists a stale balance stamped as fresh. No wallet this pass → keep the spread
     // fallback (never fabricate 0). (Directive 2 tri-state.)
@@ -553,7 +553,7 @@ export class InventoryService {
   markListed(username: string, assetIds: string[], game: GameId = 'cs2'): void {
     try {
       if (!assetIds.length) return;
-      // Write into the SAME cache the game's reads come from: CS2's complete record lives in gcStore,
+      // Write into the same cache the game's reads come from: CS2's complete record lives in gcStore,
       // TF2's in tf2Store. Using the wrong store would leave sold TF2 items stuck under "Owned".
       const store = game === 'cs2' ? this.gcStore : this.tf2Store;
       const rec = store.get(username);
@@ -649,23 +649,23 @@ export class InventoryService {
     // when it has no cached stack). Keep the fuller cache; the next good read overwrites it.
     const prev = this.storeFor(game).get(username);
     const prevCount = prev ? prev.items.reduce((n, i) => n + (i.quantity || 0), 0) : 0;
-    // H-INV-005: an EXPLICIT reportedTotal:0 means Steam itself declared the account empty →
+    // An EXPLICIT reportedTotal:0 means Steam itself declared the account empty →
     // commit the empty read so a genuinely-emptied account converges (not suspect). An absent
     // reportedTotal (undefined) keeps full protection.
     const suspectEmpty     = inv.totalItems === 0 && prevCount > 0 && inv.reportedTotal !== 0;
     const suspectTruncated = !!inv.partial && prevCount > inv.totalItems;
     if (suspectEmpty || suspectTruncated) {
       logger.warn(`[${username}] ${game} refresh returned ${inv.totalItems} item(s) (${suspectEmpty ? 'empty' : 'page-cap truncated'}) while cache holds ${prevCount} – keeping fuller cache (suspected partial read), NOT wiping`);
-      // H-TRD-041: mark the substituted clone so fresh-read-dependent consumers (buy verification)
+      // Mark the substituted clone so fresh-read-dependent consumers (buy verification)
       // treat it as a FAILED fresh read, not the pre-buy snapshot. `prev` is already an independent
       // deep copy (InventoryStore.get clones), so stamping it never touches the cache.
       const fallbackClone = prev!;
       fallbackClone.staleReadFallback = true;
-      // H-INV-006: a protected pass must still commit a fresher wallet (live 'wallet' event, else
+      // A protected pass must still commit a fresher wallet (live 'wallet' event, else
       // S41 carry) — otherwise a balance that changed since the last good read stays stale forever
       // (the H-INV-005 freeze compounds this: reconcile every pass → wallet never updates). Show it
-      // on the returned record; persist it onto the cached record too WITHOUT re-stamping fetchedAt
-      // (item data is old) and WITHOUT the read-only staleReadFallback flag (H-TRD-041 never
+      // on the returned record; persist it onto the cached record too without re-stamping fetchedAt
+      // (item data is old) and without the read-only staleReadFallback flag (H-TRD-041 never
       // persists that). `set`'s newest-wins guard passes on the equal timestamp. (Directive 2.)
       if (inv.wallet) {
         fallbackClone.wallet = inv.wallet;
@@ -686,13 +686,13 @@ export class InventoryService {
   private async ensureSession(username: string): Promise<ManagedSession> {
     const account = this.accounts.get(username);
     if (!account) throw new Error(`Account "${username}" not found`);
-    // S25: record ownership into the CALLER'S per-invocation store (undefined outside a refresh worker,
+    // Record ownership into the CALLER'S per-invocation store (undefined outside a refresh worker,
     // e.g. a single-account API refresh that never releases) — never a shared per-account map.
     const store = this.ownershipCtx.getStore();
     const existing = this.sessions.getSession(username);
     if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession) {
       // Reused a live session — not ours to release. STICKY: never downgrade a `true` a PRIOR
-      // ensureSession call in THIS same refresh already set. The both-games refresh calls ensureSession
+      // ensureSession call in this same refresh already set. The both-games refresh calls ensureSession
       // twice per account (CS2 creates the session → true; the TF2 leg then reuses it): a plain
       // `= false` here clobbered the CS2 leg's ownership, so the finally never released the session and
       // the whole fleet piled up to the live-session ceiling ("released 0" → mass ceiling refusals).
@@ -712,7 +712,7 @@ export class InventoryService {
   status(): RefreshJob { return { ...this.job, failed: [...this.job.failed] }; }
 
   /** True while any inventory refresh (single or a bulk fleet refresh) is in flight — the update
-   *  scheduler (C5) checks this so a mid-session update swap never interrupts a running refresh. */
+   * scheduler checks this so a mid-session update swap never interrupts a running refresh. */
   busy(): boolean { return this.inFlight.size > 0 || this.job.running || this.bgRefreshPasses > 0; }
 
   /**
@@ -783,7 +783,7 @@ export class InventoryService {
         const username = queue.shift()!;
         // TANK (bulk-scoped): if this account's proxy is currently reset-storming, DEFER it instead of
         // firing another handshake into the storm — the churn that feeds the 0xC0000409 native fast-fail.
-        // Money-safe by construction: a deferred account is NOT dialed, so its cached inventory/balance is
+        // Money-safe by construction: a deferred account is not dialed, so its cached inventory/balance is
         // untouched (never coerced to empty/0) and it is surfaced in job.failed as retryable. Only the BULK
         // refresh consults the breaker; user-initiated single-account/ money ops never defer. Proxyless→null.
         const acct = this.accounts.get(username);
@@ -793,16 +793,16 @@ export class InventoryService {
           this.job.done++;
           continue;
         }
-        // S25: ownership is scoped to THIS account-refresh via a per-invocation store (isolated from a
+        // Ownership is scoped to this account-refresh via a per-invocation store (isolated from a
         // concurrent post-trade refresh of the same account), set by ensureSession within the run().
         const store: { createdByCall?: boolean } = {};
         try {
-          // Both games per account on ONE login/throttle slot (owner request). Safe on the hardened
+          // Both games per account on one login/throttle slot (owner request). Safe on the hardened
           // base: the per-proxy breaker already gated this account ABOVE, so a storming proxy is
           // deferred before either leg dials — the TF2 leg only ever rides an already-healthy session.
           await this.ownershipCtx.run(store, () => this.refreshBothMaybeThrottled(username, () => this.refreshCancel));
         } catch (err) {
-          // H-INV-008: a ThrottleSkippedError means the account was cancelled BEFORE any fetch started —
+          // A ThrottleSkippedError means the account was cancelled before any fetch started —
           // it's a skip, not a failure. Don't inflate job.failed (the finally still counts it in job.done,
           // matching today's cancelled-run accounting); log at debug.
           if ((err as { skipped?: boolean }).skipped === true) {
@@ -813,10 +813,10 @@ export class InventoryService {
           }
         } finally {
           this.job.done++;
-          // Release ONLY a session THIS refresh created (ownership recorded by ensureSession into our own
+          // Release ONLY a session this refresh created (ownership recorded by ensureSession into our own
           // store) so a full-fleet refresh doesn't end with the whole fleet held live (the resource
-          // storm), WITHOUT ever tearing down a session another op owns or leaking one we created. The
-          // inventory is already cached, so logging out loses nothing; any later action re-logs. (C17 / S25.)
+          // storm), without ever tearing down a session another op owns or leaking one we created. The
+          // inventory is already cached, so logging out loses nothing; any later action re-logs.
           const createdByUs = store.createdByCall === true;
           if (REFRESH_RELEASE_SESSIONS && createdByUs) {
             try {
@@ -837,7 +837,7 @@ export class InventoryService {
       logger.info(`Refresh-all memory: RSS ${mb(startRss)}→${mb(endRss)}MB · peak ${mb(peakRss)}MB over ${usernames.length} account(s)`);
     }
 
-    // Every account fetched BOTH games this pass: CS2 wrote the full-inventory (gc) cache,
+    // Every account fetched both games this pass: CS2 wrote the full-inventory (gc) cache,
     // TF2 wrote its own — persist each batch in one atomic write.
     this.gcStore.flush();
     this.tf2Store.flush();
@@ -847,7 +847,7 @@ export class InventoryService {
     this.job.finishedAt = new Date().toISOString();
     const wasCancelled = this.refreshCancel;
     this.refreshCancel = false;
-    // History snapshots track BOTH games (CS2 + a parallel TF2 series), so settle a
+    // History snapshots track both games (CS2 + a parallel TF2 series), so settle a
     // snapshot after the pass — the snapshot is cache-only and updates both curves.
     try { this.onCompleteCb?.(`refresh-all-${game}`, game); } catch (err) {
       logger.warn(`refresh-complete hook failed: ${(err as Error).message}`);
@@ -869,7 +869,7 @@ export class InventoryService {
    * refresh straight through at full concurrency.
    */
   private refreshMaybeThrottled(username: string, game: GameId, skip?: () => boolean): Promise<AccountInventory> {
-    // H-INV-008: pass `skip` into the throttle so an "End Task" cancel drops queued-but-unstarted
+    // Pass `skip` into the throttle so an "End Task" cancel drops queued-but-unstarted
     // local-IP accounts immediately (ThrottleSkippedError) instead of draining serially through the
     // cooldown chain. Proxied accounts start straight away — the skip is checked in the bulk worker loop.
     return this.isLocalIp(username)
@@ -878,13 +878,13 @@ export class InventoryService {
   }
 
   /**
-   * One account, BOTH games, one throttle slot (owner request): the full CS2 fetch plus a TF2 read on
-   * the SAME live session. The login (the expensive, rate-limited, storm-sensitive part) is paid once;
+   * One account, both games, one throttle slot (owner request): the full CS2 fetch plus a TF2 read on
+   * the same live session. The login (the expensive, rate-limited, storm-sensitive part) is paid once;
    * the TF2 leg is one extra web read (an account without TF2 answers with a single small empty
    * response). Fetching both keeps the Steam wallet identical in both caches by construction and keeps
    * the TF2 tab fresh without a second login pass. A TF2-only failure surfaces as a "TF2:"-tagged
-   * partial failure WITHOUT voiding the committed CS2 leg; a mid-account "End Task" skips the TF2 leg.
-   * The bulk worker has ALREADY consulted the per-proxy breaker before calling this, so a storming
+   * partial failure without voiding the committed CS2 leg; a mid-account "End Task" skips the TF2 leg.
+   * The bulk worker has already consulted the per-proxy breaker before calling this, so a storming
    * proxy never reaches either leg.
    */
   private refreshBothMaybeThrottled(username: string, skip?: () => boolean): Promise<void> {
@@ -913,16 +913,16 @@ export class InventoryService {
    * Fire-and-forget refresh used after a trade so the sender loses and the
    * receiver gains the moved items in the cache (post-trade cache fix).
    *
-   * SAME discipline as the bulk refresh — this must never be the one fleet path
+   * same discipline as the bulk refresh — this must never be the one fleet path
    * that bypasses the safety rails (however many targets a future caller passes):
    *   • BOUNDED: a scaleConcurrency-sized worker pool, never one task per target
    *     (an unbounded fan-out is the login/socket storm that kills the process).
    *   • THROTTLED: routes through refreshMaybeThrottled so no-proxy accounts go
    *     through the shared LocalIpThrottle instead of hammering Steam from one IP.
-   *   • RELEASING: a session THIS refresh created is logged back out after its
+   *   • RELEASING: a session this refresh created is logged back out after its
    *     inventory is cached (explicit ownership via createdSession, exactly like
    *     runRefresh) — a session another op owns (e.g. the trade's sender, still
-   *     live) is reused and never torn down. (C17 / INV-A6.)
+   * live) is reused and never torn down.
    * Returns the completion promise (callers may ignore it; nothing rejects).
    */
   refreshAfterTrade(usernames: Array<string | undefined>): Promise<void> {
@@ -936,14 +936,14 @@ export class InventoryService {
       targets.push(u);
     }
     if (targets.length === 0) return Promise.resolve();
-    this.bgRefreshPasses++; // H-INV-007: make busy() see this pass while its accounts sit in the throttle queue
+    this.bgRefreshPasses++; // Make busy() see this pass while its accounts sit in the throttle queue
 
     const queue = [...targets];
     const workers = Math.max(1, Math.min(scaleConcurrency(queue.length), queue.length));
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const username = queue.shift()!;
-        // S25: per-invocation ownership store, isolated from a concurrent fleet refresh of the same account.
+        // Per-invocation ownership store, isolated from a concurrent fleet refresh of the same account.
         const store: { createdByCall?: boolean } = {};
         try {
           await this.ownershipCtx.run(store, () => this.refreshMaybeThrottled(username, 'cs2'));
@@ -967,6 +967,6 @@ export class InventoryService {
         logger.info(`Post-trade inventory refresh done: ${targets.join(', ')}`);
         try { this.onCompleteCb?.('post-trade', 'cs2'); } catch { /* history is best-effort */ }
       })
-      .finally(() => { this.bgRefreshPasses = Math.max(0, this.bgRefreshPasses - 1); }); // H-INV-007: single settle point (workers never reject)
+      .finally(() => { this.bgRefreshPasses = Math.max(0, this.bgRefreshPasses - 1); }); // Single settle point (workers never reject)
   }
 }

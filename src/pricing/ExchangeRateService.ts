@@ -14,7 +14,7 @@ export class ExchangeRateService {
   private updatedAt = 0; // ms of last SUCCESSFUL fetch (0 = never → still on the hardcoded fallback)
   private loadedReal = false; // true once a real rate is loaded/fetched — separates "no timestamp" from "on the 0.92 fallback"
   private timer?: NodeJS.Timeout;
-  // S44: a failed refresh used to wait the full 12h before retrying, so a transient blip stranded the
+  // A failed refresh used to wait the full 12h before retrying, so a transient blip stranded the
   // fallback/stale rate for half a day. Retry in MINUTES with bounded exponential backoff; the counter
   // resets each 12h tick (a fresh retry budget per cycle) and on any success.
   private retryTimer?: NodeJS.Timeout;
@@ -27,7 +27,7 @@ export class ExchangeRateService {
   private readonly path: string;
 
   /** `filePath` overridable for tests. Loads the last persisted rate so a cold start
-   *  does NOT begin on the 0.92 fallback (C20 / INV-E5). */
+   * does not begin on the 0.92 fallback. */
   constructor(filePath: string = dataDir('exchange_rate.json')) {
     this.path = filePath;
     this.load();
@@ -40,7 +40,7 @@ export class ExchangeRateService {
       const r = Number(p?.usdToEur);
       if (Number.isFinite(r) && r > 0) {
         this.usdToEur = r;
-        this.loadedReal = true; // a real persisted rate — NOT the 0.92 fallback, even if the timestamp is lost
+        this.loadedReal = true; // a real persisted rate — not the 0.92 fallback, even if the timestamp is lost
         const t = Number(p?.updatedAt);
         this.updatedAt = Number.isFinite(t) ? t : 0; // keep honest age (null age below if unknown)
       }
@@ -93,7 +93,7 @@ export class ExchangeRateService {
     }
   }
 
-  /** S44: after a failed refresh, arm ONE short retry with bounded exponential backoff (minutes). Once
+  /** S44: after a failed refresh, arm one short retry with bounded exponential backoff (minutes). Once
    *  MAX_RETRIES is reached we stop until the next 12h tick (which resets the budget) — never a busy loop. */
   private scheduleRetry(): void {
     if (this.stopped) return;                                           // no new timers after teardown

@@ -33,7 +33,7 @@ export const MARKET_UA = STEAM_BROWSER_UA;
 
 // ── Per-account trade-manager tuning (memory + background-poll load) ───────────
 // Each logged-in account owns a TradeOfferManager that POLLS Steam on this interval
-// AND retains up to `assetCacheMaxItems` item descriptions. Across a large fleet both
+// and retains up to `assetCacheMaxItems` item descriptions. Across a large fleet both
 // multiply: at the old 5s interval that was ~N/5 WebAPI polls/sec fleet-wide, and an
 // N×20 000 description cache that was a top resident-memory consumer (the prime leak
 // suspect). Both are now env-tunable with far leaner defaults; raise them only if
@@ -48,7 +48,7 @@ export interface SellOnMarketResult {
 }
 
 /** Billing/address the Steam market buy order requires. The working browser
- *  request sends a REAL name + address (empty fields → Steam's need_confirmation
+ *  request sends a real name + address (empty fields → Steam's need_confirmation
  *  gate). save=true mirrors the browser's save_my_address=1. */
 export interface BuyBilling {
   firstName?:  string;
@@ -67,7 +67,7 @@ export interface BuyOrderResult {
   placed: boolean;
   /** We cleared the mobile 2FA confirmation (or none was required). */
   confirmed: boolean;
-  /** True only if Steam STILL reports the order as needing a confirmation we couldn't clear. */
+  /** True only if Steam still reports the order as needing a confirmation we couldn't clear. */
   needsConfirmation: boolean;
   /** Steam buy_orderid (the confirmation 'creator'), when known. */
   buyOrderId?: string;
@@ -190,16 +190,16 @@ export interface SendTradeResult {
   /**
    * 'sent'        = no mobile confirmation was required.
    * 'confirmed'   = we auto-confirmed via 2FA.
-   * 'unconfirmed' = the offer EXISTS on Steam but its 2FA confirmation could NOT be
+   * 'unconfirmed' = the offer EXISTS on Steam but its 2FA confirmation could not be
    *                 cleared (even after retries). Callers MUST treat this as
    *                 "placed, needs manual confirmation" and never auto-resend — a
-   *                 re-send would create a SECOND real-asset offer.
+   *                 re-send would create a second real-asset offer.
    */
   status:  'sent' | 'confirmed' | 'unconfirmed';
 }
 
 /**
- * Per-account trading wrapper. Owns its OWN SteamCommunity + TradeOfferManager,
+ * Per-account trading wrapper. Owns its own SteamCommunity + TradeOfferManager,
  * both bound to the account's isolated httpsAgent — the 100% network-isolation
  * rule is preserved (no shared agents/cookies between accounts).
  */
@@ -223,12 +223,12 @@ export class AccountTrader {
     this.confGate = new MobileConfGate(this.username, () => this.rawFetchConfirmationList());
 
     // ── Network isolation ──────────────────────────────────────────────────
-    // Injecting the per-account agent into a `request` instance routes EVERY
+    // Injecting the per-account agent into a `request` instance routes every
     // community + manager HTTP call through this account's IP/proxy only.
     // `timeout` is mandatory: neither steamcommunity nor tradeoffer-manager set
     // one, so a proxy that silently drops api.steampowered.com would hang every
     // WebAPI call (and with it the trade-history sync) forever.
-    // Browser fingerprint on EVERY vendored-library call (mobileconf/confirmations, profile XML,
+    // Browser fingerprint on every vendored-library call (mobileconf/confirmations, profile XML,
     // eligibility): default the Chromium Client Hints + Sec-Fetch + Accept-Language onto the injected
     // `request` instance, and hand the canonical UA to SteamCommunity's own `userAgent` option so it
     // stays the single source. STEAM_LIBRARY_HEADERS deliberately omits Accept (the library sets
@@ -249,7 +249,7 @@ export class AccountTrader {
       dataDirectory: null,   // never share poll-data on disk across isolated accounts
       pollInterval:  POLL_INTERVAL_MS,
       // The description cache defaults to 500 items. A single mass-consolidation trade
-      // can hold 700+ items, and getOffers fetches descriptions for EVERY item across ALL
+      // can hold 700+ items, and getOffers fetches descriptions for every item across all
       // offers in one pass — so too small a ceiling evicts earlier descriptions mid-fetch,
       // leaving items BARE (no name / icon / market_hash_name → no price). ASSET_CACHE_MAX
       // (default 4 000) keeps the documented mass-consolidation pass resident while cutting
@@ -272,7 +272,7 @@ export class AccountTrader {
 
   // ── Cookie lifecycle ─────────────────────────────────────────────────────
 
-  /** Pushes fresh web-session cookies into the manager AND the community. */
+  /** Pushes fresh web-session cookies into the manager and the community. */
   setCookies(cookies: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
       // Set the cookies on the SteamCommunity instance EXPLICITLY (its `request`
@@ -295,8 +295,8 @@ export class AccountTrader {
   get ready():   boolean            { return this.cookiesReady; }
   get steamId(): string | undefined { return this.session.steamId; }
   /**
-   * True when this trader is bound to EXACTLY this live session instance.
-   * A re-login creates a NEW ManagedSession object; a trader still pointing at
+   * True when this trader is bound to exactly this live session instance.
+   * A re-login creates a new ManagedSession object; a trader still pointing at
    * the old one would use stale cookies and – worse – the OLD httpsAgent (wrong
    * proxy after a network change). TradeService uses this to rebuild traders.
    */
@@ -332,7 +332,7 @@ export class AccountTrader {
   }
 
   /**
-   * The same single `market/mylistings` read as {@link getListedAssetIds}, but ALSO reporting which of
+   * The same single `market/mylistings` read as {@link getListedAssetIds}, but also reporting which of
    * those assets are still awaiting a mobile 2FA confirmation. The mass-sell needs the distinction: only
    * an UNCONFIRMED pre-existing listing justifies spending a `mobileconf/getlist`. Same request cost.
    */
@@ -364,7 +364,7 @@ export class AccountTrader {
       const d = r.data;
       if (!d || typeof d !== 'object') throw new Error('market/mylistings: malformed response');
 
-      // ONE canonical parse — same membership rule as the inventory "Listed" bucket
+      // one canonical parse — same membership rule as the inventory "Listed" bucket
       // (MarketListings.fetchListedItems) and the Active Orders view, so the three
       // can never disagree about which assets are on the market (the field bug).
       mergeParsed(acc, parseMyListings(d));
@@ -388,7 +388,7 @@ export class AccountTrader {
   // ── New feature: Active Orders (fetch + cancel sell listings & buy orders) ──
 
   /**
-   * Reads the account's FULL set of open market orders — active SELL listings and
+   * Reads the account's full set of open market orders — active SELL listings and
    * resting BUY orders — for the "Active Orders" dashboard tab. One authenticated
    * pass through the bot's own cookies + isolated agent (same isolation as every
    * other market call).
@@ -396,9 +396,9 @@ export class AccountTrader {
    * Sell listings are paginated via market/mylistings/render (the proven endpoint);
    * each listing's item name/icon come from that page's `assets` map. Buy orders are
    * read from the same payload when present, else from one market/mylistings landing
-   * fetch (Steam only embeds buy_orders on the landing page). Orders for ALL games
+   * fetch (Steam only embeds buy_orders on the landing page). Orders for all games
    * are returned, each tagged with its appId so the caller can filter (CS2 vs TF2).
-   * Throws on a hard failure of the FIRST page so a dead proxy surfaces as a real error.
+   * Throws on a hard failure of the first page so a dead proxy surfaces as a real error.
    */
   async getMarketOrders(): Promise<MarketOrders> {
     const cookies = this.session.webSession?.cookies ?? [];
@@ -463,7 +463,7 @@ export class AccountTrader {
       if (Number.isFinite(total) && start + PAGE >= total) break;
     }
 
-    // Buy orders are NOT paginated and may live only on the landing page. If the
+    // Buy orders are not paginated and may live only on the landing page. If the
     // render payload carried none, fetch the landing page once and read them there.
     if (seenBuy.size === 0) {
       try {
@@ -478,7 +478,7 @@ export class AccountTrader {
   }
 
   /**
-   * Cancels ONE active market SELL listing (market/removelisting/<id>). Routes
+   * Cancels one active market SELL listing (market/removelisting/<id>). Routes
    * through the account's own cookies + isolated agent. Steam answers 200 on
    * success; a non-200 is surfaced as an error so the UI keeps the row.
    */
@@ -515,7 +515,7 @@ export class AccountTrader {
   }
 
   /**
-   * Cancels ONE active market BUY order (market/cancelbuyorder/). Steam answers
+   * Cancels one active market BUY order (market/cancelbuyorder/). Steam answers
    * JSON { success: 1 }. A non-success body is surfaced as an error so the UI keeps
    * the row. Routes through the account's own isolated session.
    */
@@ -556,7 +556,7 @@ export class AccountTrader {
   // ── New feature: Trade Offers (fetch sent + received, act on them) ──────────
 
   /**
-   * Reads this account's FULL set of trade offers — sent AND received — for the
+   * Reads this account's full set of trade offers — sent and received — for the
    * global Trade-Offers manager. One WebAPI pass (manager.getOffers, EOfferFilter.All)
    * routed through the bot's own session, so descriptions (item names/icons) come
    * back populated (the manager is built with language:'en'). Each side is returned
@@ -566,7 +566,7 @@ export class AccountTrader {
    */
   async getTradeOffers(opts?: { historyLimit?: number }): Promise<TradeOffers> {
     const historyLimit = Math.max(0, opts?.historyLimit ?? 50);
-    // Pass an explicit PAST cutoff so Steam includes historical offers on BOTH sides
+    // Pass an explicit PAST cutoff so Steam includes historical offers on both sides
     // (the lib's default cutoff is one year in the FUTURE). 2-year lookback is plenty.
     const cutoff = new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000);
     const { sent, received } = await new Promise<{ sent: any[]; received: any[] }>((resolve, reject) => {
@@ -632,7 +632,7 @@ export class AccountTrader {
   }
 
   /**
-   * Cancels (our sent offer) or declines (an incoming offer) ONE trade offer. The
+   * Cancels (our sent offer) or declines (an incoming offer) one trade offer. The
    * underlying steam-tradeoffer-manager call is the same — it picks cancel vs.
    * decline from the offer's `isOurOffer` flag — so a single method covers both.
    */
@@ -645,7 +645,7 @@ export class AccountTrader {
   }
 
   /**
-   * Accepts ONE incoming trade offer. Reuses acceptOffer(), which also clears the
+   * Accepts one incoming trade offer. Reuses acceptOffer(), which also clears the
    * mobile 2FA confirmation when the offer has items WE give away (a two-sided swap).
    */
   async acceptTradeOffer(
@@ -654,7 +654,7 @@ export class AccountTrader {
   ): Promise<'accepted' | 'unconfirmed'> {
     const offer = await this.getOfferById(offerId);
     if (offer.isOurOffer) throw new Error('cannot accept an offer we sent ourselves');
-    // Cross-service asset guard hook (D2 / INV-D2): a throw here aborts BEFORE anything is sent
+    // Cross-service asset guard hook (D2 / INV-D2): a throw here aborts before anything is sent
     // (e.g. an item in this offer is busy in another money op — sell/send/craft).
     opts?.beforeAccept?.(Array.isArray(offer.itemsToGive) ? offer.itemsToGive : []);
     const status = await this.acceptOffer(offer);
@@ -782,7 +782,7 @@ export class AccountTrader {
   /**
    * Creates a market sell listing for one asset. `netCents` is the amount the
    * SELLER receives (Steam's market/sellitem `price` parameter) in the account's
-   * wallet currency. Goes through the account's OWN cookies + isolated agent.
+   * wallet currency. Goes through the account's own cookies + isolated agent.
    * The listing still needs a mobile confirmation (see confirmMarketListings()).
    */
   async sellOnMarket(assetId: string, netCents: number, appId: number, contextId: string = CS2_CONTEXTID): Promise<SellOnMarketResult> {
@@ -904,7 +904,7 @@ export class AccountTrader {
     };
 
     // Phantom-order recovery: on a NETWORK error we cannot know whether the create
-    // reached Steam. Probe the account's resting buy orders for one matching THIS exact
+    // reached Steam. Probe the account's resting buy orders for one matching this exact
     // request (game+item+price); a match means the create landed → report it placed so
     // no blind retry ever doubles the order. Best-effort (a failed probe returns none).
     const probeResting = async (): Promise<BuyOrderResult | undefined> => {
@@ -942,7 +942,7 @@ export class AccountTrader {
     }
     logger.info(`[${this.username}] createbuyorder ${p.marketHashName} x${qty} total=${priceTotal} cur=${p.currency} → HTTP ${status} success=${data?.success}`);
 
-    // A returned 5xx is a Steam-EDGE failure (validateStatus:() => true means it did NOT
+    // A returned 5xx is a Steam-EDGE failure (validateStatus:() => true means it did not
     // throw): the create MIGHT have executed before the upstream answer was lost — the same
     // response-leg-lost case as the network throw above, just with a status instead of an
     // ECONNRESET. Probe for a matching resting order; if found, report placed. Otherwise
@@ -964,11 +964,11 @@ export class AccountTrader {
       };
     }
 
-    // 2) Needs mobile confirmation. CRITICAL: the create POST above ALREADY made
+    // 2) Needs mobile confirmation. CRITICAL: the create POST above already made
     //    the (pending) order on Steam's side. createbuyorder is a non-idempotent
     //    CREATE endpoint, so we must NEVER POST it again — a second POST = a
-    //    SECOND real-money order. We only accept the pending mobile confirmation
-    //    ONCE (that activates the order POST #1 created); we do NOT re-create.
+    //    second real-money order. We only accept the pending mobile confirmation
+    //    once (that activates the order POST #1 created); we do not re-create.
     const needsConf = !!(data?.need_confirmation || data?.success === 22);
     const confId = data?.confirmation?.confirmation_id;
     if (needsConf) {
@@ -998,7 +998,7 @@ export class AccountTrader {
         // turns success:22 → success:1 and ACTIVATES the order — proven live (1 key
         // bought, 1 charge, NO duplicate: the confirmation param ties it to the
         // order POST #1 created, it does not make a second one). Bounded to exactly
-        // ONE extra POST, behind the per-account in-flight lock + inventory/wallet
+        // one extra POST, behind the per-account in-flight lock + inventory/wallet
         // verification as backstops.
         if (p.retryAfterConfirm) {
           logger.info(`[${this.username}] re-POST createbuyorder with confirmation=${creator} (opt-in spec step)…`);
@@ -1020,15 +1020,15 @@ export class AccountTrader {
               buyOrderId: re.data.buy_orderid != null ? String(re.data.buy_orderid) : creator, raw: re.data };
           }
           const stillNeeds = !!(re.data?.need_confirmation || re.data?.success === 22);
-          // #44: report consistent flags — if Steam STILL needs a confirmation after the
-          // re-POST, we did NOT fully confirm, so confirmed=false (was true → contradictory
+          // #44: report consistent flags — if Steam still needs a confirmation after the
+          // re-POST, we did not fully confirm, so confirmed=false (was true → contradictory
           // confirmed+needsConfirmation, making the UI lie). The re-POST itself is unchanged.
           return { placed: true, confirmed: !stillNeeds, needsConfirmation: stillNeeds, buyOrderId: creator, raw: re.data };
         }
         return { placed: true, confirmed: true, needsConfirmation: false, buyOrderId: creator, raw: data };
       }
       // Could not match/clear the confirmation → the order exists but is unconfirmed.
-      // Do NOT re-POST (that would duplicate the order). Surface it for manual review.
+      // Do not re-POST (that would duplicate the order). Surface it for manual review.
       logger.warn(`[${this.username}] buy order confirmation NOT cleared (${(lastConfErr as Error | undefined)?.message ?? 'no matching confirmation'}) – left pending, NOT re-created`);
       return { placed: true, confirmed: false, needsConfirmation: true, buyOrderId: String(confId), raw: data };
     }
@@ -1042,7 +1042,7 @@ export class AccountTrader {
    * The single source of truth for this account's pending mobile-confirmation
    * list. Signs the getlist call with identity_secret + Steam server time and
    * resolves { off, confs } — the offset is handed back so each caller signs its
-   * own accept/respond against the SAME server-time base. Rejects only when
+   * own accept/respond against the same server-time base. Rejects only when
    * getConfirmations itself errors. Callers apply their own identity_secret guard
    * before invoking; one list protocol, no sibling drift.
    */
@@ -1067,9 +1067,9 @@ export class AccountTrader {
     return new Promise<{ off: number; confs: any[] }>((resolve, reject) => {
       SteamTotp.getTimeOffset((offErr, offset) => {
         // A confirmation key is signed against STEAM's clock. On a QueryTime failure this fell back to
-        // offset 0 — i.e. the raw local clock — so on a host whose clock has drifted EVERY confirmation
+        // offset 0 — i.e. the raw local clock — so on a host whose clock has drifted every confirmation
         // key is signed at the wrong time and Steam rejects the lot ("confirmations completely stopped
-        // working"). The login path already prefers the last REAL offset the S6 layer learned; the
+        // working"). The login path already prefers the last real offset the S6 layer learned; the
         // confirmation path did not. Align them: fall back to that mirror, which is 0 until one is
         // learned, so a machine that never got an offset behaves exactly as before. (v1.4.4)
         const off = offErr ? getSteamTotpOffsetSeconds() : offset;
@@ -1090,7 +1090,7 @@ export class AccountTrader {
   /**
    * Accepts the pending mobile confirmation for a freshly-created buy order and
    * returns its `creator` (= the Steam buy_orderid). Matches the createbuyorder
-   * confirmation_id against BOTH conf.id AND conf.creator (Steam maps it to the
+   * confirmation_id against both conf.id and conf.creator (Steam maps it to the
    * creator/buy_orderid, not always the id). Still strict to THAT id — NO "newest"
    * fallback, so an unrelated sell-listing confirmation is never auto-accepted.
    * getConfirmations + respond(allow) sign the getlist/ajaxop calls via
@@ -1107,8 +1107,8 @@ export class AccountTrader {
     logger.info(`[${this.username}] mobileconf getlist → ${list.length} pending: ` +
       (list.map((c) => `{id=${c?.id} creator=${c?.creator} type=${c?.type}}`).join(', ') || '(none)'));
     // Steam maps createbuyorder's confirmation_id to the confirmation's
-    // CREATOR (the buy_orderid) — NOT always its id. Match BOTH. Still strict
-    // to THIS id (no "newest" fallback), so a sell-listing conf is never grabbed.
+    // CREATOR (the buy_orderid) — not always its id. Match both. Still strict
+    // to this id (no "newest" fallback), so a sell-listing conf is never grabbed.
     const conf = list.find((c) =>
       String(c?.id) === String(confirmationId) || String(c?.creator) === String(confirmationId));
     if (!conf) return undefined;
@@ -1129,7 +1129,7 @@ export class AccountTrader {
    * and trade sends.
    *
    * 2026-07-10: reimplemented on the GATED canonical primitive (fetchConfirmationList + conf.respond)
-   * instead of the vendor's `acceptConfirmationForObject`, which does its OWN fresh getlist on EVERY
+   * instead of the vendor's `acceptConfirmationForObject`, which does its own fresh getlist on every
    * attempt — up to 4 un-gated getlists per object that ignore the per-account MobileConfGate. Now each
    * attempt shares the gate (single-flight with any concurrent SDA/mass-sell read) and the ~1.5-3s
    * inter-attempt sleep spaces the polls.
@@ -1164,7 +1164,7 @@ export class AccountTrader {
   }
 
   /**
-   * ONE `multiajaxop` POST that accepts (or cancels) MANY confirmations at once — the 2026-07-10 fix
+   * one `multiajaxop` POST that accepts (or cancels) many confirmations at once — the 2026-07-10 fix
    * that collapses N per-listing `ajaxop` hits into a single mobileconf op. Uses the vendored
    * steamcommunity `respondToConfirmation(cid[], ck[], time, key, accept, cb)` array form. All-or-nothing:
    * if Steam rejects any one, the whole request fails (callers fall back to per-item).
@@ -1183,12 +1183,12 @@ export class AccountTrader {
   }
 
   /**
-   * Confirms ALL pending market-listing mobile confirmations for this account in
+   * Confirms all pending market-listing mobile confirmations for this account in
    * one pass (trade confirmations are deliberately left untouched). Resolves with
    * { confirmed } — the number of listings confirmed. Mirrors steamcommunity's
    * per-object confirm but filters to ConfirmationType.MarketListing so a batch of
    * sells is cleared at once. A mid-pass respond failure resolves { confirmed, error }
-   * (the count of listings confirmed BEFORE the failure is preserved, so the caller's
+   * (the count of listings confirmed before the failure is preserved, so the caller's
    * retry accumulates honestly); only a getConfirmations failure — where nothing was
    * counted — rejects.
    */
@@ -1201,17 +1201,17 @@ export class AccountTrader {
     const listings = confs.filter(c => c?.type === CONF_TYPE_MARKET_LISTING);
     if (listings.length === 0) return { confirmed: 0 };
 
-    // Primary: ONE multiajaxop for the whole batch → 1 mobileconf op instead of N (2026-07-10 fix).
+    // Primary: one multiajaxop for the whole batch → 1 mobileconf op instead of N (2026-07-10 fix).
     try {
       await this.batchRespond(listings, off, true, identitySecret);
       this.confGate.invalidate();
       return { confirmed: listings.length };
     } catch (batchErr) {
-      // A 429 must NOT trigger a per-item storm (that hammers the exact endpoint that just rate-limited);
+      // A 429 must not trigger a per-item storm (that hammers the exact endpoint that just rate-limited);
       // surface it so confirmWithRetry takes its long rate-limit pause. Nothing was confirmed (all-or-nothing).
       if (classifyNetworkError(batchErr).rateLimited) { this.confGate.invalidate(); return { confirmed: 0, error: batchErr as Error }; }
       // A non-rate-limit batch failure (one bad confirmation fails the whole POST) → fall back to per-item
-      // so the rest still confirm (ASF pattern). Preserves the partial-count-on-error contract (H-TRD-027).
+      // so the rest still confirm (ASF pattern). Preserves the partial-count-on-error contract.
       logger.warn(`[${this.username}] batch listing-confirm failed (${(batchErr as Error).message}) — falling back to per-item`);
       const r = await this.confirmListingsPerItem(listings, off, identitySecret);
       this.confGate.invalidate();
@@ -1229,7 +1229,7 @@ export class AccountTrader {
       const next = (): void => {
         if (idx >= listings.length) { resolve(firstErr ? { confirmed, error: firstErr } : { confirmed }); return; }
         const conf = listings[idx++];
-        // Monotonic-fresh time: strictly unique AND increasing per accept, but bounded to ≤1s beyond real
+        // Monotonic-fresh time: strictly unique and increasing per accept, but bounded to ≤1s beyond real
         // server time for any batch size (a fresh base + running index would sign the Nth accept N seconds
         // in the future, risking rejection once outside Steam's tolerance at 200-500 listings).
         const t = Math.max(SteamTotp.time(off), prevT + 1); prevT = t;
@@ -1260,9 +1260,9 @@ export class AccountTrader {
   }
 
   /**
-   * Approve (accept=true) / deny (accept=false) confirmations. Re-fetches the LIVE list
+   * Approve (accept=true) / deny (accept=false) confirmations. Re-fetches the live list
    * from the canonical source and responds to the matching ones via conf.respond(...) —
-   * the SAME accept primitive confirmMarketListings uses. `all=true` actions every pending
+   * the same accept primitive confirmMarketListings uses. `all=true` actions every pending
    * confirmation. Returns counts so the caller can refresh from truth. (Feature B.)
    */
   async respondToConfirmations(ids: string[], accept: boolean, all = false): Promise<{ done: number; failed: string[] }> {
@@ -1275,7 +1275,7 @@ export class AccountTrader {
     const targets = confs.filter((c: any) => all || wanted.has(String(c?.id)));
     if (targets.length === 0) return { done: 0, failed: [] };
 
-    // Primary: ONE multiajaxop for the whole selection → 1 mobileconf op instead of N (2026-07-10 fix).
+    // Primary: one multiajaxop for the whole selection → 1 mobileconf op instead of N (2026-07-10 fix).
     try {
       await this.batchRespond(targets, off, accept, identitySecret);
       this.confGate.invalidate();
@@ -1366,7 +1366,7 @@ export function extractCookie(cookies: string[], name: string): string | undefin
 }
 
 /** Maps a TradeItemRef to the econ-item shape steam-tradeoffer-manager expects, carrying the
- *  item's REAL app/context so an offer can mix any Steam game (TF2 440, CS2 730, …). The
+ *  item's real app/context so an offer can mix any Steam game (TF2 440, CS2 730, …). The
  *  appId/contextId default to CS2 only when the caller omits them (older single-app callers).
  *  Exported for unit tests (the app-agnostic-send guarantee). */
 export function toEconItem(ref: TradeItemRef): { assetid: string; appid: number; contextid: string; amount: number } {
@@ -1448,7 +1448,7 @@ function shapeOffers(offers: any[], historyLimit: number): TradeOfferView[] {
 const feeFloorWarned = new Set<number>();
 
 /**
- * Audits our fee model against Steam's OWN arithmetic, for free, on listings we already fetched.
+ * Audits our fee model against Steam's own arithmetic, for free, on listings we already fetched.
  *
  * Every live listing carries both halves of its price — `net` and the `fee` Steam actually
  * charged — so `feesForNet(net, floor)` must reproduce that fee exactly. When it doesn't, OUR
@@ -1502,9 +1502,9 @@ function toSellOrder(l: MarketListing): ActiveSellOrder {
 }
 
 /**
- * Finds a resting buy order that matches a createbuyorder request EXACTLY (same game,
+ * Finds a resting buy order that matches a createbuyorder request exactly (same game,
  * item, and per-item price in minor units). Used to recover from a network error on
- * the create POST: if a matching order already rests, the create landed and must NOT
+ * the create POST: if a matching order already rests, the create landed and must not
  * be retried (that would double-order). Price match is what makes a stale pre-existing
  * order at a DIFFERENT price not count as "this create landed".
  */

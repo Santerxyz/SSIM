@@ -6,7 +6,7 @@ import { rollIfLarge, SINK_MAX_BYTES } from './rollLog';
 // ════════════════════════════════════════════════════════════════════════════
 //  crashlog.ts – SYNCHRONOUS last-words crash sink.
 //
-//  WHY THIS EXISTS (and why winston is not enough):
+//  WHY this EXISTS (and why winston is not enough):
 //  winston's File transport is ASYNC/buffered. When the process is about to die
 //  — an uncaught throw followed by an exit, or one of the `setTimeout(…exit, 250)`
 //  paths — the final record can still be sitting in winston's buffer and never
@@ -58,7 +58,7 @@ function memTag(): string {
 
 /**
  * Appends a crash/fatal record to crash-log.txt synchronously. PROXY credentials in the
- * stack (proxy URLs carry user:pass) are redacted with the SAME canonical masker the logger
+ * stack (proxy URLs carry user:pass) are redacted with the same canonical masker the logger
  * uses (redact.ts) — URL + legacy forms. Non-proxy secret VALUES must never be passed to a
  * crash sink in the first place (enforced by test/logSecrecyGuard.test.ts, not scrubbed
  * here). Best-effort; swallows all errors.
@@ -81,12 +81,12 @@ export const EXIT_FILE: string = (() => {
 })();
 
 /**
- * Synchronous breadcrumb written from `process.on('exit')` — i.e. on EVERY exit the
+ * Synchronous breadcrumb written from `process.on('exit')` — i.e. on every exit the
  * process initiates itself (a clean shutdown, a license/boot exit, a SIGHUP handler, or
  * even a vendor library calling process.exit()). Node runs 'exit' handlers synchronously
  * before the process leaves, so fs.appendFileSync here is guaranteed on disk.
  *
- * THE DIAGNOSIS HINGES ON THIS LINE'S PRESENCE OR ABSENCE:
+ * the DIAGNOSIS HINGES ON this LINE'S PRESENCE OR ABSENCE:
  *   • a death that leaves an EXIT line ⇒ the process exited ITSELF — `code` names which path.
  *   • a death with NO EXIT line (heartbeat/ssim.log just stop) ⇒ an UNCATCHABLE external
  *     TerminateProcess / SIGKILL — nothing inside the process chose to die.

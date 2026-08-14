@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  confirmations — a PURE view-shaper for the canonical Steam mobile-confirmation
-//  list. It consumes the SAME `community.getConfirmations(...)` output the trade/
-//  market confirm path already uses (AccountTrader) — it is NOT a second source or
+//  list. It consumes the same `community.getConfirmations(...)` output the trade/
+//  market confirm path already uses (AccountTrader) — it is not a second source or
 //  parser. Dedups by confirmation id and orders deterministically (newest first).
 // ════════════════════════════════════════════════════════════════════════════
 

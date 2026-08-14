@@ -8,7 +8,7 @@ import { logger, redactSecrets } from '../utils/logger';
 //  reach, and killing 100s of live sessions over one of them is worse than
 //  logging it). But a BURST of uncaught errors in a short window signals
 //  genuinely inconsistent in-memory state — at which point continuing to accept
-//  NEW money operations (buy / sell / trade-send) risks acting on a half-mutated
+//  new money operations (buy / sell / trade-send) risks acting on a half-mutated
 //  session map or mass-job. So on a burst we QUARANTINE money ops: reads and
 //  existing sessions stay up, but new money POSTs are refused with an actionable
 //  503 until the operator restarts. A one-off throw never trips it.
@@ -54,8 +54,7 @@ export const ProcessHealth = {
    * Clears the breaker. Call ONLY after a full teardown+rebuild of the app's in-memory
    * state (an in-process re-license: teardownFullApp → startFullApp), where the suspect
    * session map / mass-jobs that tripped it have been discarded and rebuilt fresh. A
-   * normal uncaught-burst is NOT cleared by this — it stays latched until a real restart.
-   * (INV-G6 / G-5.)
+   * normal uncaught-burst is not cleared by this — it stays latched until a real restart.
    */
   reset(): void {
     if (blocked) logger.warn('[safety] money-ops breaker reset — app in-memory state was rebuilt (re-license)');

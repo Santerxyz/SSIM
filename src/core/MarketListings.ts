@@ -18,7 +18,7 @@ import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../network/steamHeaders';
 //  from the seller's own listings endpoint. Routed through the account's isolated
 //  agent + cookies, same as every other web call.
 //
-//  Parsing is delegated to the SINGLE canonical parser (MarketModel.parseMyListings)
+//  Parsing is delegated to the single canonical parser (MarketModel.parseMyListings)
 //  so the "Listed" bucket, the "Active Orders" view and the mass-sell pre-flight can
 //  never disagree about which assets are on the market (the old field bug). Unlike
 //  the previous strict parser, a listing whose asset has no description is KEPT
@@ -34,13 +34,13 @@ export interface ListedItems {
   items:    CS2Item[];
   /**
    * Canonical CS2 dedup superset: every asset id the market holds for this account.
-   * The inventory refresh subtracts THIS set from ctx2+ctx16 so a listed asset is
+   * The inventory refresh subtracts this set from ctx2+ctx16 so a listed asset is
    * never also counted as Owned/locked (one asset = one bucket).
    */
   assetIds: Set<string>;
   /**
    * true ⇒ the MAX_PAGES cap was exhausted with more listings still to read, so the
-   * listed bucket is INCOMPLETE. Feeds `inv.partial` (C12) so the cache is never
+   * listed bucket is INCOMPLETE. Feeds `inv.partial` so the cache is never
    * marked complete when listings past the cap were dropped.
    */
   truncated: boolean;
@@ -48,7 +48,7 @@ export interface ListedItems {
 
 /**
  * Returns the account's active CS2 market listings (rows + dedup superset).
- * Paginated. Throws on ANY page failure (status, unusable body, or network error);
+ * Paginated. Throws on any page failure (status, unusable body, or network error);
  * the caller treats a thrown fetch as "listings unread this pass" and carries the
  * cached listed bucket forward — a partial page set is never committed.
  */
@@ -82,7 +82,7 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
 
     // parseMyListings throws on a non-listings body ({"success":false}/shapeless) so a
     // transient market-subsystem hiccup is never mistaken for "no listings" (which would
-    // wipe the Listed bucket). ANY page's throw propagates: the caller's listingsOk guard
+    // wipe the Listed bucket). any page's throw propagates: the caller's listingsOk guard
     // then carries the cached bucket forward — a partial page set is never committed.
     mergeParsed(acc, parseMyListings(d));
 
@@ -91,7 +91,7 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
     if (listings.length < PAGE) break;                          // last (partial) page
     if (Number.isFinite(total) && start + PAGE >= total) break; // covered all
     // Reached the last allowed page yet neither break fired ⇒ more listings remain past
-    // the cap. Flag the bucket INCOMPLETE (C12) instead of silently claiming completeness.
+    // the cap. Flag the bucket INCOMPLETE instead of silently claiming completeness.
     if (page === MAX_PAGES - 1) {
       truncated = true;
       logger.warn(`[${session.account.username}] market/mylistings exceeds ${MAX_PAGES * PAGE} listings – listed bucket INCOMPLETE`);

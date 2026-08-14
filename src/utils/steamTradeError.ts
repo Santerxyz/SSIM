@@ -7,7 +7,7 @@
 //                  'TargetCannotTrade', 'OfferLimitExceeded', 'ItemServerUnavailable').
 //
 // We read ONLY what Steam already gave us and bubble a clean, human-readable reason
-// up to the UI. We deliberately do NOT fire any follow-up request (e.g. fetching the
+// up to the UI. We deliberately do not fire any follow-up request (e.g. fetching the
 // receiver's inventory to "confirm" it is full) — the error text is the source of truth.
 
 /** Human-readable names for the EResult codes we are likely to surface on a trade. */
@@ -66,7 +66,7 @@ export interface ParsedSteamTradeError {
 }
 
 /**
- * Parses a raw trade-send error into a clean reason WITHOUT any follow-up request.
+ * Parses a raw trade-send error into a clean reason without any follow-up request.
  * Priority: full-inventory text → recognised cause → EResult code → raw Steam text.
  */
 export function parseSteamTradeError(err: unknown): ParsedSteamTradeError {

@@ -22,16 +22,16 @@ export class CsFloatKeyStore {
   private file: KeyFile;
   /** True when csfloat_keys.json EXISTS but could not be read/parsed → the on-disk key memory is
    *  untrustworthy. We surface it and REFUSE to write, so the present-but-corrupt file (and its .bak)
-   *  is never clobbered — recover it, then restart. A MISSING file (fresh install) is NOT degraded.
+   *  is never clobbered — recover it, then restart. A MISSING file (fresh install) is not degraded.
    *  Mirrors the TokenStore / DeliveredStore B2 pattern; the OLD code silently reset to empty, and the
    *  next set()/delete() then persisted that empty state over the good file + its .bak → all keys lost,
-   *  pricing silently falls back to Steam and the auto-accept worker skips every account. (S12.) */
+   * pricing silently falls back to Steam and the auto-accept worker skips every account. */
   private degraded = false;
 
   // Path injectable for tests; production uses the module KEYS_PATH default.
   constructor(private readonly filePath: string = KEYS_PATH) { this.file = this.load(); }
 
-  /** True when the file is present-but-unreadable AND we are in plaintext mode. In vault mode keys are
+  /** True when the file is present-but-unreadable and we are in plaintext mode. In vault mode keys are
    *  read from the vault, so a corrupt leftover file is irrelevant (no false alarm). */
   isDegraded(): boolean { return this.degraded && !AccountVault.isEnabled(); }
 
@@ -41,7 +41,7 @@ export class CsFloatKeyStore {
       const p = fsExtra.readJsonSync(this.filePath) as Partial<KeyFile> | null;
       if (!p || typeof p.keys !== 'object' || p.keys === null) {
         // Present but wrong SHAPE → untrustworthy. DEGRADE instead of silently resetting to empty (which
-        // the next set()/delete() would persist, clobbering the good file + its .bak). (S12)
+        // the next set()/delete() would persist, clobbering the good file + its .bak).
         this.degraded = true;
         logger.error(`${this.filePath} is present but malformed – refusing to overwrite it. CSFloat keys will NOT persist; restore it from ${path.basename(this.filePath)}.bak (or delete it) and restart.`);
         return { version: 1, keys: {} };
@@ -81,7 +81,7 @@ export class CsFloatKeyStore {
     else {
       // Mutate memory optimistically, then persist; if the write did not reach disk (degraded or a
       // thrown atomic write), roll the map back and throw so the store never claims a key it lost —
-      // otherwise keyInfo() reports { configured: true } while the next boot re-reads an absent key. (S12)
+      // otherwise keyInfo() reports { configured: true } while the next boot re-reads an absent key.
       const prev = this.file.keys[this.key(username)];
       this.file.keys[this.key(username)] = apiKey;
       if (!this.save()) {

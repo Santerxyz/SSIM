@@ -10,7 +10,7 @@ import { IS_PACKAGED } from './paths';
 //
 //  Behaviour:
 //   • packaged exe → opens automatically (what a customer expects on launch)
-//   • dev runs     → does NOT open (avoids a browser tab on every `npm run dev`),
+//   • dev runs     → does not open (avoids a browser tab on every `npm run dev`),
 //                    unless SSIM_OPEN_BROWSER=1
 //   • SSIM_NO_BROWSER=1 → never opens (headless servers / CI)
 // ════════════════════════════════════════════════════════════════════════════
@@ -19,7 +19,7 @@ export function openBrowser(url: string): void {
   if (process.env.SSIM_NO_BROWSER === '1') return;
   if (!IS_PACKAGED && process.env.SSIM_OPEN_BROWSER !== '1') return;
 
-  // A missing/blocked opener (e.g. no xdg-open on PATH) is NOT thrown synchronously —
+  // A missing/blocked opener (e.g. no xdg-open on PATH) is not thrown synchronously —
   // spawn reports it asynchronously as an 'error' event on the detached child. Without
   // a listener that emit is re-thrown as an uncaughtException, so warn-and-continue here.
   const launch = (cmd: string, args: string[], opts: Parameters<typeof spawn>[2]) => {

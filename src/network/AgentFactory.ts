@@ -19,7 +19,7 @@ export interface SteamUserNetworkOptions {
   /** Binds the Steam CM TCP socket to this local IP */
   localAddress?: string;
   /**
-   * HTTP proxy used by steam-user for its own HTTP requests AND for tunneling
+   * HTTP proxy used by steam-user for its own HTTP requests and for tunneling
    * the CM TCP connection via HTTP CONNECT (requires a proxy that supports CONNECT).
    */
   httpProxy?: string;
@@ -38,11 +38,11 @@ export interface CreateOptions {
   /**
    * Pool (reuse) the local-IP keepAlive agent across accounts. Default true.
    *
-   * All proxyless accounts share ONE host IP and are serialized by LocalIpThrottle,
+   * All proxyless accounts share one host IP and are serialized by LocalIpThrottle,
    * so a single shared keepAlive agent lets consecutive refreshes reuse a warm TLS
    * socket instead of re-handshaking per account. Pass `false` for a throwaway,
    * destroyable agent (e.g. the proxy/IP health-check, which `.destroy()`s it after
-   * each poll and must NOT tear down the shared pool that live sessions depend on).
+   * each poll and must not tear down the shared pool that live sessions depend on).
    *
    * Ignored for proxy agents — those are never pooled (per-account creds / exit IP).
    */
@@ -119,7 +119,7 @@ export class AgentFactory {
   /**
    * Retires a disposable per-account agent — destroying it only once QUIESCENT.
    *
-   * THE TEARDOWN-QUIESCENCE INVARIANT (native-crash class): an agent is NEVER
+   * the TEARDOWN-QUIESCENCE INVARIANT (native-crash class): an agent is NEVER
    * `.destroy()`ed while it still owns in-use sockets or queued requests. Destroying
    * live sockets yanks native TLS/TCP handles out from under in-flight writes — the
    * exact use-after-teardown churn implicated in the 0xC0000409 fast-fail class.
@@ -196,7 +196,7 @@ export class AgentFactory {
 
   /**
    * `0.0.0.0` is the "no specific local IP" SENTINEL that the network resolvers emit for a
-   * proxyless account (see AccountManager.legacyResolveNetwork) — it is NOT a bindable address.
+   * proxyless account (see AccountManager.legacyResolveNetwork) — it is not a bindable address.
    *
    * Handing it to Node as `localAddress` throws **EINVAL** on the very first connect (verified live
    * 2026-08-11 against csfloat.com: `localAddress:'0.0.0.0'` → EINVAL, no localAddress → HTTP 401).
@@ -235,11 +235,11 @@ export class AgentFactory {
   // ── Proxy (HTTP/HTTPS or SOCKS4/5) ─────────────────────────────────────────
 
   private static fromProxy(rawProxy: string): AgentBundle {
-    // Recover the RAW credentials ONCE and build every output from those raw parts.
+    // Recover the RAW credentials once and build every output from those raw parts.
     // The store path (server.ts) already ran `normalizeProxy` on operator input, so
     // `rawProxy` (returned verbatim as network.value) is SINGLE-encoded; `parseProxy`
     // does not decode, so its username/password come back still percent-escaped.
-    // Applying `normalizeProxy` again here re-encoded them a SECOND time and handed
+    // Applying `normalizeProxy` again here re-encoded them a second time and handed
     // every consumer the WRONG password whenever a credential contained a char
     // `encodeURIComponent` escapes. Decoding the parsed creds exactly once is the
     // inverse of that store-time encode → raw creds; from there each consumer is fed
@@ -254,11 +254,11 @@ export class AgentFactory {
 
     if (isSocks) {
       /**
-       * SOCKS: route BOTH layers through the proxy so the host IP never leaks.
+       * SOCKS: route both layers through the proxy so the host IP never leaks.
        *   • web HTTPS calls (inventory, market, confirmations) → SocksProxyAgent
        *   • steam-user's CM/GC socket                          → socksProxy
        * steam-user (≥5.x) tunnels the CM via `socksProxy`, forcing the WebSocket
-       * transport (SOCKS can't carry its raw TCP path). WITHOUT socksProxy the
+       * transport (SOCKS can't carry its raw TCP path). without socksProxy the
        * CM/GC connection would go DIRECTLY from the host IP – the classic leak.
        * (httpProxy + socksProxy are mutually exclusive in steam-user; we set one.)
        *
@@ -322,7 +322,7 @@ export interface ParsedProxy {
 function isPort(x: string): boolean { return /^\d{1,5}$/.test(x) && +x >= 1 && +x <= 65535; }
 
 /**
- * Parses a proxy string in ANY format we accept (single-bot AND environment) into
+ * Parses a proxy string in any format we accept (single-bot and environment) into
  * its parts, or null if it doesn't look like a proxy. Accepted forms:
  *   scheme://user:pass@host:port   (already a URL – any scheme)
  *   user:pass@host:port            (format 4)
@@ -399,9 +399,9 @@ export function normalizeProxy(value: string): string {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
-/** Redacts proxy credentials for display. Handles the URL form directly AND the legacy
+/** Redacts proxy credentials for display. Handles the URL form directly and the legacy
  *  non-URL formats (host:port:user:pass etc.) via parseProxy, so a value stored by a
- *  pre-normalizeProxy version can never surface its user:pass in the env/account list (B24). */
+ * pre-normalizeProxy version can never surface its user:pass in the env/account list. */
 export function redactProxyCredentials(value: string): string {
   const urlMasked = value.replace(/\/\/[^@/]+@/, '//***:***@');
   if (urlMasked !== value) return urlMasked;              // URL form → already masked

@@ -37,7 +37,7 @@ export interface CS2Item {
   tradeLockExpiry: Date | null;
   /**
    * Strict dashboard bucket — see `bucketOf` (core/MarketModel.ts), the single classifier:
-   *   'listed'      – currently on sale on the Steam Community Market (NOT in the
+   *   'listed'      – currently on sale on the Steam Community Market (not in the
    *                   inventory itself; sourced from the market-listings endpoint)
    *   'tradelocked' – in the inventory but TEMPORARILY held (tradeLockExpiry in the future)
    *   'untradable'  – in the inventory and PERMANENTLY not tradable (Storage Unit, coin,
@@ -54,7 +54,7 @@ export interface CS2Item {
    * For a 'listed' item only: false ⇒ the listing is still awaiting mobile (2FA)
    * confirmation on Steam (it came from pending_listings / listings_to_confirm). Lets
    * the dashboard distinguish a confirmed live sale from one created-but-not-yet-
-   * confirmed, instead of counting both as simply "listed". (C9 / INV-D4.)
+   * confirmed, instead of counting both as simply "listed".
    */
   listingConfirmed?: boolean;
   /** Number of identical, identically-locked items collapsed into this stack. */
@@ -85,16 +85,16 @@ export interface AccountInventory {
   /**
    * True when this record is known to be INCOMPLETE — the Steam inventory read was
    * truncated at the page cap (very large inventory). The dashboard must not treat a
-   * partial record as the authoritative full inventory. (C12 / INV-B9/B10.)
+   * partial record as the authoritative full inventory.
    */
   partial?:    boolean;
   /** Steam's `total_inventory_count` for this read; undefined when Steam did not supply it.
-   *  A strict 0 is the AUTHORITATIVE-empty signal used to converge a genuinely-emptied cache. (H-INV-005.) */
+   * A strict 0 is the AUTHORITATIVE-empty signal used to converge a genuinely-emptied cache. */
   reportedTotal?: number;
   /**
    * Which refresh produced this record:
    *   'web' – quick single-context read (forceRefresh / buy-verify; ctx2 only)
-   *   'gc'  – the FULL merged refresh (ctx2 + ctx16 + market listings). LEGACY LABEL
+   *   'gc'  – the full merged refresh (ctx2 + ctx16 + market listings). LEGACY LABEL
    *           kept for on-disk cache compatibility and the server's source==='gc'
    *           read-time tagging — no Game Coordinator is involved; the GC stack is
    *           retired. Absent in legacy records = 'web'.
@@ -103,13 +103,13 @@ export interface AccountInventory {
   /** Sum of price × quantity over priced items (USD cents). Enriched at read-time. */
   totalValueUsd?: number;
   /** Steam wallet balance in the account's native currency, captured at refresh.
-   *  UNIT: MAJOR units for 2-decimal currencies (steam-user ÷100 — see src/types/session.ts wallet; 0-decimal unit unverified, B18); convert to minor units ONLY via knownCurrencyInfo (S64).
+   * UNIT: MAJOR units for 2-decimal currencies (steam-user ÷100 — see src/types/session.ts wallet; 0-decimal unit unverified, B18); convert to minor units ONLY via knownCurrencyInfo.
    *  TRI-STATE (Directive 2, regressed 3×): field ABSENT = never refreshed → UI "—"; PRESENT with balance 0 = refreshed-and-empty (hasWallet=false coerced to 0 at attach) → UI "0,00"; funded → value. Never gate display or transport on truthiness of the balance. */
   wallet?:     { currency: number; balance: number };
   /**
    * Read-time only — this result is a carried-forward cache record substituted for a suspect
    * (empty/page-cap-shrunk) fresh read. NEVER persisted; fresh-read-dependent consumers (buy
-   * verification) must treat it as a failed fresh read. (H-TRD-041.)
+   * verification) must treat it as a failed fresh read.
    */
   staleReadFallback?: boolean;
 }
@@ -125,7 +125,7 @@ export interface RawSteamInventoryResponse {
   more_items?:            number;
   last_assetid?:          string;
   /** Set by InventoryManager.fetchRaw when the read stopped at the page cap while Steam
-   *  still had more pages → the asset list is PARTIAL. (C12.) */
+   * still had more pages → the asset list is PARTIAL. */
   truncated?:             boolean;
 }
 

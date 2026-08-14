@@ -13,7 +13,7 @@ import { writeCrash } from '../utils/crashlog';
 //  unlockPortal.ts — the APP-WINDOW equivalent of the CLI Master-Password prompt.
 //
 //  When SSIM runs as a windowed app there is no console to type the password into,
-//  so we briefly serve an unlock page on the SAME port the dashboard will use (the
+//  so we briefly serve an unlock page on the same port the dashboard will use (the
 //  exact pattern the license activation portal already uses). The password is taken
 //  over loopback BY DEFAULT (HOST=127.0.0.1); a HOST override (e.g. 0.0.0.0) exposes
 //  the Master-Password form to the network and is warned at startup. It is used to
@@ -25,7 +25,7 @@ import { writeCrash } from '../utils/crashlog';
 const PAGE = publicDir('unlock.html');
 
 /** S18: should the unlock portal REFUSE to create a fresh vault right now? True when there is no vault.enc,
- *  the operator hasn't explicitly confirmed an empty create, AND accounts.json looks orphaned (registered
+ *  the operator hasn't explicitly confirmed an empty create, and accounts.json looks orphaned (registered
  *  accounts but a missing vault.enc — partial restore / AV quarantine / unmounted drive). This hoists the
  *  headless-path B36 guard onto the PRIMARY windowed path. Exported for tests. */
 export function shouldRefuseEmptyVaultCreate(vaultExists: boolean, createEmptyAnyway: boolean): boolean {
@@ -61,15 +61,15 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
 
     let failed = 0; // brute-force throttle (loopback-only, but defence in depth)
     // Serialize unlock attempts so the escalating delay is real: each queued attempt reads `failed`
-    // only AFTER its predecessor has settled, so N parallel wrong-password POSTs can't all sample the
+    // only after its predecessor has settled, so N parallel wrong-password POSTs can't all sample the
     // same window and run scrypt back-to-back (attempt k waits min(2000, k*400)ms after attempt k-1).
     let attemptQueue: Promise<unknown> = Promise.resolve();
 
-    // Legacy heartbeat endpoint (kept BEFORE the /api/* lock-out so the page ping never 404s);
+    // Legacy heartbeat endpoint (kept before the /api/* lock-out so the page ping never 404s);
     // now a harmless no-op — the Tauri shell owns lifecycle.
     app.get('/api/app/ping', (_req, res) => { res.status(204).end(); });
 
-    // SSIM identity marker so the shell confirms this portal is SSIM before navigating. (BUG 2.)
+    // SSIM identity marker so the shell confirms this portal is SSIM before navigating.
     app.get(SSIM_HEALTH_PATH, (_req, res) => { res.type('text/plain').send(SSIM_HEALTH_MARKER); });
 
     // The page asks this on load to choose "set a new password" vs "unlock".
@@ -89,7 +89,7 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
       const exists = AccountVault.exists();
 
       if (!password) return res.status(400).json({ ok: false, error: 'A Master Password is required.' });
-      // S18: the headless CLI path refuses to create a fresh empty vault when accounts.json survives but
+      // The headless CLI path refuses to create a fresh empty vault when accounts.json survives but
       // vault.enc is MISSING (an orphaned farm — partial restore, AV quarantine of vault.enc, unmounted
       // drive). The sidecar unlock portal is the PRIMARY (windowed) path and lacked that guard — it would
       // silently create an empty vault OVER the orphan, leaving every account credential-less with no signal.
@@ -102,21 +102,21 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
           error: 'Registered accounts exist but the vault file (vault.enc) is missing — likely a partial restore, an antivirus quarantine, or an unmounted drive. Creating a new vault now would leave every account credential-less. Restore vault.enc (a local vault.enc.bak with the same Master Password is auto-restored) or fix SSIM_HOME and reopen SSIM, or explicitly confirm creating a new empty vault.',
         });
       }
-      // H-ACC-066: a FIRST-RUN create (no vault.enc) must double-check the password server-side.
+      // A FIRST-RUN create (no vault.enc) must double-check the password server-side.
       // The double-entry rule was previously enforced only when the client volunteered a `confirm`
       // field, so any client state that sent none (single-input FALLBACK_HTML, a probe-failed
       // unlock.html stuck in unlock-mode) could CREATE a vault from one unconfirmed entry — a paste
       // typo would lock the vault behind an unknown password (no recovery). Require confirm on creates.
       if (!exists) {
         if (typeof confirm !== 'string') return res.status(400).json({ ok: false, error: 'First run: confirm the new Master Password (reload the unlock page if no confirm field is shown).' });
-        // H-ACC-024: compare the NORMALIZED forms — the vault is created off the normalized password,
+        // Compare the NORMALIZED forms — the vault is created off the normalized password,
         // so a trailing space on only one field must not read as a mismatch (nor create a padded vault).
         if (normalizeMasterPassword(confirm) !== normalizeMasterPassword(password)) return res.status(400).json({ ok: false, error: 'The passwords do not match.' });
       }
 
       // Grow a small delay with each failed attempt (scrypt + loopback already gate). The delay lives
       // INSIDE the serialized attempt so it reads `failed` after the prior attempt settled, not at entry.
-      // H-ACC-024: a CREATE is keyed off the normalized password (the single normalization rule); an
+      // A CREATE is keyed off the normalized password (the single normalization rule); an
       // UNLOCK goes through unlockExistingVault (normalized first, then a verbatim retry that opens a
       // legacy padded vault this same portal created before normalization was unified).
       const opts = { createEmptyAnyway: body.createEmptyAnyway === true };
@@ -133,19 +133,19 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
         const { created } = await result;
         logger.info(`[vault] ${created ? 'created' : 'unlocked'} via app-window unlock portal`);
         res.json({ ok: true, created });
-        // Let the page receive the response, then free the port + continue boot. The page does NOT
-        // reload on a fixed timer — the Tauri shell will NOT re-navigate (one-shot per spawn), so a
+        // Let the page receive the response, then free the port + continue boot. The page does not
+        // reload on a fixed timer — the Tauri shell will not re-navigate (one-shot per spawn), so a
         // blind reload could hit the port before startFullApp rebinds it. The page instead polls
         // /api/system/status and reloads only once the full app answers (no vaultLocked:true) — see
-        // unlock.html waitForApp (H-ACC-067). So the close→rebind gap here is readiness-gated, not raced.
+        // unlock.html waitForApp. So the close→rebind gap here is readiness-gated, not raced.
         setTimeout(() => {
           try { (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); } catch { /* noop */ }
           server.close(() => resolve());
         }, 800);
       } catch (e) {
         const raw = (e as Error).message;
-        // H-ACC-068 / B30: vault.enc was written by a NEWER SSIM (VAULT_VERSION mismatch) — this is NOT a
-        // password attempt, so refuse it WITHOUT incrementing `failed` (never arm the brute-force delay for
+        // Vault.enc was written by a NEWER SSIM (VAULT_VERSION mismatch) — this is not a
+        // password attempt, so refuse it without incrementing `failed` (never arm the brute-force delay for
         // a condition no retyped password can cure) and tell the operator to update SSIM, not to retype.
         if (raw === VAULT_NEWER_VERSION_ERROR) {
           logger.warn('[vault] unlock refused: vault.enc was written by a NEWER SSIM');
@@ -153,7 +153,7 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
         }
         failed++;
         // A VAULT_READ_ERROR:* is a TRANSIENT fs error (vault.enc locked by antivirus / mid-restore),
-        // not a bad password — tell the operator to retry rather than surfacing the raw code (H-ACC-037).
+        // not a bad password — tell the operator to retry rather than surfacing the raw code.
         const msg = raw === 'WRONG_PASSWORD' ? 'Incorrect Master Password.'
           : raw.startsWith(VAULT_READ_ERROR_PREFIX) ? 'The vault file is locked by another program (antivirus?) — retry in a moment.'
           : raw;
@@ -162,7 +162,7 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
       }
     });
 
-    // Any OTHER API route is locked out until the vault opens.
+    // Any other API route is locked out until the vault opens.
     app.all('/api/*', (_req, res) => {
       res.status(423).json({ error: 'SSIM vault is locked.', code: 'VAULT_LOCKED' });
     });
@@ -173,16 +173,16 @@ export function runUnlockPortal(port: number, host: string): Promise<void> {
       res.type('html').send(FALLBACK_HTML);
     });
 
-    // BIND FIRST, then announce the ACTUAL bound port (walking EADDRINUSE) — never a port this
-    // portal didn't bind, so the shell can't adopt a foreign app on the desired port. (BUG 2.)
+    // BIND first, then announce the ACTUAL bound port (walking EADDRINUSE) — never a port this
+    // portal didn't bind, so the shell can't adopt a foreign app on the desired port.
     const server = http.createServer(app);
     listenAndAnnounce(server, host, port).then((bound) => {
       logger.info(`vault unlock portal listening on ${host}:${bound}`);
-      // Runtime errors AFTER a successful bind (accept-time EMFILE/ENFILE under fd exhaustion,
+      // Runtime errors after a successful bind (accept-time EMFILE/ENFILE under fd exhaustion,
       // handle-level failures): honor serverPort.ts's caller contract — the portal installs its
       // own runtime 'error' handler once listening, so a socket-layer event is filed as an
       // UNLOCK PORTAL RUNTIME ERROR, not misclassified as an UNCAUGHT EXCEPTION. Mirrors the
-      // full-app counterpart in index.ts. (H-ACC-069.)
+      // full-app counterpart in index.ts.
       server.on('error', (err: NodeJS.ErrnoException) => {
         writeCrash('UNLOCK PORTAL RUNTIME ERROR', err);
         logger.error(`unlock portal runtime error: ${err.message}`);

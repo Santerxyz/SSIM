@@ -7,7 +7,7 @@ import fs from 'fs';
 //  note below); it shares only SINK_MAX_BYTES from here. winston's own files are
 //  already size-capped by winston; these raw fs.appendFileSync sinks were not, so
 //  a spewing vendor library or a long-lived install could grow them without bound
-//  (S47). Rolls the file to `.1` (overwriting any prior roll — one generation of
+//. Rolls the file to `.1` (overwriting any prior roll — one generation of
 //  history is enough for a diagnostic) once it passes the cap. Best-effort: never
 //  throws, so a crash/exit sink can't be broken by a rotation failure.
 // ════════════════════════════════════════════════════════════════════════════

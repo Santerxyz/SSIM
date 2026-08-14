@@ -4,7 +4,7 @@ import { IS_PACKAGED } from '../utils/paths';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  GcActionLayer — the ONE shared, surgical Game-Coordinator action layer for the
+//  GcActionLayer — the one shared, surgical Game-Coordinator action layer for the
 //  two opt-in GC features (storage units + trade-up contracts).
 //
 //  WHY GC WAS REMOVED (and why this is safe): the old `GcInventoryManager` ran GC on
@@ -19,7 +19,7 @@ import { logger } from '../utils/logger';
 //  LISTENER SAFETY: `new GlobalOffensive(client)` attaches FIVE permanent listeners to
 //  the steam-user client and never removes them, so creating a fresh instance per op
 //  would leak listeners on the long-lived client (the #31 failure). We therefore keep
-//  EXACTLY ONE GlobalOffensive per session client, reuse it, and drop our reference when
+//  exactly one GlobalOffensive per session client, reuse it, and drop our reference when
 //  the session is destroyed (SessionManager then removeAllListeners + discards the client).
 //
 //  GATING: storage (deposit/withdraw) is REVERSIBLE → enabled whenever the library is
@@ -29,7 +29,7 @@ import { logger } from '../utils/logger';
 
 /**
  * Thrown by `withSession` when the per-account single-op slot is already held (concurrency 1).
- * Distinguished from a real failure because it can ONLY fire BEFORE the craft is sent (the
+ * Distinguished from a real failure because it can ONLY fire before the craft is sent (the
  * inFlight guard rejects pre-connect) — so a busy rejection ⇔ nothing was sent, always safe to wait out.
  */
 export class GcBusyError extends Error {
@@ -118,7 +118,7 @@ export interface GcStatus {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export class GcActionLayer {
-  /** EXACTLY ONE GlobalOffensive per live session client (reused; dropped on session destroy). */
+  /** exactly one GlobalOffensive per live session client (reused; dropped on session destroy). */
   private readonly handles = new Map<string, { go: GcLike; client: unknown }>();
   /** Per-account GC-op in-flight guard (concurrency 1 per account). */
   private readonly inFlight = new Set<string>();
@@ -137,7 +137,7 @@ export class GcActionLayer {
 
   /**
    * Trade-up CRAFT gate resolution (irreversible — destroys 10 items). The single source of truth for
-   * BOTH `craftVerified()` and `status()`, so the gate decision and the reason string can never diverge:
+   * both `craftVerified()` and `status()`, so the gate decision and the reason string can never diverge:
    *   • SSIM_GC_VERIFIED = 0/false/off  → 'kill-switch' — FORCE OFF. Set this (then relaunch) to
    *     instantly disable trade-up execution in production, no rebuild, if anything looks wrong.
    *   • SSIM_GC_VERIFIED = 1/true/on    → 'explicit-on' — FORCE ON.
@@ -209,7 +209,7 @@ export class GcActionLayer {
     const key = username.toLowerCase();
     if (this.inFlight.has(key)) throw new GcBusyError(username);
     this.inFlight.add(key);
-    // B40: this is a genuine op entry — touch it now and keep it fresh so the idle reaper (30-min TTL)
+    // This is a genuine op entry — touch it now and keep it fresh so the idle reaper (30-min TTL)
     // can never log the account out mid-move/mid-craft (a large casket move legitimately runs 10-35+ min).
     this.sessions.markUsed(username);
     const keepAlive = setInterval(() => this.sessions.markUsed(username), 60_000);
@@ -223,8 +223,8 @@ export class GcActionLayer {
         // connect() is inside the guard so a connect timeout/error still runs disconnect() (gamesPlayed([]))
         // — otherwise the account stays in-game CS2 with the lib's hello retry loop firing indefinitely.
         await this.connect(go, client);
-        // S16: the backstop budget is caller-scaled (a per-item op loop scales it by item count, and gives
-        // the loop its OWN shorter deadline so it self-aborts first). withTimeout can't cancel fn(go), so a
+        // The backstop budget is caller-scaled (a per-item op loop scales it by item count, and gives
+        // the loop its own shorter deadline so it self-aborts first). withTimeout can't cancel fn(go), so a
         // premature fire would abandon a detached loop — the scaling makes it fire only as a true backstop.
         return await withTimeout(fn(go), timeoutMs, `GC op for ${username}`);
       } finally {
@@ -271,7 +271,7 @@ export class GcActionLayer {
 
   // ── Reads (no item mutation; need only a live connect) ──────────────────────
 
-  /** Maps each owned asset id → its REAL float (paint_wear) from the live GC inventory. */
+  /** Maps each owned asset id → its real float (paint_wear) from the live GC inventory. */
   async readInventoryFloats(username: string): Promise<Map<string, number>> {
     return this.withSession(username, async (go) => {
       const out = new Map<string, number>();
@@ -286,7 +286,7 @@ export class GcActionLayer {
   /**
    * The live GC inventory as raw econ items, keyed by asset id. Read-only.
    *
-   * Used to look up what a trade-up ACTUALLY produced: craftTradeUp returns only the new item's id,
+   * Used to look up what a trade-up actually produced: craftTradeUp returns only the new item's id,
    * and the GC never sends a name, so the outcome has to be resolved against the inventory and then
    * named via Cs2ItemResolver. One read covers a whole batch of crafts, so a run costs a single
    * extra GC op rather than one per contract.
@@ -329,7 +329,7 @@ export class GcActionLayer {
     }));
   }
 
-  // ── Storage moves (deposit/withdraw) — REAL send + verify ───────────────────
+  // ── Storage moves (deposit/withdraw) — real send + verify ───────────────────
 
   /**
    * Deposits/withdraws items one at a time with verify-after. addToCasket/removeFromCasket are
@@ -346,10 +346,10 @@ export class GcActionLayer {
     onProgress?: (p: { done: number; total: number; current: string; moved: number; unconfirmed: number; failed: number }) => void,
     shouldCancel?: () => boolean,
   ): Promise<{ moved: string[]; unconfirmed: string[]; failed: Array<{ itemId: string; error: string }>; stopped: 'completed' | 'budget' | 'cancelled' }> {
-    // S16: a per-item move costs ~0.9–1.8s (verify + pacing), so the old FIXED 60s backstop falsely
-    // "timed out" any move above ~50 items AND — since withTimeout cannot cancel fn(go) — left the loop
+    // A per-item move costs ~0.9–1.8s (verify + pacing), so the old FIXED 60s backstop falsely
+    // "timed out" any move above ~50 items and — since withTimeout cannot cancel fn(go) — left the loop
     // running DETACHED (a 2nd GC op could then interleave). Scale the backstop by item count, and give the
-    // loop its OWN slightly-shorter deadline so it aborts COOPERATIVELY (returning its partial counts)
+    // loop its own slightly-shorter deadline so it aborts COOPERATIVELY (returning its partial counts)
     // before the backstop can fire — no detached zombie, and no "timed out = nothing moved" mislabel.
     const MOVE_BASE_MS = 20_000;
     const MOVE_PER_ITEM_MS = 3_000; // generous upper bound; a normal item finishes in ~half this
@@ -359,13 +359,13 @@ export class GcActionLayer {
       // budget crawling misleading "unconfirmed" items against a unit that does not exist: deposits
       // empty-coerce a missing unit to `current = 0` and pass the cap; withdraws never look it up at
       // all. Caskets are always in the SO cache (listCaskets reads it), so a missing unit is a hard,
-      // pre-send failure for BOTH directions — fail fast with nothing sent (lands runMove's 'preflight').
+      // pre-send failure for both directions — fail fast with nothing sent (lands runMove's 'preflight').
       const unit = (go.inventory ?? []).find((i) => String(i.id) === String(casketId));
       if (!unit) throw new Error(`storage unit ${casketId} not found in the live GC inventory — refresh the unit list and retry`);
       if (direction === 'deposit') {
         // The GC omits casket_contained_item_count for an EMPTY unit, so "absent" and "0" are the same
-        // on the wire — but they are NOT the same for diagnosis. `|| 0` silently lets a deposit through
-        // when the count is unreadable, and a FULL unit then behaves exactly like the trade-lock case
+        // on the wire — but they are not the same for diagnosis. `|| 0` silently lets a deposit through
+        // when the count is unreadable, and a full unit then behaves exactly like the trade-lock case
         // (GC accepts the message, discards it, every item times out "unconfirmed"). Say which one we
         // saw, so the next report distinguishes "unit full" from "item trade-held" without guesswork.
         const raw = unit?.casket_contained_item_count;
@@ -387,7 +387,7 @@ export class GcActionLayer {
       for (let i = 0; i < itemIds.length; i++) {
         if (shouldCancel?.()) { stopped = 'cancelled'; break; }
         if (Date.now() >= deadline) {
-          // S16: abort CLEANLY before the backstop timeout — return the partial result so far (honest
+          // Abort CLEANLY before the backstop timeout — return the partial result so far (honest
           // counts, no detached loop). The remaining items were not attempted; a re-run continues.
           logger.warn(`[gc] ${username} ${direction}: move budget reached at item ${i}/${itemIds.length} – stopping cleanly (partial); the rest were NOT attempted (re-run to continue)`);
           stopped = 'budget';
@@ -396,7 +396,7 @@ export class GcActionLayer {
         const itemId = String(itemIds[i]);
         // Pre-send guard for DEPOSIT: verifyMove treats "item gone from the inventory array" as proof the
         // deposit landed (the GC emits itemRemoved). That inference is only sound if the item was a FREE
-        // inventory item to begin with — so establish that BEFORE sending. An id that is already absent (or
+        // inventory item to begin with — so establish that before sending. An id that is already absent (or
         // already inside a unit) is a stale selection: fail it pre-send, with nothing submitted.
         if (direction === 'deposit') {
           const free = (go.inventory ?? []).find((x) => String(x.id) === String(itemId) && !x.casket_id);
@@ -411,7 +411,7 @@ export class GcActionLayer {
           if (direction === 'deposit') go.addToCasket(casketId, itemId);
           else go.removeFromCasket(casketId, itemId);
         } catch (e) {
-          failed.push({ itemId, error: (e as Error).message }); // threw BEFORE submit → safe, not moved
+          failed.push({ itemId, error: (e as Error).message }); // threw before submit → safe, not moved
           onProgress?.({ done: i + 1, total: itemIds.length, current: itemId, moved: moved.length, unconfirmed: unconfirmed.length, failed: failed.length });
           continue;
         }
@@ -434,7 +434,7 @@ export class GcActionLayer {
    * only reappears (tagged with `casket_id`) if `getCasketContents` is later called to load that unit.
    * So every successful deposit failed the check, burned the full 15s verify window, and was reported
    * "unconfirmed" — which also blew the move budget (20s + 3s/item), leaving most items unattempted.
-   * A deposit is confirmed when the item is no longer a FREE inventory item: gone, or tagged into THIS
+   * A deposit is confirmed when the item is no longer a FREE inventory item: gone, or tagged into this
    * casket. The caller guarantees the item was free before the send, so "gone" cannot be a false positive.
    *
    * WITHDRAW is unchanged and was already correct: the GC emits `itemAcquired`, so the item is present
@@ -452,10 +452,10 @@ export class GcActionLayer {
     return false; // sent but unconfirmed within the window — never retried (reversible)
   }
 
-  // ── Trade-up craft — REAL, gated (irreversible) ─────────────────────────────
+  // ── Trade-up craft — real, gated (irreversible) ─────────────────────────────
 
   /**
-   * Executes ONE trade-up contract via the GC craft message. GATED behind SSIM_GC_VERIFIED.
+   * Executes one trade-up contract via the GC craft message. GATED behind SSIM_GC_VERIFIED.
    * Re-verifies the 10 inputs are present in the live GC inventory immediately before sending,
    * picks the documented recipe for the (rarity, StatTrak), submits exactly once, and confirms
    * via the `craftingComplete` event (which returns the produced item id). NEVER re-sends.
@@ -501,7 +501,7 @@ export class GcActionLayer {
         go.craft(p.inputAssetIds.map(String), recipe);
         logger.info(`[gc] ${username} trade-up submitted (recipe ${recipe}, 10 inputs)`);
       } catch (e) {
-        // Threw BEFORE the message went out → safe to surface as a real failure (nothing crafted).
+        // Threw before the message went out → safe to surface as a real failure (nothing crafted).
         settled = true; clearTimeout(timer);
         try { go.removeListener('craftingComplete', onDone); } catch { /* noop */ }
         reject(e as Error);

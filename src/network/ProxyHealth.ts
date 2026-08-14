@@ -31,7 +31,7 @@ export type ProxyOutcome = 'ok' | 'reset' | 'fail';
 export enum BreakerState {
   CLOSED = 'closed',      // healthy — dial freely
   OPEN = 'open',          // storming — bulk dials deferred until cooldown elapses
-  HALF_OPEN = 'half_open' // cooldown elapsed — allow exactly ONE probe dial
+  HALF_OPEN = 'half_open' // cooldown elapsed — allow exactly one probe dial
 }
 
 /** Reset-class error signatures: a proxy tearing the connection down mid-handshake.
@@ -51,7 +51,7 @@ const RESET_SIGNATURES = [
 
 /** Classify an arbitrary error as a reset-class proxy failure vs. an ordinary failure.
  *  Reset-class failures (the ones the storm produces) are what trip the breaker; a plain
- *  auth error or a 429 is NOT reset-class and must not open a proxy's breaker. */
+ *  auth error or a 429 is not reset-class and must not open a proxy's breaker. */
 export function isResetClass(err: unknown): boolean {
   if (!err) return false;
   const code = (err as { code?: unknown }).code;
@@ -107,9 +107,9 @@ export class ProxyHealth {
 
   /**
    * May a BULK dial go out through this proxy right now? CLOSED → yes. OPEN → no until the
-   * cooldown elapses, then exactly ONE probe is allowed (transitioning to HALF_OPEN). While a
+   * cooldown elapses, then exactly one probe is allowed (transitioning to HALF_OPEN). While a
    * probe is in flight, further bulk dials are refused. Pass `now` for deterministic tests.
-   * (Money ops must NOT call this — see the file header scope note.)
+   * (Money ops must not call this — see the file header scope note.)
    */
   shouldAllow(key: string | null | undefined, now: number = Date.now()): boolean {
     if (!key) return true; // proxyless / unparseable → not our failure domain, never block
@@ -127,7 +127,7 @@ export class ProxyHealth {
   }
 
   /** Record a dial outcome. `ok` closes/heals; a reset-class `reset` counts toward tripping;
-   *  a non-reset `fail` (auth, 429, app error) does NOT trip the breaker (not the storm class). */
+   *  a non-reset `fail` (auth, 429, app error) does not trip the breaker (not the storm class). */
   record(key: string | null | undefined, outcome: ProxyOutcome, now: number = Date.now()): void {
     if (!key) return;
     const e = this.ensure(key);

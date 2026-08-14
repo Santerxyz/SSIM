@@ -14,7 +14,7 @@
  * Where the updater looks for the signed release manifest.
  *
  * The manifest is a small JSON blob — `{ latest, url, sha256, sig }` — hosted as
- * a static file. It is deliberately NOT the GitHub Releases API: that API has
+ * a static file. It is deliberately not the GitHub Releases API: that API has
  * nowhere to carry our Ed25519 signature, and dropping the signature check on a
  * ~185 MB executable that handles Steam passwords and maFile secrets would be a
  * bad trade for a little convenience. So we publish our own signed manifest and
@@ -35,10 +35,10 @@ export const UPDATE_MANIFEST_URL: string =
  * private counterpart never leaves the maintainer's release process. Committing
  * it in the clear is correct and is what every signed-update scheme does.
  *
- * ⚠ DO NOT REGENERATE THIS KEYPAIR. Every deployed client verifies against this
+ * ⚠ DO not REGENERATE this KEYPAIR. Every deployed client verifies against this
  * exact key; a new one means no existing install can ever accept another update,
  * stranding the fleet with no recovery channel. Forks running their own channel
- * should override the key AND the manifest URL together.
+ * should override the key and the manifest URL together.
  */
 const RAW_PUBLIC_KEY: string =
   process.env.SSIM_UPDATE_PUBLIC_KEY ??

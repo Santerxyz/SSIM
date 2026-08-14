@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  sessionHealth — pure web-session freshness policy (C16 / INV-A5).
+// sessionHealth — pure web-session freshness policy.
 //  isReady() used to check only that a webSession OBJECT existed, so a session whose
 //  cookies silently expired before the 20-min proactive refresh fired still passed as
 //  "ready", and a market/inventory call would then run on dead cookies. This adds a
@@ -20,12 +20,12 @@ export const WEB_COOKIE_REFRESH_MS = 20 * 60 * 1000;
 export const WEB_COOKIE_MAX_AGE_MS = WEB_COOKIE_REFRESH_MS * 1.5;
 
 /**
- * Does THIS login call own the session it produces (i.e. may a bulk op later release
+ * Does this login call own the session it produces (i.e. may a bulk op later release
  * it)? Only when the call ORIGINATED the login — there is no login already in flight to
  * coalesce onto, and no session already exists to reuse/replace. A coalescing caller or
  * a re-login of an existing session never owns it, so it never tears down a session
  * another operation established. Decided synchronously by the caller, race-free with the
- * in-flight dedup. (C17 / INV-A6.)
+ * in-flight dedup.
  */
 export function ownsCreatedSession(loginInFlight: boolean, sessionExists: boolean): boolean {
   return !loginInFlight && !sessionExists;
@@ -35,7 +35,7 @@ export function ownsCreatedSession(loginInFlight: boolean, sessionExists: boolea
  * True iff cookies obtained at `obtainedAt` are still within the freshness window.
  *
  * Fail-closed on every unmeasurable age: missing/corrupt input (null, non-finite) and
- * ALSO a FUTURE `obtainedAt` — a backward wall-clock step (NTP correction, manual fix,
+ * also a FUTURE `obtainedAt` — a backward wall-clock step (NTP correction, manual fix,
  * dual-boot RTC skew) or a corrupt value makes the age negative, which is unmeasurable,
  * so the consumer re-establishes/refreshes (an in-place `refreshWebSession` webLogOn on
  * the same connection/IP — cheap) rather than trusting possibly-dead cookies. We stay on

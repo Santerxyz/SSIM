@@ -42,7 +42,7 @@ export function resolveCapEnv(
 }
 
 // ─── Timeouts (generous – slow residential / rotating proxies need headroom) ──
-// FAIL FAST: a dead proxy must release the queue slot in ~15s, NOT tie it up for 90s × 5.
+// FAIL FAST: a dead proxy must release the queue slot in ~15s, not tie it up for 90s × 5.
 // The 5 connection retries (MAX_CONNECTION_ATTEMPTS) with backoff remain, but each attempt
 // now hard-caps at 15s, so an unreachable proxy is given up on quickly instead of stalling
 // the whole fleet queue behind one dead exit.
@@ -51,26 +51,26 @@ const WEB_SESSION_TIMEOUT_MS = 30_000;  // web cookies can lag behind loggedOn (
 const INTER_LOGIN_DELAY_MS   = 3_500;   // delay between sequential account logins
 
 // ─── Global login concurrency cap (anti-storm) ────────────────────────────────
-// THE hard ceiling on how many NEW logins may be handshaking at once, across EVERY
+// the hard ceiling on how many new logins may be handshaking at once, across every
 // caller and both games. Without it, any path that fans a login-triggering request
 // out over the whole fleet (a bulk refresh, a UI action looping all accounts, a
 // retry storm) opens hundreds of simultaneous proxy/CM sockets at once → resource
 // exhaustion → silent process death. The mass-op orchestrators (refresh/buy/sell)
-// have their OWN 25-wide pools, but nothing capped the login PATH itself; this does,
+// have their own 25-wide pools, but nothing capped the login PATH itself; this does,
 // so no caller can ever exceed it regardless of how many fire at once. Excess logins
 // queue (FIFO) and start as slots free. Per-account dedup (loginsInFlight) still
-// collapses duplicate logins for the SAME account and never consumes a slot.
+// collapses duplicate logins for the same account and never consumes a slot.
 // Tunable via SSIM_MAX_CONCURRENT_LOGINS for ops; defaults to the documented 25 ceiling.
 const MAX_CONCURRENT_LOGINS = resolveCapEnv('SSIM_MAX_CONCURRENT_LOGINS', process.env.SSIM_MAX_CONCURRENT_LOGINS, 1, 25, false);
 
 // ─── Hard resident-session ceiling (structural anti-storm backstop) ────────────
-// MAX_CONCURRENT_LOGINS bounds how many logins HANDSHAKE at once; it does NOT bound how many
+// MAX_CONCURRENT_LOGINS bounds how many logins HANDSHAKE at once; it does not bound how many
 // sessions stay RESIDENT afterwards. Every live session is a CM socket + a fresh per-account proxy
 // agent (keepAlive sockets) + a polling TradeOfferManager, so an unbounded resident population is
 // the documented resource storm that gets the process externally killed. The per-call-site releases
 // (refresh / offers / mass-send / mass-sell / mass-buy / single-buy) keep each path bounded, but a
-// missed release in ANY current or future caller would defeat them. This ceiling is the one place
-// that makes the whole class structurally impossible: once this many sessions are resident, a NEW
+// missed release in any current or future caller would defeat them. This ceiling is the one place
+// that makes the whole class structurally impossible: once this many sessions are resident, a new
 // account's login is REFUSED (fast, retryable) rather than queued — so no caller can ever drive the
 // live-session count past a safe socket budget. A re-login of an ALREADY-resident account is exempt
 // (it replaces, never grows).
@@ -85,19 +85,19 @@ const MAX_LIVE_SESSIONS = resolveCapEnv('SSIM_MAX_LIVE_SESSIONS', process.env.SS
 // Bulk ops release the sessions they create, but SINGLE-account paths (single send /
 // getTradeUrl / manual per-account refresh / post-trade refresh) leave a session resident
 // with no release. Touch >150 distinct accounts via single ops in one run and the resident
-// count reaches MAX_LIVE_SESSIONS → every NEW-account login is then refused (B40). A periodic
+// count reaches MAX_LIVE_SESSIONS → every NEW-account login is then refused. A periodic
 // reaper logs out sessions that have gone IDLE (no genuine op used them within the TTL), so a
 // one-shot op's leftover session is reclaimed instead of accumulating. A session in active use
 // is touched (markUsed) on every op entry, so its lastActivityAt stays fresh and it is never
-// reaped mid-use; the proactive cookie refresh is maintenance and deliberately does NOT count.
+// reaped mid-use; the proactive cookie refresh is maintenance and deliberately does not count.
 const IDLE_SESSION_TTL_MS = resolveCapEnv('SSIM_IDLE_SESSION_TTL_MS', process.env.SSIM_IDLE_SESSION_TTL_MS, 60_000, 30 * 60_000, false); // default 30 min; always ≥ 60 000 (no opt-out)
 const REAPER_INTERVAL_MS = 5 * 60_000;
 
 // ─── Retry strategy (Problem 1: transient NoConnection / proxy failures) ──────
 // Steam logins over slow or rotating residential proxies frequently fail with
 // TRANSIENT errors – most commonly EResult 3 (NoConnection), proxy CONNECT
-// hiccups, or socket timeouts. These must NOT abort the account: we retry the
-// SAME login path several times with exponential backoff before giving up.
+// hiccups, or socket timeouts. These must not abort the account: we retry the
+// same login path several times with exponential backoff before giving up.
 //   • attempts per path : MAX_CONNECTION_ATTEMPTS
 //   • backoff           : BACKOFF_BASE_MS, doubling each retry, capped at BACKOFF_MAX_MS
 //                         (so e.g. 4s → 8s → 16s → 32s → 45s)
@@ -124,7 +124,7 @@ const CM_PROTO_ENUM: Record<CmProtocolLabel, number> = {
 // there is STRONG evidence it is actually invalid:
 //   • the login fails with one of these Steam EResult codes, or
 //   • Steam Guard is requested on a refresh-token login (a valid token never is).
-// Network / proxy / timeout errors are explicitly NOT in this set, so they can
+// Network / proxy / timeout errors are explicitly not in this set, so they can
 // never trigger token deletion – we keep the token and simply retry later.
 //   5  = InvalidPassword (also emitted for an expired / revoked refresh token)
 //   15 = AccessDenied
@@ -165,16 +165,16 @@ export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly tokenStore = new TokenStore();
   // Per-account in-flight login dedup (keyed by lowercase username). Ensures
-  // concurrent callers share ONE login instead of destroying each other's
+  // concurrent callers share one login instead of destroying each other's
   // mid-handshake session. Cleared in finally when the login settles.
   private readonly loginsInFlight = new Map<string, Promise<ManagedSession>>();
-  // H-ACC-005: keys of accounts currently RE-logging-in — their prior resident session has been
+  // Keys of accounts currently RE-logging-in — their prior resident session has been
   // destroyed (freeing its slot) but a fresh one is not yet inserted. occupiedCount() counts these
   // as occupied so a concurrent newcomer can't steal the slot, and the insertion re-check exempts
-  // them so the re-login re-occupies its OWN slot ("replaces, never grows"). Added in doLoginAccount
+  // them so the re-login re-occupies its own slot ("replaces, never grows"). Added in doLoginAccount
   // before the destroy, cleared in its finally.
   private readonly reloginReservations = new Set<string>();
-  // S48: set by logoutAll() so an in-flight login can't insert a fresh session into a manager that has
+  // Set by logoutAll() so an in-flight login can't insert a fresh session into a manager that has
   // already been torn down (a late success would park an unmanaged live CM session + agent). Checked in
   // loginAccount / performLogin; reset by loginAll() when a deliberate new cycle starts.
   private shuttingDown = false;
@@ -192,7 +192,7 @@ export class SessionManager extends EventEmitter {
    *  behaviour, fully backward compatible). */
   private loginNetworkResolver?: (account: AccountConfig) => AccountConfig['network'];
 
-  /** Idle-session reaper handle (B40). Unref'd so it never keeps the process alive. */
+  /** Idle-session reaper handle. Unref'd so it never keeps the process alive. */
   private readonly reaperTimer?: NodeJS.Timeout;
 
   constructor() {
@@ -210,7 +210,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Marks a session as actively USED right now (called at every genuine op entry) so the idle
-   *  reaper never logs out a session an operation is currently using. (B40) */
+   * reaper never logs out a session an operation is currently using. */
   markUsed(username: string): void {
     const s = this.sessions.get(username.toLowerCase());
     if (s) s.lastActivityAt = new Date();
@@ -222,8 +222,8 @@ export class SessionManager extends EventEmitter {
     const victims: Array<{ key: string; session: ManagedSession }> = [];
     for (const [key, s] of this.sessions) {
       if (this.loginsInFlight.has(key)) continue;               // a login is mid-flight → leave it
-      // S11: reap SETTLED-live sessions AND settled-dead ones (DISCONNECTED/ERROR). The disconnected/error
-      // handlers already deferred-destroy such a session (B43 / S11); this is a BACKSTOP for any zombie
+      // Reap SETTLED-live sessions and settled-dead ones (DISCONNECTED/ERROR). The disconnected/error
+      // handlers already deferred-destroy such a session; this is a BACKSTOP for any zombie
       // that slipped past (e.g. one already resident before this fix, or where the replacement guard
       // skipped the immediate destroy) — otherwise a non-LOGGED_IN session would linger forever.
       const reapable = s.state === SessionState.LOGGED_IN
@@ -232,9 +232,9 @@ export class SessionManager extends EventEmitter {
       const last = s.lastActivityAt?.getTime() ?? s.loggedInAt?.getTime() ?? 0;
       if (now - last >= IDLE_SESSION_TTL_MS) victims.push({ key, session: s });
     }
-    // H-ACC-002: re-validate identity+idleness at the destroy site against the LIVE map — the victims list
+    // Re-validate identity+idleness at the destroy site against the live map — the victims list
     // was snapshotted before the per-victim await gap, so a session markUsed'd (the anti-reap signal) or
-    // re-logged-in (a fresh session swapped into the key) AFTER the scan but BEFORE its turn must be skipped,
+    // re-logged-in (a fresh session swapped into the key) after the scan but before its turn must be skipped,
     // not torn down mid-op. The checks and the destroy run with NO await between them → race-free on the one
     // thread. Call destroySession DIRECTLY, not logoutAccount, whose await-in-flight-then-destroy would
     // re-open the very gap this closes (and could tear down a replacement session).
@@ -256,11 +256,11 @@ export class SessionManager extends EventEmitter {
   }
 
   /** True when the refresh-token store is DEGRADED (present-but-corrupt file → not persisting). Surfaced
-   *  on the status endpoint so the operator restores it before a mass refresh re-auths the fleet. (B2.) */
+   * on the status endpoint so the operator restores it before a mass refresh re-auths the fleet. */
   isTokenStoreDegraded(): boolean { return this.tokenStore.isDegraded(); }
 
   /** The stored Auth-v2 refresh token for an account (vault-aware), or undefined. Read-only accessor so
-   *  BanService decodes a SteamID from the JWT off the single production store — no second instance (H-ACC-058). */
+   * BanService decodes a SteamID from the JWT off the single production store — no second instance. */
   getStoredRefreshToken(username: string): string | undefined { return this.tokenStore.get(username); }
 
   /** Acquire one login slot, awaiting (FIFO) if all are in use. */
@@ -277,7 +277,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Resident population for the ceiling checks (H-ACC-005): live sessions PLUS in-flight re-login
+   * Resident population for the ceiling checks: live sessions PLUS in-flight re-login
    * reservations whose old session was already destroyed. A reserved key that has re-inserted is
    * counted once via `sessions` (the filter excludes it), so neither newcomers nor re-logins can
    * overshoot the MAX_LIVE_SESSIONS budget.
@@ -307,11 +307,11 @@ export class SessionManager extends EventEmitter {
     // TradeService/MarketService getTrader, a trade's getTradeUrl, or a cs2-vs-tf2
     // refresh of the same account) would otherwise each call destroySession() on
     // the other's mid-handshake client and kill each other's login. The guard
-    // lives HERE in SessionManager so it covers EVERY caller and both games.
+    // lives here in SessionManager so it covers every caller and both games.
     const key = account.username.toLowerCase();
     const inFlight = this.loginsInFlight.get(key);
     if (inFlight) return inFlight;   // dedup: share the running login, no slot consumed
-    // S48: refuse a NEW login once teardown has begun — never build a session in a manager being discarded.
+    // Refuse a new login once teardown has begun — never build a session in a manager being discarded.
     if (this.shuttingDown) {
       return Promise.reject(Object.assign(
         new Error(`${account.username}: login refused – session manager is shutting down`),
@@ -319,11 +319,11 @@ export class SessionManager extends EventEmitter {
       ));
     }
     // ── Hard resident-session ceiling ────────────────────────────────────────
-    // Refuse a NEW account's login (fast, before consuming a slot) once the live-session
+    // Refuse a new account's login (fast, before consuming a slot) once the live-session
     // population is at the cap, so no caller can ever drive resident sockets past a safe budget.
     // A re-login of an account that already holds a session is exempt (it replaces, never grows); an
     // in-flight re-login whose old session was already destroyed still counts against the budget via
-    // occupiedCount() (its reservation), so a newcomer can't steal the slot it will re-occupy (H-ACC-005).
+    // occupiedCount() (its reservation), so a newcomer can't steal the slot it will re-occupy.
     // Classified 'connection' so it bubbles as a transient, retryable per-account failure (the bulk
     // orchestrators already record it and carry on) and NEVER deletes a refresh token.
     if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && this.occupiedCount() >= MAX_LIVE_SESSIONS) {
@@ -354,10 +354,10 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Like loginAccount, but also reports whether THIS call originated the login, so a
+   * Like loginAccount, but also reports whether this call originated the login, so a
    * bulk op can release exactly the sessions it created and never tear down a session
    * another operation owns. `createdByCall` is decided SYNCHRONOUSLY here (before any
-   * await), race-free with loginAccount's in-flight dedup. (C17 / INV-A6.)
+   * await), race-free with loginAccount's in-flight dedup.
    */
   async loginAccountOwned(account: AccountConfig): Promise<{ session: ManagedSession; createdByCall: boolean }> {
     const key = account.username.toLowerCase();
@@ -368,7 +368,7 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Persists a freshly-negotiated Auth-v2 refresh token for an account (Feature 1
-   * "Account Login" import). Routes through the SAME TokenStore loginAccount() reads,
+   * "Account Login" import). Routes through the same TokenStore loginAccount() reads,
    * so a QR/credentials-imported account logs in TOKEN-FIRST with no further prompts —
    * landing in the portable vault in vault mode, or refresh_tokens.json otherwise.
    */
@@ -378,10 +378,10 @@ export class SessionManager extends EventEmitter {
   }
 
   private async doLoginAccount(account: AccountConfig, key: string): Promise<ManagedSession> {
-    // H-ACC-005: a re-login of an already-resident account reserves its slot BEFORE doLoginAccountInner
-    // destroys the old session, so the freed slot is held for THIS account — occupiedCount() counts the
+    // A re-login of an already-resident account reserves its slot before doLoginAccountInner
+    // destroys the old session, so the freed slot is held for this account — occupiedCount() counts the
     // reservation (a concurrent newcomer can't take it) and the insertion re-check exempts the reserved
-    // key (the re-login re-occupies its OWN slot, "replaces, never grows"). Released once the login settles.
+    // key (the re-login re-occupies its own slot, "replaces, never grows"). Released once the login settles.
     const reserved = this.sessions.has(key);
     if (reserved) this.reloginReservations.add(key);
     try {
@@ -408,7 +408,7 @@ export class SessionManager extends EventEmitter {
       } catch (err) {
         const kind = (err as LoginError).loginErrorKind ?? 'connection';
         if (kind === 'auth' && onTokenAuthFailure({ hasMaFile: !!maFile, hasPassword: !!resolvePassword(account) }) === 'delete-and-retry') {
-          // STRONG evidence the token is bad AND we have a usable credential fallback
+          // STRONG evidence the token is bad and we have a usable credential fallback
           // (maFile + password) → delete the token and re-login via credentials.
           logger.warn(`[${account.username}] refresh token is INVALID (${(err as Error).message}) – deleting token, full login`);
           this.tokenStore.delete(account.username);
@@ -418,7 +418,7 @@ export class SessionManager extends EventEmitter {
           // No usable credential fallback (needs maFile + password): the refresh token is
           // this account's SOLE credential. PRESERVE it — a misclassified/transient 'auth'
           // verdict must never permanently strand the account — and surface a re-import
-          // requirement. (INV-A2 / C8.)
+          // requirement.
           logger.error(`[${account.username}] token login failed (auth) with no usable credential fallback (needs maFile + password) – token PRESERVED; account needs re-import (QR/credentials)`);
           throw err;
         } else {
@@ -460,12 +460,12 @@ export class SessionManager extends EventEmitter {
 
     for (let attempt = 1; attempt <= MAX_CONNECTION_ATTEMPTS; attempt++) {
       // Re-chosen every attempt: two TCP connect failures demote this proxy to WebSocket, so
-      // attempt 3 of the SAME login round (and every other account on this proxy) already
+      // attempt 3 of the same login round (and every other account on this proxy) already
       // connects over wss:443 — a 443-only provider costs one slow round, not a dead fleet.
       const cmProto = chooseCmProtocol(pkey, isSocks);
       try {
         // The credential payload's TOTP is valid for one 30s window; a retry re-sends the
-        // SAME object minutes later. Re-stamp a current-window code before every retry so
+        // same object minutes later. Re-stamp a current-window code before every retry so
         // attempt 2 logs in on its first logOn instead of losing the stale-code Steam Guard
         // race against the 15s login timeout. Attempt 1 keeps the just-built code; the token
         // path ({ refreshToken }) carries no maFile and is untouched.
@@ -489,7 +489,7 @@ export class SessionManager extends EventEmitter {
           logger.warn(`[cm-protocol] proxy ${pkey} demoted to WebSocket CM after ${TCP_FAILURES_TO_DEMOTE} TCP connect failures – provider likely blocks HTTP CONNECT to the CM ports (27017-27050); wss:443 from now on. PERSISTED (re-probes TCP after 24h). Force globally with SSIM_CM_PROTOCOL=ws.`);
         }
 
-        // S49: a resident-ceiling insertion refusal (B46) — and an S48 shutdown abort — must NOT be retried
+        // A resident-ceiling insertion refusal — and an S48 shutdown abort — must not be retried
         // in-slot. Retrying holds a login slot through ~60s of backoff and rebuilds/tears down a client each
         // time: a starvation amplifier exactly when the ceiling is saturated. The client was already torn
         // down in performLogin; bubble straight up so the caller retries the whole account later (a slot may
@@ -502,7 +502,7 @@ export class SessionManager extends EventEmitter {
         // Auth failure → no point retrying; bubble up so loginAccount can react.
         if (kind === 'auth') {
           logger.warn(`[${account.username}] ${pathLabel} login: authentication failed (EResult=${lastErr.eresult ?? 'n/a'}) – not retrying`);
-          // Tear the dead client down BEFORE bubbling up. The connection branch below
+          // Tear the dead client down before bubbling up. The connection branch below
           // destroys on every attempt, but the auth branch previously threw straight
           // out, leaving an ERROR session in the map with its SteamUser client (open
           // CM/proxy socket + listeners) lingering until the next login for this user.
@@ -597,14 +597,14 @@ export class SessionManager extends EventEmitter {
       lastActivityAt: new Date(), // a fresh login counts as activity (reaper grace)
     };
 
-    // Resident-ceiling re-check AT the insertion point (B46). The check in loginAccount runs
-    // BEFORE acquireLoginSlot and the entry is inserted here, up to a full backoff later — so a
+    // Resident-ceiling re-check AT the insertion point. The check in loginAccount runs
+    // before acquireLoginSlot and the entry is inserted here, up to a full backoff later — so a
     // burst admitted while the map was momentarily small could overshoot the budget. This
     // re-check is SYNCHRONOUS with the set() below (no await between), so it is race-free: once
-    // the population is at the cap, a NEW account's insertion is refused (transient/retryable). A
+    // the population is at the cap, a new account's insertion is refused (transient/retryable). A
     // re-login is exempt via its reservation (reloginReservations): it re-occupies the exact slot its
     // own destroy freed (growth 0), while newcomers still see that reservation as occupied through
-    // occupiedCount() so the budget stays exact (H-ACC-005). We must
+    // occupiedCount() so the budget stays exact. We must
     // tear the freshly-built client down so it doesn't leak a CM/proxy socket.
     if (MAX_LIVE_SESSIONS > 0 && !this.sessions.has(key) && !this.reloginReservations.has(key) && this.occupiedCount() >= MAX_LIVE_SESSIONS) {
       try { client.on('error', () => { /* discarded */ }); client.logOff(); } catch { /* noop */ }
@@ -616,7 +616,7 @@ export class SessionManager extends EventEmitter {
       );
     }
 
-    // S48: teardown began while this login was handshaking — abort at the insertion point (SYNCHRONOUS with
+    // Teardown began while this login was handshaking — abort at the insertion point (SYNCHRONOUS with
     // the set() below, so race-free) rather than parking a fresh session in a manager being discarded. Tear
     // the freshly-built client down so it doesn't leak a CM/proxy socket.
     if (this.shuttingDown) {
@@ -636,7 +636,7 @@ export class SessionManager extends EventEmitter {
       let loginTimeoutHandle:      NodeJS.Timeout;
       let webSessionTimeoutHandle: NodeJS.Timeout | undefined;
       // Guards the single allowed settlement: the periodic webSession refreshes
-      // (and any late events) must NOT re-settle this promise.
+      // (and any late events) must not re-settle this promise.
       let settled = false;
 
       const fail = (err: Error): void => {
@@ -663,7 +663,7 @@ export class SessionManager extends EventEmitter {
       });
 
       // ── wallet – capture Steam balance (fires shortly after login) ─────
-      // Steam ALSO pushes this (ClientWalletInfoUpdate) whenever the balance changes on a live
+      // Steam also pushes this (ClientWalletInfoUpdate) whenever the balance changes on a live
       // session, so a resident session's `wallet` tracks credits without any re-login. Re-emitted
       // on the manager so callers can await the first/next value (see awaitWallet) instead of
       // racing the login promise, which resolves on 'webSession' and may beat this event (W4_40).
@@ -706,7 +706,7 @@ export class SessionManager extends EventEmitter {
       });
 
       // ── loggedOn ───────────────────────────────────────────────────────
-      // NOTE: logging on is NOT the same as being "ready". Steam delivers the
+      // NOTE: logging on is not the same as being "ready". Steam delivers the
       // web-session cookies a few ms later via the 'webSession' event. We must
       // wait for those cookies before resolving, otherwise the InventoryManager
       // fails with "no web session cookies available" (classic race condition).
@@ -736,8 +736,8 @@ export class SessionManager extends EventEmitter {
       });
 
       // ── webSession ─────────────────────────────────────────────────────
-      // Fires on the initial login AND on every later refresh. We store the
-      // cookies every time, but only the FIRST occurrence resolves the login
+      // Fires on the initial login and on every later refresh. We store the
+      // cookies every time, but only the first occurrence resolves the login
       // promise (subsequent refreshes just update the stored cookies).
       client.on('webSession', (sessionId: string, cookies: string[]) => {
         session.webSession = { sessionId, cookies, obtainedAt: new Date() };
@@ -763,7 +763,7 @@ export class SessionManager extends EventEmitter {
       });
 
       // ── error ──────────────────────────────────────────────────────────
-      // PERSISTENT listener (not once): steam-user also emits fatal errors AFTER
+      // PERSISTENT listener (not once): steam-user also emits fatal errors after
       // a successful login (e.g. LoggedInElsewhere). Without a live listener the
       // EventEmitter would throw and the session would linger as a LOGGED_IN
       // zombie. Post-login we mark the session dead so ensureSession() re-logs-in.
@@ -772,13 +772,13 @@ export class SessionManager extends EventEmitter {
         if (!settled) { fail(err); return; }
         session.state = SessionState.ERROR;
         this.emit('disconnected', account.username, `fatal: ${err.message}`);
-        // B43: a post-settle fatal (e.g. LoggedInElsewhere) previously left the session RESIDENT
+        // A post-settle fatal (e.g. LoggedInElsewhere) previously left the session RESIDENT
         // in ERROR state — its TradeOfferManager kept polling every 20s on now-dead cookies
         // forever (bulk release skips it: isLive is false for ERROR), a steady background
         // request storm + pinned memory. Tear it down so 'sessionDestroyed' fires and the trader
         // poller/GC handle/agent are released. Guard against destroying a REPLACEMENT session: a
         // re-login may have already swapped a fresh session into this key, so only destroy if the
-        // map still holds THIS exact instance. Deferred a tick so we never destroy mid-emit.
+        // map still holds this exact instance. Deferred a tick so we never destroy mid-emit.
         setTimeout(() => {
           if (this.sessions.get(key) === session) void this.destroySession(key);
         }, 0).unref?.();
@@ -790,12 +790,12 @@ export class SessionManager extends EventEmitter {
         const reason = msg ?? `EResult ${eresult}`;
         logger.warn(`[${account.username}] Disconnected  reason="${reason}"`);
         this.emit('disconnected', account.username, reason);
-        // S11: a post-settle CM drop (proxy blip → 'disconnected', no 'error'; autoRelogin:false) used to
+        // A post-settle CM drop (proxy blip → 'disconnected', no 'error'; autoRelogin:false) used to
         // leave the session RESIDENT in DISCONNECTED — counted against MAX_LIVE_SESSIONS, holding its proxy
         // agent + TradeOfferManager poller — and NOTHING reaped it (the error handler's B43 destroy only
         // fires on 'error'; the idle reaper skips non-LOGGED_IN). Mirror B43 here: tear it down so
         // 'sessionDestroyed' fires and the slot/agent/poller are released. Same replacement guard (only
-        // destroy if the map still holds THIS instance — a re-login may have swapped in a fresh one) and
+        // destroy if the map still holds this instance — a re-login may have swapped in a fresh one) and
         // deferred a tick so we never destroy mid-emit.
         setTimeout(() => {
           if (this.sessions.get(key) === session) void this.destroySession(key);
@@ -866,9 +866,9 @@ export class SessionManager extends EventEmitter {
   }
 
   async logoutAll(): Promise<void> {
-    // S48: latch shutdown FIRST so no new login is admitted and any login mid-handshake aborts at its
-    // insertion point, THEN drain the logins already in flight so a late success can't insert a fresh
-    // session AFTER we tear down (which would strand an unmanaged live CM session + agent). Only then
+    // Latch shutdown first so no new login is admitted and any login mid-handshake aborts at its
+    // insertion point, then drain the logins already in flight so a late success can't insert a fresh
+    // session after we tear down (which would strand an unmanaged live CM session + agent). Only then
     // destroy the resident sessions.
     this.shuttingDown = true;
     const inFlight = [...this.loginsInFlight.values()];
@@ -934,7 +934,7 @@ export class SessionManager extends EventEmitter {
 
   /**
    * True when the account currently has a live (logged-in) or mid-login session.
-   * Bulk operations check this BEFORE they touch an account so they release ONLY the
+   * Bulk operations check this before they touch an account so they release ONLY the
    * sessions they themselves create — never one the user already had live (e.g. one
    * mid-trade) or that another op logged in concurrently. LOGGING_IN counts as live so
    * an in-flight login the user just kicked off isn't treated as "ours" to tear down.
@@ -972,8 +972,8 @@ export class SessionManager extends EventEmitter {
       existing.cookieRefreshTimer = undefined;
     }
     // 2) Teardown listener discipline: an unhandled 'error' event throws, so a live
-    //    'error' handler must exist at EVERY instant of teardown. Attach a no-op
-    //    BEFORE logOff (belt: covers a client whose real handlers were never wired),
+    //    'error' handler must exist at every instant of teardown. Attach a no-op
+    //    before logOff (belt: covers a client whose real handlers were never wired),
     //    and RE-attach it in its own try after the listener sweep — if the sweep
     //    throws, the earlier catch must not also swallow the re-attach.
     const noopError = (): void => { /* session already torn down */ };
@@ -981,7 +981,7 @@ export class SessionManager extends EventEmitter {
     try { existing.client.logOff(); } catch { /* already gone */ }
     // 2b) Neutralize the discarded client so it can NEVER resurrect itself. This is
     //    the core of the native-crash / login-storm class: steam-user's logOff() does
-    //    NOT clear _logonMsgTimeout — a teardown landing while a ClientLogon is in
+    //    not clear _logonMsgTimeout — a teardown landing while a ClientLogon is in
     //    flight (the exact 15s-timeout / connection-retry teardown a proxy ECONNRESET
     //    storm triggers hundreds of times) leaves that 5s timer alive; it fires
     //    _disconnect()+_enqueueLogonAttempt() → logOn(true), fully reconnecting a
@@ -991,7 +991,7 @@ export class SessionManager extends EventEmitter {
     //    login. steam-user exposes no destroy(), so we defensively silence the exact
     //    reconnect machinery (all guarded; unknown-field access is a safe no-op).
     neutralizeSteamClient(existing.client);
-    // 3) Drop ALL listeners (they capture the session in their closures)…
+    // 3) Drop all listeners (they capture the session in their closures)…
     try { existing.client.removeAllListeners(); } catch { /* noop */ }
     // …then restore the no-op 'error' handler: steam-user can still emit async
     // errors after logOff, and an unhandled 'error' event would crash the process.
@@ -1020,7 +1020,7 @@ export class SessionManager extends EventEmitter {
   isReady(username: string): boolean {
     const s = this.sessions.get(username.toLowerCase());
     // Not just "a webSession object exists" — its cookies must still be FRESH, or a
-    // call would run on silently-expired cookies (C16 / INV-A5).
+    // call would run on silently-expired cookies.
     return !!s && s.state === SessionState.LOGGED_IN && !!s.webSession && webCookiesFresh(s.webSession.obtainedAt);
   }
 }
@@ -1030,7 +1030,7 @@ export class SessionManager extends EventEmitter {
 /**
  * Defensively prevents a discarded steam-user client from resurrecting itself after
  * teardown. steam-user offers no public destroy(), and its logOff() leaves reconnect
- * machinery armed (notably _logonMsgTimeout, which is NOT cleared by
+ * machinery armed (notably _logonMsgTimeout, which is not cleared by
  * _cleanupClosedConnection — verified in node_modules/steam-user 5.x). Left alone,
  * that timer fires _enqueueLogonAttempt() → logOn(true) and brings a client SSIM has
  * already deleted from its map back to life: an uncapped CM login-retry storm that is
@@ -1064,13 +1064,13 @@ export function neutralizeSteamClient(client: unknown): void {
 /**
  * Triggers client.webLogOn() on an existing, logged-in SteamUser instance and
  * resolves once fresh cookies arrive (updating session.webSession in place).
- * This keeps the SAME underlying CM/proxy connection open – critical when using
+ * This keeps the same underlying CM/proxy connection open – critical when using
  * rotating residential proxies, where a full re-login would land on a new IP and
  * trip Steam's security filter.
  */
 export function refreshWebSession(session: ManagedSession, timeoutMs = WEB_SESSION_TIMEOUT_MS): Promise<void> {
   // Dedup concurrent refreshes (#30): the proactive 20-min timer and an ad-hoc caller
-  // must share ONE in-flight webLogOn rather than firing two with mismatched 'webSession'
+  // must share one in-flight webLogOn rather than firing two with mismatched 'webSession'
   // listeners racing for the same event.
   if (session.webRefreshInFlight) return session.webRefreshInFlight;
   const p = new Promise<void>((resolve, reject) => {

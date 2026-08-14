@@ -28,7 +28,7 @@ declare module 'steam-totp' {
 
   /** Calls back with the local↔Steam clock OFFSET in seconds (add to local time via time(offset)); the
    *  third arg is the QueryTime round-trip latency in ms. NOTE: patched process-wide by
-   *  installSteamTotpTimeout (S6) to bound the raw QueryTime request. */
+   * installSteamTotpTimeout to bound the raw QueryTime request. */
   export function getTimeOffset(
     callback: (err: Error | null, offset: number, latency?: number) => void,
   ): void;
@@ -239,7 +239,7 @@ declare module 'steam-user' {
     twoFactorCode?:    string;
     rememberPassword?: boolean;
     loginKey?:         string;
-    /** Auth-v2 refresh token – logs in WITHOUT password/2FA, survives restarts. */
+    /** Auth-v2 refresh token – logs in without password/2FA, survives restarts. */
     refreshToken?:     string;
     [key: string]:     unknown;
   }

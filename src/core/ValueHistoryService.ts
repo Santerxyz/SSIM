@@ -10,7 +10,7 @@ import type { ExchangeRateService } from '../pricing/ExchangeRateService';
 
 /** Which game series a snapshot should touch. Scoping to the refreshed game stops a
  *  TF2 refresh from rewriting a recent CS2 point (and vice-versa). undefined → both
- *  (manual/post-trade where the caller doesn't know). (C21 / INV-E6.) */
+ * (manual/post-trade where the caller doesn't know). */
 export function snapshotGames(game?: GameId): { cs2: boolean; tf2: boolean } {
   return { cs2: game !== 'tf2', tf2: game !== 'cs2' };
 }
@@ -40,7 +40,7 @@ export interface HistoryPoint {
   wallet: number;
   /** True when this point UNDERCOUNTS: either a loaded account held a wallet balance in a currency we
    *  can't convert to USD (FX covers only USD↔EUR — S66), or one or more items had prices that were
-   *  missing/transiently unfetchable at record time (H-INV-022). Lets the UI flag the series as
+   * missing/transiently unfetchable at record time. Lets the UI flag the series as
    *  incomplete instead of silently plotting a too-low value as if it were exact. */
   partial?: boolean;
 }
@@ -62,9 +62,9 @@ export class ValueHistoryService {
   private data: HistoryFile;
   private dirty = false;
   private flushTimer?: NodeJS.Timeout;
-  // S67: a snapshot requested WHILE a price fill is draining is deferred (the item totals would be
+  // A snapshot requested WHILE a price fill is draining is deferred (the item totals would be
   // undercounted). `pending` remembers the request; `fillWatch` polls until the fill drains, then records it.
-  // `retry` marks a pending that already fired ITS OWN ensureFilled for cache-missing names (H-INV-022): on
+  // `retry` marks a pending that already fired ITS own ensureFilled for cache-missing names: on
   // the drain pass it records flagged rather than deferring again — exactly one bounded retry, no starvation.
   private pending?: { reason: string; game?: GameId; retry?: boolean };
   private fillWatch?: NodeJS.Timeout;
@@ -89,25 +89,25 @@ export class ValueHistoryService {
         const parsed = fsExtra.readJsonSync(HISTORY_PATH) as HistoryFile;
         if (parsed && typeof parsed.series === 'object') return { version: 1, series: this.sanitizeSeries(parsed.series ?? {}) };
         // File exists but the shape is wrong (`{}`, `null`, an array, a missing `series`). Unlike
-        // InventoryStore, value history is NOT refetchable — the only record of the past — so preserve
+        // InventoryStore, value history is not refetchable — the only record of the past — so preserve
         // the current bytes before starting fresh (S12/S5 clobber class).
         this.preserveHistory('unexpected shape');
       }
     } catch (err) {
-      // ANY read/parse throw (incl. a transient Windows EBUSY/EPERM from an AV scanner at boot):
+      // any read/parse throw (incl. a transient Windows EBUSY/EPERM from an AV scanner at boot):
       // preserve the current bytes before overwriting the only copy on the next flush.
       this.preserveHistory((err as Error).message);
     }
     return { version: 1, series: {} };
   }
 
-  /** H-INV-020: the top-level `series` check passing does NOT prove each series is an array of
+  /** H-INV-020: the top-level `series` check passing does not prove each series is an array of
    *  valid points — a hand-edited file or partial disk corruption that still parses can leave a
    *  string/number/object where an array belongs, which later throws inside `append()` (`arr.push`
    *  is not a function) on the very next refresh, 500ing single-refresh routes and feeding the
    *  money breaker via the bare-setInterval fill-watch. Keep only array series, and within each
    *  only well-formed points (finite `t`, numeric `items`/`wallet`); carry the `partial` honesty
-   *  flag through, drop any other extras. Warn ONCE with the dropped counts if anything was cut. */
+   *  flag through, drop any other extras. Warn once with the dropped counts if anything was cut. */
   private sanitizeSeries(series: Record<string, HistoryPoint[]>): Record<string, HistoryPoint[]> {
     const clean: Record<string, HistoryPoint[]> = {};
     let droppedSeries = 0, droppedPoints = 0;
@@ -172,9 +172,9 @@ export class ValueHistoryService {
     }
   }
 
-  /** Real teardown (H-INV-027): disarm the S67 `fillWatch` interval and drop any deferred snapshot
+  /** Real teardown: disarm the S67 `fillWatch` interval and drop any deferred snapshot
    *  before the final flush. `flush()` alone leaves `fillWatch` armed, so on a runtime license-loss
-   *  re-gate (teardownFullApp → new ValueHistoryService in the SAME process) the OLD instance's zombie
+   *  re-gate (teardownFullApp → new ValueHistoryService in the same process) the OLD instance's zombie
    *  tick would fire and clobber the new instance's freshly-loaded history. A pending point dropped at
    *  teardown is recreated on the next refresh — cheaper than letting it fire on a dead `deps`. */
   shutdown(): void {
@@ -192,10 +192,10 @@ export class ValueHistoryService {
   }
 
   /**
-   * Aggregates the per-environment series of `seriesIds` into ONE curve for `game`,
+   * Aggregates the per-environment series of `seriesIds` into one curve for `game`,
    * summing items + wallet across the selected environments (F3b — the global-master chart
    * follows the environment selection). Robust to environments that started recording at
-   * different times: at each timestamp present in ANY selected series, every series
+   * different times: at each timestamp present in any selected series, every series
    * contributes its latest value AT-OR-BEFORE that timestamp (carry-forward), or 0 before
    * its first point — so toggling a young environment in never makes the total dip. Output
    * is chronological and capped to MAX_POINTS_PER_SERIES (most-recent kept).
@@ -232,16 +232,16 @@ export class ValueHistoryService {
   // ── Snapshots ────────────────────────────────────────────────────────────────
 
   /**
-   * Takes ONE snapshot pass over the inventory cache: appends a point to every
+   * Takes one snapshot pass over the inventory cache: appends a point to every
    * environment series (that has at least one cached inventory) plus the global
    * aggregate. Cheap – memory only – so it is safe to call after every refresh.
    */
   snapshotAll(reason: string, game?: GameId): void {
-    // S67: a snapshot taken mid price-fill permanently captures UNDERCOUNTED item totals — enrich() sums the
+    // A snapshot taken mid price-fill permanently captures UNDERCOUNTED item totals — enrich() sums the
     // cache, and most items have no price yet until the throttled background fill drains. DEFER while a fill
     // is in progress: remember the request and re-snapshot once it drains, so the point reflects the fully-
     // priced inventory. Coalesced — one pending request + one watcher regardless of how many refreshes fire;
-    // if two different games defer, we snapshot BOTH on drain (game=undefined) so neither is lost.
+    // if two different games defer, we snapshot both on drain (game=undefined) so neither is lost.
     const st = this.pricing.status();
     if (st.running || st.queued > 0) {
       this.pending = (this.pending && this.pending.game !== game)
@@ -255,7 +255,7 @@ export class ValueHistoryService {
   }
 
   /**
-   * S67 hole-closer (H-INV-022): the snapshot is COMPLETE-or-honestly-FLAGGED. `computeGame` derives every
+   * S67 hole-closer: the snapshot is COMPLETE-or-honestly-FLAGGED. `computeGame` derives every
    * row without appending and reports the names it couldn't price. If `!isRetry` and any name is cache-missing,
    * we queue exactly those names (ensureFilled), remember a retry-pending, arm the watch and record NOTHING —
    * so a snapshot that settled while prices were stale no longer captures a permanent undercount. On the drain
@@ -264,10 +264,10 @@ export class ValueHistoryService {
    */
   private doSnapshot(reason: string, game?: GameId, isRetry = false): void {
     const now = Date.now();
-    // Snapshot ONLY the game(s) that actually refreshed. Snapshotting BOTH on every call
+    // Snapshot ONLY the game(s) that actually refreshed. Snapshotting both on every call
     // let a TF2 refresh rewrite a recent CS2 point (and vice-versa) via burst-coalescing in
     // append() — last-writer-wins on the curve. `game` undefined → snapshot both (manual/
-    // post-trade where the caller doesn't scope it). (C21 / INV-E6.)
+    // post-trade where the caller doesn't scope it).
     const which = snapshotGames(game);
     const rows: Array<{ seriesId: string; items: number; wallet: number; partial: boolean }> = [];
     const missing: Array<{ name: string; appid: number }> = [];
@@ -275,7 +275,7 @@ export class ValueHistoryService {
     if (which.tf2) { const g = this.computeGame(now, this.tf2Store, 'tf2:'); rows.push(...g.rows); missing.push(...g.missing); }
 
     if (!isRetry && missing.length > 0) {
-      // Prices are stale/missing → don't record an undercounted point. Queue the fill, defer ONCE.
+      // Prices are stale/missing → don't record an undercounted point. Queue the fill, defer once.
       this.pricing.ensureFilled(missing);
       this.pending = { reason, game, retry: true };
       this.armFillWatch();
@@ -300,14 +300,14 @@ export class ValueHistoryService {
     if (this.fillWatch) { clearInterval(this.fillWatch); this.fillWatch = undefined; }
     const pend = this.pending; this.pending = undefined;
     // Pass the pending's retry flag: a pending we ourselves deferred for missing prices (retry) records
-    // flagged on this pass rather than deferring again — exactly one bounded retry. (H-INV-022.)
+    // flagged on this pass rather than deferring again — exactly one bounded retry.
     if (pend) this.doSnapshot(pend.reason, pend.game, pend.retry === true);
   }
 
   /**
-   * Pure computation of ONE game's rows ('<prefix><envId>' + '<prefix>global') from the cache — NO append.
+   * Pure computation of one game's rows ('<prefix><envId>' + '<prefix>global') from the cache — NO append.
    * Returns the rows to record plus the unique-per-account cache-missing names so the caller can defer+fill.
-   * A row is `partial` when the S66 wallet condition holds OR the env had ANY missing/soft-nulled price
+   * A row is `partial` when the S66 wallet condition holds OR the env had any missing/soft-nulled price
    * (the items total silently undercounts those). Keeps the `loaded === 0 → no point` rule (empty-coercion guard).
    */
   private computeGame(_now: number, store: { get(u: string): AccountInventory | undefined }, prefix: string):
@@ -322,17 +322,17 @@ export class ValueHistoryService {
         const inv = store.get(acc.username);
         if (!inv) continue;
         loaded++;
-        const t = this.pricing.totalsOf(inv); // READ-ONLY: never mutates the cached record (H-INV-022 / INV-B12)
+        const t = this.pricing.totalsOf(inv); // READ-ONLY: never mutates the cached record
         items += t.totalCents;
-        // H-INV-022: an item whose price was missing (queued this pass) or a fresh transient soft error-miss
+        // An item whose price was missing (queued this pass) or a fresh transient soft error-miss
         // means the items total undercounts for this point — flag it, and collect missing names for the fill.
         if (t.missing.length > 0 || t.softNull > 0) partial = true;
         missing.push(...t.missing);
         const w = inv.wallet;
         const cents = this.walletUsdCents(w);
-        // S66: a wallet we couldn't convert (non-USD/EUR) but that HAS a real balance means `wallet` is
+        // A wallet we couldn't convert (non-USD/EUR) but that HAS a real balance means `wallet` is
         // undercounted for this point — flag it partial rather than silently plotting a too-low total.
-        // H-INV-024: an ABSENT/malformed wallet (never wallet-refreshed, tri-state "—") is unknown, not 0 —
+        // An ABSENT/malformed wallet (never wallet-refreshed, tri-state "—") is unknown, not 0 —
         // flag it too so unknown never coerces to a silent 0. The hasWallet=false → balance 0 case has a
         // real numeric balance and converts to an exact 0, so it stays unflagged (Directive 2 tri-state).
         if (!w || typeof w.balance !== 'number') partial = true;
@@ -366,7 +366,7 @@ export class ValueHistoryService {
       return;
     }
     if (last && dt < 0) {
-      // H-INV-025: wall-clock stepped BACKWARD (NTP correction, VM/laptop resume). A recorded timestamp
+      // Wall-clock stepped BACKWARD (NTP correction, VM/laptop resume). A recorded timestamp
       // never moves backward — merge values into the last point but KEEP last.t, or the series would go
       // non-chronological (breaking aggregate()'s cursor and the chart's span math). Self-heals once the
       // clock passes last.t + MIN_INTERVAL_MS: normal appends resume, no data dropped.

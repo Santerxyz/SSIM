@@ -36,10 +36,10 @@ export function readTextFileTolerant(filePath: string): string {
 
 /**
  * Resolves a maFile reference to a path INSIDE the ./mafiles/ drop zone. Containment
- * (B23): a client-supplied maFilePath reaches this from POST/PATCH /api/accounts and
+ *: a client-supplied maFilePath reaches this from POST/PATCH /api/accounts and
  * attach-mafile; an absolute path (C:/Windows/win.ini) or a `../` traversal must never
  * read outside the drop zone (arbitrary file existence/JSON probing + importing any file
- * bearing a shared_secret). We strip ALL directory components with path.basename, so the
+ * bearing a shared_secret). We strip all directory components with path.basename, so the
  * result is always mafiles/<name> — the same rule the plaintext bulk-import path uses.
  * The drop zone is flat (listDropZoneMaFiles doesn't recurse), so no legit reference is
  * broken. An empty/dot/dot-dot basename is mapped to a literal, contained, never-created
@@ -173,11 +173,11 @@ export interface DropZoneEntry { file: string; accountName: string; maFile: MaFi
 export interface DropZoneUnreadable { file: string; reason: string; }
 
 /**
- * Lists every USABLE *.maFile in ./mafiles/ with its parsed contents + account_name, AND every
+ * Lists every USABLE *.maFile in ./mafiles/ with its parsed contents + account_name, and every
  * file that was dropped for being unparseable/AV-locked or missing account_name/shared_secret.
  * Nothing is ever silently swallowed: a whole folder of encrypted SDA blobs (base64, not JSON)
  * surfaces as `unreadable` entries instead of an empty list. Filenames only are logged — never
- * file contents, which may carry secrets. (H-ACC-078.)
+ * file contents, which may carry secrets.
  */
 export function listDropZoneMaFiles(): { entries: DropZoneEntry[]; unreadable: DropZoneUnreadable[] } {
   if (!fs.existsSync(MA_FILES_DIR)) return { entries: [], unreadable: [] };

@@ -8,7 +8,7 @@ const DEFAULT_STORE_PATH = dataDir('inventories.json');
 
 // Resident-cache safety net: bound how many account records stay in RAM so a very large
 // fleet can never grow the inventory cache without limit. LRU by last access (read OR write).
-// EVICTION IS DESTRUCTIVE: the dropped record is removed from RAM AND from the persisted file
+// EVICTION IS DESTRUCTIVE: the dropped record is removed from RAM and from the persisted file
 // (records is the same object flush() writes), and there is NO refetch-on-miss — the account
 // reverts to never-refreshed ("—", its last-known wallet gone) until the operator manually
 // refreshes it. Generous default (2000 per store) → INERT at typical scale (hundreds of
@@ -175,10 +175,10 @@ export class InventoryStore {
   }
 
   /**
-   * Read-only view for AGGREGATION only (H-INV-023): the live record, NO clone and NO LRU
+   * Read-only view for AGGREGATION only: the live record, NO clone and NO LRU
    * touch — used by the value-history snapshot which sums two numbers per account and would
    * otherwise structuredClone the whole multi-MB record per account, per snapshot. Callers
-   * MUST NOT mutate the returned object (INV-B12: read-time enrichment never persists into
+   * MUST not mutate the returned object (INV-B12: read-time enrichment never persists into
    * the cache); the read-only enricher `PricingService.totalsOf` upholds that. Use get()
    * everywhere else.
    */
@@ -188,7 +188,7 @@ export class InventoryStore {
 
   /**
    * Ownership transfer: the store keeps `inventory` BY REFERENCE (it clones on the way OUT
-   * via get()/all(), not on the way in). Do NOT mutate the object after set() — a later edit
+   * via get()/all(), not on the way in). Do not mutate the object after set() — a later edit
    * corrupts the cache in place; re-read via get() for an independent copy (see get()'s clone
    * note). This is the S36 aliasing class — enrich a re-fetched record, never the stored one.
    */
@@ -228,7 +228,7 @@ export class InventoryStore {
   /**
    * Drops the least-recently-used records from RAM when over MAX_RECORDS, so a very large
    * fleet can't grow the cache without bound. Eviction is DESTRUCTIVE: it deletes the record
-   * from RAM AND (on the next flush) from the persisted file, with no refetch-on-miss — the
+   * from RAM and (on the next flush) from the persisted file, with no refetch-on-miss — the
    * account reverts to never-refreshed ("—", wallet gone) until a manual refresh. No-op below
    * the cap, so at typical scale (hundreds of accounts) this never runs and behaviour is unchanged.
    */

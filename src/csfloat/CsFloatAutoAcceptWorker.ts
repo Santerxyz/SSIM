@@ -28,7 +28,7 @@ const POLL_INTERVAL_MS = 45_000;
 export interface CsFloatDeliverResult {
   tradeId: string;
   name?:   string;
-  /** `sent` = Steam offer created AND 2FA-confirmed · `unconfirmed` = offer exists, needs manual
+  /** `sent` = Steam offer created and 2FA-confirmed · `unconfirmed` = offer exists, needs manual
    *  confirmation (NEVER auto-resent) · `skipped` = nothing was sent · `failed` = Steam refused. */
   status:  'sent' | 'unconfirmed' | 'skipped' | 'failed';
   offerId?: string;
@@ -73,7 +73,7 @@ export class CsFloatAutoAcceptWorker {
   private running = false;
   private stopped = false;            // S46: set by stop() → an in-flight pass stops launching deliveries
   /** DURABLE dedup of delivered CSFloat trade ids — survives restarts so a sale is
-   *  never delivered twice across a process bounce (C6 / INV-F1). */
+   * never delivered twice across a process bounce. */
   private readonly delivered = new CsFloatDeliveredStore();
   /** The one manual delivery run (serialized like every other job in the app). */
   private job: CsFloatDeliverJob = emptyDeliverJob();
@@ -117,7 +117,7 @@ export class CsFloatAutoAcceptWorker {
     if (!username) throw new Error('username is required');
     const wanted = new Set(tradeIds.map((s) => String(s ?? '').trim()).filter(Boolean));
     this.job = { ...emptyDeliverJob(), running: true, username, startedAt: new Date().toISOString(), cancelRequested: false, cancelling: false, cancelled: false };
-    const job = this.job; // bind THIS job so a late write can never land in the NEXT one
+    const job = this.job; // bind this job so a late write can never land in the NEXT one
     void this.runDeliver(job, username, wanted)
       .catch((e) => { job.error = e instanceof Error ? e.message : String(e); })
       .finally(() => {
@@ -135,7 +135,7 @@ export class CsFloatAutoAcceptWorker {
     const block = await this.preflight(username);
     if (block) throw new Error(block);
 
-    // The SAME list the dashboard shows — see fetchTrades. Selecting from a differently-filtered
+    // The same list the dashboard shows — see fetchTrades. Selecting from a differently-filtered
     // list is what made every hand-picked sale come back "no longer a pending sale" (owner report
     // 2026-08-12: "0 sent … 30 skipped"): the tab listed the account's trades unfiltered, the job
     // asked CSFloat for state=pending only, so not one of the ticked ids was in the set it searched.
@@ -178,7 +178,7 @@ export class CsFloatAutoAcceptWorker {
   }
 
   /**
-   * The account's CSFloat trades — ONE fetch shape for every caller (poller, manual run, and the
+   * The account's CSFloat trades — one fetch shape for every caller (poller, manual run, and the
    * dashboard through the API), so what the operator sees is always what a delivery acts on.
    *
    * Deliberately UNFILTERED. The `state=pending` filter this used to pass is undocumented like the
@@ -206,7 +206,7 @@ export class CsFloatAutoAcceptWorker {
   }
 
   stop(): void {
-    // S46: signal an in-flight pass to stop launching new deliveries, and cancel BOTH timers — the boot
+    // Signal an in-flight pass to stop launching new deliveries, and cancel both timers — the boot
     // tick used to survive stop() and could fire a pass 5s into teardown (an unwatched send during shutdown).
     this.stopped = true;
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
@@ -220,7 +220,7 @@ export class CsFloatAutoAcceptWorker {
     // operator turns a clean manual run into half "already in another money operation" rows.
     if (this.job.running) return;
     // Experimental kill-switch: turning the flag off must STOP auto-delivery, even for
-    // accounts whose per-account toggle is still persisted (C15 / INV-F2).
+    // accounts whose per-account toggle is still persisted.
     if (!AppSettings.isCsfloatExperimental()) return;
     this.running = true;
     try {
@@ -243,7 +243,7 @@ export class CsFloatAutoAcceptWorker {
   }
 
   /**
-   * Everything that must hold before ANY sale on this account may be delivered. Returns the reason
+   * Everything that must hold before any sale on this account may be delivered. Returns the reason
    * to refuse, or null to proceed.
    *
    * Shared by the poller and the manual job deliberately: a hand-pressed "send" must clear exactly
@@ -253,7 +253,7 @@ export class CsFloatAutoAcceptWorker {
    */
   private async preflight(username: string): Promise<string | null> {
     const acc = this.accounts.get(username);
-    // H-FLT-003: re-check enabled on the live re-fetch, not just null. runOnce() filters on
+    // Re-check enabled on the live re-fetch, not just null. runOnce() filters on
     // a.enabled at pass start, but a 500-account pass at 45s cadence spans many seconds — an
     // operator disabling this account mid-pass must stop its queued delivery this pass, matching
     // the re-validate-on-live-state pattern the tier/hasKey guards below already follow.
@@ -262,8 +262,8 @@ export class CsFloatAutoAcceptWorker {
     // F1: pool-lost (rule matched a pool that hydrated empty → withNetwork attached no network).
     // Refuse CSFloat egress rather than fall to the host IP; skip with zero HTTP calls until fixed.
     if (!acc.network) return `${username}: proxy pool unavailable (pool-lost) — refusing CSFloat egress (it would leak the host IP)`;
-    // INV-A1 / C5 (H-ACC-083): gate on the REAL "can confirm" capability (the maFile's
-    // identity_secret, resolved vault THEN disk like login does), not the raw tier label — a
+    // INV-A1 / C5: gate on the real "can confirm" capability (the maFile's
+    // identity_secret, resolved vault then disk like login does), not the raw tier label — a
     // full/absent-tier account whose maFile lacks an identity_secret would otherwise send a real
     // Steam offer that can never be 2FA-confirmed and sits stuck unconfirmed. The tier is consulted
     // only when the maFile is unreadable (identitySecret === 'unknown').
@@ -271,8 +271,8 @@ export class CsFloatAutoAcceptWorker {
       return `${username} cannot confirm a Steam delivery (its maFile has no identity_secret) — attach a maFile with one to enable`;
     }
     if (!this.csfloat.hasKey(username)) return `${username} has no CSFloat API key`;
-    // If the delivered-id memory could not be loaded (corrupt file), delivery MUST NOT run: every
-    // currently-pending sale would look undelivered and get a SECOND real Steam offer.
+    // If the delivered-id memory could not be loaded (corrupt file), delivery MUST not run: every
+    // currently-pending sale would look undelivered and get a second real Steam offer.
     if (this.delivered.isDegraded()) {
       return 'the delivered-id store is unreadable — delivery is DISABLED (it would re-deliver already-sent sales). Fix/remove csfloat_delivered.json and restart.';
     }
@@ -288,11 +288,11 @@ export class CsFloatAutoAcceptWorker {
 
     for (const t of trades) {
       // A sale CSFloat already calls finished is not ours to deliver. The dedup store only knows
-      // what THIS install sent, so without this an item the operator delivered by hand in Steam
+      // what this install sent, so without this an item the operator delivered by hand in Steam
       // would look undelivered forever.
       if (terminalState(t)) continue;
       const r = await this.deliverOne(username, t);
-      // H-FLT-011: a delivered-id that was NOT made durable (disk full / EACCES / AV lock) means a
+      // A delivered-id that was not made durable (disk full / EACCES / AV lock) means a
       // crash before the store recovers would re-send every sale whose dedup was never saved. Stop
       // this account's pass after the first non-durable record.
       if (r.dedupLost) return;
@@ -300,7 +300,7 @@ export class CsFloatAutoAcceptWorker {
   }
 
   /**
-   * Delivers ONE CSFloat sale: validate the destination, create + confirm the Steam offer, record
+   * Delivers one CSFloat sale: validate the destination, create + confirm the Steam offer, record
    * the dedup id. Never throws — the outcome is returned so both callers can report it.
    *
    * `dedupLost` means the offer is real but its "already delivered" record did not reach disk; the
@@ -337,10 +337,10 @@ export class CsFloatAutoAcceptWorker {
         myItems: [{ assetId: d.assetId }],
       });
     } catch (err) {
-      // H-FLT-001: classify the failure. A TRANSPORT-AMBIGUOUS commit (ECONNRESET/timeout on
+      // Classify the failure. A TRANSPORT-AMBIGUOUS commit (ECONNRESET/timeout on
       // offer.send's response leg) means the offer MAY already exist on Steam — record it in the
       // delivered store exactly like a success so it is NEVER auto-resent, and tell the operator to
-      // verify manually. A DEFINITE Steam rejection did not land, so do NOT record it.
+      // verify manually. A DEFINITE Steam rejection did not land, so do not record it.
       if ((err as { commitMayHaveLanded?: boolean }).commitMayHaveLanded === true) {
         this.delivered.add(id);
         logger.warn(`[csfloat-auto-accept] ${username}: trade ${id} — the Steam send was network-AMBIGUOUS (${(err as Error).message}); the offer MAY have been created. It will NOT be auto-resent. Verify this account's Steam trade offers manually and re-deliver only if genuinely absent.`);
@@ -350,7 +350,7 @@ export class CsFloatAutoAcceptWorker {
       return { tradeId: id, status: 'failed', error: (err as Error).message };
     }
     // Mark delivered regardless of confirm status: the offer EXISTS on Steam now, so a re-attempt
-    // would create a SECOND real offer for the same sale. An unconfirmed one needs MANUAL 2FA
+    // would create a second real offer for the same sale. An unconfirmed one needs MANUAL 2FA
     // confirmation (surfaced loudly), never an automatic resend.
     const persisted = this.delivered.add(id);
     if (!persisted) {
@@ -394,7 +394,7 @@ const STEAMID64_RE = /^7656\d{13}$/;
 const TRADE_URL_RE = /^https:\/\/steamcommunity\.com\/tradeoffer\/new\/\?partner=\d+&token=[\w-]+/;
 
 /**
- * Is the parsed CSFloat delivery target well-formed enough to send a REAL Steam offer
+ * Is the parsed CSFloat delivery target well-formed enough to send a real Steam offer
  * to? Requires a numeric asset id and at least one VALID destination (a steamID64 or a
  * Steam trade URL); a present-but-malformed steamID/URL is rejected outright so a
  * drifted/undocumented payload can never mis-deliver. (F-2 / INV-F1.)
@@ -435,7 +435,7 @@ function pickString(...vals: unknown[]): string | undefined {
     if (typeof v === 'string' && v) return v;
     // Accept a numeric id ONLY when it survived JSON.parse without precision loss. A steamID64
     // (~7.66e16) is always above Number.MAX_SAFE_INTEGER (9.0e15), so a numerically-sourced
-    // buyer_id/steam_id has ALREADY been rounded to a wrong-but-17-digit value before we see it —
+    // buyer_id/steam_id has already been rounded to a wrong-but-17-digit value before we see it —
     // String(v) would stringify the corruption and slip past STEAMID64_RE, mis-delivering the asset.
     // Discard it (→ undefined → the row is skipped, never sent) rather than trust a lossy id.
     if (typeof v === 'number') {

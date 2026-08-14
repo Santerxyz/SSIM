@@ -7,16 +7,16 @@ import { parseProxy } from '../network/AgentFactory';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  cleanBrowser — "Open in clean browser": open ONE selected account in a fully
+//  cleanBrowser — "Open in clean browser": open one selected account in a fully
 //  isolated, ephemeral Steam web session.
 //
 //  ISOLATION MECHANISM (chosen, and why): the stack is a Node backend + Tauri/Edge
-//  shell — NOT Electron — so there is no in-process BrowserWindow to partition.
+//  shell — not Electron — so there is no in-process BrowserWindow to partition.
 //  We launch the SYSTEM Chromium (Edge, else Chrome) with:
 //    • --user-data-dir=<fresh temp dir>  → a brand-new, isolated profile (zero
 //      cookies/state from any other account or a prior session). Ephemeral: the dir
 //      is deleted when the browser exits, so closing discards the session.
-//    • --proxy-server=<this account's proxy>  → SAME egress IP the account normally
+//    • --proxy-server=<this account's proxy>  → same egress IP the account normally
 //      uses (a different IP can trip a Steam lock). Authenticated HTTP proxies are
 //      chained through a tiny local relay that injects Proxy-Authorization (Chromium
 //      can't take proxy creds on the command line).
@@ -35,9 +35,9 @@ export const STEAM_AUTH_COOKIES = ['steamLoginSecure', 'sessionid'] as const;
 // account LOGGED OUT the moment you leave it — the store (store.steampowered.com, e.g. the
 // CS2/Prime shop), help, checkout, login, and the Account-details pages all live on the
 // steampowered.com tree and were never authenticated. But steamLoginSecure is a JWT access
-// token whose audience is "web" — the SAME token value is accepted by EVERY Steam web
+// token whose audience is "web" — the same token value is accepted by every Steam web
 // domain; the cookie merely has to be SET on each. So we establish the session on the
-// community host AND across the whole *.steampowered.com tree via one '.steampowered.com'
+// community host and across the whole *.steampowered.com tree via one '.steampowered.com'
 // domain cookie (covers store/help/checkout/login/account). (Bug 2 fix.)
 export const STEAM_COOKIE_DOMAINS = ['steamcommunity.com', '.steampowered.com'] as const;
 const STEAM_URL = 'https://steamcommunity.com';
@@ -48,7 +48,7 @@ export interface IsolatedCookie {
 
 export interface IsolatedSessionSpec {
   username:    string;
-  /** ONLY this account's auth cookies (steamLoginSecure + sessionid), established on EVERY
+  /** ONLY this account's auth cookies (steamLoginSecure + sessionid), established on every
    *  Steam web domain — community + the steampowered tree — so the store / account / help
    *  pages stay logged in too (Bug 2). One entry per (cookie × domain). */
   cookies:     IsolatedCookie[];
@@ -59,7 +59,7 @@ export interface IsolatedSessionSpec {
   /** The page to open after cookie injection. Default STEAM_URL (the community home). W4_40 opens the
    *  store addfunds page here so the operator lands pre-authenticated on the paysafecard checkout. */
   landingUrl?: string;
-  /** W4_40: a CDP addScriptToEvaluateOnNewDocument source injected on EVERY page of the flow (the
+  /** W4_40: a CDP addScriptToEvaluateOnNewDocument source injected on every page of the flow (the
    *  paysafecard addfunds auto-fill). When present, the debugger WS is kept open for the browser's
    *  lifetime so the registration survives the flow's navigations. */
   automationScript?: string;
@@ -81,26 +81,26 @@ export function parseCookieStrings(cookieStrings: string[]): Record<string, stri
 }
 
 /**
- * PURE: build the isolated-session spec for ONE account. Carries ONLY this account's
+ * PURE: build the isolated-session spec for one account. Carries ONLY this account's
  * steamLoginSecure + sessionid, and ONLY this account's proxy. No proxy → a warning
  * (never a silent fall-through to the host IP that could differ from the account's egress).
  */
 export function buildIsolatedSession(input: {
   username: string;
-  cookieStrings: string[];                       // session.webSession.cookies (THIS account only)
+  cookieStrings: string[];                       // session.webSession.cookies (this account only)
   network?: { type: string; value: string } | null;
   landingUrl?: string;                           // W4_40: page to open post-injection (default community home)
   automationScript?: string;                     // W4_40: addfunds auto-fill script (persistent CDP injection)
 }): IsolatedSessionSpec {
   const warnings: string[] = [];
 
-  // Cookies: extract ONLY the two auth cookies from THIS account's session. Nothing else
+  // Cookies: extract ONLY the two auth cookies from this account's session. Nothing else
   // (other site cookies, and certainly no other account's cookie) can enter the context.
   const jar = parseCookieStrings(input.cookieStrings);
   const cookies: IsolatedCookie[] = [];
   for (const name of STEAM_AUTH_COOKIES) {
     if (!jar[name]) continue;
-    // Set the SAME value on every Steam web domain (community host + the steampowered tree)
+    // Set the same value on every Steam web domain (community host + the steampowered tree)
     // so the session survives navigating off steamcommunity.com — a community-only cookie did
     // not, which is why the store/account pages showed "logged out". (Bug 2.)
     for (const domain of STEAM_COOKIE_DOMAINS) {
@@ -111,9 +111,9 @@ export function buildIsolatedSession(input: {
     warnings.push('no steamLoginSecure cookie for this account — the browser will open NOT logged in; refresh/log the account in first');
   }
 
-  // Proxy: ONLY this account's resolved proxy, parsed by the SAME canonical parser the
+  // Proxy: ONLY this account's resolved proxy, parsed by the same canonical parser the
   // login flow uses (AgentFactory.parseProxy) — so the host/port/user/pass are extracted
-  // IDENTICALLY for EVERY accepted format (URL, host:port:user:pass, user:pass@host:port,
+  // IDENTICALLY for every accepted format (URL, host:port:user:pass, user:pass@host:port,
   // …). One source of truth, no re-shaping. localip / none / unparseable → warn (never leak).
   let proxyServer: string | null = null;
   let proxyAuth: IsolatedSessionSpec['proxyAuth'] = null;
@@ -194,7 +194,7 @@ export function startProxyRelay(
 ): Promise<{ port: number; close: () => void }> {
   const credHeader = `Proxy-Authorization: Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
 
-  // S65: this relay carries the account's PROXY credentials and, being a loopback proxy, is technically an
+  // This relay carries the account's PROXY credentials and, being a loopback proxy, is technically an
   // open proxy any local process could use while the window is open. A true client-auth close isn't possible
   // here — Chromium presents no proxy credentials (the whole reason the relay exists), and Edge/Chrome hand
   // off to a DETACHED browser process whose PID we don't hold, so there's nothing to PID-pin. What we CAN do
@@ -318,11 +318,11 @@ function cdp(ws: WebSocket, pending: CdpPending, id: number, method: string, par
 }
 
 /**
- * Inject ONE account's cookies over the page debugger WS at `wsUrl` and navigate to Steam.
+ * Inject one account's cookies over the page debugger WS at `wsUrl` and navigate to Steam.
  * Response-awaited: enables Network, sets every cookie, and navigates, awaiting each CDP reply —
  * so a rejected setCookie / failed navigate rejects here (the caller's catch surfaces a real 500
  * and skips the false "clean browser opened" log) instead of the old fire-and-forget 400ms flush
- * that reported success regardless. Exported as the injection test seam (H-TRD-060).
+ * that reported success regardless. Exported as the injection test seam.
  */
 export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[], landingUrl: string = STEAM_URL, automationScript?: string): Promise<WebSocket | null> {
   return new Promise<WebSocket | null>((resolve, reject) => {
@@ -347,7 +347,7 @@ export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[], l
       clearTimeout(t);
       try {
         await cdp(ws, pending, ++id, 'Network.enable', {});
-        // W4_40: register the addfunds auto-fill BEFORE navigating so it runs on the very first document
+        // W4_40: register the addfunds auto-fill before navigating so it runs on the very first document
         // and every subsequent navigation of the flow (needs the Page domain enabled first).
         if (automationScript) {
           await cdp(ws, pending, ++id, 'Page.enable', {});
@@ -359,8 +359,8 @@ export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[], l
         // Navigation is BEST-EFFORT: the cookies (this account's auth) are already set, so the browser
         // is authenticated regardless. Page.navigate's CDP reply only returns once the navigation COMMITS
         // (first response headers), which through a slow/authed proxy easily exceeds the old 3s → the
-        // launch used to throw and TEAR THE BROWSER DOWN ("CDP Page.navigate timed out", owner 2026-07-10).
-        // Give it a generous budget AND swallow a timeout/error: a slow addfunds page finishes loading on
+        // launch used to throw and TEAR the BROWSER DOWN ("CDP Page.navigate timed out", owner 2026-07-10).
+        // Give it a generous budget and swallow a timeout/error: a slow addfunds page finishes loading on
         // its own; we must never close an authenticated browser just because the landing was slow.
         try { await cdp(ws, pending, ++id, 'Page.navigate', { url: landingUrl }, 30000); }
         catch (navErr) { /* keep the authenticated browser open; the page loads on its own */ }
@@ -390,8 +390,8 @@ export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[], l
 // We instead watch the browser's own debug port (which survives the hand-off) and tear down when
 // IT disappears, with a process-shutdown backstop so nothing leaks if SSIM exits first.
 const liveTeardowns = new Set<() => void>();
-// Ephemeral profile dirs owned by THIS process (added right after mkdtempSync, removed on teardown).
-// The stale-profile sweep uses this to never touch a profile a live browser from THIS run is still using.
+// Ephemeral profile dirs owned by this process (added right after mkdtempSync, removed on teardown).
+// The stale-profile sweep uses this to never touch a profile a live browser from this run is still using.
 const liveProfiles = new Set<string>();
 let shutdownHooked = false;
 function hookShutdownOnce(): void {
@@ -400,7 +400,7 @@ function hookShutdownOnce(): void {
   const all = (): void => { for (const t of [...liveTeardowns]) { try { t(); } catch { /* ignore */ } } };
   // Teardown rides the 'exit' hook because every JS-capable termination path in index.ts funnels
   // through process.exit; paths that run no JS (SIGKILL, native fast-fail) are covered by the
-  // stale-profile sweep (H-TRD-062), not by handlers — so we must NOT install signal handlers here
+  // stale-profile sweep, not by handlers — so we must not install signal handlers here
   // (they truncated index.ts's graceful shutdown mid-logoutAll and forced exit code 0).
   process.once('exit', all);
 }
@@ -408,7 +408,7 @@ function hookShutdownOnce(): void {
 /**
  * Best-effort sweep of stale ephemeral profile dirs left in %TEMP% by a PREVIOUS run that died
  * without running its 'exit' hook (taskkill /F, SIGKILL, the 0xC0000409 native fast-fail) or whose
- * teardown hit an EBUSY at exit. Each `ssim-clean-*` dir holds this account's LIVE steamLoginSecure
+ * teardown hit an EBUSY at exit. Each `ssim-clean-*` dir holds this account's live steamLoginSecure
  * web session, so leaving them at rest bypasses the vault-encryption posture — hence the sweep.
  * Restricted to the `ssim-clean-` prefix inside os.tmpdir(); profiles this process still owns
  * (liveProfiles) are skipped. On Windows a still-open browser from a previous run holds file locks,
@@ -429,10 +429,10 @@ export function sweepStaleCleanProfiles(): void {
 /**
  * Watch the browser's own debug port and tear down (close relay + delete profile) when it
  * disappears — the port follows the real browser across Edge/Chrome's hand-off, so the relay
- * no longer dies under a live window. Used by BOTH the success path and the failure path
- * (H-TRD-064) so a browser that outlived a post-spawn error is torn down when IT closes, not
+ * no longer dies under a live window. Used by both the success path and the failure path
+ * so a browser that outlived a post-spawn error is torn down when IT closes, not
  * before. A probe counts as ALIVE only if `/json/version` answers with JSON carrying a
- * `Browser` field — a recycled ephemeral port answering with anything else must NOT pin the
+ * `Browser` field — a recycled ephemeral port answering with anything else must not pin the
  * relay open forever.
  */
 export function armPortWatch(
@@ -452,11 +452,11 @@ export function armPortWatch(
         } catch { /* not JSON — treat as a miss below */ }
         if (++misses >= 6) { clearInterval(watch); teardown(); } // ~9s answering as a non-browser ⇒ window closed
       },
-      // A rejected loopback probe is NOT proof the window closed. Under a 537-account fleet refresh
+      // A rejected loopback probe is not proof the window closed. Under a 537-account fleet refresh
       // (thousands of concurrent sockets, ECONNRESET storms) the connect can fail with local resource
       // pressure (EMFILE/ENOBUFS/EADDRNOTAVAIL/EADDRINUSE) while the browser is alive and listening.
       // Only ECONNREFUSED (nothing listening) actually means the window is gone — treat everything else
-      // with patience so a ~9s local blip cannot tear the relay from under a live window (S65).
+      // with patience so a ~9s local blip cannot tear the relay from under a live window.
       (e: unknown) => {
         const code = (e as { cause?: { code?: string } })?.cause?.code;
         if (code === 'ECONNREFUSED') { if (++misses >= 6) { clearInterval(watch); teardown(); } } // ~9s refused ⇒ window closed
@@ -469,7 +469,7 @@ export function armPortWatch(
 
 /**
  * Best-effort: ask a still-listening browser to close itself over CDP (`Browser.close` on the
- * browser target). Used on the failure path (H-TRD-064) so a window orphaned by a post-spawn error
+ * browser target). Used on the failure path so a window orphaned by a post-spawn error
  * closes itself rather than being left broken. Never throws — a browser that won't answer is left to
  * the operator + the port watcher.
  */
@@ -527,7 +527,7 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
     // Resolve the --proxy-server Chromium will use. An AUTHENTICATED proxy is NEVER handed to
     // Chromium credential-stripped (that yields ERR_PROXY_CONNECTION_FAILED): it is chained
     // through the local relay, which carries this account's proxy creds. proxyAuth came from
-    // the SAME parser the login flow uses, so the relay's egress == the account's login egress.
+    // the same parser the login flow uses, so the relay's egress == the account's login egress.
     let proxyArg = spec.proxyServer;
     let proxyAuthApplied = false;
     if (spec.proxyAuth) {
@@ -554,15 +554,15 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
       'about:blank',
     ];
     child = spawn(exe, args, { detached: true, stdio: 'ignore' });
-    // NOTE: deliberately NOT child.on('exit', teardown) — Edge/Chrome hand off and this spawned
+    // NOTE: deliberately not child.on('exit', teardown) — Edge/Chrome hand off and this spawned
     // process exits immediately while the real window lives on. Teardown is driven by the debug-port
     // watcher below (set up after injection), which tracks the actual browser.
     child.on('error', () => { /* spawn failure surfaces as the debugger-discovery timeout below */ });
     child.unref();
 
     // Discover the page debugger WS endpoint (poll — Chromium needs a moment). 15s budget: a cold
-    // Edge start on a busy host can exceed 6s, and a false negative here orphans a LIVE window
-    // (H-TRD-064). portAnswered records that the debug port ever responded — the catch below uses it
+    // Edge start on a busy host can exceed 6s, and a false negative here orphans a live window
+    //. portAnswered records that the debug port ever responded — the catch below uses it
     // to keep the relay+profile alive under a browser that outlived the error, instead of ripping them.
     let wsUrl = '';
     for (let i = 0; i < 100 && !wsUrl; i++) {
@@ -578,13 +578,13 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
 
     // Response-awaited injection: every CDP command is awaited to its reply, so a rejected setCookie
     // or a failed navigate throws to the catch below (real 500, no false success log) instead of the
-    // old fire-and-forget 400ms flush that always "succeeded". (H-TRD-060.)
+    // old fire-and-forget 400ms flush that always "succeeded".
     keepAliveWs = await injectSessionOverCdp(wsUrl, spec.cookies, spec.landingUrl, spec.automationScript);
 
     const authNote = proxyAuthApplied ? 'yes (via local relay)' : (spec.proxyServer ? 'no (open proxy)' : 'n/a');
     logger.info(`[${spec.username}] clean browser opened (proxy=${spec.proxyServer ?? 'LOCAL IP'}, proxy auth: ${authNote}, cookies=${spec.cookies.map((c) => c.name).join('+') || 'none'})`);
 
-    // Keep the relay (+ ephemeral profile) alive for EXACTLY as long as the browser is open, by
+    // Keep the relay (+ ephemeral profile) alive for exactly as long as the browser is open, by
     // watching its debug port — which follows the real browser process across Edge's hand-off, so
     // the relay no longer dies under a live window. Backstop: tear everything down if SSIM exits.
     hookShutdownOnce();
@@ -593,9 +593,9 @@ export async function launchIsolatedBrowser(spec: IsolatedSessionSpec): Promise<
 
     return { profileDir, proxyUsed: spec.proxyServer, proxyAuthApplied };
   } catch (err) {
-    // A post-spawn failure (debugger not found in time, WS handshake error/timeout) does NOT mean the
+    // A post-spawn failure (debugger not found in time, WS handshake error/timeout) does not mean the
     // browser died — Edge/Chrome hand off to a detached window that outlives the launcher and this error
-    // (H-TRD-064). If the debug port ever answered, a LIVE window is open: best-effort close it, and if it
+    //. If the debug port ever answered, a live window is open: best-effort close it, and if it
     // stays up, keep the relay+profile alive under it via the watcher instead of ripping them away (which
     // reintroduces the ERR_PROXY_CONNECTION_FAILED + orphaned-secret-dir the design eliminated).
     if (portAnswered) {

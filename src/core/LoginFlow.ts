@@ -33,8 +33,8 @@ export function loadMaFile(account: AccountConfig): MaFile {
 
 /**
  * The RUNTIME identity_secret presence for an account, resolved exactly the way {@link loadMaFile}
- * resolves the credential — vault THEN disk — so the capability the dashboard shows matches what a
- * login would actually confirm with (INV-A1 / C5). Tri-state on purpose (INV-B10 "unknown ≠ empty"):
+ * resolves the credential — vault then disk — so the capability the dashboard shows matches what a
+ * login would actually confirm with. Tri-state on purpose (INV-B10 "unknown ≠ empty"):
  * a fs/JSON error is reported as `'unknown'`, never coerced to `'absent'`, so the caller can fall
  * back to the tier label instead of fabricating a false negative.
  *   • vault mode + the vault's maFile carries a shared_secret → classify by that maFile's

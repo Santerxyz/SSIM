@@ -34,8 +34,8 @@ let deps: ReturnType<typeof createDeps> | undefined;
 let server: Server | undefined;
 let activePort = PORT; // the actually-bound port (PORT, or the next free one)
 
-// S14 / H-XCT-005: the SINGLE source of truth for "an interruptible real-item op is in
-// flight". The update SWAP defers on this (isBusy below), and so does the graceful-shutdown
+// The single source of truth for "an interruptible real-item op is in
+// flight". The update swap defers on this (isBusy below), and so does the graceful-shutdown
 // path (quiesceMoneyOps), so a buy/sell/trade/craft/move is never
 // severed mid-commit by an exit. A mass-sell, trade-up craft or casket move hard-exited mid-
 // flight loses unconfirmed listings / an irreversible craft's outcome / an in-flight move.
@@ -44,7 +44,7 @@ const isBusy = (): boolean => !!deps && (
   deps.market.busy() || deps.tradeup.busy() || deps.casket.busy() ||
   // A manual CSFloat delivery run is a queue of real, 2FA-confirmed Steam offers. Cutting it mid-run
   // leaves a sale whose offer landed but whose dedup record never reached disk — the one state that
-  // makes a later pass send a SECOND offer for the same sale.
+  // makes a later pass send a second offer for the same sale.
   deps.csfloatWorker.deliverBusy()
 );
 // Bounded drain budget for shutdown(); the hard-exit fallback
@@ -53,11 +53,11 @@ const QUIESCE_TIMEOUT_MS = 6000;
 
 // ── Single-instance lock (extracted to core/singleInstance.ts for testability) ──
 // See that module: an ATOMIC (fs.open 'wx'), FAIL-SAFE guard that makes a double-run —
-// and the vault/accounts/token store races it causes — structurally impossible (INV-G5).
+// and the vault/accounts/token store races it causes — structurally impossible.
 
 // Port selection + announcement moved to utils/serverPort.ts (listenAndAnnounce): the port is
 // now chosen by the ACTUAL server bind (walking EADDRINUSE) and announced only after a successful
-// bind, so SSIM never emits SSIM_PORT for a port it didn't bind. (BUG 2.)
+// bind, so SSIM never emits SSIM_PORT for a port it didn't bind.
 
 /** Prints a compact "server monitor" banner to the console on boot. */
 function printBanner(): void {
@@ -85,10 +85,10 @@ function listenForShellQuit(): void {
       if (buf.toString().toLowerCase().includes('quit')) void shutdown('tauri shell closed');
     });
     process.stdin.on('error', () => { /* pipe closed → ignore */ });
-    // S51: the shell pipes to our stdin; if the SHELL dies, that pipe hits EOF ('end'). The backend used
+    // The shell pipes to our stdin; if the SHELL dies, that pipe hits EOF ('end'). The backend used
     // to keep running ORPHANED — holding every Steam session, the CSFloat worker, the UI port + the
     // single-instance lock — so the NEXT launch lock-screened with "already running" and nothing visible
-    // to close. Treat EOF as a graceful-shutdown signal (clean logout, release the port + lock). NOT a
+    // to close. Treat EOF as a graceful-shutdown signal (clean logout, release the port + lock). not a
     // respawn — the process exits (owner directive: no auto-restart band-aids).
     process.stdin.on('end', () => { void shutdown('tauri shell exited (stdin EOF)'); });
   } catch { /* no stdin available → ignore */ }
@@ -96,7 +96,7 @@ function listenForShellQuit(): void {
 
 /** Bind-failure handler for startFullApp. Prints the startup-failure screen and schedules
  *  exit(1) after 250ms, then RETURNS (no throw) so startFullApp can report false to its caller
- *  and stop before arming anything against a server that never listened. (H-BOOT-002.) */
+ * and stop before arming anything against a server that never listened. */
 function handleListenError(e: NodeJS.ErrnoException): void {
   writeCrash('SERVER LISTEN ERROR', e); // 250ms exit can outrun winston's async file write
   if (e.code === 'EADDRINUSE') {
@@ -112,7 +112,7 @@ function handleListenError(e: NodeJS.ErrnoException): void {
 /** Builds the real app and starts listening. Returns true once the UI port is bound.
  *  On a bind failure handleListenError schedules exit(1) and returns, so this returns false
  *  and bootAndRun stops before arming the update scheduler against a server that never
- *  listened. (H-BOOT-002.) */
+ * listened. */
 async function startFullApp(): Promise<boolean> {
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && HOST !== '::1') {
     logger.warn(
@@ -125,16 +125,16 @@ async function startFullApp(): Promise<boolean> {
   // Fresh app state → clear any money-ops quarantine that latched in a PRIOR lifecycle.
   // A no-op on a normal boot; it matters if the app is ever torn down and rebuilt in-process,
   // because the suspect session map that tripped the breaker is discarded and rebuilt, so the
-  // breaker must not survive into the clean rebuild. (INV-G6 / G-5.)
+  // breaker must not survive into the clean rebuild.
   ProcessHealth.reset();
-  // Non-destructive UPGRADE migration ONLY: absorb accounts ALREADY registered in accounts.json
+  // Non-destructive UPGRADE migration ONLY: absorb accounts already registered in accounts.json
   // (+ legacy refresh tokens) into the vault, then blank the plaintext secrets. This NEVER scans
   // the mafiles/ drop zone — loose maFiles are imported solely by the explicit "Import Bots" UI,
   // so starting the app with files sitting in mafiles/ no longer auto-imports anything.
   migrateAccountsIntoVault(deps.accounts);
   // Proxy rules (v5): hydrate rule pools from the vault, then synthesize → prove-equivalence → cut
   // over (idempotent; re-runs every boot until proven). MUST come after the vault→org heal + env
-  // proxy hydration (inside migrateAccountsIntoVault) and BEFORE any login can occur (createApp and
+  // proxy hydration (inside migrateAccountsIntoVault) and before any login can occur (createApp and
   // the refresh scheduler come later), so a blanked-but-not-yet-hydrated pool never logs an account
   // in over the host IP.
   deps.accounts.hydrateRuleProxies();
@@ -147,34 +147,34 @@ async function startFullApp(): Promise<boolean> {
     traders:  deps?.trades.traderCount ?? 0,
   }));
   const app = createApp(deps);
-  // BIND FIRST, then announce: listenAndAnnounce binds the REAL server (walking EADDRINUSE to the
+  // BIND first, then announce: listenAndAnnounce binds the real server (walking EADDRINUSE to the
   // next free port) and emits SSIM_PORT / writes data/ssim.port ONLY from the successful bind, with
   // the ACTUAL bound port — so SSIM can never announce a port it didn't bind and the shell can never
-  // adopt a foreign app on the desired port. (BUG 2.)
+  // adopt a foreign app on the desired port.
   const srv = http.createServer(app);
   server = srv;
   try {
     activePort = await listenAndAnnounce(srv, HOST, activePort);
   } catch (err) {
     // handleListenError schedules exit(1) and RETURNS (no throw) → we report false so the
-    // caller arms nothing against a server that never listened. (H-BOOT-002.)
+    // caller arms nothing against a server that never listened.
     handleListenError(err as NodeJS.ErrnoException);
     return false;
   }
   if (!IS_SIDECAR_MODE) printBanner();
   logger.info(`SSIM server started on ${HOST}:${activePort} (pid ${process.pid})`);
-  // Build-identity marker (grep this to know EXACTLY which build is running — the fleet has had
+  // Build-identity marker (grep this to know exactly which build is running — the fleet has had
   // several exes swapped in/out during the crash hunt). Names the version, the Node runtime the
   // backend is packaged on (the 0xC0000409 hunt turns on Node 24 vs 22), and confirms the proxy-tank
-  // resilience layer is present in THIS binary (its absence = a pre-tank build).
+  // resilience layer is present in this binary (its absence = a pre-tank build).
   logger.info(`SSIM BUILD v${pkg.version} · Node ${process.version} · resilience=proxy-tank(breaker+failfast+tcp+sticky-release)`);
   openUiWindow(`http://localhost:${activePort}`);
-  // Runtime errors AFTER a successful bind (not a bind failure) — log, don't treat as EADDRINUSE.
+  // Runtime errors after a successful bind (not a bind failure) — log, don't treat as EADDRINUSE.
   srv.on('error', (err: NodeJS.ErrnoException) => {
     writeCrash('SERVER RUNTIME ERROR', err);
     logger.error(`server runtime error: ${err.message}`);
   });
-  return true; // bound — bootAndRun may now arm the update scheduler. (H-BOOT-002.)
+  return true; // bound — bootAndRun may now arm the update scheduler.
 }
 
 /**
@@ -213,7 +213,7 @@ async function bootAndRun(): Promise<void> {
   // If a newer exe is staged the process exits here to be swapped, so we must
   // not fall through to startFullApp().
   if (await maybeAutoUpdate()) return;
-  // Unlock (or create) the portable account vault BEFORE constructing anything that touches
+  // Unlock (or create) the portable account vault before constructing anything that touches
   // credentials. Sidecar (Tauri) mode has no console, so it unlocks via the in-window web portal;
   // dev (CLI prompt) and headless (SSIM_VAULT_PASSWORD) keep using unlockVault().
   // A runtime re-gate (onLicenseLost) reaches here with the vault still unlocked — the sidecar env
@@ -225,15 +225,15 @@ async function bootAndRun(): Promise<void> {
       await unlockVault();
     }
   }
-  // H-BOOT-002: a first-boot bind failure returns false (exit already scheduled) — stop here so the
+  // A first-boot bind failure returns false (exit already scheduled) — stop here so the
   // heartbeat + update scheduler are NEVER armed against a server that never listened.
   if (!(await startFullApp())) return;
-  // Periodic (6h) update-availability check + the manual "check/install now" path (C5). CHECK-ONLY on
-  // the timer; the only mid-session SWAP is a user-confirmed install, and only while no money op / refresh
+  // Periodic (6h) update-availability check + the manual "check/install now" path. CHECK-ONLY on
+  // the timer; the only mid-session swap is a user-confirmed install, and only while no money op / refresh
   // is in flight (isBusy). Boot-time auto-update above is unchanged.
   startUpdateScheduler({
     currentVersion: pkg.version,
-    // S14: gate the mid-session swap on EVERY interruptible real-item op (shared isBusy).
+    // Gate the mid-session swap on every interruptible real-item op (shared isBusy).
     isBusy,
   });
 }
@@ -253,7 +253,7 @@ async function bootAndRun(): Promise<void> {
 // id left to resolve.
 
 async function bootstrap(): Promise<void> {
-  // S6: bound steam-totp's getTimeOffset (no vendor timeout) + cache the offset, so a stalled QueryTime
+  // Bound steam-totp's getTimeOffset (no vendor timeout) + cache the offset, so a stalled QueryTime
   // can never wedge every confirmation/money path until restart. Process-wide, before any money op.
   installSteamTotpTimeout();
   // Learn the Steam time offset now (fire-and-forget, bounded by the S6 timer) so the login path
@@ -265,8 +265,8 @@ async function bootstrap(): Promise<void> {
     // crash-log entry, which reads as a "silent crash" when an operator relaunches
     // over a still-running copy. Recording it here lets the heartbeat/crash logs tell
     // the two apart (lock-abort = operational, not a real crash — Phenomenon A).
-    // H-BOOT-008: a permanent filesystem/permission fault (data/ read-only or access-denied)
-    // must NOT be reported as "another instance is running" — that sends the operator hunting a
+    // A permanent filesystem/permission fault (data/ read-only or access-denied)
+    // must not be reported as "another instance is running" — that sends the operator hunting a
     // phantom copy. lockRefusalDetail() is set only on that io fault; undefined = genuinely held.
     const lockIoDetail = lockRefusalDetail();
     if (lockIoDetail) {
@@ -281,19 +281,19 @@ async function bootstrap(): Promise<void> {
     setTimeout(() => process.exit(1), 250);
     return;
   }
-  // One-time: move vault.enc + accounts.json into the portable Vault/ folder BEFORE anything
+  // One-time: move vault.enc + accounts.json into the portable Vault/ folder before anything
   // reads them (else an existing vault would be ignored and a fresh one created). Runs UNDER the
   // single-instance lock just acquired, so a refused 2nd instance never mutates the vault files
-  // (H-BOOT-022): the credential-file rename is the one disk mutation the lock must cover.
+  //: the credential-file rename is the one disk mutation the lock must cover.
   migrateVaultDir();
   // Remove a stale data/ssim.port from a prior run so it can never point the shell at a foreign
-  // port before this process binds + announces the real one. (BUG 2.)
+  // port before this process binds + announces the real one.
   clearStalePortFile();
-  // Sidecar mode: accept the shell's graceful-quit signal. The port is NOT announced here anymore —
+  // Sidecar mode: accept the shell's graceful-quit signal. The port is not announced here anymore —
   // it is announced ONLY when a real server (activation portal / unlock portal / full app) actually
-  // binds it, from inside listenAndAnnounce, with the actual bound port. (BUG 2.)
+  // binds it, from inside listenAndAnnounce, with the actual bound port.
   if (IS_SIDECAR_MODE) listenForShellQuit();
-  // Surface the PRIOR run's crash exactly once if the shell recorded one (B1): classify it for the
+  // Surface the PRIOR run's crash exactly once if the shell recorded one: classify it for the
   // heartbeat telemetry (C4 lastExitClass) and hold it for the dashboard "crashed last run" banner.
   // Consumed here → fires once. VISIBILITY ONLY — nothing is respawned (owner directive).
   const priorCrash = consumeCrashMarker();
@@ -332,11 +332,11 @@ process.on('uncaughtException', (err) => {
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return; // idempotent — SIGINT/SIGTERM/stdin-quit/stdin-EOF (S51) can co-fire
-  shuttingDown = true; // set BEFORE the first await so co-firing signals can't double-enter
+  shuttingDown = true; // set before the first await so co-firing signals can't double-enter
   logger.info(`${signal} received – shutting down…`);
   releaseInstanceLock();
   clearOwnPortFile(); // S52: only remove OUR announced port file (never a refused-instance false-delete)
-  // H-XCT-005: let an in-flight buy/sell/trade/craft/move settle (bounded) BEFORE logoutAll severs
+  // Let an in-flight buy/sell/trade/craft/move settle (bounded) before logoutAll severs
   // its web session — the ambiguous-commit interruption S14 fixed for the update swap, on the exit path.
   const drained = await quiesceMoneyOps(isBusy, { timeoutMs: QUIESCE_TIMEOUT_MS });
   logger.info(`shutdown: money-op drain ${drained}`);
@@ -359,7 +359,7 @@ async function shutdown(signal: string): Promise<void> {
   }
   if (server) server.close(() => process.exit(0));
   // Hard-exit fallback if connections linger — must strictly exceed the quiesce budget so the
-  // bounded money-op drain above always has room to complete before this fires. (H-XCT-005)
+  // bounded money-op drain above always has room to complete before this fires.
   setTimeout(() => process.exit(0), QUIESCE_TIMEOUT_MS + 3000).unref();
 }
 
@@ -369,8 +369,8 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 // The packaged app is GUI-subsystem (no console), so the old console-close → SIGHUP →
 // hard-kill crash CANNOT occur there. These handlers remain a safety net for the
 // dev/headless console build and for logoff/shutdown: record a breadcrumb naming the
-// EXTERNAL cause, then route through the SAME bounded graceful path as SIGINT/SIGTERM
-// (H-XCT-006). `shutdown()` is idempotent, flushes the stores + vault, logs out sessions,
+// EXTERNAL cause, then route through the same bounded graceful path as SIGINT/SIGTERM
+//. `shutdown()` is idempotent, flushes the stores + vault, logs out sessions,
 // and has its own 3s hard-exit fallback — so a console-close mid-fleet-op no longer
 // severs sessions or discards a debounced inventory/history/vault write. (releaseInstanceLock
 // runs inside shutdown(); no separate exit(130) — the breadcrumb still records the cause.)
@@ -380,18 +380,18 @@ for (const sig of ['SIGHUP', 'SIGBREAK'] as const) {
     void shutdown(sig);
   });
 }
-// Belt-and-braces (#38): release the single-instance lock on ANY process exit so a
+// Belt-and-braces (#38): release the single-instance lock on any process exit so a
 // leftover lockfile never blocks the next start. (SIGKILL can't be caught — the
 // stale-PID liveness check in acquireInstanceLock() covers that case.)
 process.on('exit', (code) => {
-  // FIRST: drop the internal-exit breadcrumb (logs/exit-trace.log). Its presence proves the
+  // first: drop the internal-exit breadcrumb (logs/exit-trace.log). Its presence proves the
   // process exited itself (and `code` names which path); its ABSENCE after a death proves an
   // uncatchable external TerminateProcess/SIGKILL. This is the discriminator the silent-death
   // investigation has been missing — synchronous, so it survives an immediate exit.
   try { writeExit(code); } catch { /* best-effort */ }
   try { releaseInstanceLock(); } catch { /* best-effort */ }
-  // S52: clear ONLY our own announced port file — a refused second instance (which never announced) must
-  // not delete the LIVE instance's data/ssim.port on its way out.
+  // Clear ONLY our own announced port file — a refused second instance (which never announced) must
+  // not delete the live instance's data/ssim.port on its way out.
   try { clearOwnPortFile(); } catch { /* best-effort */ }
 });
 
@@ -400,7 +400,7 @@ process.on('exit', (code) => {
 // after icon/metadata injection. Reaching this line at all proves pkg could read
 // its appended payload (a shifted/corrupt payload dies earlier with
 // "Pkg: Error reading from file."); we additionally confirm the BUNDLED frontend
-// is present + non-empty, then exit WITHOUT booting (no license check, no port
+// is present + non-empty, then exit without booting (no license check, no port
 // bind, no browser). Inert in every normal run (guarded by the env var).
 if (process.env.SSIM_SELFTEST === '1') {
   const fails: string[] = [];
@@ -415,7 +415,7 @@ if (process.env.SSIM_SELFTEST === '1') {
   // 2) Runtime-critical heavy deps must actually require() IN-PACKAGE. These are LITERAL requires
   //    so pkg traces + bundles them from the entry too (belt-and-braces). globaloffensive is the
   //    headline risk — it is only LAZILY required at runtime (GcActionLayer), so a passing boot
-  //    self-test would NOT otherwise prove the GC stack bundled. A throw here = a missing module
+  //    self-test would not otherwise prove the GC stack bundled. A throw here = a missing module
   //    or asset → the build fails LOUDLY (build/pack.js requires SSIM_SELFTEST_OK), never a silent
   //    false success. eslint-disable for the deliberate require() probes.
   /* eslint-disable @typescript-eslint/no-var-requires, global-require */
@@ -433,7 +433,7 @@ if (process.env.SSIM_SELFTEST === '1') {
   probe('steamid',                   () => require('steamid'));
   probe('steam-totp',                () => require('steam-totp'));
 
-  // 3) globaloffensive must expose its REAL API (craft + caskets) — this only resolves if its
+  // 3) globaloffensive must expose its real API (craft + caskets) — this only resolves if its
   //    precompiled protobufs (protobufs/generated/*.js → protobufjs) also bundled + loaded.
   probe('globaloffensive.api', () => {
     const GO = require('globaloffensive');

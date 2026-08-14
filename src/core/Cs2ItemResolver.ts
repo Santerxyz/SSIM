@@ -9,21 +9,21 @@ import { wearForFloat, type Wear } from '../trading/tradeupMath';
 // ════════════════════════════════════════════════════════════════════════════
 //  Cs2ItemResolver — turns a raw Game-Coordinator econ item into a real item name.
 //
-//  WHY THIS EXISTS: the GC never sends `market_hash_name`. A storage-unit (casket)
+//  WHY this EXISTS: the GC never sends `market_hash_name`. A storage-unit (casket)
 //  read returns only { id, def_index, paint_index, paint_wear, quality, … }, which
 //  is why the Storage Units panel could only ever show "Item 44029384756". Steam's
 //  WEB inventory — the usual source of names — deliberately omits casket CONTENTS,
 //  so there is no web fallback: the name has to be reconstructed from the schema.
 //
-//  TWO INDEXES, TRIED IN THIS ORDER:
+//  two INDEXES, TRIED IN this ORDER:
 //   1. PAINTED items (skins/knives/gloves) — keyed (def_index, paint_index) against the
-//      ByMykel skins schema Cs2SchemaService already loads. Wear comes from the REAL
+//      ByMykel skins schema Cs2SchemaService already loads. Wear comes from the real
 //      paint_wear float, so the name is the exact market_hash_name incl. its wear suffix.
 //   2. EVERYTHING ELSE (cases, capsules, agents, keys, tools, patches, collectibles) —
 //      keyed on def_index alone, from the small merged catalog this file owns.
 //
 //  Order matters: a painted item ALWAYS carries paint_index, so index 1 claims it before
-//  def_index alone can mis-hit. music_kits is deliberately NOT merged into index 2 — its
+//  def_index alone can mis-hit. music_kits is deliberately not merged into index 2 — its
 //  ByMykel `def_index` is the music ID (Valve's kit #1), which would collide head-on with
 //  weapon def_index 1 (Desert Eagle) and rename vanilla Deagles to music kits.
 // ════════════════════════════════════════════════════════════════════════════
@@ -64,7 +64,7 @@ export interface ResolvedItem {
   /** Base skin name without wear/StatTrak, e.g. "AK-47 | Redline"; '' for non-skins. */
   baseName:       string;
   wear:           Wear | null;
-  /** The REAL per-item float from the GC (never an estimate); null for non-painted items. */
+  /** The real per-item float from the GC (never an estimate); null for non-painted items. */
   float:          number | null;
   paintSeed:      number | null;
   stattrak:       boolean;
@@ -190,7 +190,7 @@ export class Cs2ItemResolver {
       // (vanilla-style/no-wear entries), so never fabricate a wear band from a missing float.
       const wear = float != null ? wearForFloat(float) : null;
       const prefix = souvenir ? 'Souvenir ' : stattrak ? 'StatTrak™ ' : '';
-      // Knives/gloves already carry the ★ in their schema name; StatTrak sits AFTER it on Steam
+      // Knives/gloves already carry the ★ in their schema name; StatTrak sits after it on Steam
       // ("★ StatTrak™ Karambit | Doppler (FN)"), so splice rather than prepend blindly.
       const star = skin.name.startsWith('★ ');
       const body = star ? skin.name.slice(2) : skin.name;

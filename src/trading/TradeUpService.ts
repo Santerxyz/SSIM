@@ -84,9 +84,9 @@ export interface TuExecContract {
   unpricedInputs?: number;
 }
 /**
- * How many individual assets to expand out of ONE inventory stack.
+ * How many individual assets to expand out of one inventory stack.
  *
- * This was 10 ("a contract uses at most 10 of any single skin"), which is true of a SINGLE
+ * This was 10 ("a contract uses at most 10 of any single skin"), which is true of a single
  * contract but wrong for the account: 60 copies of one skin are 6 separate contracts, and the
  * old cap made 50 of them invisible. That cap is the main reason a scan reported the same
  * handful of contracts no matter how many were executed (owner report 2026-08-11). A CS2
@@ -94,7 +94,7 @@ export interface TuExecContract {
  */
 const MAX_PER_STACK = 1000;
 /**
- * How many contracts may fail with the SAME error, back to back and with nothing crafted, before the
+ * How many contracts may fail with the same error, back to back and with nothing crafted, before the
  * run gives up. A repeat like that is a property of the account or the GC, never of the individual
  * contract, so the rest of the plan can only reproduce it — at up to ~35s of GC connect apiece.
  * Three keeps a genuine one-off (a stale asset, a momentarily busy slot) from ending a working run.
@@ -125,7 +125,7 @@ export interface TradeUpResult {
   username:   string;
   candidates: TradeUpCandidate[];
   warnings:   string[];
-  /** True when EV used the REAL per-item GC floats (vs. wear-based estimates). */
+  /** True when EV used the real per-item GC floats (vs. wear-based estimates). */
   realFloats: boolean;
   /** Diagnostics for the UI footer. */
   eligibleInputs: number;
@@ -133,9 +133,9 @@ export interface TradeUpResult {
 }
 
 /**
- * Computes positive-profit CS2 trade-up contracts from ONE account's inventory.
+ * Computes positive-profit CS2 trade-up contracts from one account's inventory.
  *
- * SEARCH STRATEGY (documented, bounded — NOT a brute force over all C(n,10), which is billions):
+ * SEARCH STRATEGY (documented, bounded — not a brute force over all C(n,10), which is billions):
  * inputs are grouped by (rarity tier, StatTrak); within each group we evaluate the realistic
  * profitable contracts — the cheapest-10 MIXED contract, plus per single collection the cheapest-10
  * and the lowest-float-10. Each candidate is then scored with the EXACT contract math (computeContract).
@@ -153,7 +153,7 @@ export class TradeUpService {
   /** Set by craftContracts when it gives up on a repeating, account-wide failure (see
    *  SYSTEMATIC_FAILURE_STREAK). Carries the verbatim cause out to the run's stop line. */
   private systematicFailure = '';
-  // H-TRD-069: a GcBusyError can ONLY fire before the craft is sent (the per-account slot rejects
+  // A GcBusyError can ONLY fire before the craft is sent (the per-account slot rejects
   // pre-connect), so a busy rejection ⇔ nothing sent → we WAIT the slot out (a storage move / float
   // read holding it) rather than burning the contract as a real failure. Bounded, cancel-aware; a
   // maximal 1000-item casket batch can legitimately exhaust the window and lands in the honest message.
@@ -183,23 +183,23 @@ export class TradeUpService {
     };
   }
 
-  /** True while a trade-up craft job is running — gates a mid-session update swap (S14): a swap
+  /** True while a trade-up craft job is running — gates a mid-session update swap: a swap
    *  hard-exit mid-craft leaves an irreversible 10-item craft's outcome unknown. */
   busy(): boolean { return this.execJob.running; }
 
   /**
    * Starts executing the SELECTED contracts (each its 10 input asset ids) on `username`, one at a
    * time. When GC execution is gated off, the job completes immediately as a SAFE NO-OP (enabled:false,
-   * nothing crafted). Cancel stops AFTER the current contract — a submitted craft is never interrupted.
+   * nothing crafted). Cancel stops after the current contract — a submitted craft is never interrupted.
    */
   startExecute(username: string, contracts: TuExecContract[]): TradeUpExecJob {
     if (this.execJob.running) throw new Error('a trade-up execution is already running');
     if (!Array.isArray(contracts) || contracts.length === 0) throw new Error('no contracts selected');
-    // H-TRD-067: contracts CONSUME their inputs — an asset id may appear at most once across the whole
+    // Contracts CONSUME their inputs — an asset id may appear at most once across the whole
     // selection (and not twice within one contract). Overlapping candidates (the top-N by profit are
     // near-duplicates by construction) otherwise craft contract 1 then fail every later sharer at the GC
     // presence re-check; a non-unique intra-contract set passes that per-id membership check and pushes a
-    // malformed craft the GC refuses — reported today as a false confirmed success (H-TRD-052).
+    // malformed craft the GC refuses — reported today as a false confirmed success.
     const used = new Set<string>();
     for (const c of contracts) {
       if (!c || !Array.isArray(c.inputAssetIds) || c.inputAssetIds.length !== 10 || !c.inputAssetIds.every((id) => typeof id === 'string' && id)) {
@@ -211,7 +211,7 @@ export class TradeUpService {
         used.add(id);
       }
     }
-    // H-TRD-069: refuse upfront if this account's single GC-op slot is already held (a storage move /
+    // Refuse upfront if this account's single GC-op slot is already held (a storage move /
     // float read is running) — otherwise every contract would enter the loop only to wait the slot out.
     if (this.gc.opInFlight(username)) {
       throw new Error(`a GC operation (storage/float read) is running for ${username} — wait for it to finish`);
@@ -238,7 +238,7 @@ export class TradeUpService {
       inputCents: 0, outputCents: null, outputResolved: false, outputs: [], unpricedInputs: 0,
       failureReasons: [], totalUnconfirmed: 0,
     };
-    // S33: a fire-and-forget orchestrator that ever REJECTS would (a) escape `void` as an
+    // A fire-and-forget orchestrator that ever REJECTS would (a) escape `void` as an
     // unhandledRejection → a money-breaker tick, and (b) never reach its trailing running=false → the
     // job stays latched running until restart (409s every future start; S14 update busy-gate defers
     // installs forever). Finalize on rejection: release the job + log (never rethrow).
@@ -272,14 +272,14 @@ export class TradeUpService {
   /**
    * Crafts `contracts` one at a time into the CURRENT job counters. Shared by the plain
    * selected-contracts run and by the auto planner (which calls it once per round), so both
-   * paths get identical claim/busy-retry/rejection semantics. Does NOT finalize the job —
+   * paths get identical claim/busy-retry/rejection semantics. Does not finalize the job —
    * the caller owns that, because auto keeps it running across rounds.
    */
   private async craftContracts(username: string, contracts: TuExecContract[]): Promise<void> {
     let lastError = '';
     let repeats = 0;
     /**
-     * Records ONE contract failure: counters, the per-round result row, the run-level reason tally the
+     * Records one contract failure: counters, the per-round result row, the run-level reason tally the
      * UI reads, and a server log line. Every failure path goes through here — before this, a failed
      * contract wrote a `results` row that the auto planner then wiped on the next round's reset and
      * that nothing ever logged, so a whole run could fail 63 times and leave no trace anywhere.
@@ -302,7 +302,7 @@ export class TradeUpService {
       // a 63-contract run that failed 63 times, one identical failure at a time, after a long wait).
       // The same error on the first few contracts with NOTHING crafted is a property of the account or
       // the GC, not of a contract: the remaining ones can only reproduce it, and each costs a full GC
-      // connect (up to 35s on a connect timeout). Requires a repeat streak AND zero crafts, so a run
+      // connect (up to 35s on a connect timeout). Requires a repeat streak and zero crafts, so a run
       // that is genuinely working never trips it, and the reason is carried out as the stop line.
       if (repeats >= SYSTEMATIC_FAILURE_STREAK && this.execJob.crafted === 0) {
         this.systematicFailure = lastError;
@@ -321,9 +321,9 @@ export class TradeUpService {
           continue;
         }
         claimed = true;
-        // H-TRD-069: a GcBusyError ⇔ the craft was NEVER sent (the per-account slot rejects pre-connect),
-        // so it is 100% safe to wait the holder (storage move / float read) out and re-attempt the SAME
-        // contract — never a masking retry of a submitted craft. Bounded + cancel-aware; done++ fires ONCE.
+        // A GcBusyError ⇔ the craft was NEVER sent (the per-account slot rejects pre-connect),
+        // so it is 100% safe to wait the holder (storage move / float read) out and re-attempt the same
+        // contract — never a masking retry of a submitted craft. Bounded + cancel-aware; done++ fires once.
         for (let attempt = 1; ; attempt++) {
           try {
             const r = await this.gc.craftTradeUp(username, {
@@ -333,7 +333,7 @@ export class TradeUpService {
             });
             if (r.rejected) {
               // The GC answered and REFUSED the craft — no items were consumed, nothing produced. Name
-              // the recipe and rarity: a refusal is about THIS contract's inputs, and without them the
+              // the recipe and rarity: a refusal is about this contract's inputs, and without them the
               // message says nothing the operator can act on.
               fail(i, `CS2 refused the contract (${this.rarityLabelSafe(contracts[i].rarityId)}${contracts[i].stattrak ? ' StatTrak™' : ''} → one tier up) — no items were consumed. `
                 + 'The game rejects inputs it will not consume: trade-protected or trade-held skins, items sitting in a storage unit, or a mix of rarities/StatTrak.', true);
@@ -347,7 +347,7 @@ export class TradeUpService {
                 if (r.outputItemId) this.craftedOutputIds.push(String(r.outputItemId));
                 repeats = 0; lastError = ''; // progress — a later failure starts a fresh streak
               } else {
-                // Sent, no answer in the window. NOT a failure (the craft may well have landed) and
+                // Sent, no answer in the window. not a failure (the craft may well have landed) and
                 // never retried — but it is not a success either, so it needs its own visible counter.
                 // Counted nowhere, a run of these reported "0 crafted, 0 failed" and named no cause.
                 this.execJob.totalUnconfirmed = (this.execJob.totalUnconfirmed ?? 0) + 1;
@@ -423,7 +423,7 @@ export class TradeUpService {
       inputCents: 0, outputCents: null, outputResolved: false, outputs: [], unpricedInputs: 0,
       failureReasons: [], totalUnconfirmed: 0,
     };
-    // S33: same rejection-safety contract as startExecute — a fire-and-forget orchestrator that
+    // Same rejection-safety contract as startExecute — a fire-and-forget orchestrator that
     // rejects must never leave the job latched `running` (that 409s every later start forever).
     void this.runAuto(username, opts.profitableOnly !== false).catch((err) => {
       this.execJob.autoStopReason = `auto planner crashed: ${err instanceof Error ? err.message : String(err)}`;
@@ -493,7 +493,7 @@ export class TradeUpService {
         await sleep(AUTO_SETTLE_MS);
       }
     } finally {
-      // One read-back for the WHOLE run (not per round) — the summary is about the run as a whole,
+      // One read-back for the whole run (not per round) — the summary is about the run as a whole,
       // and this keeps the cost at a single extra GC op however many rounds it took.
       await this.resolveOutputs(username).catch(() => { /* resolveOutputs already fails soft */ });
       job.autoStopReason = stop;
@@ -526,7 +526,7 @@ export class TradeUpService {
    *
    * craftTradeUp reports only the new item's id and the GC never sends a name, so the outcomes are
    * looked up in one inventory read and named via Cs2ItemResolver (the same path the storage-unit
-   * panel uses). This is the REAL result — not the pre-craft expected value — which is the whole
+   * panel uses). This is the real result — not the pre-craft expected value — which is the whole
    * point of showing it: EV says what the contracts were worth on paper, this says what you got.
    *
    * Never throws and never fails the job: the crafts already happened. If the read is unavailable the
@@ -556,7 +556,7 @@ export class TradeUpService {
       }
       this.execJob.outputs = outputs;
       this.execJob.outputCents = total;
-      // Only claim the total is complete when EVERY output priced; otherwise it is a floor and the
+      // Only claim the total is complete when every output priced; otherwise it is a floor and the
       // UI says so, rather than quietly reporting a low number as the run's result.
       this.execJob.outputResolved = priced === ids.length;
       logger.info(`[tradeup] ${username}: run produced ${ids.length} item(s), ${priced} priced, total ${total}c`);
@@ -568,7 +568,7 @@ export class TradeUpService {
   }
 
   /** Live-refresh the account, then compute trade-ups from its skins. By default only positive-profit
-   *  contracts; with `includeUnprofitable` it returns EVERY computable contract (the frontend's "All
+   *  contracts; with `includeUnprofitable` it returns every computable contract (the frontend's "All
    *  trade-ups" tab), each carrying its own `profitCents` so the UI can split profitable vs all. */
   async getCandidates(username: string, opts?: { minProfitCents?: number; includeUnprofitable?: boolean }): Promise<TradeUpResult> {
     await this.schema.ensureLoaded();
@@ -583,7 +583,7 @@ export class TradeUpService {
       return { username, candidates: [], warnings, realFloats: false, eligibleInputs: inputs.length, schemaSkins: this.schema.skinCount() };
     }
 
-    // ACCURACY: replace the wear-midpoint float ESTIMATE with the REAL per-item GC float when the
+    // ACCURACY: replace the wear-midpoint float ESTIMATE with the real per-item GC float when the
     // library is present. This is a user-initiated trade-up action, so a one-shot GC connect here is
     // in-scope (never the background path); it disconnects immediately. Falls back to the estimate
     // (clearly labelled) if the GC is unavailable / the read fails.
@@ -604,16 +604,16 @@ export class TradeUpService {
     }
 
     // Warm the price cache for every eligible collection's OUTPUT skins (all wears) + the inputs,
-    // so a follow-up call has accurate EV. Outputs are NOT in the account inventory, so they would
+    // so a follow-up call has accurate EV. Outputs are not in the account inventory, so they would
     // otherwise never be queued.
     this.warmOutputPrices(inputs);
 
     const price = this.priceFn();
     const candidates: TradeUpCandidate[] = [];
     const seen = new Set<string>();
-    // H-TRD-071: a computeContract throw means a schema/grouping regression (grouping guarantees
+    // A computeContract throw means a schema/grouping regression (grouping guarantees
     // same rarity+StatTrak, so this is only reachable via a schema mismatch). Count the skips so a
-    // regression that breaks EVERY set surfaces as a distinct warning instead of the ordinary
+    // regression that breaks every set surfaces as a distinct warning instead of the ordinary
     // "no profitable trade-ups" empty state (failed ≠ empty).
     let skippedSets = 0;
     let firstSkipError = '';
@@ -636,7 +636,7 @@ export class TradeUpService {
       //
       //  (a) HEURISTIC picks — the single best-looking contract of each shape (cheapest-10 mixed,
       //      per-collection cheapest-10 and lowest-float-10). These are what a human would pick
-      //      first, but they all draw from the SAME cheap/low-float items, so they overlap heavily.
+      //      first, but they all draw from the same cheap/low-float items, so they overlap heavily.
       //      On their own they are also all this scan ever produced: a fixed handful of contracts
       //      (~12) regardless of inventory size, and selecting more than one of them tripped the
       //      "asset is used by more than one selected contract" refusal. That is the owner's report.
@@ -673,14 +673,14 @@ export class TradeUpService {
       }
     }
 
-    // H-TRD-071: if any set failed the exact math, say so — a full-blown regression would otherwise
+    // If any set failed the exact math, say so — a full-blown regression would otherwise
     // read as "nothing profitable". One warn carries the first captured cause for the operator.
     if (skippedSets > 0) {
       warnings.push(`${skippedSets} candidate set(s) could not be evaluated (schema mismatch) — results may be incomplete.`);
       logger.warn(`[tradeup] ${username}: ${skippedSets} candidate set(s) failed computeContract (schema mismatch); first error: ${firstSkipError}`);
     }
 
-    // H-TRD-072: rank fully-priced first, profit second, so the MAX_CANDIDATES slice
+    // Rank fully-priced first, profit second, so the MAX_CANDIDATES slice
     // keeps honest fully-priced contracts over estimate ones with fabricated near-zero cost.
     candidates.sort((a, b) => (Number(b.fullyPriced) - Number(a.fullyPriced)) || (b.profitCents - a.profitCents));
     // Caps are deliberately generous now that the partition makes the count MEANINGFUL: an account
@@ -689,10 +689,10 @@ export class TradeUpService {
     // with the partition it would silently truncate the answer to "how many can I do?".
     const top = candidates.slice(0, includeUnprofitable ? MAX_CANDIDATES_ALL : MAX_CANDIDATES);
 
-    // H-TRD-073: the price cache is tri-state (PricingService.priceCents: undefined = not fetched yet
+    // The price cache is tri-state (PricingService.priceCents: undefined = not fetched yet
     // → a re-click can fill it; null = FRESH authoritative "no market price", cached 24h per S2 → a
     // re-click never changes it; number = priced). The old single warning told the user to "click again
-    // in a moment" for BOTH gap kinds, so a candidate whose only gap is an authoritative no-price
+    // in a moment" for both gap kinds, so a candidate whose only gap is an authoritative no-price
     // outcome looked perpetually loading. Partition the not-fully-priced candidates' involved names and
     // warn per real cause. (computeContract's null-in = unpriced math contract stays untouched.)
     let anyLoading = false;
@@ -725,7 +725,7 @@ export class TradeUpService {
     const out: TuInput[] = [];
     for (const it of items) {
       if (it.category === 'listed') continue;                       // on the market, not in inventory
-      // Never feed a trade-locked / non-tradable skin into a craft (INV-D6 / C10). The
+      // Never feed a trade-locked / non-tradable skin into a craft. The
       // forceRefresh path doesn't set `category`, so check the lock state directly.
       if (!isSellable(it)) continue;
       const parsed = parseSkinName(it.marketHashName);

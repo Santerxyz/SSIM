@@ -38,12 +38,12 @@ export interface CasketMoveJob {
   total:       number;
   done:        number;
   moved:       number;
-  /** Sent to the GC but the SO cache didn't confirm the move within the window — NOT retried
+  /** Sent to the GC but the SO cache didn't confirm the move within the window — not retried
    *  (reversible; the item may well have moved — verify in-game). */
   unconfirmed: number;
   failed:      number;
   current?:    string;
-  /** Cancel was requested for THIS job (per-job, so a backstop-detached prior loop can't cross-wire). */
+  /** Cancel was requested for this job (per-job, so a backstop-detached prior loop can't cross-wire). */
   cancelRequested?: boolean;
   failures:    Array<{ itemId: string; error: string }>;
   startedAt?:  string;
@@ -67,7 +67,7 @@ export class CasketService {
   status(): GcStatus { return this.gc.status(); }
   moveStatus(): CasketMoveJob { return { ...this.job, failures: [...this.job.failures] }; }
 
-  /** True while a storage (casket) move is running — gates a mid-session update swap (S14): a swap
+  /** True while a storage (casket) move is running — gates a mid-session update swap: a swap
    *  hard-exit mid-move interrupts item moves inside the confirm window. */
   busy(): boolean { return this.job.running; }
 
@@ -94,7 +94,7 @@ export class CasketService {
     const missing: Array<{ name: string; appid: number }> = [];
     const out = items.map((it) => {
       const r = cs2Items.resolve(it as Parameters<typeof cs2Items.resolve>[0]);
-      // Tri-state price (INV: 0 and "not loaded" are NOT the same): undefined = never fetched →
+      // Tri-state price (INV: 0 and "not loaded" are not the same): undefined = never fetched →
       // queue a fill and report priced:false; null = authoritative "no market price"; number = real.
       const p = r.resolved && this.pricing ? this.pricing.priceCents(r.marketHashName, CS2_APPID) : null;
       if (p === undefined) missing.push({ name: r.marketHashName, appid: CS2_APPID });
@@ -184,7 +184,7 @@ export class CasketService {
   }
 
   private async runMove(username: string, casketId: string, itemIds: string[], direction: 'deposit' | 'withdraw', claimedKeys: string[]): Promise<void> {
-    // Bind THIS job so a backstop-detached loop (S16: withTimeout can't cancel fn(go)) writes only into
+    // Bind this job so a backstop-detached loop (S16: withTimeout can't cancel fn(go)) writes only into
     // its own orphaned object — never into the NEXT job started after `finally` reopened the gate.
     const job = this.job;
     try {
@@ -198,7 +198,7 @@ export class CasketService {
       job.failed = res.failed.length;
       job.failures = res.failed;
       // Label how the move ended (S16 residue): 'completed' = natural exit, 'budget' = cooperative
-      // deadline break (the rest were NOT attempted — a re-run continues), 'cancelled' = the user's
+      // deadline break (the rest were not attempted — a re-run continues), 'cancelled' = the user's
       // cancel-after-current break. `cancelled` is a strict function of this discriminator so a cancel
       // clicked during the final item's verify window can't mislabel a fully-completed job.
       job.stoppedReason = res.stopped;
@@ -207,7 +207,7 @@ export class CasketService {
       // Label the throw by what actually happened. A pre-flight throw (gated off, library missing, not
       // logged in, cap exceeded) fires before any send → 'preflight' (nothing moved). The withTimeout
       // backstop (GcActionLayer) fires MID-move → 'aborted' and the counters (set live by onProgress)
-      // reflect real partial progress — keep them, do NOT reset. `done > 0` is a faithful discriminator
+      // reflect real partial progress — keep them, do not reset. `done > 0` is a faithful discriminator
       // because onProgress fires only after a real send.
       job.error = String((e as Error)?.message ?? e);
       job.stoppedReason = job.done > 0 ? 'aborted' : 'preflight';
@@ -221,7 +221,7 @@ export class CasketService {
       job.finishedAt = new Date().toISOString();
       // Post-move reconcile (parity with every other mutating service): deposited/withdrawn assets
       // left Steam's web inventory (ctx2), so the cached inventory is now stale. Refresh this one
-      // account's FULL pipeline so the modal + master view drop the moved items without a manual
+      // account's full pipeline so the modal + master view drop the moved items without a manual
       // refresh. `unconfirmed` is included — an unconfirmed item may well have moved (see line 21-23),
       // the same rule the frontend applies to its contents reload. Failed-only / pre-flight-error jobs
       // skip (nothing changed on Steam); an 'aborted' (mid-move backstop) job with real partial progress

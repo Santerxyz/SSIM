@@ -5,10 +5,10 @@ import { getCapabilityToken } from '../api/capability';
 import { logger } from './logger';
 
 // ════════════════════════════════════════════════════════════════════════════
-//  serverPort — bind the UI port FIRST, announce it ONLY after a successful bind.
+//  serverPort — bind the UI port first, announce it ONLY after a successful bind.
 //
 //  The old flow published the port (SSIM_PORT stdout + data/ssim.port) from a TOCTOU
-//  pre-check (findFreePort) BEFORE the real server bound, and fell back to PORT on any
+//  pre-check (findFreePort) before the real server bound, and fell back to PORT on any
 //  error — so SSIM could announce a port it never bound. Combined with the shell's
 //  bare-TCP readiness probe, SSIM could open onto a DIFFERENT app already holding the
 //  port. Here the announce happens strictly inside the successful `listening` callback,
@@ -20,25 +20,25 @@ const MAX_PORT_WALK = 20;
 
 /** An unauthenticated marker route every SSIM server (full app + activation/unlock portals) serves,
  *  so the Tauri shell can confirm the responder on the port is SSIM — not a foreign app that merely
- *  accepts TCP — BEFORE it navigates to it. Kept out of the capability/origin guards (a bare GET). */
+ *  accepts TCP — before it navigates to it. Kept out of the capability/origin guards (a bare GET). */
 export const SSIM_HEALTH_PATH = '/__ssim/health';
 export const SSIM_HEALTH_MARKER = 'SSIM-DASHBOARD-OK';
 
 let announcedPort: number | undefined;
 let capEmitted = false;
 
-/** The UI port THIS process has actually bound + announced (undefined before any bind). */
+/** The UI port this process has actually bound + announced (undefined before any bind). */
 export function boundUiPort(): number | undefined { return announcedPort; }
 
 /** Remove a stale data/ssim.port so it can never point the shell at a foreign port. Call ONLY at BOOT
  *  (before we bind), and only as the sole instance — the single-instance lock guarantees any file present
- *  is a prior run's. Do NOT call this on exit: a refused second instance would delete the LIVE instance's
- *  file (S52) — use clearOwnPortFile() there instead. */
+ *  is a prior run's. Do not call this on exit: a refused second instance would delete the live instance's
+ * file — use clearOwnPortFile() there instead. */
 export function clearStalePortFile(): void {
   try { fs.rmSync(PORT_FILE, { force: true }); } catch { /* best-effort */ }
 }
 
-/** S52: remove data/ssim.port ONLY if it still names the port THIS process announced. On exit that means a
+/** S52: remove data/ssim.port ONLY if it still names the port this process announced. On exit that means a
  *  refused second instance (which never announced) leaves the live instance's file untouched, and even the
  *  real instance never deletes a file that has since been rewritten to another live port. */
 export function clearOwnPortFile(): void {
@@ -51,11 +51,11 @@ export function clearOwnPortFile(): void {
 
 /**
  * Binds `server` to the UI port and ANNOUNCES it (SSIM_CAP + data/ssim.port + SSIM_PORT) ONLY
- * after the bind SUCCEEDS — never a port this process did not bind. The FIRST bind walks from
+ * after the bind SUCCEEDS — never a port this process did not bind. The first bind walks from
  * `desiredPort` over EADDRINUSE to the first free port; a LATER bind (the full app taking over
- * from an activation/unlock portal) reuses the SAME announced port (released by the previous
- * server) and does NOT walk. Resolves the ACTUAL bound port; rejects on a non-address error or
- * after exhausting the walk. The caller installs its own runtime error handler AFTER this resolves.
+ * from an activation/unlock portal) reuses the same announced port (released by the previous
+ * server) and does not walk. Resolves the ACTUAL bound port; rejects on a non-address error or
+ * after exhausting the walk. The caller installs its own runtime error handler after this resolves.
  */
 export function listenAndAnnounce(server: Server, host: string, desiredPort: number, tries = MAX_PORT_WALK): Promise<number> {
   return new Promise<number>((resolve, reject) => {
@@ -75,10 +75,10 @@ export function listenAndAnnounce(server: Server, host: string, desiredPort: num
       resolve(actual);
     };
     const onError = (err: NodeJS.ErrnoException): void => {
-      // -1 so exactly `tries` ports are attempted (walkStart … walkStart+tries-1), matching MAX_PORT_WALK (H-BOOT-019)
+      // -1 so exactly `tries` ports are attempted (walkStart … walkStart+tries-1), matching MAX_PORT_WALK
       if (err.code === 'EADDRINUSE' && canWalk && port < walkStart + tries - 1) {
         port += 1;
-        if (port > 65535) { // TCP ceiling — treat as walk-exhausted so the caller shows the EADDRINUSE lockscreen, not a raw RangeError from server.listen(65536) (H-BOOT-020)
+        if (port > 65535) { // TCP ceiling — treat as walk-exhausted so the caller shows the EADDRINUSE lockscreen, not a raw RangeError from server.listen(65536)
           cleanup();
           reject(Object.assign(new Error('port walk exhausted (reached TCP ceiling)'), { code: 'EADDRINUSE' }));
           return;

@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  bootflags.ts – process-level flags that MUST be set before any dependency
-//  module is loaded. This file is imported FIRST in index.ts (import order =
+//  module is loaded. This file is imported first in index.ts (import order =
 //  execution order), so it runs before './api/server' pulls in steam-user /
 //  steamcommunity / the legacy `request` chain.
 //
@@ -18,12 +18,12 @@ process.noDeprecation = true;
 // ── Heap ceiling note (the cap is applied at LAUNCH, not here) ─────────────────
 // Why capping the heap matters: with no explicit limit V8's ceiling sits near ~4 GB,
 // so a leaking fleet can exhaust the machine's commit and be reclaimed by Windows
-// BEFORE V8 itself aborts — and an OS reclaim is not a V8 fatal, so reportOnFatalError
+// before V8 itself aborts — and an OS reclaim is not a V8 fatal, so reportOnFatalError
 // never fires. That is exactly why the crashes leave NO diagnostic report. A cap below
 // that point makes a JS-heap leak hit V8's own "JavaScript heap out of memory" first →
 // the fatal-error report below fires → we finally get a stack + heap post-mortem.
 //
-// We do NOT call v8.setFlagsFromString('--max-old-space-size') here: that flag is read
+// We do not call v8.setFlagsFromString('--max-old-space-size') here: that flag is read
 // only when the V8 isolate is created (before this file runs), so setting it at runtime
 // is a silent no-op (verified). The cap is therefore applied at launch instead:
 //   • packaged ssim.exe → baked in at build time  (build/pack.js: pkg --options max_old_space_size)
@@ -33,7 +33,7 @@ process.noDeprecation = true;
 
 // ── Diagnostic report: capture FATAL deaths that bypass JS error handlers ──────
 // uncaughtException / unhandledRejection only see JS-level throws. The two most
-// likely "silent crash during refresh" causes do NOT fire them and so cannot be
+// likely "silent crash during refresh" causes do not fire them and so cannot be
 // try/catch'd or logged from JS at all:
 //   • V8 out-of-memory  → "FATAL ERROR: … heap out of memory", then abort
 //   • native crash in steam-user / steamcommunity → segfault/abort
@@ -42,7 +42,7 @@ process.noDeprecation = true;
 // into a readable post-mortem in logs/.
 //
 // CRITICAL: only reportOnFatalError is enabled. reportOnUncaughtException is left
-// OFF on purpose — turning it on makes Node write a report AND THEN EXIT on every
+// OFF on purpose — turning it on makes Node write a report and then EXIT on every
 // uncaught throw, which would undo index.ts's deliberate "survive a single stray
 // vendor-callback throw" policy. JS throws stay handled by index.ts (+ crashlog).
 try {
@@ -73,15 +73,15 @@ try {
   // in this early — no winston/AgentFactory). Covers URL + legacy proxy forms; the same
   // superset the logger/crash sinks use, from a single source of truth.
   const mask = redactSecrets;
-  // S47: cap this append-only sink. It's written on EVERY stderr write (a spewing vendor library could
+  // Cap this append-only sink. It's written on every stderr write (a spewing vendor library could
   // flood it), so track bytes IN-PROCESS — no statSync per write — and roll to .1 once past the cap. The
   // counter is seeded from the current on-disk size so a pre-existing large file still rolls.
   let written = 0;
   try { written = fs.statSync(stderrTrace).size; } catch { /* no file yet */ }
   // TANK fix #9: write through a HELD open fd (fs.writeSync) instead of fs.appendFileSync. The tee stays
-  // SYNCHRONOUS — that is the whole point, so a native fatal's dying last-words are on disk BEFORE the
+  // SYNCHRONOUS — that is the whole point, so a native fatal's dying last-words are on disk before the
   // process aborts (an async sink would lose exactly the 0xC0000409 last-words we need). But appendFileSync
-  // does an open()+write()+close() syscall on EVERY stderr line; under the vendor "socket hang up" spew a
+  // does an open()+write()+close() syscall on every stderr line; under the vendor "socket hang up" spew a
   // reset storm produces, that per-line syscall churn stalls the event loop and DELAYS the very socket-close
   // callbacks whose teardown race feeds the fast-fail. A persistent O_APPEND fd + writeSync keeps the
   // death-capture guarantee while removing the per-line open/close amplifier.

@@ -16,18 +16,18 @@ export const LOG_FILE = path.join(LOG_DIR, 'ssim.log');
  * The canonical secret redactor, applied to every record's message + stack (below) and
  * re-exported for the res.json error middleware / crash sink. It covers PROXY CREDENTIALS
  * (URL userinfo + legacy host:port:user:pass forms) — the one class that can reach a sink
- * as part of an Error string. It does NOT scrub non-proxy secret VALUES (identity_secret /
+ * as part of an Error string. It does not scrub non-proxy secret VALUES (identity_secret /
  * shared_secret / tokens / password / license key); those must never be passed to a sink,
  * which is enforced by test/logSecrecyGuard.test.ts, not by scrubbing here. See redact.ts.
  */
 export { redactSecrets } from './redact';
 import { redactSecrets } from './redact';
 
-// Redacts credentials from EVERY record's string-valued fields before ANY transport
+// Redacts credentials from every record's string-valued fields before any transport
 // writes it. message + stack are the common carriers, but format.json() serializes every
 // enumerable own property, so any metadata a caller attaches (`logger.warn('x', { proxy })`,
 // or a custom Error with an enumerable own field) must be scrubbed too — otherwise those
-// keys reach ssim.log/error.log + the Live Logs ring unredacted. (H-BOOT-015.)
+// keys reach ssim.log/error.log + the Live Logs ring unredacted.
 const redactFormat = winston.format((info) => {
   if (typeof info.message === 'string') info.message = redactSecrets(info.message);
   const withStack = info as { stack?: unknown };
@@ -70,7 +70,7 @@ export const fileFormat = winston.format.combine(
 
 // ─── Live in-app log stream (the "Live Logs" window) ──────────────────────────
 // A custom transport mirrors every (already-redacted) log line into a small in-memory
-// ring buffer AND an event bus. The dashboard's "Live Logs" window opens an SSE stream
+// ring buffer and an event bus. The dashboard's "Live Logs" window opens an SSE stream
 // that backfills the ring, then receives each new line live. Fully in-process, tiny, and
 // it never throws (a log sink that throws would take logging down with it).
 export interface LiveLogLine { t: string; level: string; msg: string; }

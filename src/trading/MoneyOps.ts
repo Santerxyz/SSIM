@@ -1,9 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  MoneyOps — a SHARED, cross-service concurrent-op guard for real money/asset
 //  operations (trade-send, market-list, offer-accept, trade-up craft, casket
-//  move). Each service already has its OWN
+//  move). Each service already has its own
 //  in-flight Set, but those only block a concurrent duplicate WITHIN one service —
-//  a sell (MarketService) and a send (TradeService) of the SAME asset could still
+//  a sell (MarketService) and a send (TradeService) of the same asset could still
 //  run at once and both act on it. This shared registry blocks a concurrent op on
 //  the same key across services. It is released the moment the op settles, so a
 //  legitimate SEQUENTIAL repeat is never blocked (that would need client-side
@@ -18,8 +18,8 @@
 const inFlight = new Set<string>();
 
 /** Key for an asset-scoped money op.
- *  Deliberately NOT app/context-scoped: relies on Steam economy assetids being unique across
- *  apps in practice. Do not widen the key unless EVERY claim site derives the extra fields
+ *  Deliberately not app/context-scoped: relies on Steam economy assetids being unique across
+ *  apps in practice. Do not widen the key unless every claim site derives the extra fields
  *  identically for the same asset — mismatched derivation silently disables the cross-service
  *  match (keys stop colliding). Worst case of the flat key is a spurious cross-game 'busy'
  *  refusal, which is the safe direction. */

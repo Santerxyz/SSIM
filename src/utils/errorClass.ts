@@ -1,16 +1,16 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  H-XCT-001 — ONE network-error taxonomy for the retry classifiers.
+// one network-error taxonomy for the retry classifiers.
 //
 //  Refresh, mass-sell, and the money-commit ambiguity check each grew their own
 //  prose regex for "is this network error transient?". They drifted token-by-token
 //  (EPIPE/ECONNABORTED/"no response" matched only the commit copy; `eresult 3` only
-//  the sell copy), so the SAME proxy-RST/broken-pipe failure was retried on one path
+//  the sell copy), so the same proxy-RST/broken-pipe failure was retried on one path
 //  and hard-failed on another. This is the single token table all three now read.
 //
-//  Three orthogonal verdicts, from ONE `message`+`code` string:
+//  Three orthogonal verdicts, from one `message`+`code` string:
 //   • transient       — a network/proxy/5xx blip; safe to retry the read.
 //   • rateLimited      — a 429 / "too many" window; retry with a LONG pause.
-//   • ambiguousCommit  — transient AND the request may have LANDED (response leg
+//   • ambiguousCommit  — transient and the request may have LANDED (response leg
 //                        lost). Excludes the "never reached Steam" pre-connection
 //                        failures (a retry there is safe, not ambiguous) — see
 //                        NEVER_LANDED below. Numeric-`eresult` handling stays with
@@ -28,8 +28,8 @@ const TRANSIENT =
 // H-INV-001-anchored: a bare word-boundary 429 (not e.g. "1429"), plus the prose forms.
 const RATE_LIMITED = /\b429\b|too many|rate.?limit/i;
 
-// "Never reached Steam" — a pre-connection / DNS failure. The request could NOT have
-// created an order/offer, so a commit that fails on one of these is safe to retry, NOT
+// "Never reached Steam" — a pre-connection / DNS failure. The request could not have
+// created an order/offer, so a commit that fails on one of these is safe to retry, not
 // ambiguous. This is stated policy (an explicit exclusion), not an accident of which
 // tokens a given regex happened to omit.
 const NEVER_LANDED = /econnrefused|enetunreach|ehostunreach|enotfound|\bdns\b/i;
@@ -39,7 +39,7 @@ export interface NetworkErrorClass {
   transient: boolean;
   /** A 429 / "too many" rate-limit window — retry with a long pause. */
   rateLimited: boolean;
-  /** transient AND the request may already have landed (response leg lost). */
+  /** transient and the request may already have landed (response leg lost). */
   ambiguousCommit: boolean;
 }
 

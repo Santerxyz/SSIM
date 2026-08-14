@@ -12,21 +12,21 @@ const MAX_IDS = 5000;
 /**
  * Durable dedup of delivered CSFloat trade ids. The auto-accept worker used an
  * in-process Set, so a restart between "delivered" and "CSFloat drops the trade from
- * pending" re-sent a second real Steam offer for the same sale (C6 / INV-F1). This
+ * pending" re-sent a second real Steam offer for the same sale. This
  * persists every delivered id and is consulted on the first pass after boot.
  */
 export class CsFloatDeliveredStore {
   private ids: string[] = [];
   private readonly set = new Set<string>();
   /** True when the file EXISTS but could not be read/parsed → the delivered-id memory is LOST.
-   *  Auto-delivery MUST NOT proceed in this state or every currently-pending sale would be
-   *  re-delivered (a second real Steam offer per sale). A MISSING file (fresh install) is NOT
+   *  Auto-delivery MUST not proceed in this state or every currently-pending sale would be
+   *  re-delivered (a second real Steam offer per sale). A MISSING file (fresh install) is not
    *  degraded — nothing has been delivered yet. */
   private degraded = false;
   /** Consecutive persist failures. The load-side degraded gate only covers a file that was corrupt AT
    *  BOOT; a RUNTIME write failure (disk full / EACCES / AV lock) leaves the just-delivered id in memory
    *  only, so a crash + restart re-delivers that sale (a second real Steam offer). After N consecutive
-   *  failures we latch degraded → auto-delivery pauses, bounding how many sales can be exposed. (S39.) */
+   * failures we latch degraded → auto-delivery pauses, bounding how many sales can be exposed. */
   private persistFailures = 0;
   private static readonly PERSIST_FAIL_LIMIT = 3;
   /** Sidecar written when the runtime-persist latch trips, so the degraded state SURVIVES a restart.
@@ -50,7 +50,7 @@ export class CsFloatDeliveredStore {
       const parsed = fsExtra.readJsonSync(this.path) as { version?: unknown; ids?: unknown } | null;
       if (parsed && Array.isArray(parsed.ids)) {
         if (parsed.version !== undefined && parsed.version !== 1) {
-          this.degraded = true; // unknown/newer on-disk format → do NOT misread it as v1
+          this.degraded = true; // unknown/newer on-disk format → do not misread it as v1
           logger.error(`${this.path} is version ${String(parsed.version)} (a newer/unknown format) – CSFloat auto-delivery DISABLED to avoid misreading it as v1 and re-delivering already-sent sales. Fix or remove the file, then restart.`);
         } else {
           this.ids = parsed.ids.map(String);
@@ -66,7 +66,7 @@ export class CsFloatDeliveredStore {
     }
   }
 
-  /** True when the dedup memory could not be loaded → callers must NOT auto-deliver. */
+  /** True when the dedup memory could not be loaded → callers must not auto-deliver. */
   isDegraded(): boolean { return this.degraded; }
 
   has(id: string): boolean {
@@ -75,8 +75,8 @@ export class CsFloatDeliveredStore {
 
   /** Records an id as delivered and persists immediately (atomic). Idempotent.
    *  Returns TRUE when the id is durably persisted; FALSE when the write threw (the id is
-   *  in memory only → NOT crash-safe) or the store is already degraded. The caller uses the
-   *  FALSE signal to stop launching new deliveries on the first non-durable record (H-FLT-011),
+   *  in memory only → not crash-safe) or the store is already degraded. The caller uses the
+   * FALSE signal to stop launching new deliveries on the first non-durable record,
    *  tightening the crash-re-delivery exposure to one sale instead of PERSIST_FAIL_LIMIT. */
   add(id: string): boolean {
     if (!id || this.set.has(id)) return true; // already durably recorded / nothing to persist
@@ -88,7 +88,7 @@ export class CsFloatDeliveredStore {
     }
     try {
       writeJsonAtomic(this.path, { version: 1, ids: this.ids }, { spaces: 0 });
-      this.persistFailures = 0; // a successful write re-persists the FULL id list → a prior blip self-heals
+      this.persistFailures = 0; // a successful write re-persists the full id list → a prior blip self-heals
       // The full id list is now durable again, so a marker from a self-healed blip must not strand the
       // operator on the next boot. Best-effort clear (a failed unlink just leaves a false marker → safe).
       try { if (fsExtra.existsSync(this.MARKER_PATH)) fsExtra.unlinkSync(this.MARKER_PATH); }
@@ -99,17 +99,17 @@ export class CsFloatDeliveredStore {
       logger.error(`failed to persist ${this.path} (${this.persistFailures}/${CsFloatDeliveredStore.PERSIST_FAIL_LIMIT}): ${(err as Error).message}`);
       if (this.persistFailures >= CsFloatDeliveredStore.PERSIST_FAIL_LIMIT && !this.degraded) {
         // The dedup memory can no longer be made durable — pause auto-delivery so a subsequent crash
-        // can't re-deliver a growing set of sales whose delivered-ids were never saved. (S39)
+        // can't re-deliver a growing set of sales whose delivered-ids were never saved.
         this.degraded = true;
         logger.error(`${this.path}: ${this.persistFailures} consecutive persist failures – CSFloat auto-delivery DISABLED to avoid re-delivering sales whose dedup cannot be saved. Fix the disk/permissions and restart.`);
         // Latch the degraded state to disk so a crash inside this unpersistable window can't resume
         // delivery on the next boot (the in-memory latch alone is lost on that crash). Best-effort:
         // the marker shares the disk that just failed — if it also fails, the in-memory latch is the
-        // only protection for THIS run, which is the pre-existing behavior.
+        // only protection for this run, which is the pre-existing behavior.
         try { fsExtra.writeFileSync(this.MARKER_PATH, `${new Date().toISOString()} persist_failures=${this.persistFailures}\n`); }
         catch (markerErr) { logger.error(`could not write ${this.MARKER_PATH}: ${(markerErr as Error).message}`); }
       }
-      return false; // the id is in memory only — NOT crash-safe
+      return false; // the id is in memory only — not crash-safe
     }
   }
 }

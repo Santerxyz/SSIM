@@ -21,7 +21,7 @@ const DB_VERSION = 5; // v2 folders[]; v3 environments[]; v4 portable maFilePath
  * these are rewritten to the bare filename during the v4 migration – loadMaFile
  * resolves bare names against the consolidated ./mafiles dir, which makes
  * accounts.json survive machine/folder moves. Paths pointing somewhere ELSE
- * (operator keeps maFiles on another drive) are ALSO basenamed into ./mafiles:
+ * (operator keeps maFiles on another drive) are also basenamed into ./mafiles:
  * since B23 the loader can only read from the drop zone, so an other-drive path
  * is already broken — we normalize it and log a one-time "copy into ./mafiles"
  * rescue message rather than preserve a value that resolves to a wrong/missing file.
@@ -60,15 +60,15 @@ export class AccountManager {
       db = fsExtra.readJsonSync(DB_PATH) as AccountsDatabase;
     } catch (err) {
       // accounts.json is present but unparseable (hand-edit typo, disk fault, a torn write). The
-      // .bak written by save() (B34) exists for exactly this case — recover from it instead of
+      // .bak written by save() exists for exactly this case — recover from it instead of
       // bricking boot or (worse) fabricating an empty fleet, which would hide a recoverable file
-      // and trip the vault→org self-heal against real data (S4/S7). (H-ACC-013.)
+      // and trip the vault→org self-heal against real data.
       db = this.recoverFromBak(err as Error);
     }
-    // H-ACC-014: the file parsed but its shape is unusable — `accounts` missing/non-array (every
+    // The file parsed but its shape is unusable — `accounts` missing/non-array (every
     // later .some/.map throws a TypeError far from the cause) or `version` missing/non-numeric (a
     // hand-merge artifact where `undefined < 3` is false → migrate() silently skips forever). Do
-    // NOT coerce accounts to [] (fabricated emptiness, S4 class) or default version (guessing risks
+    // not coerce accounts to [] (fabricated emptiness, S4 class) or default version (guessing risks
     // re-running/skipping migrations against unknown state) — route into the same H-ACC-013
     // recovery machinery (try .bak → quarantine → loud failure) as a torn write.
     if (!AccountManager.isValidDbShape(db)) {
@@ -89,7 +89,7 @@ export class AccountManager {
   }
 
   /**
-   * H-ACC-014: minimal load-time shape gate. A parseable file whose `accounts` is not an array,
+   * Minimal load-time shape gate. A parseable file whose `accounts` is not an array,
    * or whose `version` is not a finite number, is unusable — treat it as corrupt (recover from
    * .bak or fail loud) rather than let it reach migrate()/save() and throw a bare TypeError, or
    * pass every version-gated migration on `undefined < N === false`.
@@ -102,10 +102,10 @@ export class AccountManager {
   }
 
   /**
-   * H-ACC-013: recover a corrupt accounts.json from its sibling .bak, or fail loud.
+   * Recover a corrupt accounts.json from its sibling .bak, or fail loud.
    *   • .bak parses → QUARANTINE the corrupt main as accounts.json.corrupt-<epochMs> (kept for
-   *     forensics, never deleted) BEFORE adopting the backup, so the next save()'s backup:true
-   *     copies recovered-good data and never clobbers the good .bak with the corrupt main (S5).
+   *     forensics, never deleted) before adopting the backup, so the next save()'s backup:true
+   * copies recovered-good data and never clobbers the good .bak with the corrupt main.
    *   • .bak missing/also-corrupt → throw a single named Error. NEVER fall through to the fresh-db
    *     branch: an empty fleet fabricated from a failed read is the S4/S7 failure class.
    */
@@ -115,7 +115,7 @@ export class AccountManager {
     let recovered: AccountsDatabase;
     try {
       recovered = fsExtra.readJsonSync(bak) as AccountsDatabase;
-      // The .bak must itself be a usable database — a shape-invalid backup (H-ACC-014) is no better
+      // The .bak must itself be a usable database — a shape-invalid backup is no better
       // than a torn one; do not swap one broken shape for another.
       if (!AccountManager.isValidDbShape(recovered)) {
         throw new Error('the backup is missing its `accounts` array or a numeric `version`');
@@ -126,7 +126,7 @@ export class AccountManager {
         `The corrupt file was left in place at ${DB_PATH}; restore it from a backup (or delete it to start fresh) and restart.`,
       );
     }
-    // Rename the corrupt main away BEFORE any save so the next save() backs up recovered-good data.
+    // Rename the corrupt main away before any save so the next save() backs up recovered-good data.
     const quarantine = `${DB_PATH}.corrupt-${Date.now()}`;
     fsExtra.renameSync(DB_PATH, quarantine);
     logger.warn(`[accounts] recovered accounts.json from .bak — corrupt original kept as ${quarantine}`);
@@ -173,8 +173,8 @@ export class AccountManager {
       let migrated = 0;
       for (const acc of db.accounts) {
         if (typeof acc.maFilePath === 'string' && path.isAbsolute(acc.maFilePath)) {
-          // Since B23 the loader (resolveMaFilePath) basenames EVERY path into ./mafiles — an
-          // absolute maFilePath can no longer read outside the drop zone. So normalize ALL
+          // Since B23 the loader (resolveMaFilePath) basenames every path into ./mafiles — an
+          // absolute maFilePath can no longer read outside the drop zone. So normalize all
           // absolute paths to the bare filename the loader actually honors, not just the legacy
           // dirs. An other-drive path that isn't in ./mafiles is broken; surface it once (rescue
           // message) instead of persisting a value that silently resolves to a wrong/missing file.
@@ -213,7 +213,7 @@ export class AccountManager {
   private save(opts?: { backup?: boolean }): void {
     this.db.updatedAt = new Date().toISOString();
     // In VAULT MODE never persist a password or a credential-bearing proxy to accounts.json
-    // — BUT only blank an account that is ACTUALLY in the vault. An account that could NOT be
+    // — BUT only blank an account that is actually in the vault. An account that could not be
     // vaulted (e.g. its maFile failed to load) KEEPS its plaintext secret here, so a transient
     // problem can never destroy a real credential (non-destructive guarantee). backup:false in
     // vault mode, else the .bak would retain the pre-blank plaintext passwords.
@@ -224,15 +224,15 @@ export class AccountManager {
             AccountVault.hasAccount(a.username)
               ? { ...a, password: '', networkOverride: a.networkOverride?.type === 'proxy' ? undefined : a.networkOverride }
               : a),
-          // Environment proxies carry credentials and must NOT sit plaintext in accounts.json
+          // Environment proxies carry credentials and must not sit plaintext in accounts.json
           // (the file the operator is told to back up / copy between machines). Blank the
-          // plaintext copy ONLY when the SAME value is provably in the encrypted vault
+          // plaintext copy ONLY when the same value is provably in the encrypted vault
           // (non-destructive: a not-yet-migrated env keeps its recoverable plaintext). B20.
           environments: this.db.environments.map(e =>
             (e.proxy && e.proxy.trim() && AccountVault.getEnvProxy(e.id) === e.proxy.trim())
               ? { ...e, proxy: '' }
               : e),
-          // Proxy-rule pools carry credentials too — blank the plaintext copy ONLY when the SAME
+          // Proxy-rule pools carry credentials too — blank the plaintext copy ONLY when the same
           // pool is provably in the vault (non-destructive: a not-yet-vaulted pool keeps its
           // recoverable plaintext). hydrateRuleProxies refills it in memory at boot. Mirrors env. B20.
           proxyRules: (this.db.proxyRules ?? []).map(r =>
@@ -240,9 +240,9 @@ export class AccountManager {
               ? { ...r, proxies: [] }
               : r) }
       : this.db;
-    // Backup policy (B34): a .bak protects the whole fleet's org structure (env/folder/tier/
+    // Backup policy: a .bak protects the whole fleet's org structure (env/folder/tier/
     // steamId/tradeUrl) from a bad write or hand-edit. In plaintext mode we always back up. In
-    // vault mode we must NOT let the .bak retain PRE-blank plaintext — but that only happens on
+    // vault mode we must not let the .bak retain PRE-blank plaintext — but that only happens on
     // the TRANSITION write (a vaulted account still carries an in-memory password). Once blanked
     // (steady state) the on-disk file is already secret-free, so a .bak of it leaks nothing new.
     // `secretFree` detects the steady state without a disk read: no vaulted account holds a
@@ -265,7 +265,7 @@ export class AccountManager {
   addImportedAccount(p: { username: string; maFilePath: string; environmentId: string; folderId?: string | null; tier?: AccountTier }): void {
     if (this.rawGet(p.username)) return;
     // Validate env/folder before the push (parity with add()): a dangling environmentId would
-    // create a record invisible in every env-scoped tree yet still counted in fleet ops. (H-ACC-016)
+    // create a record invisible in every env-scoped tree yet still counted in fleet ops.
     this.getEnvironmentOrThrow(p.environmentId);
     if (p.folderId != null) {
       const folder = this.getFolder(p.folderId);
@@ -284,20 +284,20 @@ export class AccountManager {
   }
 
   /** Blanks the now-vaulted secrets out of accounts.json (password + proxy overrides).
-   *  Only touches accounts that ACTUALLY made it into the vault — a non-vaulted account keeps
+   *  Only touches accounts that actually made it into the vault — a non-vaulted account keeps
    *  its plaintext credential so it is never destroyed. Also purges the stale plaintext .bak. */
   enterVaultMode(): void {
-    // Count the records this pass ACTUALLY blanked (a non-empty password cleared, or a
-    // proxy-type override stripped) — enterVaultMode runs on EVERY vault-mode boot (index.ts
+    // Count the records this pass actually blanked (a non-empty password cleared, or a
+    // proxy-type override stripped) — enterVaultMode runs on every vault-mode boot (index.ts
     // → vaultBoot.ts:228), but only the write that flips a plaintext secret to blank is a real
-    // TRANSITION; a steady-state boot (everything already blank) must touch nothing. (H-ACC-020)
+    // TRANSITION; a steady-state boot (everything already blank) must touch nothing.
     let blanked = 0;
     for (const acc of this.db.accounts) {
       if (!AccountVault.hasAccount(acc.username)) continue; // not vaulted → keep plaintext (recoverable)
       if (acc.password) { acc.password = ''; blanked++; }
       if (acc.networkOverride?.type === 'proxy') { acc.networkOverride = undefined; blanked++; }
     }
-    // Migrate every credential-bearing ENV proxy into the vault (B20); save() then blanks the
+    // Migrate every credential-bearing ENV proxy into the vault; save() then blanks the
     // plaintext copy for envs whose proxy is now provably vaulted (non-destructive).
     let envProxiesMoved = 0;
     for (const env of this.db.environments) {
@@ -306,7 +306,7 @@ export class AccountManager {
     if (envProxiesMoved > 0) { AccountVault.save(); logger.info(`[vault] migrated ${envProxiesMoved} environment proxy/proxies into the vault`); }
     const bak = `${DB_PATH}.bak`;
     if (blanked > 0 || envProxiesMoved > 0) {
-      // TRANSITION boot — H-ACC-015's sequence verbatim. Purge FIRST, then save with backup:false
+      // TRANSITION boot — H-ACC-015's sequence verbatim. Purge first, then save with backup:false
       // — otherwise the save() would copy the PRE-blank plaintext main into accounts.json.bak (the
       // heuristic reads in-memory passwords, which are already blanked above, so it would wrongly
       // back up the still-plaintext DISK). Purging first also removes any plaintext-mode or
@@ -321,7 +321,7 @@ export class AccountManager {
     // STEADY-STATE boot — nothing changed, so NO save (the pointless updatedAt bump / rewrite is
     // dropped) and NO unconditional purge. A .bak that is a STALE pre-transition plaintext backup
     // is retired here (this preserves -15's "a failed purge is retried next boot" property); a .bak
-    // whose secrets are NOT provably in the vault is a recoverable rollback copy and is LEFT IN
+    // whose secrets are not provably in the vault is a recoverable rollback copy and is LEFT IN
     // PLACE (same byte-equality doctrine as quarantineMigratedPlaintext, vaultBoot.ts, B21). Matrix:
     // steady boot → main and a non-stale .bak untouched; transition boot → -15's guarantees verbatim;
     // transition purge failed → retried by this sentinel on subsequent boots until gone.
@@ -341,7 +341,7 @@ export class AccountManager {
       plaintextSecrets++;
       if (AccountVault.getEnvProxy(env.id) !== p) allVaulted = false;
     }
-    // Purge ONLY a .bak that holds plaintext AND every plaintext secret is byte-equal to the vault
+    // Purge ONLY a .bak that holds plaintext and every plaintext secret is byte-equal to the vault
     // (provably stale). A secret-free .bak, or one holding any not-vaulted / mismatched secret
     // (a recoverable orphan), is a legitimate rollback copy — never destroyed.
     if (plaintextSecrets > 0 && allVaulted) {
@@ -358,7 +358,7 @@ export class AccountManager {
    *  engine). Private — nothing outside AccountManager reads the legacy chain directly (T2). */
   private legacyResolveNetwork(account: AccountConfig): NetworkConfig {
     if (AccountVault.isEnabled()) {
-      // A full VaultAccount's proxy, else a token-only account's per-account proxy (B42).
+      // A full VaultAccount's proxy, else a token-only account's per-account proxy.
       const vaultProxy = AccountVault.getAccount(account.username)?.proxy?.trim()
         ?? AccountVault.getAccountProxy(account.username);
       if (vaultProxy) return { type: 'proxy', value: vaultProxy };
@@ -383,7 +383,7 @@ export class AccountManager {
     return { kind: 'network', network: this.legacyResolveNetwork(account) };
   }
 
-  /** Build an engine ResolveCtx. `precompute` builds the per-rule valid-pool + target-Set maps ONCE
+  /** Build an engine ResolveCtx. `precompute` builds the per-rule valid-pool + target-Set maps once
    *  (T3) — pass it only for a FULL-FLEET sweep (snapshotEffective / resolutionPreview / the proof),
    *  where a single ctx is reused across every account; per-account reads pass it false so the engine
    *  falls back to the cheap single-rule path and no per-read precompute is wasted. */
@@ -417,7 +417,7 @@ export class AccountManager {
   }
 
   /** The effective env proxy for the edit dialog / check-proxy: vault value in vault mode,
-   *  else the plaintext env proxy. Single source so no route reads the wrong copy. (B20) */
+   * else the plaintext env proxy. Single source so no route reads the wrong copy. */
   envProxyFor(environmentId: string): string {
     if (AccountVault.isEnabled()) {
       return AccountVault.getEnvProxy(environmentId) ?? this.getEnvironment(environmentId)?.proxy?.trim() ?? '';
@@ -427,7 +427,7 @@ export class AccountManager {
 
   /** Fills each in-memory environment's proxy from the vault (vault mode) so the list view,
    *  edit dialog and sanitizeEnvironment all see the effective value even after the plaintext
-   *  copy was blanked on disk. Called once at boot; does NOT persist. Idempotent. (B20) */
+   * copy was blanked on disk. Called once at boot; does not persist. Idempotent. */
   hydrateEnvProxies(): void {
     if (!AccountVault.isEnabled()) return;
     for (const env of this.db.environments) {
@@ -447,7 +447,7 @@ export class AccountManager {
   // ── Proxy-rules migration / hydration (v5) ───────────────────────────────────
 
   /** Fills each rule's in-memory pool from the vault (vault mode) — UNION disk ∪ vault so a stale
-   *  vault subset can never drop a disk-resident member. Runs at boot BEFORE any login can occur
+   *  vault subset can never drop a disk-resident member. Runs at boot before any login can occur
    *  (index.ts, right after migrateAccountsIntoVault). Idempotent. Mirrors hydrateEnvProxies. */
   hydrateRuleProxies(): void {
     if (!AccountVault.isEnabled()) return;
@@ -463,7 +463,7 @@ export class AccountManager {
         for (const p of vaulted) if (!seen.has(p)) { rule.proxies.push(p); seen.add(p); }
       }
       // F9: on external file skew (a hand-copied vault.enc/accounts.json from different points) the
-      // union differs from BOTH the vault copy and the blanked disk copy. Re-vault the union NOW so
+      // union differs from both the vault copy and the blanked disk copy. Re-vault the union NOW so
       // save() can re-blank the disk — otherwise `sameProxyList` can never match a superset and the
       // credential union is re-written PLAINTEXT into accounts.json/.bak on every subsequent save.
       if (!AccountManager.sameProxyList(vaulted, rule.proxies)) {
@@ -472,7 +472,7 @@ export class AccountManager {
       }
     }
     if (reVaulted > 0) {
-      // Transition write: purge the (plaintext-union) .bak FIRST, then save(backup:false) so the
+      // Transition write: purge the (plaintext-union) .bak first, then save(backup:false) so the
       // pre-blank plaintext disk copy is never snapshotted (verbatim the enterVaultMode sequence).
       const bak = `${DB_PATH}.bak`;
       try { if (fsExtra.existsSync(bak)) fsExtra.removeSync(bak); }
@@ -533,7 +533,7 @@ export class AccountManager {
         `(${mismatches.slice(0, 5).join(', ')}${mismatches.length > 5 ? '…' : ''}). Legacy proxy config stays ` +
         `authoritative; will retry next boot.`,
       );
-      return; // rules synthesized + vaulted, but NOT live — re-attempt next boot
+      return; // rules synthesized + vaulted, but not live — re-attempt next boot
     }
 
     // 3) Cut over. Legacy fields are intentionally LEFT populated (downgrade-rollback insurance).
@@ -625,7 +625,7 @@ export class AccountManager {
   activateProxyRules(): string[] {
     const before = this.snapshotEffective(); // straddle the flag flip → the legacy→rules egress delta (F5)
     if (AccountVault.isEnabled()) {
-      let moved = 0; // T5: import each pool, then ONE vault re-encrypt (was one save PER rule)
+      let moved = 0; // T5: import each pool, then one vault re-encrypt (was one save PER rule)
       for (const r of this.db.proxyRules ?? []) {
         if (r.kind === 'pool' && r.proxies.length && AccountVault.importRuleProxies(r.id, r.proxies)) moved++;
       }
@@ -637,7 +637,7 @@ export class AccountManager {
   }
 
   /** F3: when rules are AUTHORITATIVE, ensure each given account is pinned by an account-scope rule to
-   *  its dedicated proxy (or forced local IP) — otherwise an account imported/created AFTER cutover has
+   *  its dedicated proxy (or forced local IP) — otherwise an account imported/created after cutover has
    *  its `networkOverride`/vault proxy ignored by the engine and rides a broader rule (or the host IP).
    *  Groups by distinct proxy value (mirrors synthesizeRules): find-or-create one account-scope pool
    *  rule per proxy + one shared `kind:'local'` rule for forced-local. Legacy fields are still written
@@ -691,7 +691,7 @@ export class AccountManager {
   getAllFolders(): Folder[] { return this.db.folders.map(f => ({ ...f })); }
 
   /** "Who gets what" — the effective resolution for every account under the CURRENT rules (evaluated
-   *  regardless of the authoritative flag, so it can be reviewed BEFORE activation). The caller MUST
+   *  regardless of the authoritative flag, so it can be reviewed before activation). The caller MUST
    *  redact each network.value before display. */
   resolutionPreview(): Array<{
     username: string; environmentId: string; folderId: string | null;
@@ -734,7 +734,7 @@ export class AccountManager {
 
   private snapshotEffective(): Map<string, string> {
     const m = new Map<string, string>();
-    // T3: build ONE precomputed ctx for the whole-fleet sweep (the mutation hot path resolves every
+    // T3: build one precomputed ctx for the whole-fleet sweep (the mutation hot path resolves every
     // account twice) instead of per-account. Peek only — never advances a rotation cursor.
     const ctx = this.db.proxyRulesAuthoritative ? this.ruleCtx(false, true) : null;
     for (const a of this.db.accounts) {
@@ -817,7 +817,7 @@ export class AccountManager {
   }): { rule: ProxyRule; affected: string[] } {
     const rule = (this.db.proxyRules ?? []).find(r => r.id === id);
     if (!rule) throw new Error(`Proxy rule "${id}" not found`);
-    // F6: compute + VALIDATE everything into locals; assign onto the live rule only after EVERY check
+    // F6: compute + VALIDATE everything into locals; assign onto the live rule only after every check
     // passes, so a failing PATCH never leaves memory diverged from disk.
     const nextScope = patch.scope !== undefined ? AccountManager.assertScope(patch.scope) : rule.scope; // F10
     const nextKind  = patch.kind  !== undefined ? AccountManager.assertKind(patch.kind)   : rule.kind;   // F10
@@ -913,7 +913,7 @@ export class AccountManager {
     };
     this.db.environments.push(env);
     // Write-through the (credential-bearing) proxy to the encrypted vault; save() then blanks
-    // the plaintext copy in accounts.json. (B20)
+    // the plaintext copy in accounts.json.
     if (env.proxy && AccountVault.isEnabled()) AccountVault.setEnvProxy(env.id, env.proxy);
     this.save();
     logger.info(`Environment created: ${env.name} (${env.id})`);
@@ -928,7 +928,7 @@ export class AccountManager {
     }
     if (typeof changes.proxy === 'string') {
       env.proxy = changes.proxy.trim();
-      // Write-through to the vault (empty string clears it); save() blanks the plaintext copy. (B20)
+      // Write-through to the vault (empty string clears it); save() blanks the plaintext copy.
       if (AccountVault.isEnabled()) AccountVault.setEnvProxy(env.id, env.proxy);
     }
     if (typeof changes.color === 'string') env.color = changes.color;
@@ -1031,7 +1031,7 @@ export class AccountManager {
           enabled: true, displayName: item.displayName, addedAt: new Date().toISOString(),
         };
         this.db.accounts.push(account);
-        // Defense-in-depth (C18 / INV-A3): vault the secret in vault mode so the final
+        // Defense-in-depth: vault the secret in vault mode so the final
         // save() blanks the plaintext password. The sole caller already gates vault mode,
         // but vaulting here makes addMany safe regardless of caller. Best-effort per item:
         // if the maFile can't be loaded the account stays plaintext (the non-destructive
@@ -1043,7 +1043,7 @@ export class AccountManager {
             // Vault now owns the secret — blank the in-memory plaintext copy so `secretFree`
             // (save(), l.216) stays true and B34 backups keep running. Identical semantics to
             // enterVaultMode (l.253) and the single-add route. ONLY after a successful upsert:
-            // the catch path below keeps plaintext (non-destructive guarantee). (H-ACC-017)
+            // the catch path below keeps plaintext (non-destructive guarantee).
             account.password = '';
           } catch (err) {
             logger.warn(`[${item.username}] bulk import: could not vault (kept plaintext until re-vaulted): ${(err as Error).message}`);
@@ -1126,7 +1126,7 @@ export class AccountManager {
     const account = this.rawGet(username);
     if (!account || account.steamId === steamId) return;
     account.steamId = steamId;
-    // H-ACC-019: rememberSteamId is called bare inside steam-user's 'loggedOn' emit chain, so a
+    // RememberSteamId is called bare inside steam-user's 'loggedOn' emit chain, so a
     // throwing save() (writeJsonAtomic keeps its throw contract; renameSync EPERM/EBUSY under AV is
     // the classic Windows case) would become an uncaughtException and, during a mass first-login,
     // tick the money-ops breaker. The steamId is a write-through CACHE: it stays set in memory, is
@@ -1289,7 +1289,7 @@ export class AccountManager {
     return this.withNetwork(account);
   }
 
-  /** Builds the nested folder/account tree for ONE environment (computed networks). */
+  /** Builds the nested folder/account tree for one environment (computed networks). */
   getTree(environmentId: string): AccountTree {
     const build = (parentId: string | null): TreeNode[] =>
       this.db.folders

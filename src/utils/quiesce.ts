@@ -1,19 +1,19 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  quiesce.ts – bounded "let in-flight money ops settle before teardown" drain.
 //
-//  WHY THIS EXISTS (H-XCT-005):
-//  S14 already gates the mid-session update SWAP on isBusy() so a buy/sell/trade/
+// WHY this EXISTS:
+//  S14 already gates the mid-session update swap on isBusy() so a buy/sell/trade/
 //  craft/move in flight is never hard-exited mid-commit. The far-more-common exit
-//  paths — graceful shutdown() and the re-license teardownFullApp() — did NOT: they
+//  paths — graceful shutdown() and the re-license teardownFullApp() — did not: they
 //  ran sessions.logoutAll() (severing every web session) with a createBuyOrder /
 //  sellitem / sendTrade still awaiting Steam's response, turning a routine "close
 //  the app" into the same ambiguous-commit state S3/B4 exist to protect against.
 //
-//  This shares S14's exact busy-set as ONE bounded drain: poll until no op is busy
+//  This shares S14's exact busy-set as one bounded drain: poll until no op is busy
 //  OR the deadline passes, then let teardown proceed. It is STRICTLY timeout-bounded
 //  — a wedged op must NEVER prevent exit — and it never retries the op itself (owner
 //  no-band-aid rule): the op is left to settle exactly once and the existing journal/
-//  ambiguity machinery (S3/B4/S15) handles whatever state results.
+// ambiguity machinery handles whatever state results.
 // ════════════════════════════════════════════════════════════════════════════
 
 export interface QuiesceOptions {

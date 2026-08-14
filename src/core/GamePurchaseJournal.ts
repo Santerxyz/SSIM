@@ -2,7 +2,7 @@ import { MoneyOpJournal } from './MoneyOpJournal';
 import { dataDir } from '../utils/paths';
 
 // ── W4_41 — GamePurchaseJournal: double-spend dedup for wallet-funded store purchases ──────
-// A MoneyOpJournal on its OWN file (keyed by `${username}:${subId}`, op label 'game-purchase') so a
+// A MoneyOpJournal on its own file (keyed by `${username}:${subId}`, op label 'game-purchase') so a
 // corrupt/locked purchase journal can never degrade buy/send or wallet-redeem dedup — and vice-versa.
 // Inherits the full never-throw / atomic / unreliable-gated / TTL-swept / S15-refusal contract
 // verbatim; only the on-disk file differs.

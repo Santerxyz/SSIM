@@ -1,9 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  S3 — was a money-commit failure TRANSPORT-AMBIGUOUS?
+// Was a money-commit failure TRANSPORT-AMBIGUOUS?
 //
 //  i.e. the request may have reached Steam and PLACED the buy order / SENT the
 //  trade offer, but the RESPONSE was lost — vs. a definite rejection or a
-//  pre-commit failure. An ambiguous failure must NOT consume the MoneyOpJournal
+//  pre-commit failure. An ambiguous failure must not consume the MoneyOpJournal
 //  entry: leaving it makes a retry hit the refuse-once gate instead of firing a
 //  second real order/offer (a double-spend).
 //
@@ -14,13 +14,13 @@
 //   • createBuyOrder marks the response-leg-lost case with `verifyBeforeRetry`
 //     (its resting-order probe couldn't confirm through the same broken proxy).
 //   • trade sends have no such flag → match the transport signal on message/code.
-//   • a definite Steam rejection carries a numeric `eresult` → NOT ambiguous,
+//   • a definite Steam rejection carries a numeric `eresult` → not ambiguous,
 //     EXCEPT the ambiguous-by-definition codes (16 Timeout).
 //
 //  Pure + side-effect-free; the DO-NOT-TOUCH createBuyOrder finalize re-POST is
 //  never involved (this only reads the error it already throws).
 //
-//  The transport-string verdict comes from the shared taxonomy (H-XCT-001); the
+// The transport-string verdict comes from the shared taxonomy; the
 //  verifyBeforeRetry / numeric-eresult semantics stay here.
 // ════════════════════════════════════════════════════════════════════════════
 

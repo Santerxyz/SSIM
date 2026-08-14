@@ -15,7 +15,7 @@ export interface NetworkConfig {
 
 /**
  * An Environment is the new top-level grouping (e.g. "Deutschland-Farm").
- * It owns ONE global (rotating) proxy string that all of its accounts inherit,
+ * It owns one global (rotating) proxy string that all of its accounts inherit,
  * plus its own folder/account structure (scoped via environmentId).
  */
 export interface Environment {
@@ -24,7 +24,7 @@ export interface Environment {
   /**
    * The single global rotating proxy for this environment. Runtime: empty = local IP.
    * ON DISK in vault mode this is blanked once the value is provably in the encrypted
-   * vault (B20) — the vault copy is authoritative; see AccountManager.envProxyFor/
+   * vault — the vault copy is authoritative; see AccountManager.envProxyFor/
    * hydrateEnvProxies.
    */
   proxy:     string;
@@ -55,7 +55,7 @@ export interface AccountConfig {
   /**
    * RESOLVED network – COMPUTED at read-time by AccountManager (from
    * networkOverride or the environment's proxy) and attached to every account
-   * object it returns. NOT persisted. SessionManager/AgentFactory read this, so
+   * object it returns. not persisted. SessionManager/AgentFactory read this, so
    * the trade-isolation chain stays untouched.
    */
   network?:    NetworkConfig;
@@ -63,7 +63,7 @@ export interface AccountConfig {
    * Optional per-account proxy override. When set it wins over the environment
    * proxy; when absent the account inherits `environment.proxy`. This is what
    * gets persisted (not `network`). In vault mode a credential-bearing `proxy`
-   * override is NOT persisted here — it is blanked at save and lives in the vault;
+   * override is not persisted here — it is blanked at save and lives in the vault;
    * only the non-secret `localip` form persists in accounts.json.
    */
   networkOverride?: NetworkConfig;
@@ -73,7 +73,7 @@ export interface AccountConfig {
   displayName?: string;
   /**
    * Cached SteamID64 (the account's permanent, PUBLIC identifier), learned on the first
-   * login and written-through here so it's available WITHOUT a login forever after. Lives in
+   * login and written-through here so it's available without a login forever after. Lives in
    * accounts.json (non-secret) rather than the encrypted vault. CRITICAL: always a STRING —
    * a maFile's numeric Session.SteamID exceeds Number.MAX_SAFE_INTEGER and rounds, so it must
    * never be the source; session.getSteamID64() is exact.
@@ -97,8 +97,8 @@ export interface AccountConfig {
   userAgent?:  string;
   /**
    * Manual trade-protection date (ISO 8601). Steam's new "Trade Protection"
-   * (Trade Protection) is NOT exposed via any web inventory API, so the user can
-   * set this per account to mark ALL of its items as locked until the given date.
+   * (Trade Protection) is not exposed via any web inventory API, so the user can
+   * set this per account to mark all of its items as locked until the given date.
    * When in the future it overrides the per-asset auto-tracking for display.
    * Empty/absent/past = no manual protection. Malformed (unparseable) values are
    * treated as NO protection and logged as a warning at read time — use ISO 8601.
@@ -183,14 +183,14 @@ export interface MaFile {
   token_gid?:       string;
   /**
    * SDA writes these as raw JSON numbers exceeding Number.MAX_SAFE_INTEGER — the numeric form is
-   * ALREADY precision-corrupted by JSON.parse and must never be converted to a string or used as an id.
+   * already precision-corrupted by JSON.parse and must never be converted to a string or used as an id.
    * Only a `typeof === 'string'` value matching /^7656\d{13}$/ is trustworthy; resolve ids per
    * BanService.resolveSteamId (raw-text regex / filename / live session).
    */
   steamid?:         string | number;
   /**
    * @deprecated dead SDA web-session data — nothing in src/ reads it; parse-time normalization deletes
-   * it (H-ACC-073); typed only to describe legacy vault records.
+   * it; typed only to describe legacy vault records.
    */
   Session?: {
     SessionID?:        string;
@@ -217,8 +217,8 @@ export interface AccountsDatabase {
    */
   proxyRules?:  ProxyRule[];
   /**
-   * Set true ONLY after the migration proves EVERY account's egress is unchanged under the rules.
-   * The runtime resolver gates on THIS flag — never on `proxyRules.length` — so a synthesized-but-
+   * Set true ONLY after the migration proves every account's egress is unchanged under the rules.
+   * The runtime resolver gates on this flag — never on `proxyRules.length` — so a synthesized-but-
    * unproven rule set never goes live. See AccountManager.migrateProxyRules. (v5)
    */
   proxyRulesAuthoritative?: boolean;

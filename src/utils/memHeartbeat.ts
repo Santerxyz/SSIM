@@ -6,11 +6,11 @@ import { armInterval } from './intervalGuard';
 // ════════════════════════════════════════════════════════════════════════════
 //  memHeartbeat.ts – periodic memory/handle trajectory recorder.
 //
-//  WHY THIS EXISTS:
+//  WHY this EXISTS:
 //  SSIM's deaths are SILENT — no crash-log.txt (the JS uncaught handlers keep the
 //  process alive) and no Node diagnostic report (an OS-level resource reclaim is
 //  not a V8 fatal, so reportOnFatalError never fires). That leaves us blind to the
-//  ONE thing that matters: was memory/handle count climbing toward a ceiling right
+//  one thing that matters: was memory/handle count climbing toward a ceiling right
 //  before the window vanished?
 //
 //  This writes a one-line JSON sample every SSIM_HEARTBEAT_MS to a dedicated file
@@ -39,7 +39,7 @@ let timer: NodeJS.Timeout | undefined;
 let bytesWritten = 0;
 /** Monotonic ms of the previous sample — used to detect an EVENT-LOOP STALL (a gap far larger
  *  than INTERVAL_MS means the loop was blocked, e.g. by sync IO or stdout-pipe backpressure, so the
- *  timer couldn't fire on time). A stall freezes BOTH this heartbeat and ssim.log at once, which
+ *  timer couldn't fire on time). A stall freezes both this heartbeat and ssim.log at once, which
  *  otherwise reads identically to an external kill; recording the gap makes it diagnosable. Uses a
  *  monotonic clock (not Date.now) so a host sleep/resume or clock jump can't fabricate a fake stall. */
 let lastSampleAt = 0;
@@ -86,7 +86,7 @@ function sample(): void {
     }
     if (stalledMs) rec.stallMs = stalledMs; // event-loop stall breadcrumb (only when one occurred)
     const line = JSON.stringify(rec) + '\n';
-    // Roll FIRST (so this sample lands in the fresh file), gated by the in-process counter — no statSync.
+    // Roll first (so this sample lands in the fresh file), gated by the in-process counter — no statSync.
     if (bytesWritten > MAX_BYTES) {
       try { fs.renameSync(HEARTBEAT_FILE, HEARTBEAT_FILE + '.1'); } catch { /* rename raced – ignore */ }
       bytesWritten = 0;

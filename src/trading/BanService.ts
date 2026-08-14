@@ -15,7 +15,7 @@ import { logger, redactSecrets } from '../utils/logger';
 //
 //  Fetches every ban type for a set of accounts and categorises them into
 //  buckets (clean / VAC / game / community / economy-trade). The canonical
-//  source for ALL ban types in one call is the Steam Web API endpoint
+//  source for all ban types in one call is the Steam Web API endpoint
 //  ISteamUser/GetPlayerBans, which returns VAC + game + community + economy
 //  flags together (the public profile XML only exposes VAC + trade state).
 //
@@ -28,7 +28,7 @@ import { logger, redactSecrets } from '../utils/logger';
 //  that one. An explicit STEAM_WEB_API_KEY env var, when set, wins globally (zero
 //  Steam round-trips) and is never cached.
 //
-//  SteamIDs are resolved WITHOUT a login wherever possible (live session →
+//  SteamIDs are resolved without a login wherever possible (live session →
 //  maFile Session.SteamID → the maFile filename, which is the SteamID64), so a
 //  whole folder is checked with at most one login (for the key).
 // ════════════════════════════════════════════════════════════════════════════
@@ -37,8 +37,8 @@ import { logger, redactSecrets } from '../utils/logger';
 const BANS_BATCH = 100;
 /**
  * Hard cap on accounts checked per AUTO-acquired Web API key. After this many, the checker rotates
- * to ANOTHER key sourced from the SAME environment; a key is NEVER reused across environments. Kept
- * below Steam's 100/request limit so an environment's load is spread over a few of its OWN keys
+ * to ANOTHER key sourced from the same environment; a key is NEVER reused across environments. Kept
+ * below Steam's 100/request limit so an environment's load is spread over a few of its own keys
  * rather than hammering one. (An explicit STEAM_WEB_API_KEY override is the operator's own single
  * key and is exempt — see checkBans.)
  */
@@ -51,7 +51,7 @@ const BANS_PER_KEY = 50;
 const BAN_CHECK_CONCURRENCY = 3;
 /**
  * Per-account budget for the login + Web API key mint. A Steam call still pending past this is
- * abandoned (the account is marked unable to provide a key) so ONE hung account can never stall the
+ * abandoned (the account is marked unable to provide a key) so one hung account can never stall the
  * whole run — that un-timed call is the real "ban check never finishes" failure.
  */
 const KEY_MINT_TIMEOUT_MS = 20_000;
@@ -349,7 +349,7 @@ export class BanService {
    * Acquires up to `needed` Web API keys from accounts WITHIN one environment (never another).
    * Already-logged-in env accounts are tried first (free); minting from a not‑yet‑logged‑in
    * account counts against ENV_KEY_LOGIN_CAP so a huge env never triggers a mass login. Each
-   * account sources at most ONE key. Returns the keys it could get (may be fewer than needed).
+   * account sources at most one key. Returns the keys it could get (may be fewer than needed).
    */
   private async acquireEnvKeys(envId: string, candidates: string[], needed: number): Promise<string[]> {
     if (needed <= 0 || candidates.length === 0) return [];
@@ -357,7 +357,7 @@ export class BanService {
     const rest  = candidates.filter((u) => !this.sessions.isReady(u));
     const ordered = [...new Set([...ready, ...rest])];
     // Seed from the process-lifetime cache: a prior run's keys for this env need no re-login. The
-    // `keys.length >= needed` guard below then skips ALL minting when the cache already covers us.
+    // `keys.length >= needed` guard below then skips all minting when the cache already covers us.
     const keys: string[] = [...(this.envKeys.get(envId) ?? [])];
     let logins = 0;
     for (const username of ordered) {
@@ -368,7 +368,7 @@ export class BanService {
       // the account live only for the one getWebApiKey/createWebApiKey call below.
       const wasLiveBefore = this.sessions.isLive(username);
       if (willLogin) logins++; // count the ATTEMPT up front so a timeout still respects the login cap
-      // Whole per-account mint (login + key fetch/create). Hoisted so the release can chain to THIS
+      // Whole per-account mint (login + key fetch/create). Hoisted so the release can chain to this
       // promise: a stalled call is abandoned by the ~20s budget below (the account provides no key,
       // instead of hanging the run), but the session release still fires the moment OUR mint settles.
       const mint = (async () => {
@@ -394,13 +394,13 @@ export class BanService {
     return keys;
   }
 
-  /** Release a session WE created to mint a key — chained to OUR OWN login/mint promise, not a blind
+  /** Release a session WE created to mint a key — chained to OUR own login/mint promise, not a blind
    *  wall-clock timer. On the happy/failed path `op` is already settled so `drop` runs on the next
    *  microtask (identical to the old immediate drop); on the timeout path the release fires the
    *  moment OUR login/mint actually lands (or fails) — including a semaphore-queued login that lands
    *  long after our timeout — so it can never yank a session another flow just created, and never
    *  leaves the post-horizon leak a fixed 20s timer misses. If `op` never settles, the idle reaper
-   *  (S11) reclaims the session — a bounded outcome, not the old timer's blind blast radius. */
+   * reclaims the session — a bounded outcome, not the old timer's blind blast radius. */
   private releaseWhenSettled(username: string, op: Promise<unknown>): void {
     const drop = (): void => { if (this.sessions.isLive(username)) void this.sessions.logoutAccount(username).catch(() => undefined); };
     void op.then(drop, drop);
@@ -564,7 +564,7 @@ export class BanService {
         const { account, info } = queue.shift()!;
         // The SteamID is read synchronously right after login, so this login is ours to release.
         const wasLiveBefore = this.sessions.isLive(account.username);
-        // Hoisted so the release chains to THIS login promise (not a blind timer): a login that lands
+        // Hoisted so the release chains to this login promise (not a blind timer): a login that lands
         // after our timeout releases when it settles, and can't yank a session another flow started.
         const login = this.trades.getTrader(account.username); // logs in if needed (+ persists a refresh token)
         try {

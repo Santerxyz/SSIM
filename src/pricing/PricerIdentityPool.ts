@@ -6,10 +6,10 @@ import type { HttpAgent } from '../network/AgentFactory';
 //
 //  WHY: Steam's ANONYMOUS market/priceoverview budget is per-IP, tiny, and — on the
 //  fleet's shared rotating residential pool — routinely PRE-EXHAUSTED by other
-//  tenants, so a cold request 429s while the SAME proxies carry authenticated
+//  tenants, so a cold request 429s while the same proxies carry authenticated
 //  traffic fine. The fix is to stop being anonymous: every price request rides a
 //  real logged-in session's cookie (attributing the request to that account's
-//  budget) over that account's OWN egress agent (the IP the cookie was issued to).
+//  budget) over that account's own egress agent (the IP the cookie was issued to).
 //
 //  This module is pure + framework-free: SessionManager gathers the web-ready
 //  candidates, `pickPricerIdentities` builds the cookie header + validates auth.

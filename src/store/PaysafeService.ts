@@ -5,7 +5,7 @@ import { logger } from '../utils/logger';
 //
 //  The whole flow is browser-driven (owner 2026-07-09): SSIM opens each account's store
 //  addfunds checkout pre-authenticated through the account's proxy; the OPERATOR enters the
-//  PIN + any captcha ON THE PAGE. So SSIM NEVER handles the PIN (it lives only in the
+//  PIN + any captcha ON the PAGE. So SSIM NEVER handles the PIN (it lives only in the
 //  browser) — SSIM's job is purely: sequence the accounts, and RECONCILE by reading the wallet.
 //
 //  Money-safety:
@@ -14,7 +14,7 @@ import { logger } from '../utils/logger';
 //     reconciliation, not dedup.
 //   • EUR-ONLY (owner 2026-07-10). Every amount here — the tier, the baseline, the read-back and the
 //     threshold — is EURO-CENTS. Nothing is converted. The previous design normalised balances to USD
-//     through a LIVE fx rate, so a rate that moved between the baseline read and the read-back
+//     through a live fx rate, so a rate that moved between the baseline read and the read-back
 //     manufactured a phantom "credit" on any large wallet. Reconciling in the account's native unit
 //     removes that class of bug outright rather than papering over it.
 //   • Each account records a wallet BASELINE before its checkout opens; a wallet read-back CLASSIFIES
@@ -31,7 +31,7 @@ import { logger } from '../utils/logger';
 //  tick, i.e. up to 24 destroy+handshake cycles per account, which risks Steam login throttling and is
 //  exactly the CM-socket teardown storm implicated in the 0xC0000409 native fast-fail.
 //
-//  Exactly ONE run at a time (you can only drive one browser at once). Gated: SSIM_PAYSAFE_EXPERIMENTAL
+//  Exactly one run at a time (you can only drive one browser at once). Gated: SSIM_PAYSAFE_EXPERIMENTAL
 //  — only =0 hard-disables it.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -46,7 +46,7 @@ const AUTO_POLL_MAX = 24;
 const FORCE_LOGIN_EVERY = 6;
 
 /** Amount guard rails, in EURO-CENTS. The CEILING is money-safety (a fat-fingered "50000" must not become a
- *  €50 000 checkout) and is enforced BOTH here and at the route. The FLOOR is a product rule (Steam's
+ *  €50 000 checkout) and is enforced both here and at the route. The FLOOR is a product rule (Steam's
  *  smallest real top-up) and is enforced at the route only — startBatch deliberately accepts any positive
  *  amount so the classifier's `max(1, …)` lower-bound stays exercisable down to a single cent. */
 export const PAYSAFE_MIN_MINOR = 100;        // €1.00
@@ -54,7 +54,7 @@ export const PAYSAFE_MAX_MINOR = 100_000;    // €1000.00 — paysafecard's per
 
 /** Credit-classification band, as a fraction of the intended amount. */
 const CREDIT_LO = 0.9;   // fee/rounding tolerance
-const CREDIT_HI = 1.1;   // above this the rise cannot be attributed to THIS top-up
+const CREDIT_HI = 1.1;   // above this the rise cannot be attributed to this top-up
 
 export type PaysafeAcctStatus = 'awaiting' | 'credited' | 'unconfirmed' | 'skipped' | 'error';
 
@@ -72,7 +72,7 @@ export interface PaysafeSession {
   running: boolean;
   /** True once a stop has been requested but an in-flight step still owns the run. */
   stopping: boolean;
-  amountMinor: number;           // EURO-CENTS — the checkout amount AND the credit-threshold basis
+  amountMinor: number;           // EURO-CENTS — the checkout amount and the credit-threshold basis
   currency: number;              // always 3 (EUR); carried so the UI never has to guess
   index: number;                 // 0-based index of the CURRENT account
   total: number;
@@ -87,13 +87,13 @@ export interface PaysafeDeps {
   /** Headlessly init a paysafecard top-up for `username` at the chosen amount (EURO-CENTS), then open the
    *  clean browser DIRECTLY on the paysafecard page (via Steam's externallink). No Steam DOM is driven.
    *  Returns the wallet balance AT OPEN TIME (euro-cents) as the reconcile baseline. Throws → 'error',
-   *  and because it throws BEFORE any browser opens, no charge can occur. */
+   *  and because it throws before any browser opens, no charge can occur. */
   openCheckout(username: string, checkout: { amountMinor: number }): Promise<{ warnings: string[]; proxy: string | null; walletMinor: number | null }>;
   /** The account's wallet balance in EURO-CENTS, or null when unknown/non-EUR (→ `unconfirmed`, never a
-   *  false credit). `allowLogin:false` must NOT re-login: it reads the resident session Steam pushes
+   *  false credit). `allowLogin:false` must not re-login: it reads the resident session Steam pushes
    *  balance updates to. `allowLogin:true` may force a fresh login as a staleness backstop. */
   readWalletMinor(username: string, opts: { allowLogin: boolean }): Promise<number | null>;
-  /** Release any Steam session THIS feature created for `username` (called once we're done with it), so a
+  /** Release any Steam session this feature created for `username` (called once we're done with it), so a
    *  long batch cannot walk the fleet into the resident-session ceiling. Never touches a session another
    *  operation owns. */
   releaseAccount(username: string): Promise<void>;
@@ -114,7 +114,7 @@ export class PaysafeService {
 
   status(): PaysafeSession | null { return this.session; }
 
-  /** App teardown / license re-gate: stop the auto-poll and drop ALL in-memory state. Leaving
+  /** App teardown / license re-gate: stop the auto-poll and drop all in-memory state. Leaving
    *  `stopRequested` set here would poison the next run (it would end after its first account). */
   shutdown(): void {
     this.clearAuto();
@@ -148,7 +148,7 @@ export class PaysafeService {
 
   // ── Run lifecycle ──────────────────────────────────────────────────────────
 
-  /** End the run. Clearing `stopRequested` HERE is what stops a deferred stop from leaking into the next
+  /** End the run. Clearing `stopRequested` here is what stops a deferred stop from leaking into the next
    *  run (which would otherwise terminate after its very first account). */
   private finish(): void {
     const s = this.session;
@@ -234,7 +234,7 @@ export class PaysafeService {
   private async openNextOrFinish(): Promise<void> {
     const s = this.session!;
     await this.releaseCurrent();
-    if (this.stopRequested) return;               // drainStop ends the run — do NOT open another browser
+    if (this.stopRequested) return;               // drainStop ends the run — do not open another browser
     s.index++;
     if (s.index >= s.total) { this.finish(); return; }
     await this.openUntilOpenedOrDone();

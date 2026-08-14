@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  RateLimiter — bounded request pacing for ONE CSFloat API key.
+//  RateLimiter — bounded request pacing for one CSFloat API key.
 //
 //  CSFloat publishes no rate-limit numbers (only a 429) and limits PER KEY/IP, so
 //  all clients built from the same key MUST share a single limiter (see

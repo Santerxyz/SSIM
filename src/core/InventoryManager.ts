@@ -103,7 +103,7 @@ export class InventoryManager {
         headers: {
           // Chromium fingerprint (Client Hints + Sec-Fetch + browser Accept-Encoding incl. brotli,
           // which axios decodes) so Steam's 2026-07 bot-check doesn't 429 the inventory read. UA-aware:
-          // an account with a custom (non-Chrome-124) userAgent gets the Sec-Fetch/Accept set WITHOUT the
+          // an account with a custom (non-Chrome-124) userAgent gets the Sec-Fetch/Accept set without the
           // Chrome-124 Client Hints, so the UA and the hints never contradict. Spread first; the
           // endpoint-specific values below (XHR Accept, en-US, Referer) win on collision.
           ...steamXhrHeadersFor(userAgent),
@@ -123,7 +123,7 @@ export class InventoryManager {
       // If the web call fails for a non-rate-limit reason, the cookies may simply have
       // expired — including MID-PAGINATION on a long fetch (#33), where the old page-0-only
       // guard discarded every page already fetched. Re-issue cookies via webLogOn() on the
-      // SAME open connection (no full re-login, no IP hop) and retry THIS page once.
+      // same open connection (no full re-login, no IP hop) and retry this page once.
       if (res.status !== 200 && res.status !== 429) {
         logger.warn(`[${username}] inventory call (page ${page}) returned HTTP ${res.status} – refreshing web session and retrying once`);
         // Only the cookie renewal is guarded: on refresh failure we keep the old `res` and fall
@@ -155,10 +155,10 @@ export class InventoryManager {
 
       const body = res.data;
 
-      // S4: distinguish an AUTHORITATIVE empty inventory (Steam answered success with zero assets)
+      // Distinguish an AUTHORITATIVE empty inventory (Steam answered success with zero assets)
       // from an UNUSABLE page-0 body (null / HTML error page / {success:false} / {success:0} / {}).
-      // The old code coerced BOTH into a "successful empty inventory" (success:1), so a transient bad
-      // body on ONE context (ctx2 owned vs ctx16 trade-locked/listed) silently dropped that whole
+      // The old code coerced both into a "successful empty inventory" (success:1), so a transient bad
+      // body on one context (ctx2 owned vs ctx16 trade-locked/listed) silently dropped that whole
       // context from the MERGED cache while the other context kept rawCount>0 — the item-state
       // divergence, and a weakened send-side trade-lock guard. On page 0 an unusable body now THROWS
       // (a per-account fetch failure the caller records, preserving the cache) instead of committing a
@@ -171,7 +171,7 @@ export class InventoryManager {
       }
       if (page > 0 && !authoritative) {
         // Later pages only (page 0 is handled above by the throw): an unusable body (null / HTML /
-        // {success:0} / {}) must NOT masquerade as the complete inventory — a break preserves the
+        // {success:0} / {}) must not masquerade as the complete inventory — a break preserves the
         // pages already fetched (#33) but flags the result PARTIAL so the fuller-cache guard fires.
         logger.warn(`[${username}] inventory page ${page} body not authoritative (${describeBody(body)}) – keeping ${assets.length} assets fetched so far, result marked PARTIAL`);
         midPageFail = true;
@@ -182,7 +182,7 @@ export class InventoryManager {
       for (const d of body.descriptions ?? []) descByKey.set(`${d.classid}_${d.instanceid}`, d);
       if (body.total_inventory_count != null) { totalCount = body.total_inventory_count; sawTotal = true; }
 
-      // Continue only while Steam signals more pages AND advances the cursor.
+      // Continue only while Steam signals more pages and advances the cursor.
       if (body.more_items && body.last_assetid && body.last_assetid !== startAssetId) {
         if (page === MAX_INVENTORY_PAGES - 1) { hitPageCap = true; break; } // more pages exist but we hit the cap
         startAssetId = body.last_assetid;
@@ -235,7 +235,7 @@ export class InventoryManager {
       items.push(InventoryManager.mapItem(asset, desc, steamId, game));
     }
     // Descriptions are deduped by classid_instanceid, so identical items legitimately SHARE
-    // one description (e.g. 31 assets / 28 descriptions = 3 duplicate skins) — that is NOT a
+    // one description (e.g. 31 assets / 28 descriptions = 3 duplicate skins) — that is not a
     // drop and every asset still maps. A genuine orphan (asset with NO description at all) is
     // rare and DOES vanish from the count, so surface it loudly to keep the totals honest.
     if (orphans > 0) {
@@ -262,8 +262,8 @@ export class InventoryManager {
       tradable:        desc.tradable === 1,
       marketable:      desc.marketable === 1,
       // Trade-lock from Steam's own data: the "Tradable/Marketable After …" notice in
-      // owner_descriptions — present in CS2 context 2 (market-bought holds) AND context
-      // 16 (trade-received holds). For CS2 we do NOT use the cache_expiration fallback
+      // owner_descriptions — present in CS2 context 2 (market-bought holds) and context
+      // 16 (trade-received holds). For CS2 we do not use the cache_expiration fallback
       // (it's a description-cache TTL, not a real hold → false positives); TF2 keeps it.
       tradeLockExpiry: parseTradeLock(desc, game === 'tf2'),
       quantity:        1,
@@ -274,11 +274,11 @@ export class InventoryManager {
     };
   }
 
-  // ── 2b) Stack identical items (same name AND same trade-lock state) ─────────
+  // ── 2b) Stack identical items (same name and same trade-lock state) ─────────
 
   /**
    * Collapses duplicate items into stacks. Two items only stack when they share
-   * the SAME market_hash_name AND the SAME trade-lock expiry – items locked until
+   * the same market_hash_name and the same trade-lock expiry – items locked until
    * different dates must remain separate stacks. Each stack carries quantity and
    * the full list of underlying asset IDs. Accepts both single items and
    * already-stacked inputs (quantity>1) — merging is quantity-aware.
@@ -289,7 +289,7 @@ export class InventoryManager {
     for (const item of items) {
       // Trade-lock timestamp (or 'none') is part of the key → different locks split.
       const lockKey = item.tradeLockExpiry ? item.tradeLockExpiry.toISOString() : 'none';
-      // Pending-2FA listings must not collapse into confirmed ones (C9 / INV-D4) —
+      // Pending-2FA listings must not collapse into confirmed ones —
       // non-listed items have listingConfirmed === undefined → constant 'ok' suffix.
       const stateKey = item.listingConfirmed === false ? 'pending' : 'ok';
       const key = `${item.marketHashName}__${lockKey}__${stateKey}`;
@@ -340,7 +340,7 @@ export class InventoryManager {
       totalItems: realCount, // reflects the real number of items, not stack count
       fetchedAt:  new Date(),
       partial:    !!raw.truncated, // honest flag: a page-capped read is incomplete (C12)
-      reportedTotal: raw.total_inventory_count, // Steam's own total (undefined when omitted) → authoritative-empty signal (H-INV-005)
+      reportedTotal: raw.total_inventory_count, // Steam's own total (undefined when omitted) → authoritative-empty signal
     };
   }
 }
@@ -407,7 +407,7 @@ function normalizeExterior(value?: string): ItemExterior | null {
 
 /**
  * Deterministic sentinel expiry for a trade-lock notice whose DATE could not be
- * parsed. Constant (NOT now+7d) so that stack() identity — keyed on the ISO expiry
+ * parsed. Constant (not now+7d) so that stack() identity — keyed on the ISO expiry
  * (InventoryManager.stack ~:252) — and the displayed "locked until" stay stable
  * across refreshes instead of shifting every pass. Re-evaluated each refresh: if
  * Steam later serves a parseable date, the item picks it up. (B-5 / C22.)
@@ -431,7 +431,7 @@ export const MAX_YEARLESS_HOLD_DAYS = 30;
  */
 export const YEARLESS_PAST_GRACE_MS = 24 * 3600 * 1000;
 /**
- * How long a hold note stays authoritative AFTER the instant it states (see the elapsed-note branch
+ * How long a hold note stays authoritative after the instant it states (see the elapsed-note branch
  * in {@link parseTradeLock}). Steam serves item descriptions from a cache, so the note survives the
  * hold it describes by a few minutes; 30 covers that lag and the note's rounding to the whole minute
  * without inventing the multi-hour countdown the end-of-day over-lock used to produce.
@@ -443,7 +443,7 @@ export const STALE_HOLD_NOTE_MS = 30 * 60 * 1000;
  * per-owner "Tradable After <date>" notice (visible only on the OWNER view, which
  * is why the inventory fetch must be authenticated). `cache_expiration` is only a
  * weak fallback: on a freely-tradable item it is just a description-cache TTL
- * (minutes/hours out) and must NOT be mistaken for a trade hold – so we trust it
+ * (minutes/hours out) and must not be mistaken for a trade hold – so we trust it
  * only when the item is actually non-tradable. Returns null when freely tradable.
  */
 export function parseTradeLock(desc: RawDescription, allowCacheExpiration = false): Date | null {
@@ -481,10 +481,10 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
         // parsed but in the past → expired hold; keep scanning the other notices.
       }
       // 1b) GLOBAL (language-INDEPENDENT) hold parsing. `owner_descriptions` come back in the
-      //     ACCOUNT'S Steam language, NOT the l=english fetch param — so the English/month-name matcher
-      //     above misses EVERY non-English farm (owner report 2026-07-08: a German note "⇆ … kann bis
+      //     ACCOUNT'S Steam language, not the l=english fetch param — so the English/month-name matcher
+      //     above misses every non-English farm (owner report 2026-07-08: a German note "⇆ … kann bis
       //     12.7.2026, 14:00:00 …" showed a bare "Locked", no countdown). Two facts make a keyword-free
-      //     solution possible for ANY locale: (a) Steam prefixes trade-protection notes with the
+      //     solution possible for any locale: (a) Steam prefixes trade-protection notes with the
       //     language-independent "⇆" marker (U+21C6); (b) the expiry in these auto-generated notes is a
       //     NUMERIC/ISO/CJK/month-name date in virtually every locale. So: treat the note as a candidate
       //     hold when it carries "⇆" OR the item is non-tradable, then extract the date FORMAT-agnostically.
@@ -493,10 +493,10 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
         const d = extractHoldDate(v);
         if (d && d.getTime() > Date.now()) return d; // future hold → locked, with a real countdown
         // A short-form note whose stated instant has already passed (see YEARLESS_PAST_GRACE_MS).
-        // Remembered, NOT returned here: it only settles the item once we know no OTHER note carries
+        // Remembered, not returned here: it only settles the item once we know no other note carries
         // a genuinely future hold, which always wins. Resolved after the scan.
         if (d && !elapsedShortForm) elapsedShortForm = d;
-        // "⇆" alone does NOT prove a trade hold. Steam stamps the SAME marker on the market-listing
+        // "⇆" alone does not prove a trade hold. Steam stamps the same marker on the market-listing
         // note — "⇆ This item is listed on the Steam Community Market and cannot be consumed or
         // modified." — which carries no date and is not a hold at all. Treating it as one turned every
         // listed item into "Locked (date unknown)" (741 hits in one live log) and, worse, made a listed
@@ -515,7 +515,7 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
   // ── SHORT-FORM NOTE WHOSE INSTANT HAS ELAPSED ─────────────────────────────────────────────────
   // The short note names a clock time but no timezone; that clock is STEAM'S (Pacific — see
   // STEAM_TIME_ZONE), and extractHoldDate now resolves it as such. So reaching here means the hold
-  // Steam stated has genuinely passed, while Steam is STILL serving the note.
+  // Steam stated has genuinely passed, while Steam is still serving the note.
   //
   // That is a narrow, real window: Steam caches item descriptions, so the note outlives the hold by
   // minutes. It is not a reason to invent a long countdown. The first pass at this case held the item
@@ -535,7 +535,7 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
     logger.warn(`trade-lock note still present but its stated instant (${elapsedShortForm.toISOString()}) passed over ${Math.round(STALE_HOLD_NOTE_MS / 60000)} min ago — treating the note as stale; the item's own tradable flag now decides`);
   }
   if (unreadableHold) {
-    // Log the FULL note (JSON.stringify exposes hidden bidi/zero-width chars + the trailing text), not a
+    // Log the full note (JSON.stringify exposes hidden bidi/zero-width chars + the trailing text), not a
     // truncated 80-char prefix — the old slice(0,80) cut off exactly where the date begins, so every prior
     // fix flew blind. This reveals the exact date FORMAT so extractHoldDate can be taught it. (2026-07-10)
     logger.warn(`trade-lock notice present but date unparseable (${JSON.stringify(unreadableHold.slice(0, 400))}) [len=${unreadableHold.length}] – treating item as locked (date unknown)`);
@@ -554,7 +554,7 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
 /**
  * Does this note say WHEN a hold expires? A genuine trade-hold note always does — that is its entire
  * purpose: Steam auto-generates it with the expiry embedded, as a date in the account's locale (digits,
- * possibly Arabic-Indic) or, in English, behind an explicit "after"/"until". Steam's OTHER "⇆"-marked
+ * possibly Arabic-Indic) or, in English, behind an explicit "after"/"until". Steam's other "⇆"-marked
  * note — "⇆ This item is listed on the Steam Community Market and cannot be consumed or modified." —
  * names no moment, in any language.
  *
@@ -592,7 +592,7 @@ function normalizeDigitsAndBidi(s: string): string {
 }
 
 /**
- * Month-word → month-number map for EVERY Steam storefront locale, built from the ICU data
+ * Month-word → month-number map for every Steam storefront locale, built from the ICU data
  * Node already ships (full-icu) — no hand-written keyword table (the 8254d12 regression was
  * exactly a hand-coverage gap: worded months in non-Latin scripts — Arabic "يوليو", Russian
  * genitive "июля", Greek "Ιουλίου" — parsed by nothing). `formatToParts` with day+month+year
@@ -642,7 +642,7 @@ function normalizeYear(y: number): number { return y >= 2543 && y <= 2643 ? y - 
 /**
  * Valve formats its server-side timestamps in PACIFIC time — the storefront, the market, and the
  * trade-protection notice all share that clock. The notice never states a zone, so the clock in
- * "… until 12 Aug @ 4:00am" is Pacific, NOT ours, and reading it as local time is what put the
+ * "… until 12 Aug @ 4:00am" is Pacific, not ours, and reading it as local time is what put the
  * unlock hours off. Measured twice on the owner's fleet, both at exactly the PDT offset (-7):
  *   • note "11 Aug @ 12:00pm"  ⇄  the same item's Steam tooltip "11/08/2026, 19:00:00"
  *   • note "12 Aug @ 4:00am"   ⇄  the same item's Steam tooltip "12/08/2026, 11:00:00"
@@ -688,10 +688,10 @@ export function steamWallClock(y: number, mo: number, d: number, hh: number, mi:
  * Language-INDEPENDENT trade-hold date extraction (owner request 2026-07-08: "something global").
  * Steam localises the hold note into the account's language, so keyword parsing does not scale to
  * ~28 locales. Scan the note for every date shape Steam emits — numeric (any component order),
- * CJK/Hangul, and worded-month in ANY Steam locale via the ICU-built month map — and return the
+ * CJK/Hangul, and worded-month in any Steam locale via the ICU-built month map — and return the
  * EARLIEST FUTURE one (the hold expiry). Only called once a note is already known to be a hold
  * (the "⇆" marker or a non-tradable item), so a stray date cannot false-lock a tradable item.
- * A note that STILL doesn't parse falls back to the caller's locked-date-unknown sentinel — that
+ * A note that still doesn't parse falls back to the caller's locked-date-unknown sentinel — that
  * fail-safe is correct; the frontend renders the sentinel as "date unknown", never as a countdown.
  *
  * TIMEZONE: localized numeric/CJK notes carry no zone, so those instants are built in the running
@@ -738,7 +738,7 @@ export function extractHoldDate(rawText: string): Date | null {
   // Vietnamese numeric-word month  "16 tháng 7, 2026"
   const vi = new RegExp(`(\\d{1,2})\\s+th[áa]ng\\s+(\\d{1,2})\\s*,?\\s*(\\d{4})${T}`, 'gi');
   while ((m = vi.exec(text))) push(+m[3], +m[2], +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
-  // Worded month, ANY Steam locale (ICU map): "16 Ιουλίου 2026" / "16 يوليو 2026" / "16 июля 2026 г."
+  // Worded month, any Steam locale (ICU map): "16 Ιουλίου 2026" / "16 يوليو 2026" / "16 июля 2026 г."
   // Day-first ("16 de julio de 2026") and month-first ("July 16, 2026") shapes; the month-word
   // lookup is the gate, so an unknown word simply doesn't match — no false positives.
   const dayFirst = new RegExp(`(\\d{1,2})\\.?(?:\\s+de|\\s+of)?\\s+([\\p{L}\\p{M}]{2,20})\\.?(?:\\s+de|\\s+of)?\\s+(\\d{4})${T}`, 'gu');
@@ -778,7 +778,7 @@ export function extractHoldDate(rawText: string): Date | null {
                          : (h === 12 ? 0 : h);          // am: 12→0
   };
   const yNow = new Date(now).getFullYear();
-  // Year-less candidates are kept in their OWN pool, never pushed into `cand`. They are guesses (the year
+  // Year-less candidates are kept in their own pool, never pushed into `cand`. They are guesses (the year
   // is inferred, not stated), so they must clear the horizon check below — a year-BEARING date states its
   // year and is trusted as-is.
   const ncand: number[] = [];
@@ -801,7 +801,7 @@ export function extractHoldDate(rawText: string): Date | null {
   while ((m = nyMon.exec(text))) { const mo = monthWords().get(monthWordKey(m[1])); if (mo) pushNoYear(mo, +m[2], to24(+m[3], m[5]), +m[4]); }
 
   // HORIZON GUARD (2026-07-31 — owner bug: "Storage Unit tradelocked for 222 days").
-  // A year-less note whose date has ALREADY PASSED this year (an EXPIRED hold, e.g. "11 Mar @ 2:00pm" read
+  // A year-less note whose date has already PASSED this year (an EXPIRED hold, e.g. "11 Mar @ 2:00pm" read
   // in July) was rolled to yNow+1 by the future-filter and surfaced as a ~222-day phantom lock. Steam's
   // longest hold is 15 days (trade protection / market hold; CS2's trade lock is 7), so a year-less
   // candidate beyond MAX_YEARLESS_HOLD_DAYS cannot be a real hold — it is either an expired note or an
@@ -828,7 +828,7 @@ export function extractHoldDate(rawText: string): Date | null {
   // paths (isSellable requires tradable === true regardless of this date).
   //
   // The 222-day phantom lock this guard was built for is untouched: a note months in the past falls
-  // outside the grace AND its roll-over stays beyond the horizon, so it still resolves to null.
+  // outside the grace and its roll-over stays beyond the horizon, so it still resolves to null.
   const recent = ncand.filter(t => t <= now && t >= now - YEARLESS_PAST_GRACE_MS).sort((a, b) => b - a);
   return recent.length ? new Date(recent[0]) : null;
 }

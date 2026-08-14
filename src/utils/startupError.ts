@@ -28,7 +28,7 @@ export function printLockScreen(reason: string, detail?: string): void {
     `   ${Y}Help: open an issue on GitHub, or ask on Discord${R}\n`,
   );
   // A double-clicked packaged exe often has no visible console, so the banner above is
-  // invisible. Also write a minimal styled page and open it ONCE in the browser (#52).
+  // invisible. Also write a minimal styled page and open it once in the browser (#52).
   showLockPage(reason, detail);
 }
 
