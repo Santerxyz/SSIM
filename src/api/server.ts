@@ -267,7 +267,7 @@ export function createDeps(): ApiDeps {
 
   // ── W4_40 — paysafecard top-up (Track B): SEQUENTIAL, human-in-the-loop, browser-driven.
   //    SSIM opens each account's addfunds checkout pre-authenticated + reconciles by wallet READ-BACK.
-  //    The PIN is entered ON the PAGE (never in SSIM); SSIM only sequences accounts + verifies credits.
+  //    The PIN is entered ON THE PAGE (never in SSIM); SSIM only sequences accounts + verifies credits.
   //    EUR-ONLY (owner 2026-07-10). ON by default; only SSIM_PAYSAFE_EXPERIMENTAL=0 hard-disables it.
   //    Built here (not in createApp) because it owns a background timer + run state that teardown must stop.
   const paysafeEnabled = (): boolean => process.env.SSIM_PAYSAFE_EXPERIMENTAL !== '0';
@@ -1207,7 +1207,7 @@ export function createApp(deps: ApiDeps): Express {
 
   // ── W4_40 — paysafecard top-up (Track B): SEQUENTIAL, human-in-the-loop, browser-driven.
   //    SSIM opens each account's addfunds checkout pre-authenticated + reconciles by wallet READ-BACK.
-  //    The PIN is entered ON the PAGE (never in SSIM); SSIM only sequences accounts + verifies credits.
+  //    The PIN is entered ON THE PAGE (never in SSIM); SSIM only sequences accounts + verifies credits.
   //    ON by default (owner 2026-07-09) — the visible "TEST" badge IS the flag; only =0 hard-disables. ──
   const paysafeErr = (res: Response, e: unknown) => res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
   /** paysafecard is EUR-only, so `amountMinor` IS euro-cents end-to-end — the tier value Steam printed, the

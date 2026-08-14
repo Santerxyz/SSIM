@@ -8,7 +8,7 @@
 //
 //  The design rests on one structural fact about Steam's checkout:
 //
-//        inittransaction and getfinalprice DO not CHARGE.
+//        inittransaction and getfinalprice DO NOT CHARGE.
 //        finalizetransaction is the ONLY step that moves money.
 //
 //  Which is what makes a price-parameter-free flow safe: the authoritative price arrives from
@@ -33,7 +33,7 @@
 // BuyService makes for an unrecognised currency code.
 //   3. AN UNVERIFIABLE TOTAL IS A REFUSAL. Nobody is watching this checkout, so a total we
 //      cannot parse — or one above the absolute ceiling — stops the purchase.
-//   4. NEVER BUY WHAT IS already OWNED — and an ownership signal we cannot READ counts as
+//   4. NEVER BUY WHAT IS ALREADY OWNED — and an ownership signal we cannot READ counts as
 //      "do not buy". Skipping is free and re-runnable; a duplicate purchase is not.
 //   5. the COMMIT IS NEVER AUTO-RETRIED. A transport fault on finalize is ambiguous by
 //      construction; the caller keeps its journal entry and the operator verifies on Steam.
@@ -466,7 +466,7 @@ export async function performWalletPurchase(
   if (storeOwned?.packages.includes(CS2_PRIME_SUB_ID))
     return done(base, username, 'owned', 'already has CS2 Prime (the Steam store reports the package on the account) — nothing bought.', warnings);
 
-  // ── 3) The free base game, IN the LIBRARY and CONFIRMED THERE, before the cart is touched. Getting
+  // ── 3) The free base game, IN THE LIBRARY and CONFIRMED THERE, before the cart is touched. Getting
   //       this order wrong is what made Steam drop an unbuyable "Counter-Strike 2" line into every
   //       cart and refuse the lot (EResult 2 / detail 7). See ensureBaseGameInLibrary. ──
   const baseGameRefusal = await ensureBaseGameInLibrary(ctx, env, storeOwned, warnings);

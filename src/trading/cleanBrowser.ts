@@ -359,7 +359,7 @@ export function injectSessionOverCdp(wsUrl: string, cookies: IsolatedCookie[], l
         // Navigation is BEST-EFFORT: the cookies (this account's auth) are already set, so the browser
         // is authenticated regardless. Page.navigate's CDP reply only returns once the navigation COMMITS
         // (first response headers), which through a slow/authed proxy easily exceeds the old 3s → the
-        // launch used to throw and TEAR the BROWSER DOWN ("CDP Page.navigate timed out", owner 2026-07-10).
+        // launch used to throw and TEAR THE BROWSER DOWN ("CDP Page.navigate timed out", owner 2026-07-10).
         // Give it a generous budget and swallow a timeout/error: a slow addfunds page finishes loading on
         // its own; we must never close an authenticated browser just because the landing was slow.
         try { await cdp(ws, pending, ++id, 'Page.navigate', { url: landingUrl }, 30000); }

@@ -5,7 +5,7 @@ import { logger } from '../utils/logger';
 //
 //  The whole flow is browser-driven (owner 2026-07-09): SSIM opens each account's store
 //  addfunds checkout pre-authenticated through the account's proxy; the OPERATOR enters the
-//  PIN + any captcha ON the PAGE. So SSIM NEVER handles the PIN (it lives only in the
+//  PIN + any captcha ON THE PAGE. So SSIM NEVER handles the PIN (it lives only in the
 //  browser) — SSIM's job is purely: sequence the accounts, and RECONCILE by reading the wallet.
 //
 //  Money-safety:

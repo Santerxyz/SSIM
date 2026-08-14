@@ -35,7 +35,7 @@ export const UPDATE_MANIFEST_URL: string =
  * private counterpart never leaves the maintainer's release process. Committing
  * it in the clear is correct and is what every signed-update scheme does.
  *
- * ⚠ DO not REGENERATE this KEYPAIR. Every deployed client verifies against this
+ * ⚠ DO NOT REGENERATE this KEYPAIR. Every deployed client verifies against this
  * exact key; a new one means no existing install can ever accept another update,
  * stranding the fleet with no recovery channel. Forks running their own channel
  * should override the key and the manifest URL together.

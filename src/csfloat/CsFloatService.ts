@@ -126,7 +126,7 @@ export class CsFloatService {
   /**
    * This account's own CSFloat listings (its stall).
    *
-   * Needs the steam_id of whoever OWNS the API KEY — which is not necessarily the SSIM account's
+   * Needs the steam_id of whoever OWNS THE API KEY — which is not necessarily the SSIM account's
    * own steamId (an operator can paste any key onto any account), so it is read from CSFloat's
    * /me rather than assumed from AccountConfig. Cached per username because it never changes for a
    * given key, and dropped by invalidate() when the key does.
