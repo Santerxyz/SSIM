@@ -1,8 +1,25 @@
-import type { GcActionLayer, GcItem, GcStatus } from './GcActionLayer';
+import type { GcActionLayer, GcStatus } from './GcActionLayer';
 import type { InventoryService } from '../core/InventoryService';
+import type { PricingService } from '../pricing/PricingService';
 import { MoneyOps, assetKey } from './MoneyOps';
 import { isSellable } from '../core/MarketModel';
+import { cs2Schema } from '../core/Cs2SchemaService';
+import { cs2Items, type ResolvedItem } from '../core/Cs2ItemResolver';
 import { logger } from '../utils/logger';
+
+const CS2_APPID = 730;
+
+/** A storage-unit item, NAMED. The GC sends no market_hash_name (see Cs2ItemResolver), so every
+ *  field past `id` is reconstructed here — without it the panel can only show raw asset ids. */
+export interface CasketContentItem extends ResolvedItem {
+  id: string;
+  /** Live market price for one unit, or null when the name has no price (tri-state from
+   *  PricingService is collapsed here: `undefined` = still loading is reported as null + priced:false). */
+  priceCents: number | null;
+  /** True when the price above is authoritative (fetched), so the UI never shows "$0.00" for
+   *  an item whose price simply hasn't loaded yet. */
+  priced: boolean;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 //  CasketService — storage-unit (casket) management on top of the shared GC layer.
@@ -41,7 +58,11 @@ export interface CasketMoveJob {
 export class CasketService {
   private job: CasketMoveJob = { running: false, direction: 'deposit', username: '', casketId: '', total: 0, done: 0, moved: 0, unconfirmed: 0, failed: 0, failures: [] };
 
-  constructor(private readonly gc: GcActionLayer, private readonly inventory: InventoryService) {}
+  constructor(
+    private readonly gc: GcActionLayer,
+    private readonly inventory: InventoryService,
+    private readonly pricing?: PricingService,
+  ) {}
 
   status(): GcStatus { return this.gc.status(); }
   moveStatus(): CasketMoveJob { return { ...this.job, failures: [...this.job.failures] }; }
@@ -55,9 +76,34 @@ export class CasketService {
     return this.gc.listCaskets(username);
   }
 
-  /** Reads one storage unit's contents (read-only). */
-  contents(username: string, casketId: string): Promise<GcItem[]> {
-    return this.gc.getCasketContents(username, casketId);
+  /**
+   * Reads one storage unit's contents (read-only), NAMED and PRICED.
+   *
+   * The GC returns bare econ items, so the raw read alone can only produce asset ids. Each item is
+   * put through Cs2ItemResolver (schema-backed) to recover its real market_hash_name, wear, float
+   * and icon, then priced from the shared cache so the operator can see what a withdrawal is worth.
+   * Schema loads are lazy + failure-tolerant: if either index is unavailable the read still returns
+   * every item (labelled honestly as unresolved) rather than failing the whole panel.
+   */
+  async contents(username: string, casketId: string): Promise<CasketContentItem[]> {
+    const [items] = await Promise.all([
+      this.gc.getCasketContents(username, casketId),
+      cs2Schema.ensureLoaded().catch(() => { /* resolver falls back to the def-index label */ }),
+      cs2Items.ensureLoaded(),
+    ]);
+    const missing: Array<{ name: string; appid: number }> = [];
+    const out = items.map((it) => {
+      const r = cs2Items.resolve(it as Parameters<typeof cs2Items.resolve>[0]);
+      // Tri-state price (INV: 0 and "not loaded" are NOT the same): undefined = never fetched →
+      // queue a fill and report priced:false; null = authoritative "no market price"; number = real.
+      const p = r.resolved && this.pricing ? this.pricing.priceCents(r.marketHashName, CS2_APPID) : null;
+      if (p === undefined) missing.push({ name: r.marketHashName, appid: CS2_APPID });
+      return { ...r, id: String(it.id), priceCents: p ?? null, priced: typeof p === 'number' };
+    });
+    // Storage-unit contents are never in the web inventory, so nothing else ever queues these
+    // names — warm them so a re-open shows real values.
+    if (missing.length && this.pricing) this.pricing.ensureFilled(missing);
+    return out;
   }
 
   /**

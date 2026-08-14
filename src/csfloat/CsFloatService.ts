@@ -21,6 +21,10 @@ import {
 
 interface CachedClient { key: string; client: CsFloatClient; agent: HttpAgent; }
 
+/** How long the shared lowest-ask catalog stays authoritative. Long enough that pricing a
+ *  whole stall costs one request, short enough that an undercut is still a real undercut. */
+const PRICE_LIST_TTL_MS = 5 * 60 * 1000;
+
 /**
  * F1: thrown when an account's proxy pool is lost (a rule matched a pool that hydrated empty).
  * AccountManager.withNetwork attaches `network: undefined` in that state so SessionManager refuses the
@@ -38,6 +42,10 @@ export class CsFloatService {
   private readonly keys = new CsFloatKeyStore();
   private readonly clients = new Map<string, CachedClient>();      // lowercase username → client
   private pricing?: { username: string; key: string; client: CsFloatClient; agent: HttpAgent };
+  /** Shared lowest-ask catalog for auto-pricing — see priceCatalog(). */
+  private priceList?: { at: number; map: Map<string, number> };
+  /** lowercase username → the steam_id behind its API key (see steamIdFor). */
+  private readonly steamIds = new Map<string, string>();
 
   constructor(private readonly accounts: AccountManager) {}
 
@@ -115,10 +123,75 @@ export class CsFloatService {
   search(u: string, params: ListingSearchParams): Promise<{ data: Record<string, unknown>[]; cursor?: string }> { return this.clientFor(u).searchListings(params); }
   getListing(u: string, id: string): Promise<Record<string, unknown>> { return this.clientFor(u).getListing(id); }
   createListing(u: string, body: CreateListingBody): Promise<Record<string, unknown>> { return this.clientFor(u).createListing(body); }
-  myListings(u: string, params: { page?: number; limit?: number }): Promise<Record<string, unknown>> { return this.clientFor(u).myListings(params); }
+  /**
+   * This account's own CSFloat listings (its stall).
+   *
+   * Needs the steam_id of whoever OWNS THE API KEY — which is not necessarily the SSIM account's
+   * own steamId (an operator can paste any key onto any account), so it is read from CSFloat's
+   * /me rather than assumed from AccountConfig. Cached per username because it never changes for a
+   * given key, and dropped by invalidate() when the key does.
+   */
+  async myListings(u: string, params: { page?: number; limit?: number }): Promise<Record<string, unknown>> {
+    return this.clientFor(u).myStall(await this.steamIdFor(u), params) as Promise<Record<string, unknown>>;
+  }
+
+  /** The steam_id behind this account's API key, from /me (cached). */
+  private async steamIdFor(username: string): Promise<string> {
+    const key = username.toLowerCase();
+    const hit = this.steamIds.get(key);
+    if (hit) return hit;
+    const me = await this.clientFor(username).me();
+    // CSFloat has moved this field between the root and a `user` envelope across versions; accept both
+    // rather than break the whole tab on a reshuffle.
+    const u = me?.user as { steam_id?: unknown } | undefined;
+    const id = String((me?.steam_id ?? u?.steam_id ?? '') || '').trim();
+    if (!id) throw new Error('CSFloat did not return a steam_id for this API key — cannot load its stall');
+    this.steamIds.set(key, id);
+    return id;
+  }
   delist(u: string, id: string): Promise<unknown> { return this.clientFor(u).delistListing(id); }
   editPrice(u: string, id: string, cents: number): Promise<unknown> { return this.clientFor(u).editListingPrice(id, cents); }
   buy(u: string, id: string, totalCents: number): Promise<unknown> { return this.clientFor(u).buyListing(id, totalCents); }
+
+  /**
+   * The CSFloat lowest-buy-now-ask catalog, as name → cents.
+   *
+   * Backs auto-pricing ("undercut the lowest ask by 2%") for bulk listing and repricing. It is
+   * ONE request for the whole CS2 catalog (the live-verified /listings/price-list), so pricing a
+   * 200-item stall costs a single call instead of 200 searches.
+   *
+   * The catalog is GLOBAL market data, not per-account, so the cache is shared across accounts and
+   * only the fetching client differs (whichever account asked, on its own key + proxy). A fetch
+   * failure re-serves the last good catalog with its true age attached rather than failing the
+   * caller — the UI shows the age so a stale suggestion is never mistaken for a live one.
+   */
+  async priceCatalog(username: string): Promise<{ prices: Map<string, number>; fetchedAt: number; stale: boolean }> {
+    const fresh = this.priceList && Date.now() - this.priceList.at <= PRICE_LIST_TTL_MS;
+    if (fresh) return { prices: this.priceList!.map, fetchedAt: this.priceList!.at, stale: false };
+    try {
+      const rows = await this.clientFor(username).priceList();
+      if (!Array.isArray(rows)) throw new Error('CSFloat returned an unexpected price-list shape');
+      const map = new Map<string, number>();
+      for (const r of rows) {
+        const name = r?.market_hash_name;
+        const cents = r?.min_price;
+        // Skip a bad/absent price rather than poisoning the catalog with a 0 that would then be
+        // undercut to 1 cent. An absent row simply means "no suggestion for this name".
+        if (typeof name !== 'string' || !name) continue;
+        if (typeof cents !== 'number' || !Number.isFinite(cents) || cents <= 0) continue;
+        map.set(name, Math.round(cents));
+      }
+      if (!map.size) throw new Error('CSFloat price list came back empty');
+      this.priceList = { at: Date.now(), map };
+      return { prices: map, fetchedAt: this.priceList.at, stale: false };
+    } catch (e) {
+      if (this.priceList) {
+        logger.warn(`[csfloat] price-list refresh failed (${(e as Error).message}) — serving the cached catalog`);
+        return { prices: this.priceList.map, fetchedAt: this.priceList.at, stale: true };
+      }
+      throw e;
+    }
+  }
 
   // ── operations: experimental (flag-gated at the route layer) ─────────────────
   buyOrders(u: string, params: { page?: number; limit?: number }): Promise<Record<string, unknown>> { return this.clientFor(u).getBuyOrders(params); }
@@ -188,6 +261,9 @@ export class CsFloatService {
   private invalidate(username: string): void {
     const c = this.clients.get(username.toLowerCase());
     if (c) { AgentFactory.destroyIfDisposable(c.agent); this.clients.delete(username.toLowerCase()); }
+    // A different key can belong to a different CSFloat user, so the cached steam_id (and with it
+    // WHOSE stall My Listings shows) must not survive a key change.
+    this.steamIds.delete(username.toLowerCase());
   }
 
   /** Release the shared per-key RateLimiter for a key no live account holds any more (INV-F4: a key

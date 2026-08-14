@@ -48,6 +48,8 @@ export interface SkinDef {
   collection:  string;   // canonical (first) collection name; '' if none
   minFloat:    number;
   maxFloat:    number;
+  /** Steam economy image URL for the skin (ByMykel `image`); '' when absent. */
+  image?:      string;
 }
 
 /**
@@ -70,12 +72,17 @@ export function parseSkinName(marketHashName: string):
 export class Cs2SchemaService {
   private byBaseName = new Map<string, SkinDef>();
   private byCollectionRarity = new Map<string, Map<string, SkinDef[]>>(); // collection → rarityId → skins
+  /** `${weapon_id}:${paint_index}` → skin. The ONLY way to name a Game-Coordinator econ item:
+   *  the GC never sends market_hash_name, just def_index (= ByMykel weapon.weapon_id) + paint_index.
+   *  Used by the storage-unit (casket) reader, which otherwise can only show raw asset ids. */
+  private byDefPaint = new Map<string, SkinDef>();
   private loaded = false;
   private loadingPromise?: Promise<void>;
 
   isLoaded(): boolean { return this.loaded; }
   skinCount(): number { return this.byBaseName.size; }
   collectionCount(): number { return this.byCollectionRarity.size; }
+  defPaintCount(): number { return this.byDefPaint.size; }
 
   /** Loads the schema (disk cache → ByMykel fetch fallback). Idempotent + concurrency-deduped. */
   async ensureLoaded(): Promise<void> {
@@ -147,6 +154,7 @@ export class Cs2SchemaService {
   index(skins: unknown[]): void {
     this.byBaseName.clear();
     this.byCollectionRarity.clear();
+    this.byDefPaint.clear();
     for (const s of skins as Array<Record<string, unknown>>) {
       const name = typeof s?.name === 'string' ? s.name : '';
       const rarityId = (s?.rarity as { id?: unknown })?.id;
@@ -159,9 +167,18 @@ export class Cs2SchemaService {
         name, rarityId, collection,
         minFloat: numOr(s?.min_float, 0),
         maxFloat: numOr(s?.max_float, 1),
+        image: typeof s?.image === 'string' ? s.image : '',
       };
       const key = name.toLowerCase();
       if (!this.byBaseName.has(key)) this.byBaseName.set(key, def); // first wins (stable)
+      // GC lookup key. ByMykel emits paint_index as a STRING ("387"); the GC decodes it from a
+      // float attribute, so normalise both sides through Number to keep "0387"/387/387.0 in one slot.
+      const weaponId = (s?.weapon as { weapon_id?: unknown })?.weapon_id;
+      const paintIdx = Number(s?.paint_index);
+      if (typeof weaponId === 'number' && Number.isFinite(paintIdx)) {
+        const dp = `${weaponId}:${paintIdx}`;
+        if (!this.byDefPaint.has(dp)) this.byDefPaint.set(dp, def); // first wins (stable)
+      }
       // Output pooling index: only weapon-tier skins that belong to a collection.
       if (collection && /_weapon$/.test(rarityId)) {
         let m = this.byCollectionRarity.get(collection);
@@ -177,6 +194,13 @@ export class Cs2SchemaService {
   nextRarity(rarityId: string): string | undefined { return RARITY_LADDER[rarityId]; }
   rarityLabel(rarityId: string): string { return RARITY_LABEL[rarityId] ?? rarityId; }
   lookup(baseName: string): SkinDef | undefined { return this.byBaseName.get(baseName.toLowerCase()); }
+
+  /** Resolves a Game-Coordinator econ item's (def_index, paint_index) to its skin. This is the
+   *  bridge that lets storage-unit contents show real item names — the GC sends no name at all. */
+  lookupByDefPaint(defIndex: number | undefined, paintIndex: number | undefined): SkinDef | undefined {
+    if (!Number.isFinite(defIndex) || !Number.isFinite(paintIndex)) return undefined;
+    return this.byDefPaint.get(`${Number(defIndex)}:${Number(paintIndex)}`);
+  }
 
   /** OutputProvider.outputsFor — next-rarity skins in `collection` above `inputRarityId`, DEDUPED
    *  by market name. Steam treats same-named variants (e.g. a Gamma Doppler's phases) as ONE

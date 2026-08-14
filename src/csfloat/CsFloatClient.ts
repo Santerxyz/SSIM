@@ -126,8 +126,17 @@ export class CsFloatClient {
 
   // ── UNDOCUMENTED endpoints (verify against a live key) ──────────────────────
   me(): Promise<Dict> { return this.req({ method: 'GET', url: '/me' }); }
-  myListings(params: { page?: number; limit?: number } = {}): Promise<Dict> {
-    return this.req({ method: 'GET', url: '/me/listings', params });
+  /**
+   * A seller's own listings = their STALL. `/me/listings` does NOT exist (verified live 2026-08-11:
+   * CSFloat's Go router answers a plain-text "404 page not found", which surfaced to operators as
+   * "CSFloat HTTP 404" on every My-Listings open). Probing under `/me/` is misleading because the
+   * auth middleware runs BEFORE routing there — every `/me/<anything>` returns 401 unauthenticated,
+   * including paths that do not exist — so the 401 was never evidence the route was real.
+   * `/users/<steam_id>/stall` is the endpoint that actually resolves (it answers a typed JSON error
+   * for a private stall rather than a 404), which is why this takes a steam_id.
+   */
+  myStall(steamId: string, params: { page?: number; limit?: number } = {}): Promise<Dict> {
+    return this.req({ method: 'GET', url: `/users/${encodeURIComponent(steamId)}/stall`, params });
   }
   delistListing(id: string): Promise<unknown> {
     return this.req({ method: 'DELETE', url: `/listings/${encodeURIComponent(id)}` });

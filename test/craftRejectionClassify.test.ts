@@ -61,7 +61,13 @@ test('H-TRD-052: TradeUpService books a GC rejection as failed:1, crafted:0', as
   await svc.runExecute('bot', [{ inputAssetIds: TEN, rarityId: 'rarity_common_weapon', stattrak: false }]);
   assert.equal(svc.execJob.failed, 1, 'a refused craft is a failure');
   assert.equal(svc.execJob.crafted, 0, 'nothing was crafted');
-  assert.equal(svc.execJob.results[0].error, 'GC rejected the craft — no items were consumed (check inputs/recipe)');
+  // The wording carries what the operator can act on (the refusal is about THIS contract's inputs);
+  // it must also reach the run-level tally, because `results` is wiped at every auto round.
+  assert.match(svc.execJob.results[0].error, /refused the contract .*no items were consumed/i);
+  assert.deepEqual(
+    svc.execJob.failureReasons.map((r: { count: number }) => r.count), [1],
+    'the failure must be tallied where the UI can still find it after a round reset',
+  );
 });
 
 test('H-TRD-052: TradeUpService counts a confirmed craft as crafted:1', async () => {

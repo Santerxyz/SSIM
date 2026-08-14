@@ -41,10 +41,14 @@ function svcWith(info: SellInfo) {
   return { svc, calls: () => getSellInfoCalls };
 }
 
-async function runToCompletion(svc: MarketService, items: Array<{ assetId: string; marketHashName: string }>) {
-  // itemDelayMs is floored at 500 but never reached here (every price-miss `continue`s
-  // before the trailing inter-item sleep), so the run resolves promptly.
-  svc.startMassSell([{ username: 'botA', items }], 'lowest', { itemDelayMs: 500 });
+async function runToCompletion(
+  svc: MarketService,
+  items: Array<{ assetId: string; marketHashName: string }>,
+  opts: { itemConcurrency?: number } = {},
+) {
+  // itemDelayMs is floored at 500 but never reached here (every price-miss returns before the
+  // dispatch gate), so the run resolves promptly.
+  svc.startMassSell([{ username: 'botA', items }], 'lowest', { itemDelayMs: 500, ...opts });
   const deadline = Date.now() + 10_000;
   while (svc.status().running && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 20));
@@ -55,10 +59,14 @@ async function runToCompletion(svc: MarketService, items: Array<{ assetId: strin
 
 test('H-TRD-023 (a): a transport-failure null is NOT cached — each same-name item is looked up and DEFERRED', async () => {
   const { svc, calls } = svcWith({ lowestMinor: null, medianMinor: null, volume: null, authoritative: false });
+  // ONE lane, so the second item asks AFTER the first has already failed — the case the invariant
+  // is about: a failed lookup must leave nothing behind that short-circuits the next item.
+  // (Concurrent lanes share one in-flight lookup instead; that is the test below, and it is not
+  // caching — the entry is dropped the moment it settles.)
   const job = await runToCompletion(svc, [
     { assetId: 'x1', marketHashName: 'Dreams & Nightmares Case' },
     { assetId: 'x2', marketHashName: 'Dreams & Nightmares Case' },
-  ]);
+  ], { itemConcurrency: 1 });
   assert.equal(calls(), 2, 'no cache short-circuit: both same-name items trigger their own lookup');
   assert.equal(job.skippedNoPrice, 0, 'a transport failure is never counted as "no price"');
   assert.equal(job.failed.length, 0, 'and never pushed into failed[]');
@@ -76,4 +84,21 @@ test('H-TRD-023 (b): an authoritative no-price IS cached — one lookup for N sa
   assert.equal(job.skippedNoPrice, 2, 'both are the unchanged authoritative "no price"');
   assert.equal(job.failed.length, 2, 'and recorded in failed[] (unchanged behavior)');
   assert.equal(job.deferred.length, 0, 'nothing is deferred for a true no-price');
+});
+
+test('lanes asking for the SAME name at once share ONE lookup — and still each defer on a transport failure', async () => {
+  // v1.4.8: a bot lists over parallel lanes. Without in-flight de-dup, K lanes starting on K
+  // copies of one item each fire their own priceoverview — K× the account's scarce price budget
+  // for one answer. Sharing the in-flight request is NOT caching: the entry is dropped when it
+  // settles (proven by (a) above), and every waiter still gets the transport-failure outcome, so
+  // nothing is silently listed off a failed price.
+  const { svc, calls } = svcWith({ lowestMinor: null, medianMinor: null, volume: null, authoritative: false });
+  const job = await runToCompletion(svc, [
+    { assetId: 'z1', marketHashName: 'Dreams & Nightmares Case' },
+    { assetId: 'z2', marketHashName: 'Dreams & Nightmares Case' },
+  ], { itemConcurrency: 2 });
+  assert.equal(calls(), 1, 'both lanes are served by a single in-flight lookup');
+  assert.equal(job.deferred.length, 2, 'each item still reaches its own deferred (retryable) outcome');
+  assert.equal(job.skippedNoPrice, 0, 'a shared transport failure is still never "no price"');
+  assert.equal(job.listed, 0, 'and nothing is listed off a price we never got');
 });

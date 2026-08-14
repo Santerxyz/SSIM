@@ -575,6 +575,13 @@
             <button class="nav-item" data-nav="portfolios">
               <i class="fa-solid fa-chart-pie nav-ico"></i><span>Portfolios</span>
             </button>
+            <!-- Activity: the ONE place that shows what is running. The rail is visible on every
+                 module and above every modal, so its live count is what tells the operator that
+                 jobs keep running after a window is closed — and that more than one can run. -->
+            <button class="nav-item" data-nav="activity">
+              <i class="fa-solid fa-bolt nav-ico"></i><span>Activity</span>
+              <span id="nav-activity-badge" class="hidden ml-auto shrink-0 px-1.5 py-px rounded-md text-4xs font-extrabold leading-none bg-brand text-white"></span>
+            </button>
           </div>
         </div>
         <!-- MANAGE group -->
@@ -929,6 +936,15 @@
           <p class="t14 text-slate-500 mt-1">Pick a scope, pick a job, run it with live progress.</p>
         </header>
         <div id="batch-body" class="flex-1 overflow-y-auto p-8"></div>
+      </section>
+
+      <!-- ─────── ACTIVITY (every running job, from anywhere in the app) ─────── -->
+      <section id="screen-activity" class="hidden flex-1 flex flex-col overflow-hidden">
+        <header id="activity-header" class="frosted px-8 py-6 border-b border-slate-800 bg-slate-900/40">
+          <h2 class="t28 font-bold text-white tracking-tight">Activity</h2>
+          <p class="t14 text-slate-500 mt-1">Everything SSIM is running right now. Jobs keep going when you close their window — and several can run at once.</p>
+        </header>
+        <div id="activity-body" class="flex-1 overflow-y-auto p-8"></div>
       </section>
 
       <!-- ─────── PROXIES (declarative proxy rules) ─────── -->

@@ -75,6 +75,9 @@ export function requireEResult(obj: Record<string, unknown>, field = 'success'):
 // lives — the SAME JWT authenticates it; the store cart just hands off to it.
 const STEAM_WEB_HOSTS = new Set(['store.steampowered.com', 'checkout.steampowered.com']);
 const CHECKOUT_ORIGIN = 'https://checkout.steampowered.com';
+/** The token-auth WebAPI host. DELIBERATELY NOT in STEAM_WEB_HOSTS: nothing that carries the
+ *  authenticated Cookie may go here. `webapiPost` sends no cookies at all (see there). */
+const STEAM_WEBAPI_HOST = 'api.steampowered.com';
 /** SSRF/typo guard: never send the authenticated Cookie to anything but an allowlisted Steam web host.
  *  Called before EVERY request AND before every redirect hop — `maxRedirects: 0` on the axios config means
  *  nothing is ever followed behind our back, so this is a real invariant and not just an entry check. */
@@ -113,6 +116,14 @@ export interface StoreContext {
   sessionid: string;                        // also the CSRF form param (same value as the Cookie's sessionid)
   get: (path: string, opts?: StoreReqOpts) => Promise<StoreResponse>;
   post: (path: string, form: Record<string, string>, opts?: StoreReqOpts) => Promise<StoreResponse>;
+  /** Token-authenticated Steam WebAPI call (`IAccountCartService/…`), for the operations Steam's own
+   *  store JS does that way. `method` is e.g. "IAccountCartService/DeleteCart/v1".
+   *
+   *  This request carries NO Cookie header AT ALL — the `access_token` Steam publishes in the store
+   *  page's `data-store_user_config` is the whole credential. That is what lets it reach a host outside
+   *  STEAM_WEB_HOSTS without weakening the invariant that list exists for: the authenticated
+   *  `steamLoginSecure` JWT still never leaves the store/checkout hosts. */
+  webapi: (method: string, accessToken: string, form?: Record<string, string>) => Promise<StoreResponse>;
 }
 
 const TRANSIENT = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN', 'ECONNABORTED']);
@@ -153,6 +164,7 @@ export class StoreService {
         username, steamId: session.steamId ?? '', sessionid,
         get: (path, opts2) => this.retryGet(agent, cookies, path, opts2),
         post: (path, form, opts2) => this.postOnce(agent, cookies, path, form, opts2),
+        webapi: (method, token, form2) => this.webapiPost(agent, method, token, form2),
       };
       const out = await fn(ctx, session, createdByCall);
       handedOff = !!opts.keepSession;        // ONLY a successful fn hands the session to the caller
@@ -230,6 +242,38 @@ export class StoreService {
 
   /** POST is non-idempotent → NEVER auto-retried. A network error is surfaced as StoreAmbiguousError
    *  so the caller reconciles the true outcome via a read-back (no double-submit). */
+  /**
+   * Token-authenticated Steam WebAPI POST (see StoreContext.webapi). NO Cookie header is sent — the
+   * access token is the only credential — so `api.steampowered.com` never sees `steamLoginSecure` and
+   * the STEAM_WEB_HOSTS invariant is untouched. The method name is validated against a strict shape
+   * rather than interpolated blindly, and the account's own proxy agent is still used so the call
+   * egresses from the same IP as everything else this account does.
+   *
+   * Like every other non-idempotent call here it is NEVER auto-retried; the caller verifies by reading
+   * the resulting state back.
+   */
+  private async webapiPost(agent: unknown, method: string, accessToken: string, form?: Record<string, string>): Promise<StoreResponse> {
+    if (!/^[A-Za-z]\w{0,64}\/[A-Za-z]\w{0,64}\/v\d{1,2}$/.test(method)) throw new StoreShapeError(`invalid WebAPI method "${method}"`);
+    if (!/^[\w.-]{8,512}$/.test(accessToken)) throw new StoreShapeError('invalid WebAPI access token');
+    const url = `https://${STEAM_WEBAPI_HOST}/${method}/?access_token=${encodeURIComponent(accessToken)}`;
+    try {
+      const r = await axios.post(url, new URLSearchParams(form ?? {}).toString(), {
+        httpsAgent: agent, proxy: false as const, timeout: STORE_TIMEOUT_MS, validateStatus: () => true, maxRedirects: 0,
+        headers: {
+          'User-Agent': STORE_UA,
+          Accept: 'application/json',
+          Origin: STORE_ORIGIN,
+          Referer: `${STORE_ORIGIN}/`,
+          Connection: 'close',
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        },
+      });
+      return { status: r.status, data: r.data, location: String((r.headers as Record<string, unknown> | undefined)?.location ?? '') };
+    } catch (e) {
+      throw new StoreAmbiguousError(`WebAPI ${method} failed in-flight (outcome unknown — reconcile via a read-back): ${(e as Error).message}`);
+    }
+  }
+
   private async postOnce(agent: unknown, cookies: string[], path: string, form: Record<string, string>, opts?: StoreReqOpts): Promise<StoreResponse> {
     try {
       return await this.raw(agent, cookies, 'POST', path, form, opts);

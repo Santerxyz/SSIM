@@ -1,8 +1,8 @@
 import type { TradeService } from './TradeService';
 import type { InventoryService } from '../core/InventoryService';
-import type { MarketOrders } from './AccountTrader';
+import type { MarketOrders, ActiveSellOrder, ActiveBuyOrder } from './AccountTrader';
 import { MarketPricing, sellerNetFromBuyer, targetBuyerMinor, feesForNet, EUR_CURRENCY, type SellStrategy } from '../pricing/MarketPricing';
-import { knownCurrencyInfo, type CurrencyInfo } from '../pricing/currencies';
+import { knownCurrencyInfo, feeMinimumOf, type CurrencyInfo } from '../pricing/currencies';
 import type { PricerIdentity } from '../pricing/PricerIdentityPool';
 import { scaleConcurrency, clampConcurrency } from '../utils/concurrency';
 import { isSellable } from '../core/MarketModel';
@@ -38,9 +38,31 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 // Listing concurrency scales with the batch (scaleConcurrency: 1 worker / 5 bots, floor 5,
 // ceiling 25). Per-bot anti-spam pacing (item/bot delays) still applies inside each worker.
-const DEFAULT_ITEM_DELAY  = 1_200; // pause between a bot's individual listings
+// `itemDelay` is the minimum gap between two sellitem DISPATCHES for one bot — the account's
+// request cadence, now enforced across the bot's lanes rather than by sleeping after each item.
+// It used to double as "wait out the round-trip too", so a bot idled ~0.5-1s per listing on top
+// of the pause; the lanes overlap that latency, which is where the speed-up comes from. The
+// default is lower than the old 1_200 because it is no longer padded by the round-trip.
+const DEFAULT_ITEM_DELAY  = 700;   // min gap between a bot's individual listing dispatches
 const MIN_ITEM_DELAY       = 500;  // hard floor: a client can raise the pause, never remove it (B45 anti-storm)
 const DEFAULT_BOT_DELAY    = 3_000; // pause between bots per worker
+/**
+ * Listing lanes per bot. Concurrency here hides Steam's round-trip; it does NOT raise the
+ * request rate (every dispatch still passes the shared `itemDelay` gate), so the anti-spam
+ * cadence is unchanged and only dead time is removed. Capped low on purpose: more lanes than
+ * this buy nothing once the pacing gate is the bottleneck, and each one is another concurrent
+ * money-op on a single account.
+ */
+const DEFAULT_ITEM_CONCURRENCY = 3;
+const MAX_ITEM_CONCURRENCY     = 5;
+/**
+ * Confirm a bot's listings every this many, instead of once at the end. Steam caps how many
+ * listings may await 2FA (a 263-item field run hit the wall at ~254); draining in batches keeps
+ * the backlog an order of magnitude below any such cap, and it also means a crash mid-run leaves
+ * at most this many listings unconfirmed. Kept well above 1 because each drain spends the
+ * account's scarce mobileconf budget (~5 ops/min) — one pass per 50 listings, not per listing.
+ */
+const CONFIRM_BATCH = 50;
 
 // ── Stability tuning (Rules 1-3) ──────────────────────────────────────────────
 const MAX_SELL_RETRIES   = 3;                       // retries per item on transient errors
@@ -106,6 +128,24 @@ export function isAlreadyListed(err: unknown): boolean {
   const listingNoun = /listing|listed|angebot|verkaufsangebot|inserat/;
   const alreadyQual = /already|pending|bereits|vorhanden|aktiv|existiert|besteht/;
   return listingNoun.test(m) && alreadyQual.test(m);
+}
+
+/**
+ * "You have too many listings pending confirmation. Please confirm or cancel some before
+ * attempting to list more." — Steam's BACKPRESSURE signal, not a failure and not a rate limit.
+ *
+ * It is entirely self-inflicted: it means WE have parked too many unconfirmed listings, and the
+ * one action that clears it is confirming them. Classifying it by message alone sent it down the
+ * rate-limit path (it contains "too many"), so every item burned 3 retries × 15-35 s waiting for a
+ * window that would never open — the whole tail of a big sell died against a wall we built and
+ * could have cleared in one 2FA pass. Checked BEFORE isAlreadyListed, which also matches this
+ * text ("listings" + "pending") and would otherwise bank the item as a phantom listing.
+ */
+export function isTooManyPendingConfirmations(err: unknown): boolean {
+  const m = ((err as Error)?.message ?? '').toLowerCase();
+  const tooMany = /too many|zu viele|demasiad|trop de|слишком много/.test(m);
+  const pendingConfirm = /pending confirmation|confirm or cancel|bestätigung|confirmaci|подтвержд/.test(m);
+  return tooMany && pendingConfirm;
 }
 
 /**
@@ -179,6 +219,61 @@ export interface SellPreview {
   prices:      Record<string, { netMinor: number | null; buyerMinor: number | null }>;
 }
 
+// ── Active Orders across MANY accounts (folder / multi-select scope) ──────────
+
+/** One account's slice of a multi-account Active-Orders scan. A per-account failure is a
+ *  ROW with `error`, never an aborted scan — one dead proxy must not hide 200 healthy bots. */
+export interface AccountOrders {
+  username:   string;
+  sellOrders: ActiveSellOrder[];
+  buyOrders:  ActiveBuyOrder[];
+  /** This account's snapshot was truncated mid-fetch (see MarketOrders.partial). */
+  partial?:   boolean;
+  error?:     string;
+}
+
+export interface OrdersScanProgress {
+  total:  number;  // accounts in the scan
+  done:   number;  // accounts finished (ok or errored)
+  sell:   number;  // sell rows collected so far (after the appId filter)
+  buy:    number;  // buy rows collected so far
+  errors: number;  // accounts that failed
+}
+
+/** Snapshot of the single live orders scan. `accounts` is APPEND-ONLY while the scan runs, so
+ *  the route can serve a client cursor (`since`) and never re-send rows it already delivered. */
+export interface OrdersScanStatus {
+  running:    boolean;
+  startedAt:  number;
+  appId:      number;
+  usernames:  string[];
+  progress:   OrdersScanProgress;
+  accounts:   AccountOrders[];
+  cancelling?: boolean;
+  cancelled?:  boolean;
+  error?:     string;
+}
+
+/** One order to cancel, tagged with the account that owns it (a multi-account bulk cancel). */
+export interface CancelOrderTarget {
+  username: string;
+  kind:     'sell' | 'buy';
+  id:       string;
+}
+export interface CancelOrderResult extends CancelOrderTarget {
+  ok:     boolean;
+  error?: string;
+}
+
+/** Parallel accounts in a multi-account orders scan. Login-bound, so small + FIXED (mirrors
+ *  TradeService's OFFERS_READ_CONCURRENCY): a folder scan reads several bots at once but can
+ *  never become the unbounded login fan-out that crashes the process. */
+const ORDERS_READ_CONCURRENCY = 4;
+/** Parallel ACCOUNTS in a bulk cancel (each account's own cancels stay strictly sequential). */
+const ORDERS_CANCEL_CONCURRENCY = 3;
+/** Pause between two cancels on the SAME account — market writes, so pace them (B45 anti-storm). */
+const ORDERS_CANCEL_PACE_MS = 600;
+
 function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
 
 /**
@@ -202,6 +297,15 @@ export class MarketService {
   private confirmRateLimitPause = CONFIRM_RATELIMIT_PAUSE_MS;
   /** Co-operative cancel flag for the live mass-sell (set by cancelSell()). */
   private cancelRequested = false;
+  /** Single live multi-account Active-Orders scan (polled by the UI with a row cursor). Its
+   *  `accounts` array is append-only and retained until the next start, so a poll landing after
+   *  completion still receives every row. */
+  private ordersJob: OrdersScanStatus = {
+    running: false, startedAt: 0, appId: CS2_APPID, usernames: [],
+    progress: { total: 0, done: 0, sell: 0, buy: 0, errors: 0 }, accounts: [],
+  };
+  /** Co-operative cancel flag for the orders scan (set by cancelOrdersScan()). */
+  private ordersScanCancel = false;
   /** H-TRD-020: bots currently executing processBot, mirrored into job.activeBots for the UI.
    *  Lazily created on first use (see trackBotActive). */
   private activeBotSet?: Set<string>;
@@ -278,6 +382,145 @@ export class MarketService {
   async cancelBuyOrder(username: string, buyOrderId: string): Promise<void> {
     const trader = await this.trades.getTrader(username);
     await trader.cancelBuyOrder(buyOrderId);
+  }
+
+  // ── Active Orders across MANY accounts (folder / multi-select scope) ─────────
+
+  /**
+   * Starts the multi-account Active-Orders scan as a DETACHED job and returns immediately.
+   *
+   * Detached for the same reason the ban check is (H-TRD-033): a folder of a few hundred bots is
+   * login-bound and runs far past the client's 120s request budget, so awaiting one POST would time
+   * the view out while the backend kept working. The client polls `ordersScanStatus()` with a cursor
+   * and renders accounts AS THEY LAND. Single-flight — a second start while one runs throws (409).
+   */
+  startOrdersScan(usernames: string[], appId: number): { total: number } {
+    if (this.ordersJob.running) throw new Error('An Active Orders scan is already running');
+    const unique = [...new Set(usernames.map((u) => u.trim()).filter(Boolean))];
+    this.ordersScanCancel = false;
+    this.ordersJob = {
+      running: true, startedAt: Date.now(), appId, usernames: unique,
+      progress: { total: unique.length, done: 0, sell: 0, buy: 0, errors: 0 },
+      accounts: [],
+    };
+    const job = this.ordersJob;
+    void this.runOrdersScan(unique, appId, job)
+      .catch((err) => {
+        job.error = (err as Error).message;
+        logger.error(`[orders] scan crashed – ${job.error}`);
+      })
+      .finally(() => {
+        job.running = false;
+        job.cancelling = false;
+        logger.info(`[orders] scan finished: ${job.progress.done}/${job.progress.total} account(s), ` +
+          `${job.progress.sell} sell / ${job.progress.buy} buy, ${job.progress.errors} failed${job.cancelled ? ' (cancelled)' : ''}`);
+      });
+    return { total: unique.length };
+  }
+
+  /** Live snapshot of the orders scan. Retained until the next `startOrdersScan`, so a poll that
+   *  lands after completion still receives every row (the client reads from its own cursor). */
+  ordersScanStatus(): OrdersScanStatus {
+    const j = this.ordersJob;
+    return {
+      running: j.running, startedAt: j.startedAt, appId: j.appId, usernames: j.usernames,
+      progress: { ...j.progress }, accounts: j.accounts,
+      cancelling: j.cancelling, cancelled: j.cancelled, error: j.error,
+    };
+  }
+
+  /** Co-operative stop: workers finish the account in hand and take no new ones. Accounts already
+   *  scanned keep their rows — a cancelled scan is a SHORT scan, not a discarded one. */
+  cancelOrdersScan(): { cancelling: boolean } {
+    if (!this.ordersJob.running) return { cancelling: false };
+    this.ordersScanCancel = true;
+    this.ordersJob.cancelling = true;
+    logger.info('[orders] scan cancel requested — no new accounts will be started');
+    return { cancelling: true };
+  }
+
+  /**
+   * Reads open orders for every account in `usernames` (bounded worker pool), filtered to `appId`.
+   * Per-account failures land as `error` rows and never abort the others. Each worker releases the
+   * session IT created straight after that account's read, so a 200-bot folder scan never leaves the
+   * whole fleet resident (the resident-session storm that lets the process be externally killed).
+   */
+  private async runOrdersScan(usernames: string[], appId: number, job: OrdersScanStatus): Promise<void> {
+    const queue = [...usernames];
+    const worker = async (): Promise<void> => {
+      while (queue.length > 0) {
+        if (this.ordersScanCancel) { job.cancelled = true; return; }
+        const username = queue.shift()!;
+        // Snapshot live-ness BEFORE we touch the account so we only release sessions WE create —
+        // never one the user already had live (e.g. mid-trade) or logged in concurrently.
+        const wasLive = this.trades.snapshotLive([username]);
+        try {
+          const orders = await this.getOrders(username);
+          const sellOrders = orders.sellOrders.filter((o) => o.appId === appId);
+          const buyOrders  = orders.buyOrders.filter((o) => o.appId === appId);
+          job.progress.sell += sellOrders.length;
+          job.progress.buy  += buyOrders.length;
+          job.accounts.push({ username, sellOrders, buyOrders, partial: orders.partial });
+        } catch (err) {
+          const error = (err as Error).message;
+          logger.warn(`[orders] ${username}: ${error}`);
+          job.progress.errors++;
+          job.accounts.push({ username, sellOrders: [], buyOrders: [], error });
+        } finally {
+          job.progress.done++;
+          await this.trades.releaseCreatedSessions([username], wasLive).catch(() => undefined);
+        }
+      }
+    };
+    const workers = Math.max(1, Math.min(ORDERS_READ_CONCURRENCY, usernames.length || 1));
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+  }
+
+  /**
+   * Cancels a set of orders that may span MANY accounts (the multi-scope "Cancel selected/all").
+   *
+   * Grouped by account so one bot's cancels run strictly sequentially through its own session —
+   * paced (ORDERS_CANCEL_PACE_MS) because these are market WRITES — while a few accounts are worked
+   * in parallel. Per-item failures are results, never throws, so one dead order can't strand the rest.
+   * Sessions this op creates are released per account (same anti-accumulation rule as the scan).
+   */
+  async cancelOrdersBatch(targets: CancelOrderTarget[]): Promise<CancelOrderResult[]> {
+    const groups = new Map<string, CancelOrderTarget[]>();
+    for (const t of targets) {
+      const key = t.username.toLowerCase();
+      const list = groups.get(key) ?? [];
+      list.push(t);
+      groups.set(key, list);
+    }
+    const results: CancelOrderResult[] = [];
+    const queue = [...groups.values()];
+    const worker = async (): Promise<void> => {
+      while (queue.length > 0) {
+        const group = queue.shift()!;
+        const username = group[0].username;
+        const wasLive = this.trades.snapshotLive([username]);
+        try {
+          for (let i = 0; i < group.length; i++) {
+            const t = group[i];
+            if (i > 0) await sleep(ORDERS_CANCEL_PACE_MS);
+            try {
+              if (t.kind === 'buy') await this.cancelBuyOrder(t.username, t.id);
+              else                  await this.cancelListing(t.username, t.id);
+              results.push({ ...t, ok: true });
+            } catch (err) {
+              const error = (err as Error).message;
+              logger.error(`[orders] ${t.username} cancel ${t.kind} ${t.id} failed: ${error}`);
+              results.push({ ...t, ok: false, error });
+            }
+          }
+        } finally {
+          await this.trades.releaseCreatedSessions([username], wasLive).catch(() => undefined);
+        }
+      }
+    };
+    const workers = Math.max(1, Math.min(ORDERS_CANCEL_CONCURRENCY, groups.size || 1));
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+    return results;
   }
 
   private static readonly EMPTY_CTX: PriceCtx = {};
@@ -371,7 +614,8 @@ export class MarketService {
 
     if (strategy === 'custom') {
       const net = Math.max(1, Math.round((opts?.customPriceMajor ?? 0) * Math.pow(10, cur.decimals)));
-      const buyer = net + feesForNet(net);
+      // Fee floor of THIS wallet's currency — a PLN net of 38 costs the buyer 46, not 42.
+      const buyer = net + feesForNet(net, feeMinimumOf(cur));
       for (const name of [...new Set(names)]) out[name] = { netMinor: net, buyerMinor: buyer };
       return done();
     }
@@ -419,7 +663,7 @@ export class MarketService {
         // currency selects the denomination so the quote matches the wallet that will list.
         const info = await this.pricing.getSellInfo(name, { ...ctx, budgetMs: PER_NAME_BUDGET_MS, appid: appId, currency: cur.code });
         const buyer = targetBuyerMinor(info, strategy);
-        out[name] = { buyerMinor: buyer, netMinor: buyer != null ? sellerNetFromBuyer(buyer) : null };
+        out[name] = { buyerMinor: buyer, netMinor: buyer != null ? sellerNetFromBuyer(buyer, feeMinimumOf(cur)) : null };
       }
     };
     // ALWAYS run up to WORKERS concurrent workers (throughput must not drop when only one identity is
@@ -438,7 +682,7 @@ export class MarketService {
   startMassSell(
     groups:   MassSellGroup[],
     strategy: SellStrategy,
-    opts?: { concurrency?: number; itemDelayMs?: number; customPriceMajor?: number; retryBackoffMs?: number; preflightBackoffMs?: number; confirmBackoffMs?: number; confirmRateLimitPauseMs?: number },
+    opts?: { concurrency?: number; itemDelayMs?: number; itemConcurrency?: number; customPriceMajor?: number; retryBackoffMs?: number; preflightBackoffMs?: number; confirmBackoffMs?: number; confirmRateLimitPauseMs?: number },
   ): MassSellJob {
     if (this.job.running) throw new Error('A mass-sell is already running');
     this.cancelRequested = false; // fresh run — clear any prior cancel request
@@ -480,7 +724,7 @@ export class MarketService {
   private async runMassSell(
     groups:   MassSellGroup[],
     strategy: SellStrategy,
-    opts?: { concurrency?: number; itemDelayMs?: number; customPriceMajor?: number },
+    opts?: { concurrency?: number; itemDelayMs?: number; itemConcurrency?: number; customPriceMajor?: number },
   ): Promise<void> {
     // Dynamic scaling: 1 worker / 5 bots, floor 5, ceiling 25. An explicit override (e.g. the
     // /api/market/sell body) is honoured but CLAMPED to the 25 ceiling — proxy/socket stability
@@ -492,12 +736,22 @@ export class MarketService {
     // the delay, never drop it below the floor. `?? default` then `Math.max`, because
     // 0 ?? 1200 === 0 would otherwise keep the zero.
     const itemDelay   = Math.max(MIN_ITEM_DELAY, opts?.itemDelayMs ?? DEFAULT_ITEM_DELAY);
+    // Lanes per bot. Clamped like every other client-supplied concurrency: a forged body must not
+    // be able to point an unbounded number of concurrent money-ops at one account. Raising lanes
+    // never raises the request RATE (itemDelay still gates every dispatch) — it only hides latency.
+    const itemConcurrency = Math.max(1, Math.min(MAX_ITEM_CONCURRENCY,
+      Number.isFinite(opts?.itemConcurrency) ? Math.floor(Number(opts?.itemConcurrency)) : DEFAULT_ITEM_CONCURRENCY));
     // A custom price is a MAJOR amount (e.g. 2.05) applied in EACH bot's OWN wallet currency —
     // the same contract as a folder mass-buy's pricePerItemMajor. It cannot be pre-scaled here:
     // 2.05 is 205 minor units on a 2-decimal wallet and 2 on a 0-decimal one, so the scaling
     // happens per bot inside resolveNet, once its currency is known.
     const customMajor = strategy === 'custom' ? Math.max(0, Number(opts?.customPriceMajor ?? 0)) : null;
     const netCache = new Map<string, number | null>(); // appId:currency:name → seller net (minor units)
+    // In-flight lookups, so the bot's parallel listing lanes ASK STEAM ONCE for a name they all
+    // want. Without it the value cache only fills when the first lookup RETURNS, and K lanes
+    // starting together on K copies of the same item would each fire their own priceoverview —
+    // K× the account's scarce price budget for one answer (H-TRD-023's dedupe, restored for lanes).
+    const netInflight = new Map<string, Promise<{ net: number | null; transport: boolean }>>();
     const queue = [...groups];
     // Snapshot which bots were ALREADY live so we release ONLY the sessions this sell creates.
     const wasLiveBefore = this.trades.snapshotLive(groups.map((g) => g.username));
@@ -516,11 +770,22 @@ export class MarketService {
       // wallets is exactly the mis-denomination this whole path exists to prevent.
       const key = `${appId}:${cur.code}:${name}`;
       if (netCache.has(key)) return { net: netCache.get(key)!, transport: false };
-      const info = await this.pricing.getSellInfo(name, { ...ctx, appid: appId, currency: cur.code });
-      const buyer = targetBuyerMinor(info, strategy);
-      const net = buyer != null ? sellerNetFromBuyer(buyer) : null;
-      if (net != null || info.authoritative) netCache.set(key, net);
-      return { net, transport: net == null && !info.authoritative };
+      const pending = netInflight.get(key);
+      if (pending) return pending;          // another lane is already asking Steam for this name
+      const lookup = (async () => {
+        const info = await this.pricing.getSellInfo(name, { ...ctx, appid: appId, currency: cur.code });
+        const buyer = targetBuyerMinor(info, strategy);
+        // The net we COMMIT is solved with this bot's own currency fee floor: with the wrong
+        // floor the listing goes live ABOVE the buyer price it was aiming at, so an 'undercut'
+        // silently fails to undercut (v1.4.6, PLN).
+        const net = buyer != null ? sellerNetFromBuyer(buyer, feeMinimumOf(cur)) : null;
+        if (net != null || info.authoritative) netCache.set(key, net);
+        return { net, transport: net == null && !info.authoritative };
+      })();
+      netInflight.set(key, lookup);
+      // Cleared on BOTH paths: a rejected lookup must not leave a poisoned promise that every
+      // later item for this name re-awaits (they would all inherit one dead request's failure).
+      try { return await lookup; } finally { netInflight.delete(key); }
     };
 
     const worker = async (): Promise<void> => {
@@ -539,7 +804,7 @@ export class MarketService {
         // sibling — counters are NOT touched (processBot already recorded what it did; the visible
         // done < total gap plus this log is the honest record).
         try {
-          await this.processBot(group, resolveNet, itemDelay);
+          await this.processBot(group, resolveNet, itemDelay, itemConcurrency);
         } catch (err) {
           logger.error(`[mass-sell] ${group.username}: bot aborted (${(err as Error)?.message ?? String(err)})`);
         }
@@ -646,6 +911,7 @@ export class MarketService {
     group: MassSellGroup,
     resolveNet: (name: string, ctx: { httpsAgent?: unknown; cookieHeader?: string }, appId: number, cur: CurrencyInfo) => Promise<{ net: number | null; transport: boolean }>,
     itemDelay: number,
+    itemConcurrency: number = DEFAULT_ITEM_CONCURRENCY,
   ): Promise<void> {
     const user = group.username;
     const N = group.items.length;
@@ -731,23 +997,78 @@ export class MarketService {
     let unsellable: Set<string> | undefined;
     let unsellableBuilt = false;
 
-    for (let i = 0; i < group.items.length; i++) {
-      const item = group.items[i];
-      const pos = `${i + 1}/${N}`;
+    // ── List the bot's items over PARALLEL LANES, confirming as we go ─────────
+    //
+    // Two things were wrong with the old strictly-sequential "list everything, then confirm
+    // once at the end" shape, and they compound on a big batch:
+    //
+    //  1. THE WALL. Steam caps how many listings may sit awaiting 2FA. Confirming only at the
+    //     end meant the backlog grew unbounded until Steam refused every further listing with
+    //     "too many listings pending confirmation" — at which point the run was dead in the
+    //     water (field report, 2026-08-04: a 263-item sell died at 254). Worse, the message
+    //     contains "too many", so it classified as a rate limit and each remaining item burned
+    //     3 retries × 15-35 s against a window that could never open, because the only thing
+    //     that clears it is confirming. Now the confirm pass is INTERLEAVED: every
+    //     CONFIRM_BATCH successful listings we drain the backlog, so it never approaches the
+    //     cap — and if Steam says the wall anyway (a pre-existing backlog, a smaller cap on
+    //     this account), that is a 'needs-confirm' outcome: drain, then re-list the item.
+    //
+    //  2. DEAD TIME. One item at a time meant the bot sat idle for the whole round-trip of
+    //     every listing (~0.5-1 s) on top of the deliberate anti-spam pause. Lanes overlap
+    //     those round-trips WITHOUT raising the request rate: `pace()` still admits at most
+    //     one sellitem per `itemDelay` for this bot, so the pacing floor (B45) is intact and
+    //     the only thing removed is waiting. Latency is hidden, cadence is unchanged.
+    let cursor = 0;                       // next unclaimed item (lanes share it)
+    let stopReason: string | null = null; // set once → every UNCLAIMED item is deferred below
+    let nextDispatchAt = 0;               // wall-clock gate for the shared pacing
+    let confirmPass: Promise<void> | null = null; // in-flight interleaved confirm (lanes await it)
 
-      // Item containment (H-TRD-024): an UNEXPECTED throw inside one item's processing (e.g.
-      // isAssetSellable hitting a malformed disk-cached stack) must cost exactly one `failed`
-      // row, never abort the bot — a bare throw here escapes to worker()/Promise.all and would
-      // strand the rest of the fleet's workers as zombies against the next run.
-      try {
-      // "End Task" mid-bot: defer this item + the rest (retryable) and stop this bot.
-      if (this.cancelRequested) {
-        const rest = group.items.slice(i);
-        logger.warn(`[mass-sell] ${user} ${pos}: cancelled (End Task) – deferring ${rest.length} remaining item(s)`);
-        this.deferAll(group, rest, 'cancelled (End Task) – not attempted');
-        break;
-      }
+    /** Claims the next item, or null when the bot is done/stopping. */
+    const claimNext = (): { item: MassSellGroup['items'][number]; pos: string } | null => {
+      if (stopReason || this.cancelRequested || cursor >= group.items.length) return null;
+      const i = cursor++;
+      return { item: group.items[i], pos: `${i + 1}/${N}` };
+    };
+    /** Stops this bot's remaining (unclaimed) work; in-flight lanes finish their own item. */
+    const stopBot = (reason: string): void => { if (!stopReason) stopReason = reason; };
+    /** Admits ONE listing dispatch per `itemDelay` for this bot, across all lanes. */
+    const pace = async (): Promise<void> => {
+      const now = Date.now();
+      const at = Math.max(now, nextDispatchAt);
+      nextDispatchAt = at + itemDelay;
+      if (at > now) await sleep(at - now);
+    };
+    /**
+     * Drains the 2FA backlog mid-run. Single-flight: a second lane hitting the threshold (or the
+     * wall) at the same moment awaits the pass already running instead of starting a second one —
+     * two concurrent getlist/confirm rounds on one account would spend its mobileconf budget twice
+     * over for the same work. Never throws: a failed drain leaves the listings awaiting manual 2FA
+     * exactly as the end-of-bot pass does, and the run continues.
+     */
+    const drainConfirmations = async (why: string): Promise<void> => {
+      if (confirmPass) { await confirmPass; return; }
+      const pending = pendingForBot;
+      pendingForBot = 0;                  // reset up front: these are now this pass's responsibility
+      this.job.phase = 'confirming';
+      logger.info(`[mass-sell] ${user}: confirming ${pending} pending listing(s) mid-run (${why})…`);
+      confirmPass = (async () => {
+        try {
+          const n = await this.confirmWithRetry(trader, user);
+          this.job.confirmed += n;
+          logger.info(`[mass-sell] ${user}: ✓ ${n} listing(s) confirmed via 2FA (mid-run)`);
+        } catch (err) {
+          this.job.confirmed += (err as { confirmedSoFar?: number }).confirmedSoFar ?? 0;
+          logger.error(`[mass-sell] ${user}: mid-run confirmation FAILED (${(err as Error).message}) – those listings await manual 2FA; continuing`);
+        } finally {
+          this.job.phase = 'listing';
+        }
+      })();
+      try { await confirmPass; } finally { confirmPass = null; }
+    };
 
+    /** Processes ONE claimed item to a terminal outcome. `retryAfterConfirm` allows exactly one
+     *  re-list after a backlog drain, so the wall costs an item a confirm pass — not its life. */
+    const processItem = async (item: MassSellGroup['items'][number], pos: string, retryAfterConfirm = true): Promise<void> => {
       // Already listed (pre-existing or an earlier phantom) → count once, skip.
       // H-TRD-026: a pre-existing listing may still be awaiting its 2FA confirm (crash-rerun after
       // listings were created but before the confirm phase). Steam tells us WHICH ones (pending_listings
@@ -757,7 +1078,7 @@ export class MarketService {
         this.job.listed++; this.job.done++; skippedAlreadyListed++;
         if (unconfirmedSet.has(item.assetId)) skippedAwaitingConfirm++;
         logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} already listed → skipped (${listedForBot} new this bot)`);
-        continue;
+        return;
       }
 
       // Pre-list guard (INV-B2 / INV-D1 / C3): never list a trade-locked or non-tradable
@@ -768,7 +1089,7 @@ export class MarketService {
         this.job.blocked.push({ username: user, assetId: item.assetId, error: 'trade-locked or not tradable' });
         this.job.done++;
         logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} is trade-locked / not tradable → blocked (not listed)`);
-        continue;
+        return;
       }
 
       const { net, transport } = await resolveNet(item.marketHashName, { httpsAgent: trader.httpsAgent, cookieHeader: trader.cookieHeader }, appId, currency);
@@ -780,15 +1101,13 @@ export class MarketService {
         this.job.done++;
         transportPriceMisses++;
         logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} – price lookup failed (connection), deferred`);
-        // Two connection-class price misses in a row → the bot's egress is down; defer the
-        // rest instead of burning a lookup per item (same philosophy as the 'deferred' outcome).
+        // Two connection-class price misses in a row → the bot's egress is down; stop instead of
+        // burning a lookup per item (same philosophy as the 'deferred' outcome).
         if (transportPriceMisses >= 2) {
-          const rest = group.items.slice(i + 1);
-          logger.warn(`[mass-sell] ${user} ${pos}: price lookups failing (connection) – deferring ${rest.length} remaining item(s)`);
-          this.deferAll(group, rest, 'price lookup failed (connection) – not attempted');
-          break;
+          logger.warn(`[mass-sell] ${user} ${pos}: price lookups failing (connection) – deferring the remaining item(s)`);
+          stopBot('price lookup failed (connection) – not attempted');
         }
-        continue;
+        return;
       }
       transportPriceMisses = 0; // Steam answered (a real net or an authoritative no-price) → streak broken.
       if (net == null) {
@@ -796,7 +1115,7 @@ export class MarketService {
         this.job.failed.push({ username: user, assetId: item.assetId, error: 'no market price (skipped)' });
         this.job.done++;
         logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} – no price, skipped`);
-        continue;
+        return;
       }
 
       // Cross-service guard (D2 / INV-D2): don't list an asset that is mid-flight in
@@ -807,10 +1126,28 @@ export class MarketService {
         this.job.blocked.push({ username: user, assetId: item.assetId, error: 'busy in another money operation' });
         this.job.done++;
         logger.warn(`[mass-sell] ${user} ${pos}: ${item.marketHashName} busy in another money op → skipped`);
-        continue;
+        return;
       }
+      // Wait out any in-flight confirm drain, then take this lane's pacing slot.
+      if (confirmPass) await confirmPass;
+      await pace();
       const outcome = await this.listWithRetry(trader, item.assetId, net, listedSet, appId)
         .finally(() => MoneyOps.release(mk));
+
+      // Steam refused because OUR unconfirmed backlog is full. Drain it, then re-list this item
+      // once. The item is NOT counted here — processItem is re-entered and reaches a terminal
+      // outcome there (or is failed below if the wall survives the drain).
+      if (outcome === 'needs-confirm') {
+        logger.warn(`[mass-sell] ${user} ${pos}: Steam's pending-confirmation backlog is full – confirming now, then re-listing`);
+        await drainConfirmations('Steam refused further listings');
+        if (retryAfterConfirm) return processItem(item, pos, false);
+        this.job.failed.push({ username: user, assetId: item.assetId, error: 'still too many listings pending confirmation after a 2FA pass' });
+        this.job.done++;
+        failedHere.add(item.assetId);
+        logger.error(`[mass-sell] ${user} ${pos}: ✗ ${item.marketHashName} – backlog still full after confirming`);
+        return;
+      }
+
       this.job.done++;
       if (outcome === 'listed')      { this.job.listed++; listedForBot++; pendingForBot++;
         logger.info(`[mass-sell] ${user} ${pos}: ✓ listed ${item.marketHashName} @ ${money(net)} net (${listedForBot} listed / ${N})`);
@@ -821,36 +1158,65 @@ export class MarketService {
       else if (outcome === 'deferred') {
         // Connection died on this item → defer it AND the remaining items.
         this.job.deferred.push({ username: user, assetId: item.assetId, error: 'connection lost during listing' });
-        const rest = group.items.slice(i + 1);
-        logger.warn(`[mass-sell] ${user} ${pos}: connection lost – deferring ${rest.length + 1} remaining item(s)`);
-        this.deferAll(group, rest, 'connection lost – not attempted');
-        break;
+        logger.warn(`[mass-sell] ${user} ${pos}: connection lost – deferring the remaining item(s)`);
+        stopBot('connection lost – not attempted');
+        return;
       }
       else if (outcome === 'gone') {
         // Stale candidate: the asset already left the inventory (sold/moved/listed elsewhere).
         // Reported as `gone`, not a failure, and not retried.
         this.job.gone.push({ username: user, assetId: item.assetId, error: 'no longer in inventory' });
         logger.info(`[mass-sell] ${user} ${pos}: ${item.marketHashName} no longer in inventory → skipped (gone)`);
+        return;
       } else {
         this.job.failed.push({ username: user, assetId: item.assetId, error: outcome.error });
         failedHere.add(item.assetId);
         logger.error(`[mass-sell] ${user} ${pos}: ✗ failed ${item.marketHashName} – ${outcome.error}`);
+        return;
       }
 
-      if (i < group.items.length - 1) await sleep(itemDelay);
-      } catch (err) {
-        // An exception no branch above anticipated → one honest `failed` row, then carry on
-        // with the next item. This is containment (defined outcome), not a retry wrapper.
-        const msg = (err as Error)?.message ?? String(err);
-        this.job.failed.push({ username: user, assetId: item.assetId, error: 'internal error: ' + msg });
-        this.job.done++;
-        failedHere.add(item.assetId);
-        logger.error(`[mass-sell] ${user} ${pos}: ✗ internal error ${item.marketHashName} – ${msg}`);
+      // Drain the backlog well before Steam's cap rather than discovering it at the wall.
+      if (pendingForBot >= CONFIRM_BATCH) await drainConfirmations(`${pendingForBot} awaiting 2FA`);
+    };
+
+    const lane = async (): Promise<void> => {
+      for (;;) {
+        const next = claimNext();
+        if (!next) return;
+        // Item containment (H-TRD-024): an UNEXPECTED throw inside one item's processing (e.g.
+        // isAssetSellable hitting a malformed disk-cached stack) must cost exactly one `failed`
+        // row, never abort the bot — a bare throw here escapes to worker()/Promise.all and would
+        // strand the rest of the fleet's workers as zombies against the next run.
+        try {
+          await processItem(next.item, next.pos);
+        } catch (err) {
+          const msg = (err as Error)?.message ?? String(err);
+          this.job.failed.push({ username: user, assetId: next.item.assetId, error: 'internal error: ' + msg });
+          this.job.done++;
+          failedHere.add(next.item.assetId);
+          logger.error(`[mass-sell] ${user} ${next.pos}: ✗ internal error ${next.item.marketHashName} – ${msg}`);
+        }
+      }
+    };
+
+    const lanes = Math.max(1, Math.min(itemConcurrency, group.items.length));
+    if (lanes > 1) logger.info(`[mass-sell] ${user}: listing over ${lanes} lane(s), one dispatch per ${itemDelay}ms, confirming every ${CONFIRM_BATCH}`);
+    await Promise.all(Array.from({ length: lanes }, () => lane()));
+
+    // Whatever no lane claimed (End Task, dead connection, dead egress) is deferred as ONE
+    // retryable block — the sequential loop's `slice(i)` in pooled form.
+    if (stopReason || this.cancelRequested) {
+      const rest = group.items.slice(cursor);
+      if (rest.length) {
+        logger.warn(`[mass-sell] ${user}: deferring ${rest.length} unattempted item(s) – ${stopReason ?? 'cancelled (End Task) – not attempted'}`);
+        this.deferAll(group, rest, stopReason ?? 'cancelled (End Task) – not attempted');
       }
     }
 
-    // ── Confirm this bot's pending listings in one 2FA batch (Hotfix A: retry) ──
-    // H-TRD-026: also arm the confirm phase when the only pending work is pre-existing listings from an
+    // ── Final 2FA pass: whatever the mid-run drains left (Hotfix A: retry) ──────
+    // Usually a partial batch (< CONFIRM_BATCH) plus anything a drain could not confirm; on a
+    // small sell it is still the only pass. H-TRD-026: also arm it when the only pending work is
+    // pre-existing listings from an
     // interrupted earlier run — but ONLY the ones Steam still reports as awaiting confirmation. A re-run
     // over listings that are already active has nothing to confirm, and calling anyway cost a
     // mobileconf/getlist per bot against a per-IP budget the account needs for real money ops.
@@ -980,6 +1346,8 @@ export class MarketService {
    *   'phantom'  – Steam had already created it (recovered, no double-list)
    *   'deferred' – the bot's connection is dead → caller defers the rest
    *   'gone'     – the asset is no longer in the inventory (stale candidate; not a failure)
+   *   'needs-confirm' – Steam refused because OUR unconfirmed backlog is full → caller
+   *                     confirms, then re-lists this item (see isTooManyPendingConfirmations)
    *   { error }  – a genuine, non-recoverable failure
    */
   private async listWithRetry(
@@ -988,7 +1356,7 @@ export class MarketService {
     net: number,
     listedSet: Set<string>,
     appId: number,
-  ): Promise<'listed' | 'phantom' | 'deferred' | 'gone' | { error: string }> {
+  ): Promise<'listed' | 'phantom' | 'deferred' | 'gone' | 'needs-confirm' | { error: string }> {
     let lastErr = '';
     for (let attempt = 0; attempt <= MAX_SELL_RETRIES; attempt++) {
       try {
@@ -997,6 +1365,11 @@ export class MarketService {
         return 'listed';
       } catch (err) {
         lastErr = (err as Error).message;
+
+        // Steam's pending-confirmation wall: OUR unconfirmed backlog, not a Steam fault. Hand it
+        // back so the caller runs a 2FA pass and re-lists — retrying here just waits out a window
+        // that never opens (this check MUST precede isAlreadyListed, which matches the same text).
+        if (isTooManyPendingConfirmations(err)) return 'needs-confirm';
 
         // A "listing already exists" rejection means the item IS listed (phantom).
         if (isAlreadyListed(err) && !isTransient(err)) {

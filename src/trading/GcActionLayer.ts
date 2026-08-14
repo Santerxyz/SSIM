@@ -283,6 +283,22 @@ export class GcActionLayer {
     });
   }
 
+  /**
+   * The live GC inventory as raw econ items, keyed by asset id. Read-only.
+   *
+   * Used to look up what a trade-up ACTUALLY produced: craftTradeUp returns only the new item's id,
+   * and the GC never sends a name, so the outcome has to be resolved against the inventory and then
+   * named via Cs2ItemResolver. One read covers a whole batch of crafts, so a run costs a single
+   * extra GC op rather than one per contract.
+   */
+  async readInventoryItems(username: string): Promise<Map<string, GcItem>> {
+    return this.withSession(username, async (go) => {
+      const out = new Map<string, GcItem>();
+      for (const it of go.inventory ?? []) if (it?.id != null) out.set(String(it.id), it);
+      return out;
+    });
+  }
+
   /** Lists the account's storage units (def_index 1201). Read-only. */
   async listCaskets(username: string): Promise<Array<{ id: string; name: string; count: number }>> {
     return this.withSession(username, async (go) => (go.inventory ?? [])

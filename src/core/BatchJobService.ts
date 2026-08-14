@@ -29,8 +29,13 @@ export type BatchSource =
 export interface BatchAdapterCtx {
   usernames: string[]; params: Record<string, unknown>; game: 'cs2' | 'tf2';
   /** Run a serial (concurrency 1) per-account loop the engine tracks; call this for jobs whose service
-   *  exposes a per-account method but no fleet job. `perAccount` throwing is recorded in failed[], loop continues. */
-  runInternal(perAccount: (username: string, index: number) => Promise<void>): void;
+   *  exposes a per-account method but no fleet job. `perAccount` throwing is recorded in failed[], loop continues.
+   *
+   *  A value RETURNED by `perAccount` is appended to `status().result.rows` as it happens (W4_41). done/failed
+   *  counts cannot express a money job's real outcomes — "already owned", "wallet too low" and "bought" are all
+   *  non-failures that mean very different things — so a job that has more to say says it here. Returning
+   *  `undefined` (every pre-existing job) leaves `result` unset, so nothing changes for them. */
+  runInternal(perAccount: (username: string, index: number) => Promise<unknown>): void;
 }
 export interface JobDef {
   jobType: string; label: string;
@@ -160,12 +165,18 @@ export class BatchJobService {
   history(): BatchHistoryEntry[] { return [...this.hist].reverse(); }
 
   // ── internals ──
-  private startInternal(usernames: string[], perAccount: (u: string, i: number) => Promise<void>): void {
+  private startInternal(usernames: string[], perAccount: (u: string, i: number) => Promise<unknown>): void {
     this.source = { kind: 'internal' };
+    const rows: unknown[] = [];
     void (async () => {
       for (let i = 0; i < usernames.length; i++) {
         if (this.live.cancelling) break;                     // co-operative cancel (in-flight op finishes)
-        try { await perAccount(usernames[i], i); }
+        try {
+          const row = await perAccount(usernames[i], i);
+          // Published as it happens, not at the end: on a money job the operator must be able to watch
+          // the outcomes land, and a run that is cancelled (or crashes) still shows what it already did.
+          if (row !== undefined) { rows.push(row); this.live.result = { rows }; }
+        }
         catch (e) { this.live.failed.push({ username: usernames[i], error: (e as Error).message }); }   // no-band-aid: record + continue
         this.live.done++;
       }

@@ -27,6 +27,11 @@ function extractFunction(src: string, name: string): string {
 
 const APP_JS = readFileSync(join(__dirname, '..', 'public', 'app.js'), 'utf8');
 const csfLoadTrades = extractFunction(APP_JS, 'csfLoadTrades');
+// The tab was split into fetch (csfLoadTrades) + paint (csfRenderTrades) when it became the
+// delivery dashboard, so the toggle's markup now lives in the renderer. The invariant is
+// unchanged and still checked end-to-end below: data-enabled may only ever carry a value that
+// came back from a SUCCESSFUL /auto-accept fetch.
+const csfRenderTrades = extractFunction(APP_JS, 'csfRenderTrades');
 const csfToggleAutoAccept = extractFunction(APP_JS, 'csfToggleAutoAccept');
 
 test('H-FE-008: a failed /auto-accept fetch is not coerced to a fake OFF toggle', () => {
@@ -46,10 +51,22 @@ test('H-FE-008: a failed /auto-accept fetch is not coerced to a fake OFF toggle'
 });
 
 test('H-FE-008: the toggle carries data-enabled from the known-good fetched state', () => {
+  // Link 1: the fetched value is the ONLY thing stored — no fabricated default on the way in.
   assert.match(
     csfLoadTrades,
-    /data-enabled="\$\{auto\.enabled \? '1' : '0'\}"/,
-    'the toggle must record the fetched auto.enabled as data-enabled',
+    /CSF\.trd\.auto = !!auto\.enabled;/,
+    'the fetched auto.enabled must be what the tab stores',
+  );
+  // Link 2: the toggle's data-enabled is rendered from that stored value, nothing else.
+  assert.match(
+    csfRenderTrades,
+    /const auto = CSF\.trd\.auto;/,
+    'the renderer must read the toggle state from the stored fetch result',
+  );
+  assert.match(
+    csfRenderTrades,
+    /data-enabled="\$\{auto \? '1' : '0'\}"/,
+    'the toggle must record the fetched state as data-enabled',
   );
 });
 

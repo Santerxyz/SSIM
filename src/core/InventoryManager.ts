@@ -422,6 +422,21 @@ export const TRADE_LOCK_DATE_UNKNOWN = new Date('2099-01-01T00:00:00.000Z');
  * real 15-day maximum while still rejecting the multi-month phantoms.
  */
 export const MAX_YEARLESS_HOLD_DAYS = 30;
+/**
+ * How far into the PAST a year-less hold date may sit and still be read as "this hold just lifted"
+ * rather than rolled to next year. The note's clock is resolved on Steam's own timezone (see
+ * {@link STEAM_TIME_ZONE}), so this no longer has to absorb an unknown offset — 24h now covers only
+ * how long Steam keeps serving the note from its description cache after the hold ends, while
+ * staying far short of the months-old notes the horizon guard exists to reject.
+ */
+export const YEARLESS_PAST_GRACE_MS = 24 * 3600 * 1000;
+/**
+ * How long a hold note stays authoritative AFTER the instant it states (see the elapsed-note branch
+ * in {@link parseTradeLock}). Steam serves item descriptions from a cache, so the note survives the
+ * hold it describes by a few minutes; 30 covers that lag and the note's rounding to the whole minute
+ * without inventing the multi-hour countdown the end-of-day over-lock used to produce.
+ */
+export const STALE_HOLD_NOTE_MS = 30 * 60 * 1000;
 
 /**
  * Resolves a trade-lock expiry from Steam's data. The AUTHORITATIVE source is the
@@ -440,6 +455,8 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
   // market-listing note first). Returning early on the first dateless note abandoned the scan — the
   // countdown was then replaced by "date unknown" purely because of note ORDER. (2026-07-10)
   let unreadableHold = '';
+  /** A SHORT-FORM (year-less) hold whose stated instant has just elapsed — see the note below. */
+  let elapsedShortForm: Date | null = null;
   for (const pool of pools) {
     if (!pool) continue;
     for (const entry of pool) {
@@ -475,6 +492,10 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
       if (hasMarker || desc.tradable === 0) {
         const d = extractHoldDate(v);
         if (d && d.getTime() > Date.now()) return d; // future hold → locked, with a real countdown
+        // A short-form note whose stated instant has already passed (see YEARLESS_PAST_GRACE_MS).
+        // Remembered, NOT returned here: it only settles the item once we know no OTHER note carries
+        // a genuinely future hold, which always wins. Resolved after the scan.
+        if (d && !elapsedShortForm) elapsedShortForm = d;
         // "⇆" alone does NOT prove a trade hold. Steam stamps the SAME marker on the market-listing
         // note — "⇆ This item is listed on the Steam Community Market and cannot be consumed or
         // modified." — which carries no date and is not a hold at all. Treating it as one turned every
@@ -490,6 +511,28 @@ export function parseTradeLock(desc: RawDescription, allowCacheExpiration = fals
         if (hasMarker && !d && !unreadableHold && (statesAWhen(v) || desc.tradable === 1)) unreadableHold = v;
       }
     }
+  }
+  // ── SHORT-FORM NOTE WHOSE INSTANT HAS ELAPSED ─────────────────────────────────────────────────
+  // The short note names a clock time but no timezone; that clock is STEAM'S (Pacific — see
+  // STEAM_TIME_ZONE), and extractHoldDate now resolves it as such. So reaching here means the hold
+  // Steam stated has genuinely passed, while Steam is STILL serving the note.
+  //
+  // That is a narrow, real window: Steam caches item descriptions, so the note outlives the hold by
+  // minutes. It is not a reason to invent a long countdown. The first pass at this case held the item
+  // to the END of the named DAY, which is what produced the owner's "14 h, 39 min" on an item Steam
+  // said unlocks at 11:00 — the over-lock was covering for the timezone error that is now fixed.
+  //
+  // So: stay locked for a SHORT, FIXED window past the stated instant (Steam's cache lag + the note's
+  // rounding to the minute), then let the note go. The window is derived from the note, not from the
+  // clock, so the expiry is stable across refreshes — stack() keys on it (~:252) and a sliding value
+  // would re-shuffle every stack on every pass. Once it too has passed, the note carries no live
+  // information and `tradable` alone decides, which is the same fail-safe every other path relies on.
+  // A fully-elapsed note falls THROUGH rather than returning: another note on the same item may still
+  // be an unreadable hold, and that one must keep its fail-closed sentinel.
+  if (elapsedShortForm) {
+    const settles = new Date(elapsedShortForm.getTime() + STALE_HOLD_NOTE_MS);
+    if (settles.getTime() > Date.now()) return settles;
+    logger.warn(`trade-lock note still present but its stated instant (${elapsedShortForm.toISOString()}) passed over ${Math.round(STALE_HOLD_NOTE_MS / 60000)} min ago — treating the note as stale; the item's own tradable flag now decides`);
   }
   if (unreadableHold) {
     // Log the FULL note (JSON.stringify exposes hidden bidi/zero-width chars + the trailing text), not a
@@ -594,6 +637,53 @@ function monthWords(): Map<string, number> {
 /** Thai storefront years can be Buddhist Era (2569 = 2026 CE); map the BE range for 2000-2100 CE. */
 function normalizeYear(y: number): number { return y >= 2543 && y <= 2643 ? y - 543 : y; }
 
+// ── Steam's clock ──────────────────────────────────────────────────────────────
+
+/**
+ * Valve formats its server-side timestamps in PACIFIC time — the storefront, the market, and the
+ * trade-protection notice all share that clock. The notice never states a zone, so the clock in
+ * "… until 12 Aug @ 4:00am" is Pacific, NOT ours, and reading it as local time is what put the
+ * unlock hours off. Measured twice on the owner's fleet, both at exactly the PDT offset (-7):
+ *   • note "11 Aug @ 12:00pm"  ⇄  the same item's Steam tooltip "11/08/2026, 19:00:00"
+ *   • note "12 Aug @ 4:00am"   ⇄  the same item's Steam tooltip "12/08/2026, 11:00:00"
+ * An IANA zone (not a fixed -7) so the PST/PDT switch is handled for free.
+ */
+export const STEAM_TIME_ZONE = 'America/Los_Angeles';
+
+/** Formatter used to read an instant's Pacific wall clock. Null if this ICU build lacks the zone. */
+const steamZoneFmt: Intl.DateTimeFormat | null = (() => {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: STEAM_TIME_ZONE, hourCycle: 'h23', calendar: 'gregory',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+  } catch { return null; } // slim ICU → steamWallClock falls back to local (the pre-fix behaviour)
+})();
+
+/** How far Pacific time sits from UTC at `atMs`, in ms (negative — e.g. -7h in PDT). */
+function steamZoneOffsetMs(atMs: number): number {
+  const parts = steamZoneFmt!.formatToParts(new Date(atMs));
+  const at = (type: string): number => Number(parts.find((p) => p.type === type)?.value);
+  return Date.UTC(at('year'), at('month') - 1, at('day'), at('hour'), at('minute'), at('second')) - atMs;
+}
+
+/**
+ * A wall clock READ IN STEAM'S TIMEZONE → the real instant it names.
+ *
+ * The offset depends on the instant we are solving for, so it is applied and then re-checked: the
+ * first guess can land on the far side of a DST boundary, and the second pass settles it. On the
+ * two ambiguous hours a DST switch creates, either reading is at most an hour out — irrelevant to
+ * a hold measured in days, and the item stays locked either way.
+ */
+export function steamWallClock(y: number, mo: number, d: number, hh: number, mi: number, ss = 0): number {
+  const naive = Date.UTC(y, mo - 1, d, hh, mi, ss);
+  if (!steamZoneFmt) return new Date(y, mo - 1, d, hh, mi, ss).getTime(); // no zone data → local
+  const first = naive - steamZoneOffsetMs(naive);
+  const settled = naive - steamZoneOffsetMs(first);
+  return settled;
+}
+
 /**
  * Language-INDEPENDENT trade-hold date extraction (owner request 2026-07-08: "something global").
  * Steam localises the hold note into the account's language, so keyword parsing does not scale to
@@ -695,7 +785,11 @@ export function extractHoldDate(rawText: string): Date | null {
   const pushNoYear = (mo: number, d: number, hh: number, mi: number): void => {
     for (const y of [yNow, yNow + 1]) {                 // Dec→Jan notes need the roll-over; horizon bounds it
       if (mo < 1 || mo > 12 || d < 1 || d > 31) return; // reject garbage triples (mirrors `push`)
-      const t = new Date(y, mo - 1, d, hh, mi, 0).getTime();
+      // STEAM'S CLOCK, not ours (see STEAM_TIME_ZONE). This is the ONLY note shape Valve formats
+      // server-side with no zone attached, so it is the only one that has to be re-based; the
+      // year-bearing branches above keep their own reading (explicit GMT, or the localized numeric
+      // form that Steam renders in the viewer's own zone).
+      const t = steamWallClock(y, mo, d, hh, mi);
       if (!Number.isNaN(t)) ncand.push(t);
     }
   };
@@ -716,7 +810,27 @@ export function extractHoldDate(rawText: string): Date | null {
   // inventing a countdown. Genuine Dec→Jan roll-overs are days out, so they still pass.
   const horizon = now + MAX_YEARLESS_HOLD_DAYS * 86_400_000;
   const nfuture = ncand.filter(t => t > now && t <= horizon).sort((a, b) => a - b);
-  return nfuture.length ? new Date(nfuture[0]) : null;
+  if (nfuture.length) return new Date(nfuture[0]);
+
+  // RELEASE-DAY GRACE (2026-08-11 — owner: "at a specific date it will start saying unknown, mostly
+  // if it reached the same day of the release").
+  //
+  // On the day a hold lifts, Steam's short note names only a clock time — "…until 11 Aug @ 12:00pm".
+  // Once that time passes LOCALLY the this-year candidate is no longer `> now`, so the only survivor
+  // was the yNow+1 roll-over, which the horizon guard above then (correctly) rejected — leaving null
+  // and the "date unparseable" warning, on a note whose date we had in fact read perfectly.
+  //
+  // A year-less date a few hours in the past is overwhelmingly "this hold is lifting right about now"
+  // — Steam's short form only appears near expiry, and its clock is not necessarily in our timezone —
+  // never "this hold expires twelve months from now". So accept the RECENT past and report that date.
+  // It is a real date Steam gave us, so the item gets a truthful timestamp instead of "unknown"; it is
+  // in the past, so nothing treats it as a live lock, and `tradable` alone keeps gating the money
+  // paths (isSellable requires tradable === true regardless of this date).
+  //
+  // The 222-day phantom lock this guard was built for is untouched: a note months in the past falls
+  // outside the grace AND its roll-over stays beyond the horizon, so it still resolves to null.
+  const recent = ncand.filter(t => t <= now && t >= now - YEARLESS_PAST_GRACE_MS).sort((a, b) => b - a);
+  return recent.length ? new Date(recent[0]) : null;
 }
 
 /**

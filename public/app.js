@@ -35,6 +35,14 @@ const state = {
   moveUsernames: null,   // batch multi-select move scope (array of usernames)
   banResult: null,       // last Ban Checker result { accounts, totals } for the results modal
   banTimer: null,        // H-TRD-033: setTimeout handle for the ban-check status poll loop
+  // Active Orders tab (single account OR a folder / multi-selection):
+  //   run       – paint token; an in-flight fetch/poll of an older paint is discarded
+  //   key/rows  – the scope the cached rows belong to + the rows themselves (re-render ⇒ repaint,
+  //               never a silent refetch of a whole folder)
+  //   autoStart – set ONLY by an explicit tab click / Refresh, so an incidental re-render
+  //               (ticking another sidebar checkbox) can never launch a fleet-wide live scan
+  //   cursor    – how many scanned accounts the client has already received (server-side slice)
+  orders: { run: 0, timer: null, key: '', rows: null, autoStart: false, cursor: 0 },
   editUsername: null,
   editProxyInitial: '',         // raw saved proxy the edit field was pre-filled with (change-detection)
   editUseEnvInitial: true,      // was "Use environment proxy" on when the edit modal opened (change-detection)
@@ -125,6 +133,9 @@ const el = {
   screenProxies:    $('screen-proxies'),
   proxiesHeader:    $('proxies-header'),
   proxiesBody:      $('proxies-body'),
+  screenActivity:   $('screen-activity'),
+  activityBody:     $('activity-body'),
+  navActivityBadge: $('nav-activity-badge'),
   envTiles:         $('env-tiles'),
   envEmpty:         $('env-empty'),
   btnNewEnv:        $('btn-new-env'),
@@ -1226,7 +1237,7 @@ async function refreshEnv() {
 // ════════════════════════════════════════════════════════════════════════════
 
 // Allow-list guards against a bad localStorage value or a typo destination.
-const NAV_DEST = { dashboard: 1, portfolios: 1, inventories: 1, accounts: 1, batch: 1, proxies: 1 };
+const NAV_DEST = { dashboard: 1, portfolios: 1, inventories: 1, accounts: 1, batch: 1, proxies: 1, activity: 1 };
 
 function setNav(nav) {
   if (!NAV_DEST[nav]) nav = 'dashboard';
@@ -1239,6 +1250,7 @@ function setNav(nav) {
   el.screenAccounts.classList.toggle('hidden', nav !== 'accounts');
   el.screenBatch.classList.toggle('hidden', nav !== 'batch');
   el.screenProxies.classList.toggle('hidden', nav !== 'proxies');
+  el.screenActivity.classList.toggle('hidden', nav !== 'activity');
 
   // (b) The Inventories module wraps the two LEGACY screens. Force both hidden on exit
   //     and drop the windowed-scroll listener (mirrors showScreen's own TBL-02 teardown).
@@ -1263,6 +1275,7 @@ function setNav(nav) {
   else if (nav === 'accounts')   renderAccountsModule();
   else if (nav === 'batch')      renderBatchModule();
   else if (nav === 'proxies')    renderProxiesModule();
+  else if (nav === 'activity')   renderActivityModule();
   else                           enterInventories();
 }
 
@@ -1589,6 +1602,7 @@ function renderFolderNode(node, depth, sibIndex = 0, sibCount = 1) {
           class="btn btn-icon-sm btn-ghost ${isFirst ? 'opacity-40' : ''}"><i class="fa-solid fa-angle-up t10"></i></button>
         <button ${isLast ? 'disabled' : `data-folderdown="${escapeAttr(id)}"`} title="Move folder down" aria-label="Move folder ${escapeAttr(name)} down"
           class="btn btn-icon-sm btn-ghost ${isLast ? 'opacity-40' : ''}"><i class="fa-solid fa-angle-down t10"></i></button>
+        <button data-ordersfolder="${escapeAttr(id)}" title="Active market orders for all accounts in this folder" aria-label="Active orders for folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-receipt t10"></i></button>
         <button data-banfolder="${escapeAttr(id)}" title="Check bans for all accounts in this folder" aria-label="Check bans for folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-shield-halved t10"></i></button>
         <button data-addsub="${escapeAttr(id)}" title="Create subfolder" aria-label="Create subfolder in ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-folder-plus t10"></i></button>
         <button data-rename="${escapeAttr(id)}" data-name="${escapeAttr(name)}" title="Rename" aria-label="Rename folder ${escapeAttr(name)}" class="btn btn-icon-sm btn-ghost"><i class="fa-solid fa-pen t10"></i></button>
@@ -1714,6 +1728,7 @@ function onSidebarClick(e) {
   if ((n = t.closest('[data-addsub]')))     return openFolderModal({ mode: 'create', parentId: n.dataset.addsub });
   if ((n = t.closest('[data-rename]')))     return openFolderModal({ mode: 'rename', id: n.dataset.rename, name: n.dataset.name });
   if ((n = t.closest('[data-delfolder]')))  return deleteFolder(n.dataset.delfolder, n.dataset.name);
+  if ((n = t.closest('[data-ordersfolder]'))) return openFolderOrders(n.dataset.ordersfolder);
   if ((n = t.closest('[data-banfolder]')))  return checkFolderBans(n.dataset.banfolder);
   if ((n = t.closest('.otpcopy-btn')))      return copyAccountOtp(n.dataset.otpcopy);
   if ((n = t.closest('[data-folder]')))     return openFolderMaster(n.dataset.folder);
@@ -1750,6 +1765,7 @@ function setupDelegation() {
   el.itemsBody.addEventListener('change', onItemsBodyChange);
   el.itemsHead.addEventListener('click', onItemsHeadClick);
   el.itemsHead.addEventListener('change', onItemsHeadChange);
+  el.activityBody?.addEventListener('click', onActivityClick);
 }
 
 /** Toggles one account's multi-select membership. The row's checked styling is flipped
@@ -2811,6 +2827,136 @@ async function redeemWalletCode(u) {
 //  Proxies module (v5) — declarative proxy rules (most-specific match wins)
 // ════════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════════
+//  ACTIVITY — every running job, from anywhere in the app
+//
+//  SSIM has always run these concurrently, but nothing ever said so: a job's progress lived only
+//  inside the modal that started it, so closing that modal made a running job invisible and the
+//  operator sat waiting for a machine that was already free (owner, 2026-08-12). The poller below
+//  runs for the WHOLE session, independent of which module or modal is open, and drives two things:
+//  the rail's live count badge (always on screen — the part that actually changes the behaviour)
+//  and this view.
+// ════════════════════════════════════════════════════════════════════════════
+
+const ACT = { jobs: [], running: 0, timer: null, failed: 0 };
+/** Fast while work is in flight, lazy when idle — the endpoint is an in-memory snapshot, but there
+ *  is no reason to ask 40× a minute on an idle install. */
+const ACT_POLL_BUSY_MS = 1500;
+const ACT_POLL_IDLE_MS = 6000;
+
+/** Icon per job kind. Unknown ids (a job added later) fall back rather than render an empty box. */
+const ACT_ICON = {
+  'inventory-refresh': 'fa-rotate', 'mass-send': 'fa-paper-plane', 'mass-sell': 'fa-tags',
+  'folder-buy': 'fa-cart-shopping', 'orders-scan': 'fa-magnifying-glass-dollar', tradeup: 'fa-arrows-up-to-line',
+  'casket-move': 'fa-box-archive', batch: 'fa-list-check', distribute: 'fa-share-nodes',
+  'csfloat-bulk': 'fa-layer-group', 'csfloat-deliver': 'fa-truck-fast', 'ban-check': 'fa-shield-halved',
+  paysafe: 'fa-wallet',
+};
+
+function startActivityPoll() {
+  if (ACT.timer) return;
+  const tick = async () => {
+    ACT.timer = null;
+    try {
+      const r = await api('/api/jobs');
+      ACT.jobs = Array.isArray(r.jobs) ? r.jobs : [];
+      ACT.running = Number(r.running) || 0;
+      ACT.failed = 0;
+    } catch {
+      // A blip must not blank the badge — that would read as "everything finished". Keep the last
+      // known list and only give up on the display after several consecutive failures.
+      if (++ACT.failed > 3) { ACT.jobs = []; ACT.running = 0; }
+    }
+    paintActivityBadge();
+    if (state.nav === 'activity') paintActivity();
+    ACT.timer = setTimeout(tick, ACT.running ? ACT_POLL_BUSY_MS : ACT_POLL_IDLE_MS);
+  };
+  tick();
+}
+
+function paintActivityBadge() {
+  const b = el.navActivityBadge;
+  if (!b) return;
+  b.textContent = String(ACT.running);
+  b.classList.toggle('hidden', ACT.running === 0);
+}
+
+function renderActivityModule() {
+  startActivityPoll();     // idempotent; the poll is session-wide, this just guarantees it is up
+  paintActivity();
+}
+
+function actElapsed(j) {
+  const from = j.startedAt || 0;
+  if (!from) return '';
+  const s = Math.max(0, Math.round(((j.finishedAt || Date.now()) - from) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function paintActivity() {
+  if (!el.activityBody) return;
+  const running = ACT.jobs.filter((j) => j.running);
+  const recent = ACT.jobs.filter((j) => !j.running);
+  el.activityBody.innerHTML = `
+    <div class="max-w-4xl">
+      ${running.length
+        ? `<p class="t12 text-slate-400 mb-3">${running.length} job${running.length === 1 ? '' : 's'} running${running.length > 1 ? ' — at the same time. You never have to wait for one to finish before starting another.' : '. You can leave this screen; it keeps running.'}</p>
+           <div class="space-y-2">${running.map(actCard).join('')}</div>`
+        : `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-bolt"></i></div>
+             <div class="empty-title">Nothing running</div>
+             <p class="t12 text-slate-500 mt-2 max-w-md mx-auto">Refreshes, mass sends, sells, storage moves, trade-ups, batch jobs and CSFloat deliveries all show up here while they run — including several at once.</p></div>`}
+      ${recent.length ? `<p class="t12 text-slate-500 mt-6 mb-2">Just finished</p><div class="space-y-2">${recent.map(actCard).join('')}</div>` : ''}
+    </div>`;
+}
+
+function actCard(j) {
+  const pct = j.total ? Math.min(100, Math.round((j.done / j.total) * 100)) : (j.running ? 100 : 100);
+  const indeterminate = !j.total;   // a job that cannot say how much work it has (a scan sizing itself)
+  return `<div class="surface px-4 py-3">
+    <div class="flex items-center gap-3">
+      <i class="fa-solid ${ACT_ICON[j.id] || 'fa-gear'} ${j.running ? 'text-brand' : 'text-slate-600'} w-4 text-center shrink-0"></i>
+      <div class="min-w-0 flex-1">
+        <p class="t13 font-semibold ${j.running ? 'text-slate-100' : 'text-slate-400'} truncate">
+          ${escapeHtml(j.label)}${j.detail ? ` <span class="t11 font-normal text-slate-500">· ${escapeHtml(j.detail)}</span>` : ''}
+        </p>
+        <p class="t10 text-slate-500 font-mono">
+          ${indeterminate ? (j.running ? 'working…' : 'done') : `${j.done}/${j.total}`}
+          ${j.phase ? ` · ${escapeHtml(j.phase)}` : ''}
+          ${j.failed ? ` · <span class="text-rose-400">${j.failed} failed</span>` : ''}
+          ${j.startedAt ? ` · ${escapeHtml(actElapsed(j))}` : ''}
+          ${j.cancelling ? ' · <span class="text-amber-400">stopping…</span>' : ''}
+          ${!j.running ? ' · <span class="text-emerald-400">finished</span>' : ''}
+        </p>
+      </div>
+      ${j.nav ? `<button data-act-go="${escapeAttr(j.nav)}" class="btn btn-ghost btn-sm shrink-0">Open</button>` : ''}
+      ${j.cancelPath ? `<button data-act-cancel="${escapeAttr(j.cancelPath)}" data-label="${escapeAttr(j.label)}" ${j.cancelling ? 'disabled' : ''} class="btn btn-danger btn-sm shrink-0 ${j.cancelling ? 'opacity-40 cursor-not-allowed' : ''}">End task</button>` : ''}
+    </div>
+    <div class="h-1.5 mt-2 rounded-full bg-slate-800 overflow-hidden">
+      <div class="h-full rounded-full ${j.running ? 'bg-brand' : 'bg-emerald-500/60'} transition-all" style="width:${indeterminate && j.running ? 100 : pct}%"></div>
+    </div>
+  </div>`;
+}
+
+/** "End task" from Activity hits each job's OWN cancel route — the same co-operative stop its own
+ *  screen offers, never a kill. Confirmed, because several of these are mid-flight money ops. */
+async function onActivityClick(e) {
+  const go = e.target.closest('[data-act-go]');
+  if (go) return setNav(go.getAttribute('data-act-go'));
+  const stop = e.target.closest('[data-act-cancel]');
+  if (!stop) return;
+  const path = stop.getAttribute('data-act-cancel');
+  const label = stop.getAttribute('data-label') || 'this job';
+  const ok = await ssimConfirm({
+    title: `End ${label}?`, tone: 'danger', confirmLabel: 'End task', confirmIcon: 'fa-stop',
+    body: `Stop <b class="text-slate-100">${escapeHtml(label)}</b> after the step it is on. Work already committed (offers sent, listings created, items moved) stays done — only the remaining steps are skipped.`,
+  });
+  if (!ok) return;
+  try { await api(path, { method: 'POST' }); toast(`${label}: stopping…`, 'warn'); }
+  catch (err) { toast(err.message, 'error'); }
+}
+
 function renderProxiesModule() {
   ensureProxiesWiring();
   const p = state.proxies;
@@ -3456,6 +3602,7 @@ function paintBatch() {
     progressSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4">
       <div class="flex items-center justify-between mb-2"><h3 class="t14 font-bold text-white">${escapeHtml(st.label || 'Job')} ${st.running ? '<span class="t11 text-brand">running…</span>' : '<span class="t11 text-emerald-400">done</span>'}</h3><span class="t12 font-mono text-slate-400">${fmtCount(st.done)}/${fmtCount(st.total)} · ${fmtCount((st.failed || []).length)} failed</span></div>
       <div class="h-2 rounded-full bg-slate-800 overflow-hidden"><div class="h-full bg-brand transition-all" style="width:${pct}%"></div></div>
+      ${batchResultRows(st)}
       ${(st.failed || []).length ? `<div class="mt-3 max-h-40 overflow-y-auto t11 text-slate-500 space-y-0.5">${st.failed.slice(0, 50).map((f) => `<div><span class="font-mono text-amber-400/80">${escapeHtml(f.username)}</span> — ${escapeHtml(f.error)}</div>`).join('')}</div>` : ''}
     </section>`;
   }
@@ -3465,6 +3612,40 @@ function paintBatch() {
   }</section>`;
 
   el.batchBody.innerHTML = scopeSection + jobSection + runSection + progressSection + histSection;
+}
+
+// ── Per-account outcome rows (W4_41) ──────────────────────────────────────────
+// done/failed counts cannot express a money job's real outcomes: "already owned", "wallet too low"
+// and "bought" are all non-failures that mean very different things. A job that returns a row per
+// account (BatchJobService collects them into status.result.rows) gets them rendered here; every
+// other job returns nothing and this stays invisible.
+const BATCH_ROW_TONE = {
+  purchased:   ['text-emerald-400', 'bought'],
+  owned:       ['text-sky-400',     'already owned'],
+  skipped:     ['text-slate-400',   'skipped'],
+  refused:     ['text-amber-400',   'not bought'],
+  unconfirmed: ['text-red-400',     'UNCONFIRMED'],
+};
+function batchResultRows(st) {
+  const rows = st && st.result && Array.isArray(st.result.rows) ? st.result.rows : null;
+  if (!rows || !rows.length) return '';
+  // Summary first: on a 500-account run nobody scrolls a list to find the one that needs attention.
+  const counts = {};
+  for (const r of rows) counts[r && r.status] = (counts[r && r.status] || 0) + 1;
+  const summary = Object.keys(BATCH_ROW_TONE).filter((k) => counts[k]).map((k) => {
+    const [tone, label] = BATCH_ROW_TONE[k];
+    return `<span class="${tone}">${fmtCount(counts[k])} ${escapeHtml(label)}</span>`;
+  }).join('<span class="text-slate-700 mx-1.5">·</span>');
+  const list = rows.slice(-200).reverse().map((r) => {
+    const [tone, label] = BATCH_ROW_TONE[r && r.status] || ['text-slate-400', String((r && r.status) || '?')];
+    return `<div class="flex gap-2 items-baseline py-0.5 border-b border-slate-800/40">
+      <span class="font-mono text-slate-300 shrink-0" style="min-width:9rem">${escapeHtml(String((r && r.username) || ''))}</span>
+      <span class="${tone} shrink-0" style="min-width:6.5rem">${escapeHtml(label)}</span>
+      <span class="text-slate-500">${escapeHtml(String((r && r.detail) || ''))}</span>
+    </div>`;
+  }).join('');
+  return `<div class="mt-3"><p class="t11 mb-1.5">${summary}</p>
+    <div class="max-h-72 overflow-y-auto t11">${list}</div></div>`;
 }
 
 /** Repaint the whole batch body but KEEP each scope tree's scroll position. The tree lives inside a
@@ -3546,7 +3727,17 @@ async function runBatch() {
   if (!def) return;
   const usernames = batchScopeUsernames();
   if (!usernames.length) { toast('Pick a scope first', 'warn'); return; }
-  if (def.moneySafe || def.experimental) {
+  // Buying Prime is the one job that charges wallets unattended, so it states plainly what it is
+  // about to spend on — a single Confirm, no typed word (owner 2026-08-05).
+  if (def.jobType === 'buy-prime') {
+    if (!(await ssimConfirm({
+      title: 'Buy CS2 Prime with real balance',
+      body: `This <b>charges the Steam wallet</b> of up to <b>${usernames.length}</b> account(s), one at a time, at whatever Steam prices Prime at in each account's own currency.<br><br>`
+        + `Accounts that already have Prime, or whose wallet does not cover it, are <b>skipped</b> — not charged.<br><br>`
+        + `<b>Beta.</b> Start with a few accounts and read the results before running the whole fleet.`,
+      confirmLabel: 'Confirm', confirmIcon: 'fa-cart-shopping', tone: 'spend',
+    }))) return;
+  } else if (def.moneySafe || def.experimental) {
     const testWarn = def.experimental ? '<br><br><b>Beta.</b> Start with a few accounts and review the results before running at scale.' : '';
     const moneyWarn = def.moneySafe ? 'This is a <b>money</b> job. ' : '';
     if (!(await ssimConfirm({ title: `Run "${def.label}"`, body: `${moneyWarn}Run across <b>${usernames.length}</b> account(s)?${testWarn}`, confirmLabel: 'Run', confirmIcon: 'fa-play', tone: def.moneySafe ? 'spend' : 'brand', typedWord: (def.moneySafe && usernames.length > 25) ? 'RUN' : null }))) return;
@@ -3927,7 +4118,8 @@ function renderMain() {
   el.btnBuyMarket?.classList.toggle('hidden', state.invMode === 'global');
   el.gcCatTabs?.classList.add('hidden');                // category pills only for full-fetched inventories (renderTable re-shows)
   el.facetBar?.classList.add('hidden');                 // TBL-03: facet chips re-shown by renderTable when a table renders
-  el.ordersWrap?.classList.add('hidden');               // Active-Orders view only in account view (renderAccountView re-shows)
+  el.ordersWrap?.classList.add('hidden');               // Active-Orders view re-shown by whichever view owns the tab
+  stopOrdersPoll();                                     // a scan poll must not outlive the paint that started it
   if (state.invMode === 'global')     return renderGlobalMaster();
   if (state.invMode === 'env-master') return renderEnvMaster();
   if (state.invMode === 'folder')     return renderFolderMaster();
@@ -4220,10 +4412,17 @@ function aggregateWithOwners(usernames) {
   return [...map.values()];
 }
 
+/** Sidebar shortcut: open a folder's master straight on its Active Orders tab (and load it). */
+function openFolderOrders(folderId) {
+  openFolderMaster(folderId);
+  showOrdersTab();
+}
+
 function openFolderMaster(folderId) {
   state.invMode = 'folder';
   state.activeFolder = folderId;
   state.activeUsername = null;
+  state.gcCat = 'all'; // reset the Items/Active-Orders tab when switching folder (never auto-scan on open)
   state.search = ''; state.sort = null; clearSelection();
   el.searchInput.value = '';
   updateSidebar();
@@ -4250,6 +4449,7 @@ function renderFolderMaster() {
     </div>
     <div class="flex items-center gap-2 flex-wrap justify-end">
       <button id="btn-folder-massbuy" title="Mass Buy: max out a purchase of one item across every account in this folder" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
+      <button id="btn-folder-orders" title="Active market orders (sell listings + buy orders) across every account in this folder" class="btn btn-secondary btn-sm"><i class="fa-solid fa-receipt"></i><span>Active Orders</span></button>
       <button id="btn-folder-bans" title="Check every account in this folder for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
       <button id="btn-refresh-folder" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh folder</span></button>
     </div>`;
@@ -4259,6 +4459,8 @@ function renderFolderMaster() {
   if (mb) mb.addEventListener('click', () => openFolderBuy(node.folder.name, usernames));
   const fb = $('btn-folder-bans');
   if (fb) fb.addEventListener('click', () => openBanChecker(usernames, node.folder.name));
+  const fo = $('btn-folder-orders');
+  if (fo) fo.addEventListener('click', showOrdersTab);
 
   el.btnLoad.classList.add('hidden');
   el.statBar.classList.remove('hidden'); el.statBar.classList.add('flex');
@@ -4269,6 +4471,10 @@ function renderFolderMaster() {
   let folderWalletUsd = 0, folderWalletAccts = 0;
   for (const u of usernames) { const wu = walletToUsd(walletOf(u)); if (wu != null) { folderWalletUsd += wu; folderWalletAccts++; } }
   setMoneyStats(folderValueCents, folderWalletAccts ? folderWalletUsd : null);
+
+  // Items / Active Orders tabs — the same pair the single-account view has, so the folder's
+  // live market orders are one click from its aggregated inventory.
+  if (renderMasterOrdersTab(agg)) return;
 
   if (agg.length === 0) {
     el.toolbar.classList.add('hidden');
@@ -4311,6 +4517,7 @@ function renderSelectionMaster() {
     </div>
     <div class="flex items-center gap-2 flex-wrap justify-end">
       <button id="btn-sel-massbuy" title="Mass Buy: max out a purchase of one item across every selected account" class="btn btn-buy btn-sm"><i class="fa-solid fa-cart-arrow-down"></i><span>Mass Buy</span></button>
+      <button id="btn-sel-orders" title="Active market orders (sell listings + buy orders) across every selected account" class="btn btn-secondary btn-sm"><i class="fa-solid fa-receipt"></i><span>Active Orders</span></button>
       <button id="btn-sel-refresh" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i><span>Refresh selected</span></button>
       <button id="btn-sel-move" title="Move every selected account into a folder / environment" class="btn btn-secondary btn-sm"><i class="fa-solid fa-folder-tree"></i><span>Move Selected</span></button>
       <button id="btn-sel-bans" title="Check every selected account for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
@@ -4320,6 +4527,7 @@ function renderSelectionMaster() {
   $('btn-sel-massbuy')?.addEventListener('click', () => openFolderBuy(`${usernames.length} selected account(s)`, usernames));
   $('btn-sel-move')?.addEventListener('click', () => openMoveModal(usernames));
   $('btn-sel-bans')?.addEventListener('click', () => openBanChecker(usernames, `${usernames.length} selected`));
+  $('btn-sel-orders')?.addEventListener('click', showOrdersTab);
   $('btn-sel-delete')?.addEventListener('click', () => batchDeleteAccounts(usernames));
   $('sel-all')?.addEventListener('click', selectAllAccounts);
   $('sel-clear-all')?.addEventListener('click', clearSelectionAndRevert);
@@ -4334,6 +4542,9 @@ function renderSelectionMaster() {
   for (const u of usernames) { const wu = walletToUsd(walletOf(u)); if (wu != null) { walletUsd += wu; walletAccts++; } }
   setMoneyStats(valueCents, walletAccts ? walletUsd : null);
 
+  // Items / Active Orders tabs, exactly as in the folder master.
+  if (renderMasterOrdersTab(agg)) return;
+
   if (agg.length === 0) {
     el.toolbar.classList.add('hidden');
     el.itemsWrap.classList.add('hidden'); el.emptyState.classList.remove('hidden');
@@ -4343,6 +4554,36 @@ function renderSelectionMaster() {
   }
   el.toolbar.classList.remove('hidden');
   renderTable(agg, { master: true, selectable: true });
+}
+
+/**
+ * Shared Items / Active Orders tab bar for the two MULTI-account masters (folder + selection).
+ * Returns true when the Active-Orders tab owns the body (the caller then renders nothing else).
+ * The item-table surfaces are torn down first so the two tabs can never paint on top of each other.
+ */
+function renderMasterOrdersTab(agg) {
+  renderAccountTabs(agg, state.gcCat === 'orders' ? 'orders' : 'all', { categorized: false });
+  if (state.gcCat !== 'orders') { el.ordersWrap?.classList.add('hidden'); return false; }
+  hideItemsSurfaces();
+  renderOrdersView();
+  return true;
+}
+
+/** Hides every item-table surface so the Active Orders view is the only thing in the body. */
+function hideItemsSurfaces() {
+  el.toolbar?.classList.add('hidden');
+  el.itemsWrap?.classList.add('hidden');
+  el.emptyState?.classList.add('hidden');
+  el.facetBar?.classList.add('hidden');
+}
+
+/** "Active Orders" header button on a master view: switch to the tab AND load it (an explicit
+ *  click is the one place a multi-account live scan may start on its own). */
+function showOrdersTab() {
+  state.gcCat = 'orders';
+  state.orders.autoStart = true;
+  state.orders.rows = null;
+  renderMain();
 }
 
 // ── Account view ───────────────────────────────────────────────────────────────
@@ -4444,10 +4685,8 @@ function renderAccountView() {
 
   // ── Active Orders tab → live sell-listings + buy-orders view ────────────────
   if (active === 'orders') {
-    el.toolbar.classList.add('hidden');
-    el.itemsWrap.classList.add('hidden');
-    el.emptyState.classList.add('hidden');
-    renderOrdersView(username, tf2 ? 440 : 730);
+    hideItemsSurfaces();
+    renderOrdersView();
     return;
   }
   el.ordersWrap?.classList.add('hidden');
@@ -4468,78 +4707,342 @@ function renderAccountView() {
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Active Orders view (live sell listings + buy orders, with per-order cancel)
+//
+//  SCOPES: ONE account (the account view's tab) or MANY — a whole folder's subtree, or a
+//  hand-picked multi-selection. The scope is derived from the current view, never stored,
+//  so it can't drift from what the user is looking at.
+//    · one account  → a single GET (cheap; the tab loads it immediately, as it always did)
+//    · many accounts → the DETACHED backend scan (/api/market/orders-scan), polled with a row
+//      cursor and painted account-by-account as rows land. Detached because a few hundred
+//      login-bound reads run far past the client's 120s request budget (same reason as the
+//      ban checker), and cursor-paged so a 1.5s poll never re-sends rows we already have.
+//  A multi-account scan is NEVER auto-started by an incidental re-render (ticking another
+//  sidebar checkbox re-renders the Selection Master): it starts on an explicit tab click /
+//  Refresh only, and a re-render of the SAME scope repaints the rows already in hand.
 // ════════════════════════════════════════════════════════════════════════════
 
-/** Fetches and renders the account's open market orders into #orders-wrap. The
- *  view is independent of the inventory cache – orders are always pulled live. */
-async function renderOrdersView(username, appId) {
+/** The account(s) whose orders the tab shows, derived from the CURRENT view. */
+function ordersScope() {
+  const appId = state.game === 'tf2' ? 440 : 730;
+  if (state.invMode === 'folder') {
+    const node = findFolderNode(state.tree.folders, state.activeFolder);
+    const usernames = node ? collectFolderAccounts(node).map((a) => a.username) : [];
+    return { mode: 'folder', usernames, appId, label: node ? node.folder.name : 'Folder' };
+  }
+  if (state.invMode === 'selection') {
+    const usernames = selectedUsernames();
+    return { mode: 'selection', usernames, appId, label: `${usernames.length} selected account(s)` };
+  }
+  const u = state.activeUsername;
+  const acc = state.allAccounts.find((a) => a.username === u);
+  return { mode: 'account', usernames: u ? [u] : [], appId, label: (acc && acc.displayName) || u || '' };
+}
+
+/** Scope identity: same key ⇒ same question, so a re-render repaints the rows already fetched
+ *  instead of hitting Steam again. A different key ⇒ the cached rows are about other accounts. */
+function ordersScopeKey(sc) { return `${sc.mode}|${sc.appId}|${[...sc.usernames].sort().join(',')}`; }
+
+/** Display name for an owner tag (falls back to the login name). */
+function ordersOwnerName(username) {
+  const acc = state.allAccounts.find((a) => a.username === username);
+  return (acc && acc.displayName) || username;
+}
+
+/** Empty row-set: the shape every paint/append works against. */
+function emptyOrdersData() {
+  return { buy: [], sell: [], errors: [], partial: false, scanned: 0, total: 0, running: false, cancelled: false };
+}
+
+function stopOrdersPoll() { clearTimeout(state.orders.timer); state.orders.timer = null; }
+
+/** Renders the Active Orders tab for the current view's scope. Called by the account /
+ *  folder / selection renderers when their "Active Orders" pill is the active tab. */
+function renderOrdersView() {
   if (!el.ordersWrap) return;
+  const sc = ordersScope();
+  const key = ordersScopeKey(sc);
+  const auto = state.orders.autoStart;
+  state.orders.autoStart = false;
+  stopOrdersPoll();
+  const token = ++state.orders.run;   // invalidates every in-flight fetch/poll of a previous paint
   el.ordersWrap.classList.remove('hidden');
-  el.ordersWrap.innerHTML = `
-    <div class="flex items-center justify-center py-16 text-center">
-      <i class="fa-solid fa-spinner cs2-spin text-2xl text-brand mr-3"></i>
-      <span class="text-slate-300">Loading active orders live from Steam…</span>
-    </div>`;
-  // Guard: the user may switch account/tab while this live fetch is in flight.
-  const stillHere = () => state.invMode === 'account' && state.activeUsername === username && (state.gcCat || 'all') === 'orders';
-  let data;
-  try {
-    data = await api(`/api/market/orders/${encodeURIComponent(username)}?appId=${appId}`);
-  } catch (err) {
-    if (!stillHere()) return;
-    el.ordersWrap.innerHTML = ordersShellHtml(
-      `<div class="px-4 py-10 text-center text-rose-300"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${escapeHtml(err.message)}</div>`,
-      `<div class="px-4 py-10 text-center text-rose-300">—</div>`);
-    bindOrdersControls(username, appId);
+
+  if (sc.usernames.length === 0) {
+    el.ordersWrap.innerHTML = ordersShellHtml(sc, emptyOrdersData(), 'empty-scope');
+    bindOrdersControls();
     return;
   }
-  if (!stillHere()) return;
-  el.ordersWrap.innerHTML = ordersHtml(data);
-  bindOrdersControls(username, appId);
+  if (sc.mode === 'account') { loadOrdersSingle(sc, token); return; }
+
+  // Multi-account: repaint what we already fetched for THIS scope; otherwise scan (explicit
+  // action only) or offer the manual "Load" button so a checkbox tick can't storm the fleet.
+  if (state.orders.key === key && state.orders.rows) {
+    paintOrders(sc, state.orders.rows);
+    // The scan for THIS scope is still running (the repaint was triggered by something else, e.g.
+    // a sidebar refresh) — resume polling under the new token, or the view would freeze mid-scan.
+    if (state.orders.rows.running) pollOrdersScan(sc, token);
+    return;
+  }
+  state.orders.key = key;
+  state.orders.rows = null;
+  if (auto) startOrdersScan(sc, token);
+  else {
+    el.ordersWrap.innerHTML = ordersShellHtml(sc, emptyOrdersData(), 'idle');
+    bindOrdersControls();
+  }
 }
 
-/** Two-section shell (Buy / Sell) with a header + refresh button.
- *  STRUCTURE IS LOAD-BEARING: each section = header `.panel-head` (with a `span.font-mono`
- *  count) immediately followed by the rows-list container. `removeOrderRow()` walks
- *  row.parentElement (the rows-list) → previousElementSibling (the header) →
- *  querySelector('span.font-mono') to update the count, so that shape must not change. */
-function ordersShellHtml(buyInner, sellInner, counts = {}) {
-  const section = (title, icon, color, countKey, inner) => `
-    <div class="surface overflow-hidden">
-      <div class="panel-head">
-        <i class="fa-solid ${icon}" style="color:${color}"></i>
-        <span class="panel-title">${title} <span class="font-mono opacity-70 text-slate-500">${counts[countKey] != null ? counts[countKey] : ''}</span></span>
-      </div>
-      <div class="divide-y divide-slate-800/60">${inner}</div>
-    </div>`;
-  return `
-    <div class="surface mb-4"><div class="panel-head justify-between flex-wrap gap-2">
-      <div class="flex items-center gap-2"><i class="fa-solid fa-receipt text-brand"></i><span class="panel-title" style="font-size:var(--fs-13)">Active market orders</span></div>
-      <div class="flex items-center gap-2 flex-wrap">
-        <div class="relative"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i><input id="orders-search" type="text" placeholder="Search item…" class="field pl-8 py-1.5 t12 w-48" /></div>
-        <button id="orders-cancel-selected" disabled class="btn btn-sm btn-danger"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="orders-sel-count">0</span>)</span></button>
-        <button id="orders-cancel-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
-        <button id="orders-refresh" class="btn btn-sm btn-secondary"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
-      </div>
-    </div></div>
-    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      ${section('Active Buy Orders', 'fa-cart-arrow-down', 'rgb(var(--success-rgb))', 'buy', buyInner)}
-      ${section('Active Sell Orders', 'fa-tag', 'rgb(var(--listed-rgb))', 'sell', sellInner)}
-    </div>`;
+// ── Single account: one live GET (unchanged behaviour) ────────────────────────
+async function loadOrdersSingle(sc, token) {
+  const username = sc.usernames[0];
+  state.orders.key = ordersScopeKey(sc);
+  state.orders.rows = null;
+  el.ordersWrap.innerHTML = ordersLoadingHtml(`Loading active orders live from Steam…`);
+  let res;
+  try {
+    res = await api(`/api/market/orders/${encodeURIComponent(username)}?appId=${sc.appId}`);
+  } catch (err) {
+    if (token !== state.orders.run) return;              // the user moved on mid-fetch
+    const data = emptyOrdersData();
+    data.errors = [{ username, error: err.message }];
+    data.total = 1; data.scanned = 1;
+    state.orders.rows = data;
+    paintOrders(sc, data);
+    return;
+  }
+  if (token !== state.orders.run) return;
+  const data = emptyOrdersData();
+  data.buy  = (res.buyOrders  || []).map((o) => ({ ...o, username }));
+  data.sell = (res.sellOrders || []).map((o) => ({ ...o, username }));
+  data.partial = !!res.partial;
+  data.total = 1; data.scanned = 1;
+  state.orders.rows = data;
+  paintOrders(sc, data);
 }
 
-function ordersHtml(data) {
-  const buys = Array.isArray(data.buyOrders) ? data.buyOrders : [];
-  const sells = Array.isArray(data.sellOrders) ? data.sellOrders : [];
-  const emptyRow = (txt) => `<div class="px-4 py-8 text-center text-slate-600 text-sm">${txt}</div>`;
-  const buyInner = buys.length ? buys.map(buyOrderRow).join('') : emptyRow('No active buy orders.');
-  const sellInner = sells.length ? sells.map(sellOrderRow).join('') : emptyRow('No active sell orders.');
-  // Non-blocking honesty banner: the backend flags a mid-fetch Steam/proxy error that
-  // truncated the snapshot, so the list below is partial, not authoritative.
+// ── Many accounts: start the detached scan, then poll it with a row cursor ─────
+async function startOrdersScan(sc, token) {
+  const data = emptyOrdersData();
+  data.total = sc.usernames.length;
+  data.running = true;
+  state.orders.key = ordersScopeKey(sc);
+  state.orders.rows = data;
+  state.orders.cursor = 0;
+  paintOrders(sc, data);
+  try {
+    await api('/api/market/orders-scan', {
+      method: 'POST', body: JSON.stringify({ usernames: sc.usernames, appId: sc.appId }),
+    });
+  } catch (err) {
+    if (token !== state.orders.run) return;
+    // 409 = another scan is already running (single-flight); say so plainly instead of a dead view.
+    if (err.status === 409) toast(err.message || 'An Active Orders scan is already running', 'warn');
+    data.running = false;
+    data.errors = [{ username: '', error: err.message }];
+    paintOrders(sc, data);
+    return;
+  }
+  if (token !== state.orders.run) return;
+  resetPoller('orders'); resetPoller('ordersErr');
+  pollOrdersScan(sc, token);
+}
+
+/** Polls the scan every 1.5s, appending each newly-finished account's rows.
+ *  A transient status-fetch error retries (bounded by the shared stall guard) rather than
+ *  killing the poll while the backend keeps scanning. */
+function pollOrdersScan(sc, token) {
+  stopOrdersPoll();
+  state.orders.timer = setTimeout(async () => {
+    state.orders.timer = null;              // this tick has fired; only a reschedule re-arms it
+    if (token !== state.orders.run) return;
+    let job;
+    try { job = await api(`/api/market/orders-scan-status?since=${state.orders.cursor}`); resetPoller('ordersErr'); }
+    catch (err) {
+      if (token !== state.orders.run) return;
+      if (pollerStalled('ordersErr', 0)) {
+        resetPoller('ordersErr');
+        const data = state.orders.rows || emptyOrdersData();
+        data.running = false;
+        data.errors = [...data.errors, { username: '', error: err.message || 'Lost contact with the scan' }];
+        paintOrders(sc, data);
+        return;
+      }
+      pollOrdersScan(sc, token); return;
+    }
+    if (token !== state.orders.run) return;
+    const data = state.orders.rows || emptyOrdersData();
+    if (Number.isFinite(job.nextIndex)) state.orders.cursor = job.nextIndex;
+    appendScanBatch(sc, data, job.accounts || []);
+    data.scanned = (job.progress && job.progress.done) || data.scanned;
+    data.total = (job.progress && job.progress.total) || data.total;
+    data.running = !!job.running;
+    data.cancelled = !!job.cancelled;
+    updateOrdersProgress(sc, data);
+
+    if (!job.running) {
+      resetPoller('orders');
+      // A crashed job (not a per-account failure) is surfaced as its own row.
+      if (job.error) data.errors = [...data.errors, { username: '', error: job.error }];
+      paintOrders(sc, data);
+      return;
+    }
+    if (pollerStalled('orders', data.scanned)) {
+      resetPoller('orders');
+      data.running = false;
+      data.errors = [...data.errors, { username: '', error: 'The scan appears stuck (no progress) — stopping the live updater. Check the server.' }];
+      paintOrders(sc, data);
+      return;
+    }
+    pollOrdersScan(sc, token);
+  }, 1500);
+}
+
+/** Folds one poll batch (whole accounts) into the row-set AND the live DOM — appending only
+ *  the new rows, so a 500-bot scan never re-renders thousands of existing ones. */
+function appendScanBatch(sc, data, accounts) {
+  if (!accounts.length) return;
+  const newBuy = [], newSell = [];
+  for (const acc of accounts) {
+    if (acc.error) { data.errors.push({ username: acc.username, error: acc.error }); continue; }
+    if (acc.partial) data.partial = true;
+    for (const o of (acc.buyOrders  || [])) newBuy.push({ ...o, username: acc.username });
+    for (const o of (acc.sellOrders || [])) newSell.push({ ...o, username: acc.username });
+  }
+  data.buy.push(...newBuy);
+  data.sell.push(...newSell);
+  appendOrderRows('orders-buy-list',  newBuy,  buyOrderRow,  sc);
+  appendOrderRows('orders-sell-list', newSell, sellOrderRow, sc);
+  updateOrdersCounts();
+  renderOrdersErrors(data);
+  applyOrdersSearch();   // rows landing while a filter is typed must obey that filter
+}
+
+function appendOrderRows(listId, rows, rowHtml, sc) {
+  const list = $(listId);
+  if (!list || !rows.length) return;
+  const placeholder = list.querySelector('[data-orders-empty]');
+  if (placeholder) placeholder.remove();
+  list.insertAdjacentHTML('beforeend', rows.map((o) => rowHtml(o, sc)).join(''));
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────────
+
+function ordersLoadingHtml(text) {
+  return `<div class="flex items-center justify-center py-16 text-center">
+    <i class="fa-solid fa-spinner cs2-spin text-2xl text-brand mr-3"></i>
+    <span class="text-slate-300">${escapeHtml(text)}</span></div>`;
+}
+
+/** The whole view: toolbar + (multi) progress + error strip + the two order columns.
+ *  `phase` is 'idle' (multi scope awaiting an explicit load), 'empty-scope', or '' (rows). */
+function ordersShellHtml(sc, data, phase = '') {
+  const multi = sc.mode !== 'account';
+  const scanning = !!data.running;
   const banner = data.partial
     ? `<div class="mb-3 px-4 py-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs flex items-center gap-2"><i class="fa-solid fa-triangle-exclamation shrink-0"></i><span>Order list may be incomplete (Steam/proxy error during fetch) — refresh to retry.</span></div>`
     : '';
-  return banner + ordersShellHtml(buyInner, sellInner, { buy: buys.length, sell: sells.length });
+  const section = (title, icon, color, listId, countId, rows, emptyTxt) => `
+    <div class="surface overflow-hidden">
+      <div class="panel-head">
+        <i class="fa-solid ${icon}" style="color:${color}"></i>
+        <span class="panel-title">${title} <span id="${countId}" class="font-mono opacity-70 text-slate-500">${rows.length}</span></span>
+      </div>
+      <div id="${listId}" class="divide-y divide-slate-800/60">${
+        rows.length
+          ? rows.map((o) => (listId === 'orders-buy-list' ? buyOrderRow(o, sc) : sellOrderRow(o, sc))).join('')
+          : `<div data-orders-empty class="px-4 py-8 text-center text-slate-600 text-sm">${escapeHtml(emptyTxt)}</div>`
+      }</div>
+    </div>`;
+
+  const scopePill = multi
+    ? `<span class="pill pill--brand" title="${escapeAttr(sc.usernames.join(', '))}">${escapeHtml(sc.label)}</span>`
+    : '';
+  // Multi-scope actions: Stop while scanning, Refresh (= rescan) otherwise.
+  const loadBtn = phase === 'idle'
+    ? `<button id="orders-refresh" class="btn btn-sm btn-primary"><i class="fa-solid fa-bolt"></i><span>Load orders (${sc.usernames.length} account${sc.usernames.length === 1 ? '' : 's'})</span></button>`
+    : scanning
+      ? `<button id="orders-stop" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-stop"></i><span>Stop scan</span></button>`
+      : `<button id="orders-refresh" class="btn btn-sm btn-secondary"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>`;
+
+  return `
+    ${banner}
+    <div class="surface mb-4"><div class="panel-head justify-between flex-wrap gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <i class="fa-solid fa-receipt text-brand"></i>
+        <span class="panel-title" style="font-size:var(--fs-13)">Active market orders</span>
+        ${scopePill}
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <div class="relative"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i><input id="orders-search" type="text" placeholder="${escapeAttr(multi ? 'Search item / account…' : 'Search item…')}" class="field pl-8 py-1.5 t12 w-48" /></div>
+        <button id="orders-cancel-selected" disabled class="btn btn-sm btn-danger"><i class="fa-solid fa-xmark"></i><span>Cancel selected (<span id="orders-sel-count">0</span>)</span></button>
+        <button id="orders-cancel-all" class="btn btn-sm btn-secondary" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-trash"></i><span>Cancel all</span></button>
+        ${loadBtn}
+      </div>
+    </div>
+    ${multi ? `<div id="orders-progress" class="px-4 py-2 border-t border-slate-800/60 t12 text-slate-400">${ordersProgressHtml(sc, data, phase)}</div>` : ''}
+    </div>
+    <div id="orders-errors">${ordersErrorsHtml(data)}</div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+      ${section('Active Buy Orders', 'fa-cart-arrow-down', 'rgb(var(--success-rgb))', 'orders-buy-list', 'orders-buy-count', data.buy, phase === 'idle' ? 'Not loaded yet.' : 'No active buy orders.')}
+      ${section('Active Sell Orders', 'fa-tag', 'rgb(var(--listed-rgb))', 'orders-sell-list', 'orders-sell-count', data.sell, phase === 'idle' ? 'Not loaded yet.' : 'No active sell orders.')}
+    </div>`;
+}
+
+/** The multi-scope progress line: honest about how much of the scope has actually been read. */
+function ordersProgressHtml(sc, data, phase = '') {
+  const n = sc.usernames.length;
+  if (phase === 'empty-scope') return 'No accounts in this scope.';
+  if (phase === 'idle') {
+    return `<i class="fa-solid fa-circle-info mr-1.5 text-slate-500"></i>${n} account(s) in scope — orders are read live from Steam, one session per bot.`;
+  }
+  const failed = data.errors.filter((e) => e.username).length;
+  const head = data.running
+    ? `<i class="fa-solid fa-spinner cs2-spin mr-1.5 text-brand"></i>Scanning ${data.scanned} of ${data.total} account(s)…`
+    : data.cancelled
+      ? `<i class="fa-solid fa-circle-stop mr-1.5 text-amber-400"></i>Scan stopped after ${data.scanned} of ${data.total} account(s)`
+      : `<i class="fa-solid fa-circle-check mr-1.5 text-emerald-400"></i>${data.scanned} of ${data.total} account(s) scanned`;
+  return `${head} <span class="text-slate-600">·</span> ${data.buy.length} buy <span class="text-slate-600">·</span> ${data.sell.length} sell` +
+    (failed ? ` <span class="text-slate-600">·</span> <span class="text-rose-300">${failed} failed</span>` : '');
+}
+
+/** Failures are never swallowed: an account we could not read has UNKNOWN orders, which is not
+ *  the same as "no orders", so it is named here instead of quietly missing from the columns. */
+function ordersErrorsHtml(data) {
+  if (!data.errors.length) return '';
+  const accts = data.errors.filter((e) => e.username).length;
+  const head = accts
+    ? `${accts} account(s) could not be read — their orders are NOT in the list below`
+    : 'The Active Orders scan reported an error';
+  const rows = data.errors.map((e) =>
+    `<div class="flex items-start gap-2 t11"><span class="font-mono text-rose-200 shrink-0">${escapeHtml(e.username || 'scan')}</span><span class="text-rose-300/80 min-w-0">${escapeHtml(e.error)}</span></div>`).join('');
+  return `<div class="mb-4 px-4 py-2.5 rounded-lg border border-rose-500/40 bg-rose-500/10">
+    <div class="flex items-center gap-2 text-rose-200 text-xs font-semibold mb-1.5"><i class="fa-solid fa-triangle-exclamation"></i>${escapeHtml(head)}</div>
+    <div class="space-y-1 max-h-32 overflow-y-auto">${rows}</div></div>`;
+}
+
+/** Full (re)paint from a row-set — used on first render, on completion and on a cached re-render. */
+function paintOrders(sc, data) {
+  el.ordersWrap.innerHTML = ordersShellHtml(sc, data);
+  bindOrdersControls();
+}
+function updateOrdersProgress(sc, data) {
+  const p = $('orders-progress');
+  if (p) p.innerHTML = ordersProgressHtml(sc, data);
+}
+function renderOrdersErrors(data) {
+  const box = $('orders-errors');
+  if (box) box.innerHTML = ordersErrorsHtml(data);
+}
+function updateOrdersCounts() {
+  for (const [listId, countId] of [['orders-buy-list', 'orders-buy-count'], ['orders-sell-list', 'orders-sell-count']]) {
+    const list = $(listId), count = $(countId);
+    if (!list || !count) continue;
+    const n = list.querySelectorAll('.order-row').length;
+    count.textContent = String(n);
+    if (n === 0 && !list.querySelector('[data-orders-empty]')) {
+      list.innerHTML = '<div data-orders-empty class="px-4 py-8 text-center text-slate-600 text-sm">No active orders.</div>';
+    }
+  }
 }
 
 function orderIcon(o) {
@@ -4547,71 +5050,100 @@ function orderIcon(o) {
     ? `<img src="${escapeAttr(safeIconUrl(o.iconUrl))}" alt="" loading="lazy" class="w-10 h-8 object-contain shrink-0" onerror="this.style.display='none'" />`
     : '<div class="w-10 h-8 shrink-0"></div>';
 }
-function cancelBtn(attr, id) {
-  // .order-cancel hook preserved (bulkCancelOrders/removeOrderRow depend on it); inner is
-  // '<i fa-xmark/><span>Cancel</span>' — MUST match bulkCancelOrders' hard-coded restore string.
-  return `<button ${attr}="${escapeAttr(id)}" title="Cancel this order on the Steam market" class="order-cancel btn btn-sm btn-secondary shrink-0" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i><span>Cancel</span></button>`;
+function cancelBtn() {
+  // .order-cancel hook preserved (the delegated click handler + bulk cancel depend on it); inner is
+  // '<i fa-xmark/><span>Cancel</span>' — MUST match the restore string in bulkCancelOrders' busy().
+  return `<button title="Cancel this order on the Steam market" class="order-cancel btn btn-sm btn-secondary shrink-0" style="color:rgb(var(--danger-rgb))"><i class="fa-solid fa-xmark"></i><span>Cancel</span></button>`;
 }
 function orderCheck() {
   return '<input type="checkbox" class="order-check accent-violet-500 w-4 h-4 shrink-0" />';
 }
-function buyOrderRow(o) {
+/** Owner tag — shown only in a multi-account scope, where "which bot?" is the whole point. */
+function orderOwnerTag(o, sc) {
+  if (sc.mode === 'account') return '';
+  return `<span class="pill pill--neutral shrink-0" title="${escapeAttr(o.username)}"><i class="fa-solid fa-user text-3xs"></i>${escapeHtml(ordersOwnerName(o.username))}</span>`;
+}
+/** Common row attrs: the cancel path reads kind + id + OWNER off the row, which is what makes a
+ *  cross-account bulk cancel possible (each row carries the account it belongs to). */
+function orderRowAttrs(o, kind, id, sc) {
+  const search = [o.name || '', sc.mode === 'account' ? '' : o.username, sc.mode === 'account' ? '' : ordersOwnerName(o.username)]
+    .join(' ').toLowerCase();
+  return `class="order-row flex items-center gap-3 px-4 py-2.5" data-order-kind="${kind}" data-order-id="${escapeAttr(id)}"` +
+    ` data-order-user="${escapeAttr(o.username || '')}" data-order-name="${escapeAttr(search)}"`;
+}
+function buyOrderRow(o, sc) {
   const qtyTxt = o.quantity && o.quantity !== o.quantityRemaining
     ? `${o.quantityRemaining} / ${o.quantity}` : `${o.quantityRemaining || o.quantity || 0}`;
-  return `<div class="order-row flex items-center gap-3 px-4 py-2.5" data-order-kind="buy" data-order-id="${escapeAttr(o.buyOrderId)}" data-order-name="${escapeAttr(String(o.name || '').toLowerCase())}">
+  return `<div ${orderRowAttrs(o, 'buy', o.buyOrderId, sc)}>
     ${orderCheck()}
     ${orderIcon(o)}
     <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate font-semibold" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</p>
-      <p class="t10 text-slate-500 font-mono">#${escapeHtml(o.buyOrderId)}</p></div>
+      <p class="t10 text-slate-500 font-mono flex items-center gap-1.5 flex-wrap">${orderOwnerTag(o, sc)}<span>#${escapeHtml(o.buyOrderId)}</span></p></div>
     <div class="text-right shrink-0 mr-1"><p class="t13 font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</p>
       <p class="t10 text-slate-500">qty ${escapeHtml(qtyTxt)}</p></div>
-    ${cancelBtn('data-cancel-buy', o.buyOrderId)}</div>`;
+    ${cancelBtn()}</div>`;
 }
-function sellOrderRow(o) {
-  return `<div class="order-row flex items-center gap-3 px-4 py-2.5" data-order-kind="sell" data-order-id="${escapeAttr(o.listingId)}" data-order-name="${escapeAttr(String(o.name || '').toLowerCase())}">
+function sellOrderRow(o, sc) {
+  return `<div ${orderRowAttrs(o, 'sell', o.listingId, sc)}>
     ${orderCheck()}
     ${orderIcon(o)}
     <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate font-semibold" title="${escapeAttr(o.name)}">${escapeHtml(o.name)}</p>
-      <p class="t10 text-slate-500 font-mono">#${escapeHtml(o.listingId)}</p></div>
+      <p class="t10 text-slate-500 font-mono flex items-center gap-1.5 flex-wrap">${orderOwnerTag(o, sc)}<span>#${escapeHtml(o.listingId)}</span></p></div>
     <div class="text-right shrink-0 mr-1"><p class="t13 font-mono text-slate-200">${fmtMoneyMinor(o.pricePerItemMinor, o.currency)}</p>
       <p class="t10 text-slate-500">qty ${o.quantity || 1}</p></div>
-    ${cancelBtn('data-cancel-listing', o.listingId)}</div>`;
+    ${cancelBtn()}</div>`;
 }
 
-/** Wires Refresh, every per-row Cancel, the search filter, multi-select, and Cancel selected/all. */
-function bindOrdersControls(username, appId) {
+// ── Controls ─────────────────────────────────────────────────────────────────
+
+/** Wires the toolbar + DELEGATED row handlers. Delegation is load-bearing for the scan: rows are
+ *  appended batch-by-batch as accounts land, and a delegated listener covers them without rebinding. */
+function bindOrdersControls() {
   const refresh = $('orders-refresh');
-  if (refresh) refresh.addEventListener('click', () => renderOrdersView(username, appId));
+  if (refresh) refresh.addEventListener('click', () => { state.orders.autoStart = true; state.orders.rows = null; renderOrdersView(); });
+  const stop = $('orders-stop');
+  if (stop) stop.addEventListener('click', () => stopOrdersScan(stop));
 
-  // Per-row cancel (single, with its own confirm).
-  el.ordersWrap.querySelectorAll('[data-cancel-listing]').forEach((b) =>
-    b.addEventListener('click', () => cancelOrder(username, b, '/api/market/cancel-listing', { listingId: b.dataset.cancelListing })));
-  el.ordersWrap.querySelectorAll('[data-cancel-buy]').forEach((b) =>
-    b.addEventListener('click', () => cancelOrder(username, b, '/api/market/cancel-buy-order', { buyOrderId: b.dataset.cancelBuy })));
+  el.ordersWrap.onclick = (e) => {
+    const btn = e.target.closest('.order-cancel');
+    if (btn) { cancelSingleOrder(btn); return; }
+  };
+  el.ordersWrap.onchange = (e) => {
+    if (e.target.closest('.order-check')) updateOrdersSelCount();
+  };
 
-  // Multi-select.
-  el.ordersWrap.querySelectorAll('.order-check').forEach((cb) => cb.addEventListener('change', updateOrdersSelCount));
-
-  // Search: filter rows by item name; hidden rows are also unchecked.
   const search = $('orders-search');
-  if (search) search.addEventListener('input', () => {
-    const q = search.value.trim().toLowerCase();
-    el.ordersWrap.querySelectorAll('.order-row').forEach((row) => {
-      const match = !q || (row.dataset.orderName || '').includes(q);
-      row.style.display = match ? '' : 'none';
-      if (!match) { const cb = row.querySelector('.order-check'); if (cb) cb.checked = false; }
-    });
-    updateOrdersSelCount();
-  });
+  if (search) search.addEventListener('input', applyOrdersSearch);
 
-  // Cancel selected / Cancel all (all = the currently-visible/filtered set, so you can
-  // search "AK-47" then Cancel all to clear just those).
+  // Cancel selected / Cancel all (all = the currently-VISIBLE set, so you can search "AK-47"
+  // then Cancel all to clear just those — across every account in scope).
   const selBtn = $('orders-cancel-selected');
-  if (selBtn) selBtn.addEventListener('click', () => bulkCancelOrders(username, checkedOrderRows()));
+  if (selBtn) selBtn.addEventListener('click', () => bulkCancelOrders(checkedOrderRows()));
   const allBtn = $('orders-cancel-all');
-  if (allBtn) allBtn.addEventListener('click', () => bulkCancelOrders(username, visibleOrderRows()));
+  if (allBtn) allBtn.addEventListener('click', () => bulkCancelOrders(visibleOrderRows()));
 
+  applyOrdersSearch();
   updateOrdersSelCount();
+}
+
+/** Filters rows by item name (and, in a multi-account scope, by account); hidden rows are
+ *  also unchecked so they can never be swept up by "Cancel selected". */
+function applyOrdersSearch() {
+  const search = $('orders-search');
+  const q = search ? search.value.trim().toLowerCase() : '';
+  el.ordersWrap.querySelectorAll('.order-row').forEach((row) => {
+    const match = !q || (row.dataset.orderName || '').includes(q);
+    row.style.display = match ? '' : 'none';
+    if (!match) { const cb = row.querySelector('.order-check'); if (cb) cb.checked = false; }
+  });
+  updateOrdersSelCount();
+}
+
+async function stopOrdersScan(btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i><span>Stopping…</span>';
+  try { await api('/api/market/orders-scan-cancel', { method: 'POST' }); toast('Scan stopping — accounts already read are kept', 'info'); }
+  catch (err) { toast(`Could not stop the scan: ${err.message}`, 'error'); btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-stop"></i><span>Stop scan</span>'; }
 }
 
 function checkedOrderRows() {
@@ -4628,65 +5160,92 @@ function updateOrdersSelCount() {
   const b = $('orders-cancel-selected'); if (b) b.disabled = n === 0;
 }
 
-/** Cancels a list of order rows SEQUENTIALLY (anti-rate-limit) via the per-row endpoints. */
-async function bulkCancelOrders(username, rows) {
-  if (!rows.length) { toast('No orders to cancel', 'warn'); return; }
+/** How many cancels ride in ONE request. Bounded so a fleet-wide cancel can't exceed the client's
+ *  120s budget (the backend paces each account's writes), and so rows clear progressively. */
+const ORDERS_CANCEL_CHUNK = 20;
+
+/** Cancels a set of rows that may span MANY accounts, in paced chunks through the batch endpoint
+ *  (each row carries its own owner, so one sweep can clear a whole folder's orders). */
+async function bulkCancelOrders(rows) {
+  const targets = rows.filter((r) => r.dataset.orderId && r.dataset.orderUser);
+  if (!targets.length) { toast('No orders to cancel', 'warn'); return; }
+  const owners = new Set(targets.map((r) => r.dataset.orderUser));
   if (!(await ssimConfirm({
-    title: 'Cancel orders', tone: 'danger', confirmLabel: `Cancel ${rows.length} order(s)`, confirmIcon: 'fa-xmark',
-    body: `Cancel <b class="text-slate-100">${rows.length}</b> order(s) on the Steam market?`,
+    title: 'Cancel orders', tone: 'danger', confirmLabel: `Cancel ${targets.length} order(s)`, confirmIcon: 'fa-xmark',
+    body: `Cancel <b class="text-slate-100">${targets.length}</b> order(s) on the Steam market` +
+      (owners.size > 1 ? ` across <b class="text-slate-100">${owners.size}</b> account(s)` : '') + '?',
   }))) return;
-  let ok = 0, fail = 0;
-  for (const row of rows) {
+
+  const busy = (row, on) => {
     const btn = row.querySelector('.order-cancel');
-    const kind = row.dataset.orderKind;
-    const id = row.dataset.orderId;
-    if (!id) continue;
-    const endpoint = kind === 'buy' ? '/api/market/cancel-buy-order' : '/api/market/cancel-listing';
-    const idBody = kind === 'buy' ? { buyOrderId: id } : { listingId: id };
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i>'; }
+    if (!btn) return;
+    btn.disabled = on;
+    btn.innerHTML = on ? '<i class="fa-solid fa-spinner cs2-spin"></i>' : '<i class="fa-solid fa-xmark"></i><span>Cancel</span>';
+  };
+  for (const row of targets) busy(row, true);
+
+  let ok = 0, fail = 0;
+  for (let i = 0; i < targets.length; i += ORDERS_CANCEL_CHUNK) {
+    const chunk = targets.slice(i, i + ORDERS_CANCEL_CHUNK);
+    const items = chunk.map((r) => ({ username: r.dataset.orderUser, kind: r.dataset.orderKind, id: r.dataset.orderId }));
+    let res;
     try {
-      await api(endpoint, { method: 'POST', body: JSON.stringify({ username, ...idBody }) });
-      ok++;
-      if (btn) removeOrderRow(btn); else row.remove();
+      res = await api('/api/market/cancel-orders', { method: 'POST', body: JSON.stringify({ items }) });
     } catch (err) {
-      fail++;
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-xmark"></i><span>Cancel</span>'; }
+      fail += chunk.length;
+      for (const row of chunk) busy(row, false);
+      toast(`Cancel failed: ${err.message}`, 'error');
+      continue;   // a failed chunk must not abort the rest of the sweep
+    }
+    // Match results back to their rows by (owner, kind, id) — the identity a row is keyed on.
+    const byKey = new Map((res.results || []).map((r) => [`${r.username.toLowerCase()}|${r.kind}|${r.id}`, r]));
+    for (const row of chunk) {
+      const r = byKey.get(`${row.dataset.orderUser.toLowerCase()}|${row.dataset.orderKind}|${row.dataset.orderId}`);
+      if (r && r.ok) { ok++; dropOrderRow(row); }
+      else { fail++; busy(row, false); }
     }
   }
   toast(`Cancelled ${ok}${fail ? `, ${fail} failed` : ''}`, fail ? 'warn' : 'success');
   updateOrdersSelCount();
 }
 
-/** Cancels one order via the backend, then removes its row + updates the count. */
-async function cancelOrder(username, btn, endpoint, idBody) {
+/** Per-row Cancel button (its own confirm), routed through that row's OWN account. */
+async function cancelSingleOrder(btn) {
+  const row = btn.closest('.order-row');
+  if (!row) return;
+  const { orderKind: kind, orderId: id, orderUser: username } = row.dataset;
+  if (!id || !username) return;
   if (!(await ssimConfirm({
     title: 'Cancel order', tone: 'danger', confirmLabel: 'Cancel order', confirmIcon: 'fa-xmark',
-    body: 'Cancel this order on the Steam market?',
+    body: `Cancel this order on the Steam market (<span class="font-mono text-slate-100">${escapeHtml(ordersOwnerName(username))}</span>)?`,
   }))) return;
   const old = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner cs2-spin"></i>';
+  const endpoint = kind === 'buy' ? '/api/market/cancel-buy-order' : '/api/market/cancel-listing';
+  const idBody = kind === 'buy' ? { buyOrderId: id } : { listingId: id };
   try {
     await api(endpoint, { method: 'POST', body: JSON.stringify({ username, ...idBody }) });
     toast('Order cancelled', 'success');
-    removeOrderRow(btn);
+    dropOrderRow(row);
   } catch (err) {
     toast(`Cancel failed: ${err.message}`, 'error');
     btn.disabled = false; btn.innerHTML = old;
   }
 }
 
-/** Removes a cancelled order's row and refreshes its section's count/empty state. */
-function removeOrderRow(btn) {
-  const row = btn.closest('.order-row');
-  if (!row) return;
-  const list = row.parentElement;            // the divide-y container
-  const countSpan = list?.previousElementSibling?.querySelector('span.font-mono');
-  row.remove();
-  const remaining = list ? list.querySelectorAll('.order-row').length : 0;
-  if (countSpan) countSpan.textContent = String(remaining);
-  if (list && remaining === 0) {
-    list.innerHTML = '<div class="px-4 py-8 text-center text-slate-600 text-sm">No active orders.</div>';
+/** Removes a cancelled order's row from the DOM *and* from the cached row-set, so a re-render
+ *  (e.g. ticking another account) can't resurrect an order that no longer exists. */
+function dropOrderRow(row) {
+  const { orderKind: kind, orderId: id, orderUser: username } = row.dataset;
+  const data = state.orders.rows;
+  if (data) {
+    const list = kind === 'buy' ? data.buy : data.sell;
+    const idx = list.findIndex((o) => (kind === 'buy' ? o.buyOrderId : o.listingId) === id && o.username === username);
+    if (idx >= 0) list.splice(idx, 1);
   }
+  row.remove();
+  updateOrdersCounts();
+  updateOrdersSelCount();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -5241,7 +5800,13 @@ function renderAccountTabs(items, active, opts = {}) {
     }).join('')
     + '<span class="mx-1 w-px self-stretch bg-slate-700/70" aria-hidden="true"></span>'
     + `<button data-cat="orders" title="Active market orders (sell listings + buy orders)" class="chip chip--buy" aria-pressed="${ordersOn}"><i class="fa-solid fa-receipt"></i>Active Orders</button>`;
-  el.gcCatTabs.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.gcCat = b.dataset.cat; renderMain(); }));
+  el.gcCatTabs.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => {
+    state.gcCat = b.dataset.cat;
+    // Clicking the pill is the EXPLICIT ask that lets a multi-account scope go live to Steam
+    // (a re-render alone never may — see state.orders.autoStart).
+    if (b.dataset.cat === 'orders') { state.orders.autoStart = true; state.orders.rows = null; }
+    renderMain();
+  }));
 }
 
 // ── TBL-02: windowed rendering for the FLAT item list (the ~10k Global Master case) ──
@@ -6317,7 +6882,30 @@ async function submitAttach(ev) {
 //  shown; Buy Orders / Trades / Inventory appear only when experimental is ON.
 //  All renderers extract fields defensively (undocumented response shapes).
 // ════════════════════════════════════════════════════════════════════════════
-const CSF = { username: null, tab: 'dashboard', experimental: false, key: { configured: false }, market: { cursor: null, items: [], query: {}, loading: false } };
+const CSF = {
+  username: null, tab: 'dashboard', experimental: false, key: { configured: false },
+  market: { cursor: null, items: [], query: {}, loading: false },
+  // Inventory + My Listings each keep their own rows, selection and filter so switching
+  // tabs doesn't silently discard a 200-item selection you just made.
+  // `manual` holds prices the operator typed on a row, in cents, keyed by asset/listing id.
+  // It lives in state rather than the DOM because selecting a row re-renders the table — a
+  // typed price kept only in the input would vanish the moment you ticked its checkbox.
+  inv: { items: [], sel: new Set(), search: '', manual: {} },
+  lst: { items: [], sel: new Set(), search: '', manual: {} },
+  /** Sales awaiting delivery. `sel` holds CSFloat TRADE ids (what /deliver takes); `delivered` is
+   *  the server's durable record of what this install already sent, so a delivered sale can be
+   *  marked instead of offering a Send button that could only refuse. */
+  trd: { rows: [], sel: new Set(), search: '', delivered: new Set(), auto: false },
+  /** CSFloat's lowest buy-now ask per name (one bulk request, cached server-side).
+   *  `asked` = names already requested, so a name with no CSFloat listing isn't re-fetched forever. */
+  prices: { map: {}, asked: new Set(), fetchedAt: 0, stale: false, loading: false },
+  /** Auto-pricing strategy shared by both tabs. */
+  strategy: { mode: 'undercut', pct: 2 },
+  bulkTimer: null,
+  deliverTimer: null,
+};
+/** CSFloat's documented per-page cap; asking for more is rejected upstream. */
+const CSF_PAGE_LIMIT = 50;
 const csfUsd = (cents) => '$' + (Number(cents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function csfApi(path, opts) { return api('/api/csfloat/' + encodeURIComponent(CSF.username) + path, opts); }
 // CSFloat item images: build the Steam economy URL from a hash, or accept a full URL — but ALWAYS
@@ -6333,9 +6921,111 @@ function csfError(msg) { return `<div class="empty"><div class="empty-icon text-
 function csfEmpty(icon, msg) { return `<div class="empty"><div class="empty-icon"><i class="fa-solid ${icon}"></i></div><div class="empty-title">${escapeHtml(msg)}</div></div>`; }
 function csfArr(res) { if (Array.isArray(res)) return res; const r = res || {}; return r.data || r.listings || r.orders || r.trades || r.results || r.items || []; }
 function csfMsg(eln, text, tone) { if (!eln) return; eln.className = `t10 mt-2 ${tone === 'error' ? 'text-rose-300' : tone === 'ok' ? 'text-emerald-300' : 'text-slate-400'}`; eln.textContent = text; eln.classList.remove('hidden'); }
+/** Item name off a CSFloat listing/inventory row (shapes differ across the endpoints). */
+function csfName(row) {
+  const item = (row && (row.item || row.contract?.item)) || row || {};
+  return item.market_hash_name || item.full_item_name || item.item_name || '';
+}
+/** CSFloat's current lowest buy-now ask for a name, or null when we have no catalog entry. */
+function csfLowest(name) { const c = CSF.prices.map[name]; return typeof c === 'number' ? c : null; }
+
+/**
+ * The price the current strategy suggests for a name, in cents, or null when unknown.
+ *
+ * NOTE this is a NAME-level suggestion: CSFloat's catalog gives the lowest ask per
+ * market_hash_name, which ignores float. A 0.0001 Factory New and a 0.069 Factory New share
+ * one suggestion, so the per-row price stays editable and the UI says so.
+ */
+function csfSuggestPrice(name) {
+  const low = csfLowest(name);
+  if (low == null) return null;
+  const pct = Number(CSF.strategy.pct) || 0;
+  const mode = CSF.strategy.mode;
+  let cents = mode === 'match' ? low
+    : mode === 'over' ? low * (1 + pct / 100)
+    : low * (1 - pct / 100);                       // 'undercut'
+  cents = Math.round(cents);
+  return Math.max(3, cents);                       // CSFloat's floor is $0.03
+}
+
+/**
+ * The reprice suggestion for an EXISTING listing, or null when it should be left alone.
+ *
+ * Critical difference from csfSuggestPrice: the catalog's lowest ask INCLUDES our own listing.
+ * If we are already at (or under) the lowest, "undercut the lowest by 2%" means undercutting
+ * OURSELVES — click it a few times and the stall walks its own prices to the floor. So a
+ * listing that already holds the lowest price is reported as "nothing to do", not repriced.
+ */
+function csfSuggestReprice(listing) {
+  const name = csfName(listing);
+  const low = csfLowest(name);
+  if (low == null) return null;
+  const current = listing.price ?? 0;
+  if (CSF.strategy.mode !== 'over' && current <= low) return null; // already lowest → never chase ourselves down
+  const want = csfSuggestPrice(name);
+  if (want == null || want === current) return null;
+  return want;
+}
+
+/**
+ * Loads CSFloat's lowest ask for `names`, MERGING into the catalog we already hold.
+ *
+ * `asked` tracks what we've requested so a name CSFloat has no listing for (absent from the
+ * response, so it stays undefined in the map) isn't re-requested on every tab switch. Merging
+ * matters because the two tabs show different name sets: gating on "have we ever fetched?"
+ * left the second tab's items permanently unpriced.
+ */
+async function csfLoadPrices(names, force) {
+  const wanted = [...new Set((names || []).filter(Boolean))]
+    .filter((n) => force || !CSF.prices.asked.has(n));
+  if (!wanted.length) return;
+  CSF.prices.loading = true;
+  try {
+    const r = await csfApi('/price-list', { method: 'POST', body: JSON.stringify({ names: wanted }) });
+    Object.assign(CSF.prices.map, r.prices || {});
+    for (const n of wanted) CSF.prices.asked.add(n);
+    CSF.prices.fetchedAt = r.fetchedAt || Date.now();
+    CSF.prices.stale = !!r.stale;
+  } catch (err) {
+    toast(`Could not load CSFloat prices: ${err.message}`, 'error');
+  } finally {
+    CSF.prices.loading = false;
+  }
+}
+
+/** Shared strategy control + selection actions, rendered above the Inventory and Listings tables. */
+function csfStrategyBar(scope, selCount, actionsHtml) {
+  const s = CSF.strategy;
+  const opt = (v, label) => `<option value="${v}" ${s.mode === v ? 'selected' : ''}>${label}</option>`;
+  const age = CSF.prices.fetchedAt ? `${Math.max(0, Math.round((Date.now() - CSF.prices.fetchedAt) / 1000))}s ago` : 'not loaded';
+  return `<div class="flex flex-wrap items-end gap-2 mb-3 pb-3 border-b border-slate-800">
+    <div class="flex-1 min-w-[150px]"><label class="field-label">Filter</label>
+      <input data-csf-search="${scope}" value="${escapeAttr(scope === 'inv' ? CSF.inv.search : CSF.lst.search)}" placeholder="Filter items…" class="field !py-1.5"/></div>
+    <div><label class="field-label">Price</label>
+      <select data-csf-mode class="field !w-auto !py-1.5">${opt('undercut', 'Undercut lowest')}${opt('match', 'Match lowest')}${opt('over', 'Above lowest')}</select></div>
+    <div><label class="field-label">%</label>
+      <input data-csf-pct type="number" step="0.5" min="0" max="90" value="${escapeAttr(String(s.pct))}" ${s.mode === 'match' ? 'disabled' : ''} class="field !w-20 !py-1.5"/></div>
+    <button data-csf="loadprices" class="btn btn-secondary btn-sm" title="Fetch CSFloat's lowest ask for every item shown (one request)">
+      <i class="fa-solid fa-tags"></i>${CSF.prices.loading ? 'Loading…' : 'Refresh prices'}</button>
+    <span class="t10 ${CSF.prices.stale ? 'text-amber-400' : 'text-slate-500'}" title="${CSF.prices.stale ? 'CSFloat did not answer — these are the last good prices' : ''}">${CSF.prices.stale ? 'stale · ' : ''}${age}</span>
+    <span class="ml-auto"></span>
+    <button data-csf="selall" data-scope="${scope}" class="btn btn-ghost btn-sm">Select all</button>
+    <button data-csf="selnone" data-scope="${scope}" class="btn btn-ghost btn-sm">Clear</button>
+    ${actionsHtml}
+  </div>
+  <p class="t10 text-slate-500 -mt-1 mb-3">Suggestions come from CSFloat's lowest ask <b>per item name</b> — they don't account for float, so review anything rare before listing.${selCount ? ` <span class="text-brand-light">${selCount} selected.</span>` : ''}</p>`;
+}
 
 async function openCsFloat(username) {
   CSF.username = username; CSF.tab = 'dashboard'; CSF.market = { cursor: null, items: [], query: {}, loading: false };
+  // Everything below is per-account: a stall, a selection and a price catalog from the PREVIOUS
+  // account must never leak into this one (listing the wrong bot's items is unrecoverable).
+  CSF.inv = { items: [], sel: new Set(), search: '', manual: {} };
+  CSF.lst = { items: [], sel: new Set(), search: '', manual: {} };
+  CSF.prices = { map: {}, asked: new Set(), fetchedAt: 0, stale: false, loading: false };
+  CSF.trd = { rows: [], sel: new Set(), search: '', delivered: new Set(), auto: false };
+  clearTimeout(CSF.bulkTimer); CSF.bulkTimer = null;
+  clearTimeout(CSF.deliverTimer); CSF.deliverTimer = null;
   el.csfloatAccount.textContent = username;
   el.csfloatOverlay.classList.remove('hidden');
   el.csfloatTabs.innerHTML = ''; el.csfloatBody.innerHTML = csfSkeleton();
@@ -6348,8 +7038,26 @@ async function openCsFloat(username) {
   } catch { CSF.experimental = false; CSF.key = { configured: false }; }
   csfRenderTabs();
   csfSwitchTab(CSF.key.configured ? 'dashboard' : 'settings');
+  // A bulk job survives the modal being closed, so pick a still-running one back up rather
+  // than leaving the operator with no sign that 200 listings are mid-flight.
+  try {
+    const j = await api('/api/csfloat/bulk-status');
+    if (j && j.running && j.username === username) csfPollBulk();
+  } catch { /* status is a convenience here — never block opening the workspace */ }
+  // Same for a delivery run — it sends real Steam offers, so reopening the workspace mid-run must
+  // show it rather than look idle while items are leaving the account.
+  try {
+    const d = await api('/api/csfloat/deliver-status');
+    if (d && d.running && d.username === username) csfPollDeliver();
+  } catch { /* convenience only */ }
 }
-function closeCsFloat() { el.csfloatOverlay.classList.add('hidden'); }
+function closeCsFloat() {
+  // H-FE-010: stop the bulk-progress poller on close (the job itself keeps running server-side
+  // and its result is picked up again on reopen — only the polling stops).
+  clearTimeout(CSF.bulkTimer); CSF.bulkTimer = null;
+  clearTimeout(CSF.deliverTimer); CSF.deliverTimer = null;
+  el.csfloatOverlay.classList.add('hidden');
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 //  SDA Overview (Phase 6 Feature B): Steam Guard OTP (auto-rolling + copy) + live
@@ -6545,7 +7253,7 @@ async function openCleanBrowser(btn, username) {
 
 function csfRenderTabs() {
   const core = [['dashboard', 'Dashboard', 'fa-gauge'], ['listings', 'My Listings', 'fa-tags'], ['market', 'Market', 'fa-store']];
-  const exp = [['buyorders', 'Buy Orders', 'fa-hand-holding-dollar'], ['trades', 'Trades', 'fa-right-left'], ['inventory', 'Inventory', 'fa-boxes-stacked']];
+  const exp = [['buyorders', 'Buy Orders', 'fa-hand-holding-dollar'], ['trades', 'Sales &amp; Delivery', 'fa-paper-plane'], ['inventory', 'Inventory', 'fa-boxes-stacked']];
   const tabs = [...core, ...(CSF.experimental ? exp : []), ['settings', 'Settings', 'fa-gear']];
   el.csfloatTabs.innerHTML = tabs.map(([id, label, icon]) => {
     const on = CSF.tab === id;
@@ -6570,17 +7278,28 @@ async function csfLoadDashboard() {
     const me = await csfApi('/me');
     const bal = me.balance ?? (me.user && me.user.balance) ?? me.pending_balance ?? 0;
     const name = me.username || (me.user && me.user.username) || me.steam_id || (me.user && me.user.steam_id) || CSF.username;
-    let listingCount = '—';
-    try { listingCount = String(csfArr(await csfApi('/listings?limit=50')).length); } catch { /* leave as — */ }
+    // Cache the stall on the dashboard too, so the Listings tab opens instantly and the
+    // headline numbers below come from the SAME snapshot the tab will show.
+    let listingCount = '—', listedValue = null, count = 0;
+    try {
+      const rows = csfArr(await csfApi(`/listings?limit=${CSF_PAGE_LIMIT}`));
+      CSF.lst.items = rows;
+      count = rows.length;
+      listedValue = rows.reduce((n, l) => n + (l.price ?? 0), 0);
+      // A full page means there may be more — say "50+" rather than implying that IS the whole stall.
+      listingCount = count >= CSF_PAGE_LIMIT ? `${CSF_PAGE_LIMIT}+` : String(count);
+    } catch { /* leave as — */ }
     el.csfloatBody.innerHTML = `
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+      <div class="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
         ${csfStat('Balance', csfUsd(bal), 'fa-wallet', 'text-emerald-400')}
         ${csfStat('Active listings', listingCount, 'fa-tags', 'text-brand-light')}
+        ${csfStat('Listed value', listedValue == null ? '—' : csfUsd(listedValue), 'fa-sack-dollar', 'text-teal-300')}
         ${csfStat('Account', escapeHtml(String(name)), 'fa-user', 'text-slate-300')}
       </div>
-      <div class="flex gap-2">
+      <div class="flex gap-2 flex-wrap">
         <button data-csf-tab="market" class="btn btn-secondary btn-sm"><i class="fa-solid fa-store mr-1.5"></i>Browse market</button>
-        <button data-csf-tab="listings" class="btn btn-secondary btn-sm"><i class="fa-solid fa-tags mr-1.5"></i>My listings</button>
+        <button data-csf-tab="listings" class="btn btn-secondary btn-sm"><i class="fa-solid fa-tags mr-1.5"></i>My listings${count ? ` (${listingCount})` : ''}</button>
+        ${CSF.experimental ? '<button data-csf-tab="inventory" class="btn btn-primary btn-sm"><i class="fa-solid fa-boxes-stacked mr-1.5"></i>List items in bulk</button>' : ''}
       </div>`;
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
 }
@@ -6588,25 +7307,69 @@ function csfStat(label, value, icon, color) {
   return `<div class="stat-card"><p class="stat-label">${label}</p><p class="stat-value ${color} truncate"><i class="fa-solid ${icon} mr-1.5 t13"></i>${value}</p></div>`;
 }
 
-// ── My Listings ──
-async function csfLoadListings() {
+// ── My Listings — multi-select, live undercut comparison, bulk delist/reprice ──
+async function csfLoadListings(keepSelection) {
   el.csfloatBody.innerHTML = csfSkeleton();
   try {
-    const items = csfArr(await csfApi('/listings?limit=50'));
-    el.csfloatBody.innerHTML = items.length ? `<div class="space-y-2">${items.map(csfListingRow).join('')}</div>` : csfEmpty('fa-tags', 'No active listings on CSFloat.');
+    const items = csfArr(await csfApi(`/listings?limit=${CSF_PAGE_LIMIT}`));
+    CSF.lst.items = items;
+    if (!keepSelection) CSF.lst.sel = new Set();
+    // Warm the lowest-ask catalog for exactly the names on screen so the position column
+    // ("lowest" / "$1.20 above") is meaningful the moment the tab opens. Only the names we
+    // haven't asked for yet actually hit the network.
+    await csfLoadPrices(items.map(csfName));
+    csfRenderListings();
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
 }
+
+function csfVisibleListings() {
+  const q = CSF.lst.search.trim().toLowerCase();
+  return q ? CSF.lst.items.filter((l) => csfName(l).toLowerCase().includes(q)) : CSF.lst.items;
+}
+
+function csfRenderListings() {
+  const visible = csfVisibleListings();
+  const selected = visible.filter((l) => CSF.lst.sel.has(String(l.id || l.listing_id || '')));
+  // How many of the SELECTED listings would actually move — a listing already holding the
+  // lowest price is deliberately excluded (see csfSuggestReprice), so the button must not
+  // promise to reprice 40 when only 12 will change.
+  const repriceable = selected.filter((l) => csfSuggestReprice(l) != null).length;
+  const actions = `
+    <button data-csf="bulkreprice" ${repriceable ? '' : 'disabled'} class="btn btn-primary btn-sm ${repriceable ? '' : 'opacity-40 cursor-not-allowed'}" title="${repriceable ? 'Move the selected listings to the suggested price' : 'Nothing to reprice — the selected listings already hold the lowest ask'}">
+      <i class="fa-solid fa-arrows-down-to-line"></i>Reprice (${repriceable})</button>
+    <button data-csf="bulkdelist" ${selected.length ? '' : 'disabled'} class="btn btn-danger btn-sm ${selected.length ? '' : 'opacity-40 cursor-not-allowed'}">
+      <i class="fa-solid fa-xmark"></i>Delist (${selected.length})</button>`;
+  el.csfloatBody.innerHTML = csfStrategyBar('lst', selected.length, actions)
+    + (visible.length
+      ? `<div class="space-y-1.5">${visible.map(csfListingRow).join('')}</div>`
+      : (CSF.lst.items.length ? csfEmpty('fa-filter', 'No listing matches that filter.') : csfEmpty('fa-tags', 'No active listings on CSFloat.')));
+}
+
 function csfListingRow(l) {
-  const item = l.item || {}; const id = l.id || l.listing_id || '';
-  const name = item.market_hash_name || item.full_item_name || item.item_name || 'Unknown item';
-  const price = l.price ?? 0; const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
-  return `<div class="csf-row flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
-    ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
-    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="t10 text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
-    <input type="number" step="0.01" min="0.03" placeholder="${(price / 100).toFixed(2)}" class="csf-price field !w-24 !py-1.5 text-right" />
-    <button data-csf="editprice" data-id="${escapeAttr(id)}" title="Update price" class="btn btn-icon-sm btn-secondary"><i class="fa-solid fa-pen"></i></button>
-    <button data-csf="delist" data-id="${escapeAttr(id)}" title="Delist" class="btn btn-icon-sm btn-danger"><i class="fa-solid fa-xmark"></i></button>
-    <span class="t13 font-bold text-emerald-400 font-mono w-20 text-right">${csfUsd(price)}</span></div>`;
+  const item = l.item || {}; const id = String(l.id || l.listing_id || '');
+  const name = csfName(l) || 'Unknown item';
+  const price = l.price ?? 0;
+  const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
+  const low = csfLowest(name);
+  const want = csfSuggestReprice(l);
+  const sel = CSF.lst.sel.has(id);
+  // Position vs. the rest of the market, so it's obvious at a glance what is and isn't selling.
+  const pos = low == null
+    ? '<span class="t10 text-slate-600">no market data</span>'
+    : price <= low
+      ? '<span class="pill pill--success t10">lowest</span>'
+      : `<span class="pill pill--warn t10" title="Cheapest on CSFloat: ${csfUsd(low)}">${csfUsd(price - low)} above</span>`;
+  return `<div class="csf-row flex items-center gap-2.5 rounded-xl bg-slate-950/50 border ${sel ? 'border-brand/50 ring-1 ring-brand/40' : 'border-slate-800'} px-3 py-2">
+    <input type="checkbox" data-csf-lst="${escapeAttr(id)}" ${sel ? 'checked' : ''} class="accent-brand w-4 h-4 shrink-0">
+    ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" loading="lazy" class="w-10 h-10 object-contain shrink-0"/>` : '<i class="fa-solid fa-image text-slate-700 w-10 text-center shrink-0"></i>'}
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate" title="${escapeAttr(name)}">${escapeHtml(name)}</p>
+      <p class="t10 text-slate-500 font-mono">${fl ? `float ${fl}` : ''}${low != null ? `${fl ? ' · ' : ''}lowest ${csfUsd(low)}` : ''}</p></div>
+    <div class="shrink-0 w-24 text-right">${pos}</div>
+    <div class="shrink-0 w-20 text-right t10 font-mono ${want != null ? 'text-brand-light' : 'text-slate-700'}" title="${want != null ? 'Suggested new price' : 'No change suggested'}">${want != null ? '→ ' + csfUsd(want) : '—'}</div>
+    <input type="number" step="0.01" min="0.03" value="${CSF.lst.manual[id] != null ? (CSF.lst.manual[id] / 100).toFixed(2) : ''}" placeholder="${(price / 100).toFixed(2)}" class="csf-price field !w-24 !py-1.5 text-right shrink-0" />
+    <button data-csf="editprice" data-id="${escapeAttr(id)}" title="Update to the typed price" class="btn btn-icon-sm btn-secondary shrink-0"><i class="fa-solid fa-pen"></i></button>
+    <button data-csf="delist" data-id="${escapeAttr(id)}" title="Delist" class="btn btn-icon-sm btn-danger shrink-0"><i class="fa-solid fa-xmark"></i></button>
+    <span class="t13 font-bold text-emerald-400 font-mono w-20 text-right shrink-0">${csfUsd(price)}</span></div>`;
 }
 
 // ── Market ──
@@ -6731,7 +7494,85 @@ function csfBuyOrderRow(o) {
     <button data-csf="delorder" data-id="${escapeAttr(id)}" class="btn btn-icon-sm btn-danger"><i class="fa-solid fa-xmark"></i></button></div>`;
 }
 
-// ── Trades (experimental) — incl. the Auto-Accept toggle ──
+// ── Sales (experimental) — the delivery dashboard ────────────────────────────
+//
+// This tab used to be the auto-accept ON/OFF switch plus one flat row per trade showing a name and
+// a price. Two things were wrong with that (owner report 2026-08-12): the toggle was the ONLY way to
+// deliver — a sale that arrived before you flipped it just sat there — and a buyer who bought seven
+// of the same skin produced seven identical rows with nothing to tie them together.
+//
+// So: sales are grouped by BUYER, identical skins inside a buyer are stacked with a ×N, and every
+// level (row, buyer, whole selection) has its own Send button. The toggle stays for hands-off
+// running; it is no longer the only lever.
+
+/**
+ * Normalizes one row of CSFloat's UNDOCUMENTED /me/trades payload.
+ *
+ * Every field is looked up through a chain of plausible names and degrades to null rather than to a
+ * wrong value — a mis-parsed buyer or asset is what ships an item to the wrong place, so anything
+ * that does not resolve is simply not shown (and the server refuses to deliver it: it validates the
+ * steamID/trade-URL/asset independently before creating an offer).
+ */
+/**
+ * An id field as a string — but NEVER from a JSON number too large to survive JSON.parse.
+ *
+ * A steamID64 (~7.66e16) is above Number.MAX_SAFE_INTEGER, so if CSFloat ever transports one as a
+ * number its low digits are already lost by the time this runs. The server discards such a value
+ * outright (it would mis-deliver the item); stringifying the corruption here would show a Send
+ * button that the server can only ever refuse.
+ */
+function csfIdStr(v) {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number') return Number.isSafeInteger(v) ? String(v) : '';
+  return '';
+}
+
+function csfTrade(t) {
+  const contract = (t && (t.contract || t.listing)) || {};
+  const item = contract.item || t.item || {};
+  const buyer = t.buyer || t.buyer_user || {};
+  const price = contract.price ?? t.price ?? t.total_price ?? 0;
+  const created = Date.parse(t.created_at || contract.created_at || t.accepted_at || '') || 0;
+  return {
+    id:        csfIdStr(t.id) || csfIdStr(t.trade_id),
+    state:     String(t.state || t.status || ''),
+    name:      csfName(t) || item.item_name || 'Item',
+    icon:      item.icon_url || '',
+    float:     typeof item.float_value === 'number' ? item.float_value : null,
+    wear:      item.wear_name || '',
+    stattrak:  !!item.is_stattrak,
+    souvenir:  !!item.is_souvenir,
+    priceCents: Number(price) || 0,
+    buyerName: buyer.username || buyer.name || '',
+    buyerId:   csfIdStr(t.buyer_id) || csfIdStr(buyer.steam_id) || csfIdStr(buyer.steamid),
+    buyerAvatar: buyer.avatar || '',
+    assetId:   csfIdStr(item.asset_id) || csfIdStr(item.assetid) || csfIdStr(contract.asset_id),
+    tradeUrl:  t.trade_url || buyer.trade_url || t.buyer_trade_url || '',
+    offerId:   String(t.trade_offer_id || (t.steam_offer && t.steam_offer.id) || ''),
+    createdAt: created,
+    raw:       t,
+  };
+}
+
+/** Sale states that mean it is over — mirrors `terminalState` in CsFloatAutoAcceptWorker.ts.
+ *  Keep the two in step: this one greys the button, that one is the gate that actually holds. */
+function csfFinishedState(state) {
+  const s = String(state || '').trim();
+  return /complet|verified|delivered|cancel|fail|expire|refund|dispute/i.test(s) ? s : '';
+}
+
+/** Can SSIM send this one? Mirrors the server's pre-send validation so the UI never offers a
+ *  button whose only possible outcome is "skipped". */
+function csfDeliverable(r) {
+  if (CSF.trd.delivered.has(r.id)) return 'Already delivered by SSIM';
+  if (!r.id) return 'CSFloat sent no trade id for this sale';
+  const done = csfFinishedState(r.state);
+  if (done) return `CSFloat calls this sale "${done}" — it is finished, nothing to deliver`;
+  if (!r.assetId) return 'CSFloat sent no asset id for this sale';
+  if (!r.tradeUrl && !r.buyerId) return "CSFloat sent no buyer trade URL or steamID — SSIM will not send to an unverified destination";
+  return '';   // deliverable
+}
+
 async function csfLoadTrades() {
   el.csfloatBody.innerHTML = csfSkeleton(3);
   try {
@@ -6739,45 +7580,287 @@ async function csfLoadTrades() {
     // indistinguishable from genuinely off, and fed the next PUT a fabricated default). Let a
     // failure fall to the tab's error surface (csfError) below, exactly like the other CSF tabs.
     const [auto, tradesRes] = await Promise.all([ csfApi('/auto-accept'), csfApi('/trades?limit=50') ]);
-    const trades = csfArr(tradesRes);
-    const acc = state.allAccounts.find((a) => a.username === CSF.username);
-    const limited = !!(acc && acc.canConfirm === false);
-    el.csfloatBody.innerHTML = `
-      <div class="surface flex items-center justify-between px-4 py-3 mb-4">
-        <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p><p class="text-2xs text-slate-500 max-w-md">${limited ? "Unavailable — this account's maFile has no identity_secret to confirm the Steam delivery. Attach a maFile with one to enable." : 'Auto-send &amp; confirm the Steam trade for each CSFloat sale (reuses your maFile).'}</p></div>
-        <button data-csf="autoaccept" data-enabled="${auto.enabled ? '1' : '0'}" ${limited ? 'disabled' : ''} class="btn btn-sm ${auto.enabled ? 'btn-primary' : 'btn-secondary'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto.enabled ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
-      </div>
-      ${trades.length ? `<div class="space-y-2">${trades.map(csfTradeRow).join('')}</div>` : csfEmpty('fa-right-left', 'No trades yet.')}`;
+    CSF.trd.rows = csfArr(tradesRes).map(csfTrade);
+    CSF.trd.delivered = new Set(((tradesRes && tradesRes.ssim && tradesRes.ssim.delivered) || []).map(String));
+    CSF.trd.auto = !!auto.enabled;
+    // Drop selections for sales that are gone (delivered elsewhere, cancelled) so a stale tick
+    // can't be submitted on the next click.
+    const live = new Set(CSF.trd.rows.map((r) => r.id));
+    CSF.trd.sel = new Set([...CSF.trd.sel].filter((id) => live.has(id)));
+    csfRenderTrades();
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
 }
-function csfTradeRow(t) {
-  const item = (t.contract && t.contract.item) || t.item || {};
-  const name = item.market_hash_name || 'Trade'; const st = t.state || t.status || '';
-  const price = (t.contract && t.contract.price) ?? t.price ?? 0;
-  return `<div class="flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
-    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(String(name))}</p><p class="t10 text-slate-500">${escapeHtml(String(st))}</p></div>
-    <span class="t13 font-bold text-emerald-400 font-mono">${csfUsd(price)}</span></div>`;
+
+function csfVisibleTrades() {
+  const q = CSF.trd.search.trim().toLowerCase();
+  if (!q) return CSF.trd.rows;
+  return CSF.trd.rows.filter((r) => r.name.toLowerCase().includes(q) || r.buyerName.toLowerCase().includes(q) || r.buyerId.includes(q));
 }
 
-// ── Inventory (experimental) — list an item for sale ──
-async function csfLoadInventory() {
+/** Buyer → stacks of identical items. One buyer card per person, one row per distinct skin. */
+function csfGroupTrades(rows) {
+  const byBuyer = new Map();
+  for (const r of rows) {
+    const key = r.buyerId || r.buyerName || '—';
+    let g = byBuyer.get(key);
+    if (!g) { g = { key, name: r.buyerName, steamId: r.buyerId, avatar: r.buyerAvatar, rows: [], stacks: new Map(), cents: 0, newest: 0 }; byBuyer.set(key, g); }
+    g.rows.push(r);
+    g.cents += r.priceCents;
+    g.newest = Math.max(g.newest, r.createdAt);
+    // Stack on the NAME: "7× AK-47 | Redline" is the thing the operator is looking at. Floats and
+    // per-unit prices still differ inside a stack, so both are summarised on the row.
+    const sk = r.name;
+    const s = g.stacks.get(sk) || { name: r.name, icon: r.icon, rows: [] };
+    s.rows.push(r);
+    g.stacks.set(sk, s);
+  }
+  return [...byBuyer.values()].sort((a, b) => b.newest - a.newest);
+}
+
+function csfStateBadge(state) {
+  const s = String(state || '').toLowerCase();
+  const tone = /verif|accept|complete|success/.test(s) ? 'text-emerald-400 bg-emerald-500/10 ring-emerald-500/30'
+    : /fail|cancel|expire|error/.test(s) ? 'text-rose-400 bg-rose-500/10 ring-rose-500/30'
+    : 'text-amber-400 bg-amber-500/10 ring-amber-500/30';
+  return s ? `<span class="t10 px-1.5 py-0.5 rounded ring-1 ${tone}">${escapeHtml(s)}</span>` : '';
+}
+
+function csfRenderTrades() {
+  const visible = csfVisibleTrades();
+  const groups = csfGroupTrades(visible);
+  const acc = state.allAccounts.find((a) => a.username === CSF.username);
+  const limited = !!(acc && acc.canConfirm === false);
+  const auto = CSF.trd.auto;
+
+  const selected = CSF.trd.rows.filter((r) => CSF.trd.sel.has(r.id));
+  const sendable = selected.filter((r) => !csfDeliverable(r));
+  const selCents = sendable.reduce((n, r) => n + r.priceCents, 0);
+  const pending = CSF.trd.rows.filter((r) => !csfDeliverable(r));
+  const pendCents = pending.reduce((n, r) => n + r.priceCents, 0);
+
+  const stat = (label, value, tone) => `<div class="px-3 py-2 rounded-xl bg-slate-950/50 border border-slate-800">
+    <p class="t10 text-slate-500">${label}</p><p class="t14 font-bold ${tone || 'text-slate-200'} font-mono">${value}</p></div>`;
+
+  el.csfloatBody.innerHTML = `
+    <div class="surface flex items-center justify-between gap-4 px-4 py-3 mb-3">
+      <div><p class="text-sm font-bold text-slate-200">Auto-accept sales</p>
+        <p class="text-2xs text-slate-500 max-w-md">${limited
+          ? "Unavailable — this account's maFile has no identity_secret to confirm the Steam delivery. Attach a maFile with one to enable."
+          : 'Deliver every new sale automatically (checked every 45s). You can always send by hand below — the toggle is not required.'}</p></div>
+      <button data-csf="autoaccept" data-enabled="${auto ? '1' : '0'}" ${limited ? 'disabled' : ''} class="btn btn-sm ${auto ? 'btn-primary' : 'btn-secondary'} ${limited ? 'opacity-40 cursor-not-allowed' : ''}">${auto ? '<i class="fa-solid fa-check mr-1"></i>ON' : 'OFF'}</button>
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+      ${stat('Sales', String(CSF.trd.rows.length))}
+      ${stat('Awaiting delivery', String(pending.length), pending.length ? 'text-amber-400' : 'text-slate-200')}
+      ${stat('Value to send', csfUsd(pendCents), 'text-emerald-400')}
+      ${stat('Buyers', String(groups.length))}
+    </div>
+
+    <div class="flex flex-wrap items-end gap-2 mb-3 pb-3 border-b border-slate-800">
+      <div class="flex-1 min-w-[150px]"><label class="field-label">Filter</label>
+        <input data-csf-search="trd" value="${escapeAttr(CSF.trd.search)}" placeholder="Filter by item or buyer…" class="field !py-1.5"/></div>
+      <button data-csf="refreshtrades" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate-right"></i>Refresh</button>
+      <span class="ml-auto"></span>
+      <button data-csf="selall" data-scope="trd" class="btn btn-ghost btn-sm">Select all</button>
+      <button data-csf="selnone" data-scope="trd" class="btn btn-ghost btn-sm">Clear</button>
+      <button data-csf="deliver" data-ids="${escapeAttr(sendable.map((r) => r.id).join(','))}" ${sendable.length ? '' : 'disabled'}
+        class="btn btn-primary btn-sm ${sendable.length ? '' : 'opacity-40 cursor-not-allowed'}"
+        title="${sendable.length ? 'Send and 2FA-confirm the Steam offer for each selected sale' : 'Tick the sales you want to deliver'}">
+        <i class="fa-solid fa-paper-plane"></i>Send ${sendable.length}${sendable.length ? ` · ${csfUsd(selCents)}` : ''}</button>
+    </div>
+    ${selected.length > sendable.length ? `<p class="t10 text-amber-400 -mt-1 mb-3">${selected.length - sendable.length} selected sale(s) can't be sent — see the reason on the row.</p>` : ''}
+
+    ${groups.length ? `<div class="space-y-3">${groups.map(csfBuyerCard).join('')}</div>` : (CSF.trd.rows.length ? csfEmpty('fa-filter', 'No sale matches that filter.') : csfEmpty('fa-right-left', 'No sales yet.'))}
+    ${CSF.trd.rows.length ? `<details class="mt-4"><summary class="t10 text-slate-600 cursor-pointer hover:text-slate-400">Raw CSFloat payload (first sale) — for diagnosing a missing field</summary>
+      <pre class="mt-2 p-3 rounded-lg bg-slate-950 border border-slate-800 t10 text-slate-400 overflow-x-auto max-h-64">${escapeHtml(JSON.stringify(CSF.trd.rows[0].raw, null, 2))}</pre></details>` : ''}`;
+}
+
+function csfBuyerCard(g) {
+  // Checkboxes tick only what can actually be SENT: ticking a buyer whose one item is already
+  // delivered would otherwise put a sale in the selection that the run can only skip.
+  const sendableIds = g.rows.filter((r) => !csfDeliverable(r)).map((r) => r.id);
+  const allSel = sendableIds.length && sendableIds.every((id) => CSF.trd.sel.has(id));
+  const label = g.name || (g.steamId ? `Buyer ${g.steamId}` : 'Unknown buyer');
+  return `<div class="rounded-xl bg-slate-950/40 border border-slate-800 overflow-hidden">
+    <div class="flex items-center gap-3 px-3 py-2.5 bg-slate-900/40 border-b border-slate-800">
+      <input type="checkbox" data-csf-trd-group="${escapeAttr(sendableIds.join(','))}" ${allSel ? 'checked' : ''} ${sendableIds.length ? '' : 'disabled'} class="accent-brand w-4 h-4 shrink-0">
+      ${g.avatar ? `<img src="${escapeAttr(safeIconUrl(g.avatar))}" alt="" loading="lazy" class="w-7 h-7 rounded-full shrink-0"/>` : '<i class="fa-solid fa-user text-slate-600 w-7 text-center shrink-0"></i>'}
+      <div class="min-w-0 flex-1">
+        <p class="t13 font-semibold text-slate-100 truncate">${escapeHtml(label)}</p>
+        <p class="t10 text-slate-500 font-mono truncate">${escapeHtml(g.steamId || '—')}${g.newest ? ` · ${escapeHtml(dashAgo(g.newest))}` : ''}</p>
+      </div>
+      <div class="text-right shrink-0">
+        <p class="t13 font-bold text-emerald-400 font-mono">${csfUsd(g.cents)}</p>
+        <p class="t10 text-slate-500">${g.rows.length} item${g.rows.length === 1 ? '' : 's'}</p>
+      </div>
+      <button data-csf="deliver" data-ids="${escapeAttr(sendableIds.join(','))}" ${sendableIds.length ? '' : 'disabled'}
+        class="btn btn-sm ${sendableIds.length ? 'btn-primary' : 'btn-secondary opacity-40 cursor-not-allowed'} shrink-0">
+        <i class="fa-solid fa-paper-plane"></i>Send all${sendableIds.length ? ` (${sendableIds.length})` : ''}</button>
+    </div>
+    <div class="divide-y divide-slate-800/70">${[...g.stacks.values()].map(csfTradeStackRow).join('')}</div>
+  </div>`;
+}
+
+/** One distinct skin inside a buyer card — "×7" instead of seven identical rows. */
+function csfTradeStackRow(s) {
+  const rows = s.rows;
+  const sendableIds = rows.filter((r) => !csfDeliverable(r)).map((r) => r.id);
+  const blocked = rows.map(csfDeliverable).filter(Boolean);
+  const allSel = sendableIds.length && sendableIds.every((id) => CSF.trd.sel.has(id));
+  const cents = rows.reduce((n, r) => n + r.priceCents, 0);
+  const unit = rows.map((r) => r.priceCents);
+  const lo = Math.min(...unit), hi = Math.max(...unit);
+  const floats = rows.map((r) => r.float).filter((f) => f != null);
+  const wear = rows[0].wear;
+  // Every distinct state in the stack (a buyer's seven copies can be at different stages).
+  const states = [...new Set(rows.map((r) => r.state).filter(Boolean))];
+  const deliveredCount = rows.filter((r) => CSF.trd.delivered.has(r.id)).length;
+  return `<div class="flex items-center gap-2.5 px-3 py-2">
+    <input type="checkbox" data-csf-trd-group="${escapeAttr(sendableIds.join(','))}" ${allSel ? 'checked' : ''} ${sendableIds.length ? '' : 'disabled'} class="accent-brand w-4 h-4 shrink-0">
+    ${s.icon ? `<img src="${escapeAttr(csfImg(s.icon))}" alt="" loading="lazy" class="w-10 h-10 object-contain shrink-0"/>` : '<i class="fa-solid fa-image text-slate-700 w-10 text-center shrink-0"></i>'}
+    <div class="min-w-0 flex-1">
+      <p class="t13 text-slate-200 truncate" title="${escapeAttr(s.name)}">${rows.length > 1 ? `<span class="text-brand-light font-bold">${rows.length}×</span> ` : ''}${escapeHtml(s.name)}</p>
+      <p class="t10 text-slate-500 font-mono truncate">
+        ${wear ? escapeHtml(wear) : ''}${floats.length ? ` · float ${floats.map((f) => f.toFixed(4)).join(', ')}` : ''}
+        ${states.length ? ' · ' + states.map(csfStateBadge).join(' ') : ''}
+        ${deliveredCount ? `<span class="text-emerald-400"> · ${deliveredCount} delivered</span>` : ''}
+      </p>
+      ${blocked.length ? `<p class="t10 text-amber-400 truncate" title="${escapeAttr(blocked[0])}">${escapeHtml(blocked[0])}${blocked.length > 1 ? ` (+${blocked.length - 1} more)` : ''}</p>` : ''}
+    </div>
+    <div class="shrink-0 w-24 text-right t10 font-mono text-slate-500" title="Price per item">${lo === hi ? csfUsd(lo) : `${csfUsd(lo)}–${csfUsd(hi)}`}${rows.length > 1 ? ' ea.' : ''}</div>
+    <div class="shrink-0 w-24 text-right t13 font-bold text-emerald-400 font-mono">${csfUsd(cents)}</div>
+    <button data-csf="deliver" data-ids="${escapeAttr(sendableIds.join(','))}" ${sendableIds.length ? '' : 'disabled'}
+      class="btn btn-sm ${sendableIds.length ? 'btn-secondary' : 'btn-secondary opacity-40 cursor-not-allowed'} shrink-0">Send${sendableIds.length > 1 ? ` ${sendableIds.length}` : ''}</button>
+  </div>`;
+}
+
+/**
+ * Sends the chosen sales. This creates REAL, 2FA-confirmed Steam offers that hand over the items,
+ * so it confirms first and names exactly what leaves the account — the same bar the single-item
+ * List button clears.
+ */
+async function csfDeliverTrades(ids) {
+  const wanted = ids.filter(Boolean);
+  if (!wanted.length) return toast('Nothing to send', 'error');
+  const rows = CSF.trd.rows.filter((r) => wanted.includes(r.id));
+  const cents = rows.reduce((n, r) => n + r.priceCents, 0);
+  const buyers = new Set(rows.map((r) => r.buyerName || r.buyerId || '?'));
+  const preview = rows.slice(0, 6).map((r) => `<li>${escapeHtml(r.name)} → <span class="text-slate-400">${escapeHtml(r.buyerName || r.buyerId || 'buyer')}</span></li>`).join('');
+  const ok = await ssimConfirm({
+    title: 'Deliver CSFloat sales',
+    tone: 'brand',
+    confirmLabel: `Send ${rows.length}`,
+    confirmIcon: 'fa-paper-plane',
+    body: `Send <b class="text-slate-100">${rows.length} item(s)</b> worth <b class="text-emerald-300">${csfUsd(cents)}</b> to <b class="text-slate-100">${buyers.size} buyer(s)</b> from <b class="text-slate-100">${escapeHtml(CSF.username)}</b>?`
+      + `<ul class="mt-2 space-y-0.5 text-2xs text-slate-300 list-disc list-inside">${preview}${rows.length > 6 ? `<li class="text-slate-500">…and ${rows.length - 6} more</li>` : ''}</ul>`
+      + '<p class="mt-2 text-2xs text-amber-300">Each one becomes a real Steam offer, confirmed with this account\'s maFile. Delivered sales are never re-sent.</p>',
+  });
+  if (!ok) return;
+  try {
+    await csfApi('/deliver', { method: 'POST', body: JSON.stringify({ tradeIds: wanted }) });
+    CSF.trd.sel = new Set();
+    csfPollDeliver();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/** Live progress for a manual delivery run — mirrors the bulk-job bar. */
+function csfPollDeliver() {
+  clearTimeout(CSF.deliverTimer);
+  const tick = async () => {
+    if (!el.csfloatOverlay || el.csfloatOverlay.classList.contains('hidden')) { CSF.deliverTimer = null; return; }
+    let j;
+    try { j = await api('/api/csfloat/deliver-status'); }
+    catch { CSF.deliverTimer = setTimeout(tick, 2000); return; }   // transient — keep watching
+    let bar = document.getElementById('csf-deliver-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'csf-deliver-bar';
+      bar.className = 'surface px-4 py-2.5 mb-3';
+      el.csfloatBody.prepend(bar);
+    }
+    const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+    const bad = (j.results || []).filter((r) => r.status === 'failed' || r.status === 'skipped' || r.status === 'unconfirmed');
+    bar.innerHTML = `<div class="flex items-center gap-3">
+        <span class="t12 text-slate-200 font-semibold">Delivering ${j.done}/${j.total}</span>
+        <span class="t10 text-emerald-400">${j.sent} sent</span>
+        ${j.unconfirmed ? `<span class="t10 text-amber-400">${j.unconfirmed} unconfirmed</span>` : ''}
+        ${j.failed ? `<span class="t10 text-rose-400">${j.failed} failed</span>` : ''}
+        ${j.skipped ? `<span class="t10 text-slate-400">${j.skipped} skipped</span>` : ''}
+        <span class="t10 text-slate-500 truncate flex-1">${escapeHtml(j.current || '')}</span>
+        ${j.running ? '<button data-csf="delivercancel" class="btn btn-danger btn-sm !py-0.5">Cancel</button>' : ''}
+      </div>
+      <div class="h-1.5 mt-2 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full bg-brand transition-all" style="width:${pct}%"></div></div>
+      ${bad.length ? `<div class="mt-2 max-h-32 overflow-y-auto space-y-0.5">${bad.slice(0, 25).map((r) => `<div class="t10 ${r.status === 'failed' ? 'text-rose-300' : r.status === 'unconfirmed' ? 'text-amber-300' : 'text-slate-400'} truncate" title="${escapeAttr(r.error || '')}">${escapeHtml(r.name || r.tradeId)}: ${escapeHtml(r.error || r.status)}</div>`).join('')}</div>` : ''}`;
+    if (j.running) { CSF.deliverTimer = setTimeout(tick, 900); return; }
+    CSF.deliverTimer = null;
+    if (j.error) toast(j.error, 'error');
+    else toast(`Delivered ${j.sent}/${j.total}${j.unconfirmed ? ` · ${j.unconfirmed} need manual 2FA` : ''}${j.failed ? ` · ${j.failed} failed` : ''}${j.cancelled ? ' (cancelled)' : ''}`, j.failed ? 'warn' : 'success');
+    // The sale list is now stale — some rows are delivered and must come back marked as such.
+    if (CSF.tab === 'trades') await csfLoadTrades();
+  };
+  tick();
+}
+
+// ── Inventory (experimental) — multi-select + auto-priced bulk listing ──
+async function csfLoadInventory(keepSelection) {
   el.csfloatBody.innerHTML = csfSkeleton();
   try {
     const items = csfArr(await csfApi('/inventory'));
-    el.csfloatBody.innerHTML = items.length
-      ? `<p class="text-2xs text-slate-500 mb-3">Set a price and list an item for sale on CSFloat.</p><div class="space-y-2">${items.map(csfInvRow).join('')}</div>`
-      : csfEmpty('fa-boxes-stacked', 'No tradable CS2 items found on CSFloat.');
+    CSF.inv.items = items;
+    if (!keepSelection) CSF.inv.sel = new Set();
+    await csfLoadPrices(items.map(csfName));
+    csfRenderInventory();
   } catch (err) { el.csfloatBody.innerHTML = csfError(err.message); }
 }
+
+/** Asset id off an inventory row (the endpoint nests it inconsistently). */
+function csfAsset(it) {
+  const item = (it && it.item) || it || {};
+  return String(item.asset_id || item.assetid || it.asset_id || it.assetid || '');
+}
+
+function csfVisibleInventory() {
+  const q = CSF.inv.search.trim().toLowerCase();
+  const rows = CSF.inv.items.filter((it) => csfAsset(it));  // unlistable without an asset id
+  return q ? rows.filter((it) => csfName(it).toLowerCase().includes(q)) : rows;
+}
+
+/** The price an inventory row would actually list at: what was typed, else the suggestion. */
+function csfInvPrice(it) { return CSF.inv.manual[csfAsset(it)] ?? csfSuggestPrice(csfName(it)); }
+
+function csfRenderInventory() {
+  const visible = csfVisibleInventory();
+  const selected = visible.filter((it) => CSF.inv.sel.has(csfAsset(it)));
+  // Only rows we can actually price are listable in bulk; the rest need a manual price.
+  const priced = selected.filter((it) => csfInvPrice(it) != null);
+  const totalCents = priced.reduce((n, it) => n + csfInvPrice(it), 0);
+  const actions = `
+    <button data-csf="bulklist" ${priced.length ? '' : 'disabled'} class="btn btn-primary btn-sm ${priced.length ? '' : 'opacity-40 cursor-not-allowed'}" title="${priced.length ? 'List every selected item at its suggested price' : 'Load prices first, or type a price on the rows you want to list'}">
+      <i class="fa-solid fa-tags"></i>List ${priced.length}${priced.length ? ` · ${csfUsd(totalCents)}` : ''}</button>`;
+  el.csfloatBody.innerHTML = csfStrategyBar('inv', selected.length, actions)
+    + (visible.length
+      ? `<div class="space-y-1.5">${visible.map(csfInvRow).join('')}</div>`
+      : (CSF.inv.items.length ? csfEmpty('fa-filter', 'No item matches that filter.') : csfEmpty('fa-boxes-stacked', 'No tradable CS2 items found on CSFloat.')));
+}
+
 function csfInvRow(it) {
-  const item = it.item || it; const asset = item.asset_id || item.assetid || it.asset_id || '';
-  const name = item.market_hash_name || item.full_item_name || 'Item';
+  const item = it.item || it;
+  const asset = csfAsset(it);
+  const name = csfName(it) || 'Item';
   const fl = item.float_value != null ? Number(item.float_value).toFixed(4) : '';
-  return `<div class="csf-row flex items-center gap-3 rounded-xl bg-slate-950/50 border border-slate-800 px-3 py-2">
-    ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" class="w-10 h-10 object-contain shrink-0"/>` : ''}
-    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate">${escapeHtml(name)}</p>${fl ? `<p class="t10 text-slate-500 font-mono">float ${fl}</p>` : ''}</div>
-    <input type="number" step="0.01" min="0.03" placeholder="price $" class="csf-price field !w-24 !py-1.5 text-right" />
-    <button data-csf="listasset" data-asset="${escapeAttr(asset)}" ${asset ? '' : 'disabled'} class="btn btn-sm btn-primary">List</button></div>`;
+  const low = csfLowest(name);
+  const want = csfSuggestPrice(name);
+  const sel = CSF.inv.sel.has(asset);
+  return `<div class="csf-row flex items-center gap-2.5 rounded-xl bg-slate-950/50 border ${sel ? 'border-brand/50 ring-1 ring-brand/40' : 'border-slate-800'} px-3 py-2">
+    <input type="checkbox" data-csf-inv="${escapeAttr(asset)}" ${sel ? 'checked' : ''} class="accent-brand w-4 h-4 shrink-0">
+    ${item.icon_url ? `<img src="${escapeAttr(csfImg(item.icon_url))}" alt="" loading="lazy" class="w-10 h-10 object-contain shrink-0"/>` : '<i class="fa-solid fa-image text-slate-700 w-10 text-center shrink-0"></i>'}
+    <div class="min-w-0 flex-1"><p class="t13 text-slate-200 truncate" title="${escapeAttr(name)}">${escapeHtml(name)}</p>
+      <p class="t10 text-slate-500 font-mono">${fl ? `float ${fl}` : ''}</p></div>
+    <div class="shrink-0 w-24 text-right t10 font-mono ${low == null ? 'text-slate-700' : 'text-slate-400'}" title="CSFloat's lowest ask for this name">${low == null ? 'no data' : csfUsd(low)}</div>
+    <div class="shrink-0 w-20 text-right t12 font-mono ${want == null ? 'text-slate-700' : 'text-brand-light'}" title="Suggested list price">${want == null ? '—' : csfUsd(want)}</div>
+    <input type="number" step="0.01" min="0.03" value="${CSF.inv.manual[asset] != null ? (CSF.inv.manual[asset] / 100).toFixed(2) : ''}" placeholder="${want == null ? 'price $' : (want / 100).toFixed(2)}" class="csf-price field !w-24 !py-1.5 text-right shrink-0" />
+    <button data-csf="listasset" data-asset="${escapeAttr(asset)}" class="btn btn-sm btn-primary shrink-0">List</button></div>`;
 }
 
 // ── Settings ──
@@ -6806,6 +7889,20 @@ function csfRenderSettings() {
 function onCsfTabClick(e) { const b = e.target.closest('[data-csf-tab]'); if (b) csfSwitchTab(b.getAttribute('data-csf-tab')); }
 function onCsfBodyClick(e) {
   const tabBtn = e.target.closest('[data-csf-tab]'); if (tabBtn) return csfSwitchTab(tabBtn.getAttribute('data-csf-tab'));
+  // Row selection (checkboxes fire click before change; handled here so one delegated
+  // listener covers a 300-row table instead of 300 individual listeners).
+  const invCb = e.target.closest('[data-csf-inv]');
+  if (invCb) { toggleSet(CSF.inv.sel, invCb.getAttribute('data-csf-inv'), invCb.checked); return csfRenderInventory(); }
+  const lstCb = e.target.closest('[data-csf-lst]');
+  if (lstCb) { toggleSet(CSF.lst.sel, lstCb.getAttribute('data-csf-lst'), lstCb.checked); return csfRenderListings(); }
+  // One checkbox covers a whole stack (a buyer's 7 identical skins) or a whole buyer card, so the
+  // selection is per TRADE id underneath — that is what /deliver takes.
+  const trdCb = e.target.closest('[data-csf-trd-group]');
+  if (trdCb) {
+    for (const id of trdCb.getAttribute('data-csf-trd-group').split(',').filter(Boolean)) toggleSet(CSF.trd.sel, id, trdCb.checked);
+    return csfRenderTrades();
+  }
+
   const b = e.target.closest('[data-csf]'); if (!b) return;
   const act = b.getAttribute('data-csf');
   if (act === 'retry') return csfSwitchTab(CSF.tab);
@@ -6819,7 +7916,88 @@ function onCsfBodyClick(e) {
   if (act === 'editprice') return csfEditPrice(b);
   if (act === 'buy') return csfBuy(b.getAttribute('data-id'), Number(b.getAttribute('data-price')), b.getAttribute('data-name'));
   if (act === 'listasset') return csfListAsset(b);
+  if (act === 'loadprices') return csfRefreshPrices();
+  if (act === 'selall') return csfSelectAll(b.getAttribute('data-scope'), true);
+  if (act === 'selnone') return csfSelectAll(b.getAttribute('data-scope'), false);
+  if (act === 'bulklist') return csfBulkList();
+  if (act === 'bulkdelist') return csfBulkDelist();
+  if (act === 'bulkreprice') return csfBulkReprice();
+  if (act === 'bulkcancel') return api('/api/csfloat/bulk-cancel', { method: 'POST' }).catch(() => {});
+  if (act === 'deliver') return csfDeliverTrades((b.getAttribute('data-ids') || '').split(',').filter(Boolean));
+  if (act === 'delivercancel') return api('/api/csfloat/deliver-cancel', { method: 'POST' }).catch(() => {});
+  if (act === 'refreshtrades') return csfLoadTrades();
 }
+function toggleSet(set, key, on) { if (on) set.add(key); else set.delete(key); }
+
+/** Select-all / clear applies to the CURRENTLY FILTERED rows, never the hidden ones —
+ *  filtering to "Case" then hitting Select all must not also pick the 200 items you filtered out. */
+function csfSelectAll(scope, on) {
+  if (scope === 'inv') {
+    if (!on) CSF.inv.sel = new Set();
+    else for (const it of csfVisibleInventory()) CSF.inv.sel.add(csfAsset(it));
+    return csfRenderInventory();
+  }
+  if (scope === 'trd') {
+    if (!on) CSF.trd.sel = new Set();
+    // Only what can actually be sent: ticking rows that are already delivered or missing a buyer
+    // would put a count on the Send button that the run can never meet.
+    else for (const r of csfVisibleTrades()) { if (!csfDeliverable(r)) CSF.trd.sel.add(r.id); }
+    return csfRenderTrades();
+  }
+  if (!on) CSF.lst.sel = new Set();
+  else for (const l of csfVisibleListings()) CSF.lst.sel.add(String(l.id || l.listing_id || ''));
+  csfRenderListings();
+}
+
+/** Re-renders whichever selectable tab is open. */
+function csfRepaintTab() { (CSF.tab === 'inventory' ? csfRenderInventory : CSF.tab === 'trades' ? csfRenderTrades : csfRenderListings)(); }
+
+async function csfRefreshPrices() {
+  const names = (CSF.tab === 'inventory' ? CSF.inv.items : CSF.lst.items).map(csfName);
+  CSF.prices.loading = true;
+  csfRepaintTab();
+  await csfLoadPrices(names, true);   // explicit click → re-ask even for names we already have
+  csfRepaintTab();
+}
+/**
+ * Strategy-bar inputs (filter / pricing mode / percent). These re-render the whole table, so
+ * the focused field and caret are restored afterwards — otherwise typing a filter would lose
+ * focus after the first keystroke.
+ */
+function onCsfBodyInput(e) {
+  const t = e.target;
+  const scopeEl = t.closest && t.closest('[data-csf-search]');
+  const isMode = t.hasAttribute && t.hasAttribute('data-csf-mode');
+  const isPct = t.hasAttribute && t.hasAttribute('data-csf-pct');
+  // A per-row price: remember it, but do NOT re-render — that would fight the operator's typing.
+  if (t.classList && t.classList.contains('csf-price')) {
+    const row = t.closest('.csf-row');
+    const key = row && (row.querySelector('[data-csf-inv]')?.getAttribute('data-csf-inv')
+      || row.querySelector('[data-csf-lst]')?.getAttribute('data-csf-lst'));
+    if (!key) return;
+    const store = row.querySelector('[data-csf-inv]') ? CSF.inv.manual : CSF.lst.manual;
+    const dollars = t.value === '' ? NaN : Number(t.value);
+    if (Number.isFinite(dollars) && dollars >= 0.03) store[key] = Math.round(dollars * 100);
+    else delete store[key];
+    return;
+  }
+  if (!scopeEl && !isMode && !isPct) return;
+  if (scopeEl) {
+    const scope = scopeEl.getAttribute('data-csf-search');
+    if (scope === 'inv') CSF.inv.search = t.value;
+    else if (scope === 'trd') CSF.trd.search = t.value;
+    else CSF.lst.search = t.value;
+  }
+  if (isMode) CSF.strategy.mode = t.value;
+  if (isPct) CSF.strategy.pct = Math.max(0, Math.min(90, Number(t.value) || 0));
+  const sel = t.selectionStart;
+  csfRepaintTab();
+  // Re-find the same control in the freshly rendered table and put the caret back.
+  const again = el.csfloatBody.querySelector(
+    scopeEl ? `[data-csf-search="${scopeEl.getAttribute('data-csf-search')}"]` : isMode ? '[data-csf-mode]' : '[data-csf-pct]');
+  if (again) { again.focus(); if (sel != null && again.setSelectionRange) { try { again.setSelectionRange(sel, sel); } catch { /* number inputs reject this */ } } }
+}
+
 function onCsfBodySubmit(e) {
   if (e.target.id === 'csf-key-form') { e.preventDefault(); return csfSaveKey(e.target); }
   if (e.target.id === 'csf-market-form') { e.preventDefault(); return csfDoMarketSearch(true); }
@@ -6857,15 +8035,19 @@ async function csfToggleAutoAccept(btn) {
 }
 async function csfDelist(id) {
   if (!id || !(await ssimConfirm({ title: 'Delist', body: 'Remove this listing from CSFloat?', tone: 'danger', confirmLabel: 'Delist', confirmIcon: 'fa-xmark' }))) return;
-  try { await csfApi('/listings/' + encodeURIComponent(id), { method: 'DELETE' }); toast('Listing removed', 'success'); csfLoadListings(); }
+  try { await csfApi('/listings/' + encodeURIComponent(id), { method: 'DELETE' }); toast('Listing removed', 'success'); csfLoadListings(true); }
   catch (err) { toast(err.message, 'error'); }
 }
 async function csfEditPrice(btn) {
-  const id = btn.getAttribute('data-id'); const row = btn.closest('.csf-row');
-  const input = row && row.querySelector('.csf-price'); const dollars = input && Number(input.value);
-  if (!dollars || dollars < 0.03) return toast('Enter a new price first', 'error');
-  try { await csfApi('/listings/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ price: Math.round(dollars * 100) }) }); toast('Price updated', 'success'); csfLoadListings(); }
-  catch (err) { toast(err.message, 'error'); }
+  const id = btn.getAttribute('data-id');
+  const cents = CSF.lst.manual[id];
+  if (cents == null) return toast('Enter a new price first', 'error');
+  try {
+    await csfApi('/listings/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ price: cents }) });
+    delete CSF.lst.manual[id];
+    toast('Price updated', 'success');
+    csfLoadListings(true);   // keep the selection — you're usually editing a few in a row
+  } catch (err) { toast(err.message, 'error'); }
 }
 async function csfBuy(id, priceCents, name) {
   if (!id) return;
@@ -6885,14 +8067,130 @@ async function csfDeleteBuyOrder(id) {
   try { await csfApi('/buy-orders/' + encodeURIComponent(id), { method: 'DELETE' }); toast('Buy order cancelled', 'success'); csfLoadBuyOrders(); }
   catch (err) { toast(err.message, 'error'); }
 }
-async function csfListAsset(btn) {
-  const asset = btn.getAttribute('data-asset'); const row = btn.closest('.csf-row');
-  const input = row && row.querySelector('.csf-price'); const dollars = input && Number(input.value);
-  if (!asset) return toast('Missing asset id', 'error');
-  if (!dollars || dollars < 0.03) return toast('Enter a price first', 'error');
-  if (!(await ssimConfirm({ title: 'List on CSFloat', tone: 'brand', confirmLabel: `List for $${dollars.toFixed(2)}`, confirmIcon: 'fa-tag', body: `Create a CSFloat listing at <b class="text-brand-light">$${dollars.toFixed(2)}</b>?` }))) return;
-  try { await csfApi('/listings', { method: 'POST', body: JSON.stringify({ asset_id: asset, price: Math.round(dollars * 100), type: 'buy_now' }) }); toast('Listing created', 'success'); csfLoadInventory(); }
+// ── bulk operations ──
+async function csfBulkList() {
+  // A typed price on a row ALWAYS wins over the suggestion — that's the escape hatch for the
+  // float-blind name-level suggestion, so it must not be silently overwritten by the strategy.
+  const items = [];
+  for (const it of csfVisibleInventory()) {
+    const asset = csfAsset(it);
+    if (!CSF.inv.sel.has(asset)) continue;
+    const name = csfName(it);
+    const cents = CSF.inv.manual[asset] ?? csfSuggestPrice(name);
+    if (cents == null) continue;                       // no price and none typed → skip, never guess
+    items.push({ assetId: asset, priceCents: cents, name });
+  }
+  if (!items.length) return toast('Nothing to list — load prices or type one on the rows you want', 'warn');
+  const total = items.reduce((n, i) => n + i.priceCents, 0);
+  const preview = items.slice(0, 10).map((i) => `<div class="flex gap-2 t12"><span class="text-slate-200 truncate flex-1">${escapeHtml(i.name || i.assetId)}</span><span class="font-mono text-emerald-300 shrink-0">${csfUsd(i.priceCents)}</span></div>`).join('');
+  const ok = await ssimConfirm({
+    title: `List ${items.length} item(s) on CSFloat?`,
+    tone: 'brand', confirmLabel: `List for ${csfUsd(total)}`, confirmIcon: 'fa-tags',
+    body: `Create <b class="text-slate-100">${items.length}</b> buy-now listing(s) on <b>${escapeHtml(CSF.username)}</b>, totalling <b class="text-emerald-300">${csfUsd(total)}</b>:`
+      + `<div class="mt-2 max-h-52 overflow-y-auto space-y-0.5 text-left">${preview}</div>`
+      + (items.length > 10 ? `<div class="t10 text-slate-500 mt-1">…and ${items.length - 10} more</div>` : ''),
+  });
+  if (!ok) return;
+  try { await csfApi('/bulk-list', { method: 'POST', body: JSON.stringify({ items }) }); csfPollBulk(); }
   catch (err) { toast(err.message, 'error'); }
+}
+
+async function csfBulkDelist() {
+  const chosen = csfVisibleListings().filter((l) => CSF.lst.sel.has(String(l.id || l.listing_id || '')));
+  if (!chosen.length) return toast('Select listing(s) to delist', 'warn');
+  const names = {};
+  for (const l of chosen) names[String(l.id || l.listing_id || '')] = csfName(l);
+  const ok = await ssimConfirm({
+    title: `Delist ${chosen.length} listing(s)?`, tone: 'danger', confirmLabel: 'Delist', confirmIcon: 'fa-xmark',
+    body: `Remove <b class="text-slate-100">${chosen.length}</b> listing(s) from CSFloat. The items return to your inventory — this is reversible (you can re-list them).`,
+  });
+  if (!ok) return;
+  try {
+    await csfApi('/bulk-delist', { method: 'POST', body: JSON.stringify({ listingIds: Object.keys(names), names }) });
+    csfPollBulk();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function csfBulkReprice() {
+  const items = [];
+  for (const l of csfVisibleListings()) {
+    const id = String(l.id || l.listing_id || '');
+    if (!CSF.lst.sel.has(id)) continue;
+    const want = csfSuggestReprice(l);
+    if (want == null) continue;                       // already lowest, or no market data
+    items.push({ listingId: id, priceCents: want, name: csfName(l), from: l.price ?? 0 });
+  }
+  if (!items.length) return toast('Nothing to reprice — the selected listings already hold the lowest ask', 'warn');
+  const delta = items.reduce((n, i) => n + (i.priceCents - i.from), 0);
+  const preview = items.slice(0, 10).map((i) => `<div class="flex gap-2 t12"><span class="text-slate-200 truncate flex-1">${escapeHtml(i.name)}</span><span class="font-mono text-slate-500 shrink-0">${csfUsd(i.from)} → </span><span class="font-mono text-brand-light shrink-0">${csfUsd(i.priceCents)}</span></div>`).join('');
+  const ok = await ssimConfirm({
+    title: `Reprice ${items.length} listing(s)?`, tone: 'brand', confirmLabel: 'Reprice', confirmIcon: 'fa-arrows-down-to-line',
+    body: `Move <b class="text-slate-100">${items.length}</b> listing(s) to the ${CSF.strategy.mode === 'match' ? 'lowest ask' : CSF.strategy.mode === 'over' ? `lowest ask +${CSF.strategy.pct}%` : `lowest ask −${CSF.strategy.pct}%`}, `
+      + `a total change of <b class="${delta < 0 ? 'text-amber-300' : 'text-emerald-300'}">${delta < 0 ? '−' : '+'}${csfUsd(Math.abs(delta))}</b>:`
+      + `<div class="mt-2 max-h-52 overflow-y-auto space-y-0.5 text-left">${preview}</div>`
+      + (items.length > 10 ? `<div class="t10 text-slate-500 mt-1">…and ${items.length - 10} more</div>` : ''),
+  });
+  if (!ok) return;
+  try {
+    await csfApi('/bulk-reprice', { method: 'POST', body: JSON.stringify({ items: items.map(({ listingId, priceCents, name }) => ({ listingId, priceCents, name })) }) });
+    csfPollBulk();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/** Live progress for a running bulk job, pinned above the table. */
+function csfPollBulk() {
+  clearTimeout(CSF.bulkTimer);
+  const label = { list: 'Listing', delist: 'Delisting', reprice: 'Repricing' };
+  const tick = async () => {
+    // The workspace modal may have been closed mid-job — stop polling, the job runs on regardless.
+    if (!el.csfloatOverlay || el.csfloatOverlay.classList.contains('hidden')) { CSF.bulkTimer = null; return; }
+    let j;
+    try { j = await api('/api/csfloat/bulk-status'); }
+    catch { CSF.bulkTimer = setTimeout(tick, 2000); return; }   // transient — keep watching
+    let bar = document.getElementById('csf-bulk-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'csf-bulk-bar';
+      bar.className = 'surface px-4 py-2.5 mb-3';
+      el.csfloatBody.prepend(bar);
+    }
+    const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+    bar.innerHTML = `<div class="flex items-center gap-3">
+        <span class="t12 text-slate-200 font-semibold">${label[j.kind] || 'Working'} ${j.done}/${j.total}</span>
+        <span class="t10 text-emerald-400">${j.ok} ok</span>
+        ${j.failed ? `<span class="t10 text-rose-400">${j.failed} failed</span>` : ''}
+        <span class="t10 text-slate-500 truncate flex-1">${escapeHtml(j.current || '')}</span>
+        ${j.running ? '<button data-csf="bulkcancel" class="btn btn-danger btn-sm !py-0.5">Cancel</button>' : ''}
+      </div>
+      <div class="h-1.5 mt-2 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full bg-brand transition-all" style="width:${pct}%"></div></div>
+      ${j.failures && j.failures.length ? `<div class="mt-2 max-h-24 overflow-y-auto space-y-0.5">${j.failures.slice(0, 20).map(f => `<div class="t10 text-rose-300 truncate">${escapeHtml(f.name || f.ref)}: ${escapeHtml(f.error)}</div>`).join('')}</div>` : ''}`;
+    if (j.running) { CSF.bulkTimer = setTimeout(tick, 900); return; }
+    CSF.bulkTimer = null;
+    if (j.error) toast(j.error, 'error');
+    else toast(`${label[j.kind] || 'Done'}: ${j.ok} ok${j.failed ? `, ${j.failed} failed` : ''}${j.cancelled ? ' (cancelled)' : ''}`, j.failed ? 'warn' : 'success');
+    // Re-read from CSFloat — the local rows are now wrong on both tabs whichever job ran.
+    CSF.inv.sel = new Set(); CSF.lst.sel = new Set();
+    if (CSF.tab === 'listings') await csfLoadListings();
+    else if (CSF.tab === 'inventory') await csfLoadInventory();
+  };
+  tick();
+}
+
+async function csfListAsset(btn) {
+  const asset = btn.getAttribute('data-asset');
+  if (!asset) return toast('Missing asset id', 'error');
+  // Typed price wins; otherwise fall back to the strategy suggestion shown on the row, so the
+  // single-item List button lists at exactly the price the row is displaying.
+  const item = CSF.inv.items.find((it) => csfAsset(it) === asset);
+  const cents = CSF.inv.manual[asset] ?? (item ? csfSuggestPrice(csfName(item)) : null);
+  if (cents == null) return toast('Enter a price first (or load CSFloat prices)', 'error');
+  if (!(await ssimConfirm({ title: 'List on CSFloat', tone: 'brand', confirmLabel: `List for ${csfUsd(cents)}`, confirmIcon: 'fa-tag', body: `Create a CSFloat listing for <b class="text-slate-100">${escapeHtml(item ? csfName(item) : asset)}</b> at <b class="text-brand-light">${csfUsd(cents)}</b>?` }))) return;
+  try {
+    await csfApi('/listings', { method: 'POST', body: JSON.stringify({ asset_id: asset, price: cents, type: 'buy_now' }) });
+    delete CSF.inv.manual[asset];
+    toast('Listing created', 'success');
+    csfLoadInventory(true);
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // ── new / edit environment ──
@@ -8826,6 +10124,8 @@ function bindStaticEvents() {
   if (el.csfloatTabs) el.csfloatTabs.addEventListener('click', onCsfTabClick);
   if (el.csfloatBody) el.csfloatBody.addEventListener('click', onCsfBodyClick);
   if (el.csfloatBody) el.csfloatBody.addEventListener('submit', onCsfBodySubmit);
+  if (el.csfloatBody) el.csfloatBody.addEventListener('input', onCsfBodyInput);
+  if (el.csfloatBody) el.csfloatBody.addEventListener('change', onCsfBodyInput);
   // environment
   el.envClose.addEventListener('click', closeEnvModal);
   el.envCancel.addEventListener('click', closeEnvModal);
@@ -9046,6 +10346,7 @@ function renderTuToolbar() {
   const tabBtn = (id, label) => `<button data-tu-tab="${id}" class="px-3 py-1.5 rounded-lg t12 border ${tuState.tab === id ? 'border-brand text-brand bg-brand/10' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">${label}</button>`;
   tb.innerHTML =
     `<button data-tu-scan class="btn btn-primary btn-sm"><i class="fa-solid fa-magnifying-glass-dollar"></i>Scan trade-ups</button>` +
+    `<button data-tu-auto class="btn btn-danger btn-sm" title="Keep planning and crafting until this account has nothing left to trade up"><i class="fa-solid fa-wand-magic-sparkles"></i>Trade up everything</button>` +
     (have ? `
       <div class="flex gap-1.5 ml-1">${tabBtn('profit', `Profitable (${profitN})`)}${tabBtn('all', `All trade-ups (${tuState.candidates.length})`)}</div>
       <button data-tu-all class="btn btn-secondary btn-sm">Select all${tuState.tab === 'all' ? '' : ' profitable'}</button>
@@ -9053,11 +10354,32 @@ function renderTuToolbar() {
       <span class="ml-auto"></span>
       <button data-tu-start class="btn btn-danger btn-sm"><i class="fa-solid fa-bolt"></i>Execute (${tuState.selected.size})</button>` : '');
   tb.querySelector('[data-tu-scan]')?.addEventListener('click', tuScan);
+  tb.querySelector('[data-tu-auto]')?.addEventListener('click', tuAuto);
   tb.querySelectorAll('[data-tu-tab]').forEach((b) => b.addEventListener('click', () => { tuState.tab = b.dataset.tuTab; renderTuList(); renderTuToolbar(); }));
   tb.querySelector('[data-tu-none]')?.addEventListener('click', () => { tuState.selected.clear(); renderTuList(); renderTuToolbar(); });
-  // Select-all applies to the CURRENTLY VISIBLE tab (all vs profitable-only).
-  tb.querySelector('[data-tu-all]')?.addEventListener('click', () => { tuVisible().forEach(c => tuState.selected.add(c.id)); renderTuList(); renderTuToolbar(); });
+  // Select-all applies to the CURRENTLY VISIBLE tab (all vs profitable-only), and picks a
+  // NON-OVERLAPPING run: contracts consume their inputs, so selecting two candidates that share
+  // an asset is not executable — the backend refuses the whole batch with "asset is used by more
+  // than one selected contract". Candidates are ranked best-first, so greedy keeps the best of
+  // each overlapping cluster instead of making the operator deselect duplicates by hand.
+  tb.querySelector('[data-tu-all]')?.addEventListener('click', () => {
+    tuState.selected = new Set(tuPickDisjoint(tuVisible()).map(c => c.id));
+    renderTuList(); renderTuToolbar();
+  });
   tb.querySelector('[data-tu-start]')?.addEventListener('click', tuStart);
+}
+
+/** Largest run of candidates sharing no input asset, best first (mirrors the backend picker). */
+function tuPickDisjoint(candidates) {
+  const used = new Set();
+  const out = [];
+  for (const c of candidates) {
+    const ids = (c.inputs || []).map(i => i.assetId).filter(Boolean);
+    if (ids.length !== 10 || ids.some(id => used.has(id))) continue;
+    ids.forEach(id => used.add(id));
+    out.push(c);
+  }
+  return out;
 }
 
 async function tuScan() {
@@ -9133,13 +10455,19 @@ function renderTuList() {
 async function tuStart() {
   const chosen = tuState.candidates.filter(c => tuState.selected.has(c.id) && c.inputs.every(i => i.assetId));
   if (!chosen.length) { toast('Select at least one executable contract (with asset ids)', 'warn'); return; }
-  const contracts = chosen.map(c => ({ inputAssetIds: c.inputs.map(i => i.assetId), rarityId: c.rarityId, stattrak: !!c.stattrak }));
+  const contracts = chosen.map(c => ({
+    inputAssetIds: c.inputs.map(i => i.assetId), rarityId: c.rarityId, stattrak: !!c.stattrak,
+    // Carried for the run summary, so it can report what the run actually cost.
+    costCents: c.costCents, unpricedInputs: c.inputs.filter(i => i.priceCents == null).length,
+  }));
+  const cost = chosen.reduce((n, c) => n + (c.costCents || 0), 0);
+  const ev = chosen.reduce((n, c) => n + (c.evCents || 0), 0);
   const ok = await ssimConfirm({
     title: 'Execute trade-ups?',
     body: `Execute <b class="text-slate-100">${chosen.length}</b> trade-up(s) on <b class="text-slate-100">${escapeHtml(tuState.username)}</b>?`
-      + `<br><span class="text-rose-400 font-semibold">Each destroys 10 real items. IRREVERSIBLE.</span>`
-      + `<br><span class="text-amber-400">⚠ GC trade-up execution has NOT been live-verified. Run ONE cheap contract first and confirm the output arrives before batching more. To disable execution entirely, relaunch with SSIM_GC_VERIFIED=0.</span>`
-      + (chosen.length > 1 ? `<br><span class="text-amber-300">You selected ${chosen.length} — consider starting with just 1 until you've confirmed it works.</span>` : ''),
+      + `<div class="mt-2 flex justify-center gap-5 t12"><span class="text-slate-400">input <b class="text-slate-100 font-mono">${fmtCents(cost)}</b></span>`
+      + `<span class="text-slate-400">expected <b class="${ev >= cost ? 'text-success' : 'text-danger'} font-mono">${fmtCents(ev)}</b></span></div>`
+      + `<div class="mt-2"><span class="text-rose-400 font-semibold">Each destroys 10 real items. IRREVERSIBLE.</span></div>`,
     confirmLabel: 'Execute', confirmIcon: 'fa-bolt', tone: 'danger',
   });
   if (!ok) return;
@@ -9147,6 +10475,119 @@ async function tuStart() {
     await api('/api/tradeup/execute', { method: 'POST', body: JSON.stringify({ username: tuState.username, contracts }) });
     tuPollExec();
   } catch (err) { toast(err.message, 'error'); }
+}
+
+/**
+ * "Trade up everything": hand the account to the backend planner, which loops
+ * plan → craft → settle → re-plan until nothing is left. One click, then walk away.
+ *
+ * The scope choice lives INSIDE the confirm dialog because it changes what gets destroyed:
+ * profitable-only (default) crafts positive-EV contracts, while "every possible contract"
+ * also crafts the ones that lose money. Both are legitimate; neither should be a silent default.
+ */
+async function tuAuto() {
+  const ok = await ssimConfirm({
+    title: 'Trade up everything?',
+    body: `SSIM will repeatedly scan <b class="text-slate-100">${escapeHtml(tuState.username)}</b> and craft every contract it can, `
+      + `re-reading the inventory after each batch so the items it just created get traded up too.`
+      + `<br><span class="text-rose-400 font-semibold">Each contract destroys 10 real items. IRREVERSIBLE.</span>`
+      + `<label class="flex items-start gap-2 mt-3 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 cursor-pointer text-left">
+           <input type="checkbox" id="tu-auto-all" class="mt-0.5 accent-rose-500 w-4 h-4 shrink-0">
+           <span class="t12 text-slate-300">Also craft <b>unprofitable</b> contracts<br>
+             <span class="t10 text-slate-500">Off: only positive-EV contracts (recommended). On: literally every possible trade-up, including ones that destroy value.</span></span>
+         </label>`,
+    confirmLabel: 'Start', confirmIcon: 'fa-wand-magic-sparkles', tone: 'danger',
+  });
+  if (!ok) return;
+  // Read the scope straight after the dialog resolves — finish() only hides the overlay, so the
+  // checkbox is still in the DOM and nothing else has run that could replace the confirm body.
+  const allEl = document.getElementById('tu-auto-all');
+  const profitableOnly = !(allEl && allEl.checked);
+  try {
+    await api('/api/tradeup/auto', { method: 'POST', body: JSON.stringify({ username: tuState.username, profitableOnly }) });
+    toast(profitableOnly ? 'Auto trade-up started (profitable contracts)' : 'Auto trade-up started (every possible contract)', 'success');
+    tuPollExec();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/**
+ * Post-run summary: what the run consumed, what it actually produced, and the difference.
+ *
+ * `output` is the REAL result — the items the GC reported creating, read back and priced — not the
+ * pre-craft expected value. Where that could not be established the panel says "unknown" rather than
+ * showing a 0, and an incomplete input/output total is labelled as a floor.
+ */
+function renderTuSummary(j, crafted) {
+  const ov = document.getElementById('tradeup-overlay'); if (!ov) return;
+  const input = j.inputCents || 0;
+  const known = j.outputResolved === true && typeof j.outputCents === 'number';
+  const output = typeof j.outputCents === 'number' ? j.outputCents : null;
+  const delta = output == null ? null : output - input;
+  const items = (j.outputs || []).slice();
+  // Group identical outputs so 30 crafts read as a short list, not 30 lines.
+  const byName = new Map();
+  for (const o of items) {
+    const k = o.name || 'Unknown';
+    const e = byName.get(k) || { name: k, n: 0, cents: 0, priced: 0 };
+    e.n++; if (typeof o.priceCents === 'number') { e.cents += o.priceCents; e.priced++; }
+    byName.set(k, e);
+  }
+  const rows = [...byName.values()].sort((a, b) => b.cents - a.cents).map(e =>
+    `<div class="flex items-center gap-2 t12 py-0.5">
+       <span class="text-slate-500 font-mono w-8 shrink-0">${e.n}×</span>
+       <span class="text-slate-200 truncate flex-1">${escapeHtml(e.name)}</span>
+       <span class="font-mono shrink-0 ${e.priced ? 'text-slate-300' : 'text-slate-600'}">${e.priced ? fmtCents(e.cents) : 'unpriced'}</span>
+     </div>`).join('');
+  const stat = (label, value, cls) =>
+    `<div class="text-center px-3"><div class="t10 uppercase tracking-wide text-slate-500">${label}</div><div class="t16 font-bold font-mono ${cls || 'text-slate-100'}">${value}</div></div>`;
+
+  ov.querySelector('[data-body]').innerHTML = `
+    <div class="px-5 py-5">
+      <div class="surface p-4">
+        <div class="flex items-center gap-2 mb-3">
+          <i class="fa-solid fa-clipboard-check text-brand"></i>
+          <span class="t14 font-bold text-slate-100">Trade-up summary</span>
+          <span class="t11 text-slate-500">${crafted} contract(s) · ${escapeHtml(tuState.username)}</span>
+        </div>
+        <div class="flex items-center justify-center gap-2 py-2">
+          ${stat('Input', fmtCents(input), 'text-danger')}
+          <i class="fa-solid fa-arrow-right-long text-slate-600"></i>
+          ${stat('Output', output == null ? 'unknown' : fmtCents(output), 'text-success')}
+          <span class="w-px h-8 bg-slate-800 mx-1"></span>
+          ${stat('Result', delta == null ? '—' : `${delta >= 0 ? '+' : '−'}${fmtCents(Math.abs(delta))}`, delta == null ? 'text-slate-500' : delta >= 0 ? 'text-success' : 'text-danger')}
+        </div>
+        ${j.unpricedInputs ? `<p class="t10 text-slate-500 text-center">${j.unpricedInputs} input(s) had no market price — the input total is a floor.</p>` : ''}
+        ${output != null && !known ? '<p class="t10 text-amber-400 text-center">Some outputs could not be priced — the output total is a floor.</p>' : ''}
+        ${output == null ? '<p class="t10 text-amber-400 text-center">The crafted items could not be read back, so the output value is unknown. The crafts themselves succeeded — check the account in-game.</p>' : ''}
+        ${rows ? `<div class="mt-3 pt-3 border-t border-slate-800 max-h-56 overflow-y-auto">${rows}</div>` : ''}
+        <div class="mt-3 flex justify-center"><button data-tu-scan class="btn btn-secondary btn-sm"><i class="fa-solid fa-magnifying-glass-dollar"></i>Scan again</button></div>
+      </div>
+    </div>`;
+  ov.querySelector('[data-tu-scan]')?.addEventListener('click', tuScan);
+  tuState.candidates = []; tuState.selected = new Set();   // the inventory changed underneath them
+  renderTuToolbar();
+}
+
+/** The commonest failure reason of a finished trade-up run, for the toast. */
+function tuFirstReason(j) { return ((j.failureReasons || [])[0] || {}).error || ''; }
+
+/**
+ * The run's failure reasons, commonest first, plus any submitted-but-unconfirmed contracts.
+ *
+ * The stop line has always pointed at "the failures" — and nothing ever rendered them, in either the
+ * auto or the selected-contracts path, while the auto planner additionally wipes `results` at the top
+ * of every round. That is how a 63-contract run reported "63 failed" and named no cause at all
+ * (owner report 2026-08-12). `failureReasons` is the server-side tally that survives both.
+ */
+function tuFailureBreakdown(j) {
+  const reasons = j.failureReasons || [];
+  const unconfirmed = j.totalUnconfirmed || 0;
+  if (!reasons.length && !unconfirmed) return '';
+  const rows = reasons.map(r => `<li class="flex gap-2"><span class="text-amber-400 font-semibold shrink-0">${r.count}×</span><span>${escapeHtml(r.error)}</span></li>`);
+  if (unconfirmed) {
+    rows.push(`<li class="flex gap-2"><span class="text-sky-400 font-semibold shrink-0">${unconfirmed}×</span><span>submitted but not confirmed in time — these may well have crafted; verify in-game (never retried, a retry would destroy 10 more items)</span></li>`);
+  }
+  return `<ul class="mt-2 space-y-1 t10 text-slate-400 text-left">${rows.join('')}</ul>`;
 }
 
 function tuPollExec() {
@@ -9159,16 +10600,52 @@ function tuPollExec() {
       const j = await api('/api/tradeup/execute-status');
       resetPoller('tuExecErr'); // S17: a good poll clears the error-retry window
       const confirmed = (j.results || []).filter(r => r.confirmed).length;
-      const line = j.enabled
-        ? `Executing ${j.done}/${j.total} · submitted ${j.crafted} (${confirmed} confirmed) · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}`
-        : `Execution disabled (${escapeHtml(j.statusReason)}) — nothing was crafted.`;
+      let line;
+      if (!j.enabled) {
+        line = `Execution disabled (${escapeHtml(j.statusReason)}) — nothing was crafted.`;
+      } else if (j.auto) {
+        // Auto runs many rounds, so the per-round counters alone are misleading ("2/3" three
+        // times over). Lead with the cumulative total and name the phase we're actually in.
+        const phase = j.phase === 'planning' ? 'scanning the inventory'
+          : j.phase === 'settling' ? 'waiting for Steam to catch up'
+          : j.phase === 'crafting' ? `crafting ${j.done}/${j.total}`
+          : 'finished';
+        line = `Auto trade-up · round ${j.round || 1} · ${escapeHtml(phase)} · ${j.totalCrafted || 0} crafted, ${j.totalFailed || 0} failed so far${j.cancelling ? ' · cancelling…' : ''}`;
+      } else {
+        line = `Executing ${j.done}/${j.total} · submitted ${j.crafted} (${confirmed} confirmed) · failed ${j.failed}${j.cancelling ? ' · cancelling…' : ''}`;
+      }
       foot.innerHTML = `<span class="${j.enabled ? 'text-slate-300' : 'text-amber-400'}">${line}</span>` +
         (j.running ? ` <button data-tu-cancel class="ml-2 px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-600 text-white">Cancel</button>` : '');
       foot.querySelector('[data-tu-cancel]')?.addEventListener('click', () => api('/api/tradeup/execute-cancel', { method: 'POST' }).catch(() => {}));
-      if (j.running) { tuState.execTimer = setTimeout(tick, 1200); }
+      // Auto spends most of its time planning (a full inventory refresh) and settling, so poll it
+      // a little slower — 1.2s would just re-render the same phase line dozens of times.
+      if (j.running) { tuState.execTimer = setTimeout(tick, j.auto ? 2000 : 1200); }
+      else if (j.auto) {
+        // Report the stop reason verbatim; "0 crafted" is a real outcome, never dressed up.
+        const total = j.totalCrafted || 0;
+        if (j.enabled) {
+          foot.innerHTML = `<span class="${total ? 'text-slate-300' : 'text-amber-400'}">Auto trade-up finished · ${total} crafted, ${j.totalFailed || 0} failed over ${j.round || 0} round(s) — ${escapeHtml(j.autoStopReason || '')}</span>`
+            + tuFailureBreakdown(j);
+          toast(total ? `Auto trade-up: ${total} contract(s) crafted` : `Auto trade-up did nothing — ${tuFirstReason(j) || j.autoStopReason || 'no contract was possible'}`, total ? 'success' : 'warn');
+          if (total) renderTuSummary(j, total);
+        } else {
+          toast(j.autoStopReason || j.statusReason || 'trade-up execution is disabled', 'warn');
+        }
+        // The account's inventory changed underneath every other view — re-pull the shared cache.
+        await refreshActiveViewFromCache().catch(() => {});
+      }
       else {
-        const failMsg = (j.results || []).filter(r => r.error)[0]?.error;
-        if (!j.enabled && failMsg) toast(failMsg, 'warn'); else if (j.crafted) toast(`Trade-ups: ${j.crafted} submitted, ${confirmed} confirmed`, 'success');
+        // A finished selected-contracts run needs its reasons too: the old line only toasted an error
+        // when execution was DISABLED, so an enabled run where every contract failed said nothing.
+        // `done < total` with no cancel means the run gave up on a repeating failure — say so, or the
+        // counts look like contracts that silently vanished.
+        const gaveUp = !j.cancelled && j.done < j.total ? ' — stopped early, the same failure kept repeating' : '';
+        foot.innerHTML = `<span class="${j.crafted ? 'text-slate-300' : 'text-amber-400'}">Finished · ${j.crafted} crafted (${confirmed} confirmed), ${j.failed} failed of ${j.total}${escapeHtml(gaveUp)}</span>`
+          + tuFailureBreakdown(j);
+        const failMsg = tuFirstReason(j) || (j.results || []).filter(r => r.error)[0]?.error;
+        if (!j.enabled || !j.crafted) { if (failMsg) toast(failMsg, 'warn'); }
+        else toast(`Trade-ups: ${j.crafted} submitted, ${confirmed} confirmed`, 'success');
+        if (j.crafted) { renderTuSummary(j, j.crafted); await refreshActiveViewFromCache().catch(() => {}); }
       }
     } catch {
       // S17: a transient status-fetch error must not permanently kill the poller while the trade-up
@@ -9186,14 +10663,14 @@ function tuPollExec() {
 }
 
 // ── Storage Units (caskets) ──────────────────────────────────────────────────
-const ckState = { username: null, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', error: null, moveTimer: null };
+const ckState = { username: null, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', unitSearch: '', expanded: new Set(), error: null, moveTimer: null };
 // H-FE-010: closing the Storage-Unit overlay stops its move-status poller (a long casket move would
 // otherwise poll /api/casket/move-status + write the hidden foot for minutes after close).
 MODAL_TEARDOWNS.set('casket-overlay', () => { clearTimeout(ckState.moveTimer); ckState.moveTimer = null; });
 
 async function openCasketModal(username) {
   const ov = ensureFeatureOverlay('casket-overlay', 'Storage Units', 'fa-box-archive', 'max-w-5xl');
-  Object.assign(ckState, { username, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', error: null });
+  Object.assign(ckState, { username, caskets: [], casketId: null, contents: [], invSel: new Set(), unitSel: new Set(), search: '', unitSearch: '', expanded: new Set(), error: null });
   ov.querySelector('[data-scope]').textContent = `· ${username}`;
   ov.querySelector('[data-toolbar]').innerHTML = `<label class="t10 uppercase tracking-wide text-slate-500 font-semibold">Storage unit</label><select data-ck-unit class="field !w-auto !py-1.5 t13"><option value="">— loading… —</option></select>`;
   ov.querySelector('[data-body]').innerHTML = `<div class="empty"><div class="empty-icon"><i class="fa-solid fa-spinner cs2-spin"></i></div><div class="empty-title">Connecting to the game coordinator…</div></div>`;
@@ -9217,7 +10694,7 @@ function renderCasketUnitSelect() {
     ? ckState.caskets.map(c => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)} (${c.count}/1000)</option>`).join('')
     : `<option value="">— no storage units —</option>`;
   if (ckState.casketId) sel.value = ckState.casketId;
-  sel.onchange = async () => { ckState.casketId = sel.value; ckState.unitSel = new Set(); await loadCasketContents(); renderCasketPanels(); };
+  sel.onchange = async () => { ckState.casketId = sel.value; ckState.unitSel = new Set(); ckState.expanded = new Set(); await loadCasketContents(); renderCasketPanels(); };
 }
 
 async function loadCasketContents() {
@@ -9226,6 +10703,40 @@ async function loadCasketContents() {
     const r = await api(`/api/casket/${encodeURIComponent(ckState.username)}/contents?casketId=${encodeURIComponent(ckState.casketId)}`);
     ckState.contents = r.items || [];
   } catch { ckState.contents = []; }
+}
+
+/**
+ * Storage-unit contents grouped into STACKS, the way the inventory side has always shown them.
+ * The GC returns one row per asset, so an unstacked unit of 900 items was 900 unreadable rows;
+ * identical items now collapse into one "name ×N" row that can be expanded to pick individual
+ * floats (which matters — you often want the LOW float one out, not just any of them).
+ *
+ * Sorted by total value desc, then name, so the expensive things are at the top where you look.
+ */
+function casketUnitStacks() {
+  const q = ckState.unitSearch.trim().toLowerCase();
+  const by = new Map();
+  for (const it of ckState.contents) {
+    const name = it.marketHashName || 'Unknown item';
+    if (q && !name.toLowerCase().includes(q)) continue;
+    // Same name but a custom name-tag ⇒ a genuinely different item to a human — keep it separate.
+    const key = name + (it.customName ? ` ${it.customName}` : '');
+    let s = by.get(key);
+    if (!s) {
+      s = { key, name, customName: it.customName || '', iconUrl: it.iconUrl || '', resolved: it.resolved !== false, priceCents: null, priced: false, items: [] };
+      by.set(key, s);
+    }
+    if (it.priced && s.priceCents == null) { s.priceCents = it.priceCents; s.priced = true; }
+    s.items.push(it);
+  }
+  const stacks = [...by.values()];
+  // Within a stack, best float first — that is the one an operator picks out by hand.
+  for (const s of stacks) {
+    s.items.sort((a, b) => (a.float ?? 1) - (b.float ?? 1));
+    s.totalCents = s.priced ? s.priceCents * s.items.length : null;
+  }
+  stacks.sort((a, b) => (b.totalCents ?? -1) - (a.totalCents ?? -1) || a.name.localeCompare(b.name));
+  return stacks;
 }
 
 /** Inventory items eligible to deposit (in-inventory, not on the market). One row per stack. */
@@ -9292,13 +10803,36 @@ function renderCasketPanels() {
       <span class="truncate flex-1 text-slate-200">${escapeHtml(i.name || i.marketHashName)}</span>
       <span class="text-slate-600 font-mono">×${i.assetIds.length}</span></label>`;
   }).join('') : `<div class="empty !py-10"><div class="empty-icon"><i class="fa-solid fa-box-open"></i></div><div class="empty-title">No depositable items in cache.</div><div class="empty-sub">Refresh the account to populate it.</div></div>`;
-  const unitInner = ckState.contents.length ? ckState.contents.map(it => {
-    const id = String(it.id); const sel = ckState.unitSel.has(id);
-    return `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer t12">
-      <input type="checkbox" data-ck-unit-item="${escapeAttr(id)}" ${sel ? 'checked' : ''} class="accent-brand w-3.5 h-3.5 shrink-0">
-      <span class="truncate flex-1 text-slate-200">${escapeHtml(it.custom_name || ('Item ' + id))}</span>
-      <span class="text-slate-600 font-mono">${it.def_index != null ? 'def ' + it.def_index : ''}</span></label>`;
-  }).join('') : `<div class="empty !py-10"><div class="empty-icon ${ckState.error ? 'text-warn' : ''}"><i class="fa-solid fa-${ckState.error ? 'triangle-exclamation' : 'box-archive'}"></i></div><div class="empty-title">${ckState.error ? escapeHtml(ckState.error) : (ckState.casketId ? 'Empty storage unit.' : 'No storage unit selected.')}</div>${ckState.error ? '<div class="empty-sub">Storage units need the GC layer (install globaloffensive + set SSIM_GC_VERIFIED=1).</div>' : ''}</div>`;
+  const stacks = casketUnitStacks();
+  const unitInner = stacks.length ? stacks.map(s => {
+    const ids = s.items.map(i => String(i.id));
+    const selN = ids.filter(id => ckState.unitSel.has(id)).length;
+    const open = ckState.expanded.has(s.key);
+    // Tri-state stack checkbox: all / none / some of the stack's assets are picked.
+    const head = `<label class="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-800/40 cursor-pointer t12">
+      <input type="checkbox" data-ck-stack="${escapeAttr(s.key)}" ${selN === ids.length ? 'checked' : ''} class="accent-brand w-3.5 h-3.5 shrink-0">
+      ${s.iconUrl ? `<img src="${escapeAttr(safeIconUrl(s.iconUrl))}" alt="" loading="lazy" class="w-7 h-6 object-contain shrink-0" onerror="this.style.display='none'">` : '<i class="fa-solid fa-cube w-7 text-center text-slate-700 shrink-0"></i>'}
+      <span class="truncate flex-1 ${s.resolved ? 'text-slate-200' : 'text-slate-500 italic'}">${escapeHtml(s.name)}${s.customName ? ` <span class="text-brand-light">“${escapeHtml(s.customName)}”</span>` : ''}</span>
+      ${selN && selN < ids.length ? `<span class="t10 text-brand-light shrink-0">${selN} picked</span>` : ''}
+      <span class="t10 font-mono shrink-0 ${s.priced ? 'text-slate-400' : 'text-slate-700'}">${s.priced ? fmtCents(s.totalCents) : '—'}</span>
+      <span class="text-slate-500 font-mono shrink-0 w-8 text-right">×${ids.length}</span>
+      <button type="button" data-ck-expand="${escapeAttr(s.key)}" class="btn btn-ghost btn-sm !py-0.5 !px-1.5 shrink-0" title="Show individual items (floats)"><i class="fa-solid fa-chevron-${open ? 'up' : 'down'} t10"></i></button></label>`;
+    if (!open) return head;
+    const rows = s.items.map(it => {
+      const id = String(it.id);
+      return `<label class="flex items-center gap-2.5 pl-10 pr-3 py-1.5 hover:bg-slate-800/40 cursor-pointer t11 bg-slate-950/40">
+        <input type="checkbox" data-ck-unit-item="${escapeAttr(id)}" ${ckState.unitSel.has(id) ? 'checked' : ''} class="accent-brand w-3 h-3 shrink-0">
+        <span class="font-mono text-slate-400 shrink-0">${it.float != null ? Number(it.float).toFixed(6) : '—'}</span>
+        ${it.wear ? `<span class="t10 text-slate-500 shrink-0">${escapeHtml(it.wear)}</span>` : ''}
+        <span class="flex-1"></span>
+        ${it.paintSeed != null ? `<span class="t10 text-slate-600 font-mono shrink-0">seed ${it.paintSeed}</span>` : ''}
+        <span class="t10 text-slate-700 font-mono shrink-0 truncate max-w-[9rem]" title="${escapeAttr(id)}">${escapeHtml(id)}</span></label>`;
+    }).join('');
+    return head + rows;
+  }).join('') : `<div class="empty !py-10"><div class="empty-icon ${ckState.error ? 'text-warn' : ''}"><i class="fa-solid fa-${ckState.error ? 'triangle-exclamation' : 'box-archive'}"></i></div><div class="empty-title">${ckState.error ? escapeHtml(ckState.error) : (ckState.casketId ? (ckState.unitSearch ? 'No item matches that filter.' : 'Empty storage unit.') : 'No storage unit selected.')}</div>${ckState.error ? '<div class="empty-sub">Storage units need the GC layer (install globaloffensive + set SSIM_GC_VERIFIED=1).</div>' : ''}</div>`;
+  // Unit value = only the PRICED items, so a half-loaded price cache can't understate it silently.
+  const unitValue = ckState.contents.reduce((n, i) => i.priced ? n + i.priceCents : n, 0);
+  const unpricedN = ckState.contents.filter(i => !i.priced).length;
 
   const pct = unit ? Math.min(100, Math.round((unit.count / 1000) * 100)) : 0;
   const capBar = unit ? `<div class="px-3 pt-2.5"><div class="h-1.5 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full bg-brand" style="width:${pct}%"></div></div><div class="t10 text-slate-500 mt-1 font-mono">${unit.count} / 1000</div></div>` : '';
@@ -9316,18 +10850,48 @@ function renderCasketPanels() {
          <div class="overflow-y-auto grow divide-y divide-slate-800/60">${invInner}</div>
        </div>
        <div class="surface flex flex-col min-h-0">
-         <div class="panel-head"><span class="panel-title truncate">${unit ? escapeHtml(unit.name) : 'Storage unit'}</span><span class="t10 text-slate-500 shrink-0">${ckState.unitSel.size} selected</span><button data-ck-sel="unit" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button></div>
+         <div class="panel-head gap-2">
+           <span class="panel-title truncate">${unit ? escapeHtml(unit.name) : 'Storage unit'}</span>
+           <input data-ck-unit-search value="${escapeAttr(ckState.unitSearch)}" placeholder="Filter unit…" class="field !py-1 !w-32 t11">
+           <span class="t10 text-slate-500 shrink-0">${ckState.unitSel.size} selected</span>
+           <button data-ck-sel="unit" class="btn btn-ghost btn-sm ml-auto !py-1 !px-2">Select all</button>
+         </div>
          ${capBar}
          <div class="overflow-y-auto grow divide-y divide-slate-800/60 ${capBar ? 'mt-1' : ''}">${unitInner}</div>
+         ${ckState.contents.length ? `<div class="px-3 py-1.5 border-t border-slate-800 t10 text-slate-500 flex items-center gap-2">
+           <span>${stacks.length} stack(s) · ${ckState.contents.length} item(s)</span>
+           <span class="ml-auto font-mono text-slate-300">${fmtCents(unitValue)}</span>
+           ${unpricedN ? `<span class="text-slate-600" title="Prices for these are still loading — reopen in a moment">+${unpricedN} unpriced</span>` : ''}
+         </div>` : ''}
        </div>
      </div>`;
 
   const body = ov.querySelector('[data-body]');
   body.querySelector('[data-ck-search]')?.addEventListener('input', (e) => { ckState.search = e.target.value; renderCasketPanels(); body.querySelector('[data-ck-search]')?.focus(); });
   body.querySelectorAll('[data-ck-inv]').forEach(cb => cb.addEventListener('change', () => { cb.checked ? ckState.invSel.add(cb.dataset.ckInv) : ckState.invSel.delete(cb.dataset.ckInv); }));
-  body.querySelectorAll('[data-ck-unit-item]').forEach(cb => cb.addEventListener('change', () => { cb.checked ? ckState.unitSel.add(cb.dataset.ckUnitItem) : ckState.unitSel.delete(cb.dataset.ckUnitItem); }));
+  body.querySelectorAll('[data-ck-unit-item]').forEach(cb => cb.addEventListener('change', () => { cb.checked ? ckState.unitSel.add(cb.dataset.ckUnitItem) : ckState.unitSel.delete(cb.dataset.ckUnitItem); renderCasketPanels(); }));
+  // A stack checkbox selects/clears EVERY asset in that stack (the common case: "take all 12 out").
+  body.querySelectorAll('[data-ck-stack]').forEach(cb => cb.addEventListener('change', () => {
+    const stack = casketUnitStacks().find(s => s.key === cb.dataset.ckStack);
+    if (!stack) return;
+    for (const it of stack.items) cb.checked ? ckState.unitSel.add(String(it.id)) : ckState.unitSel.delete(String(it.id));
+    renderCasketPanels();
+  }));
+  body.querySelectorAll('[data-ck-expand]').forEach(b => b.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation(); // the button sits inside the row's <label>
+    const k = b.dataset.ckExpand;
+    ckState.expanded.has(k) ? ckState.expanded.delete(k) : ckState.expanded.add(k);
+    renderCasketPanels();
+  }));
+  body.querySelector('[data-ck-unit-search]')?.addEventListener('input', (e) => {
+    ckState.unitSearch = e.target.value; renderCasketPanels();
+    const f = body.querySelector('[data-ck-unit-search]');
+    if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); }
+  });
   body.querySelector('[data-ck-sel="inv"]')?.addEventListener('click', () => { casketInvRows().filter(casketStorable).forEach(i => ckState.invSel.add(i.marketHashName)); renderCasketPanels(); });
-  body.querySelector('[data-ck-sel="unit"]')?.addEventListener('click', () => { ckState.contents.forEach(i => ckState.unitSel.add(String(i.id))); renderCasketPanels(); });
+  // Select-all respects the unit filter — otherwise filtering to "Case" then Select all would
+  // silently pick the 900 items you just filtered OUT and withdraw the whole unit.
+  body.querySelector('[data-ck-sel="unit"]')?.addEventListener('click', () => { casketUnitStacks().forEach(s => s.items.forEach(i => ckState.unitSel.add(String(i.id)))); renderCasketPanels(); });
   body.querySelector('[data-ck-deposit]')?.addEventListener('click', () => casketMove('deposit'));
   body.querySelector('[data-ck-withdraw]')?.addEventListener('click', () => casketMove('withdraw'));
 }
@@ -9335,16 +10899,30 @@ function renderCasketPanels() {
 async function casketMove(direction) {
   if (!ckState.casketId) { toast('Select a storage unit first', 'warn'); return; }
   let itemIds;
+  // A manifest of what is actually moving — the whole point of naming the contents is that the
+  // confirm dialog can say "3× AK-47 | Redline (FT)" instead of "34 item(s)".
+  const manifest = new Map();
   if (direction === 'deposit') {
-    const rows = casketInvRows().filter(i => ckState.invSel.has(i.marketHashName));
+    const rows = casketInvRows().filter(i => ckState.invSel.has(i.marketHashName) && casketStorable(i));
     itemIds = rows.flatMap(i => i.assetIds);
+    for (const r of rows) manifest.set(r.name || r.marketHashName, (manifest.get(r.name || r.marketHashName) || 0) + r.assetIds.length);
   } else {
     itemIds = [...ckState.unitSel];
+    const sel = new Set(itemIds);
+    for (const it of ckState.contents) {
+      if (!sel.has(String(it.id))) continue;
+      const n = it.marketHashName || 'Unknown item';
+      manifest.set(n, (manifest.get(n) || 0) + 1);
+    }
   }
   if (!itemIds.length) { toast(`Select item(s) to ${direction}`, 'warn'); return; }
+  const lines = [...manifest.entries()].sort((a, b) => b[1] - a[1]);
+  const shown = lines.slice(0, 12).map(([n, q]) => `<div class="flex gap-2 t12"><span class="text-slate-500 font-mono w-8 shrink-0">${q}×</span><span class="text-slate-200 truncate">${escapeHtml(n)}</span></div>`).join('');
   const ok = await ssimConfirm({
     title: `${direction === 'deposit' ? 'Deposit' : 'Withdraw'} ${itemIds.length} item(s)?`,
-    body: `${direction === 'deposit' ? 'Move into' : 'Take from'} the storage unit on <b class="text-slate-100">${escapeHtml(ckState.username)}</b>?`,
+    body: `${direction === 'deposit' ? 'Move into' : 'Take from'} the storage unit on <b class="text-slate-100">${escapeHtml(ckState.username)}</b>:`
+      + `<div class="mt-2 max-h-52 overflow-y-auto space-y-0.5 text-left">${shown}</div>`
+      + (lines.length > 12 ? `<div class="t10 text-slate-500 mt-1">…and ${lines.length - 12} more item type(s)</div>` : ''),
     confirmLabel: direction === 'deposit' ? 'Deposit' : 'Withdraw', confirmIcon: 'fa-box-archive', tone: 'brand',
   });
   if (!ok) return;
@@ -9394,6 +10972,9 @@ function casketPollMove() {
         // /api/inventory cache (reuse the S10 entry point — no new fetch path) BEFORE re-rendering, so
         // the deposit panel drops the moved items in the same modal session (they'd otherwise stay as
         // owned/tradable in the stale cache, inviting a duplicate deposit).
+        // Moved assets no longer exist on the side they came from, so a surviving selection would
+        // show a phantom "N selected" and could be re-submitted. Drop both sides and re-derive.
+        ckState.invSel = new Set(); ckState.unitSel = new Set();
         await loadCasketContents(); await refreshActiveViewFromCache(); renderCasketPanels();
       }
     } catch {
@@ -9439,6 +11020,10 @@ async function init() {
     void watchPriceFill(refreshActiveViewFromCache);
     // Poll system status for the update / breaker / prior-crash surfaces (C3/B3/B1). Additive; once.
     void watchSystemStatus();
+    // Activity: session-wide from boot, NOT on entering the Activity view. The rail badge is the
+    // whole point — it has to be right the moment a job starts, whatever screen you are on, and
+    // it must survive closing the modal that started the job.
+    startActivityPoll();
   } catch (err) {
     toast(`Could not load data: ${err.message}`, 'error');
   }

@@ -194,12 +194,30 @@ export class AgentFactory {
 
   // ── Local-IP binding ───────────────────────────────────────────────────────
 
+  /**
+   * `0.0.0.0` is the "no specific local IP" SENTINEL that the network resolvers emit for a
+   * proxyless account (see AccountManager.legacyResolveNetwork) — it is NOT a bindable address.
+   *
+   * Handing it to Node as `localAddress` throws **EINVAL** on the very first connect (verified live
+   * 2026-08-11 against csfloat.com: `localAddress:'0.0.0.0'` → EINVAL, no localAddress → HTTP 401).
+   * Proxied accounts never take this path, which is exactly why only LOCAL-IP accounts saw CSFloat
+   * fail while everything worked behind a proxy. Binding to nothing is what the sentinel means, so
+   * omit the option entirely and let the OS choose the source address.
+   */
+  private static bindable(localIp: string): string | undefined {
+    const ip = (localIp ?? '').trim();
+    return ip && ip !== '0.0.0.0' && ip !== '::' ? ip : undefined;
+  }
+
   private static fromLocalIp(localIp: string, pooled: boolean): AgentBundle {
+    const bind = AgentFactory.bindable(localIp);
     return {
       httpsAgent:       pooled
         ? AgentFactory.pooledLocalIpAgent(localIp)
-        : new https.Agent({ localAddress: localIp, keepAlive: true }),
-      steamUserOptions: { localAddress: localIp },
+        : new https.Agent(bind ? { localAddress: bind, keepAlive: true } : { keepAlive: true }),
+      // Same sentinel rule for the Steam client: an unbindable address must be absent, not passed
+      // through, or steam-user hands it to net.connect and hits the identical EINVAL.
+      steamUserOptions: bind ? { localAddress: bind } : {},
     };
   }
 
@@ -207,7 +225,8 @@ export class AgentFactory {
   private static pooledLocalIpAgent(localIp: string): https.Agent {
     let agent = AgentFactory.localIpPool.get(localIp);
     if (!agent) {
-      agent = new https.Agent({ localAddress: localIp, keepAlive: true });
+      const bind = AgentFactory.bindable(localIp);
+      agent = new https.Agent(bind ? { localAddress: bind, keepAlive: true } : { keepAlive: true });
       AgentFactory.localIpPool.set(localIp, agent);
     }
     return agent;

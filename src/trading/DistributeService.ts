@@ -100,6 +100,9 @@ export function planDistribute(req: DistributeRequest, deps: DistributeDeps, now
       if (it.category === 'listed') { skipped.listed++; continue; }
       if (isLocked(it, now)) { skipped.locked++; continue; }
       if (it.price == null) { skipped.unpriced++; continue; }   // unpriced → fail-closed exclude
+      // `it.price` is the cached USD-cent valuation (not a wallet amount), and USD's per-side
+      // fee floor IS one minor unit — so the default floor is the right one here. Only the
+      // per-wallet listing math (preview / mass-sell) passes a currency-specific floor.
       const netEach = sellerNetFromBuyer(it.price);
       if (netEach < minNet) continue;
       for (const assetId of it.assetIds) items.push({ assetId, netCents: netEach, buyerCents: it.price });

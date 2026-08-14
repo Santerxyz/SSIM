@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../utils/logger';
-import { parseSteamMoney, knownCurrencyInfo, priceTextForeignCurrency, type CurrencyInfo } from './currencies';
+import { parseSteamMoney, knownCurrencyInfo, priceTextForeignCurrency, DEFAULT_FEE_MINIMUM, type CurrencyInfo } from './currencies';
 import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../network/steamHeaders';
 
 const APPID_CS2     = 730;
@@ -307,28 +307,43 @@ function parseVolume(v: unknown): number | null {
 
 /**
  * Steam fee on a sale: the seller RECEIVES `net`, the buyer PAYS
- *   net + steamFee + publisherFee,  steamFee = max(1, floor(net·0.05)),
- *   publisherFee(CS2) = max(1, floor(net·0.10)).
+ *   net + steamFee + publisherFee,  steamFee = max(feeMin, floor(net·0.05)),
+ *   publisherFee(CS2) = max(feeMin, floor(net·0.10)).
  * The market/sellitem `price` parameter is the seller's `net`, so given a target
  * BUYER price we solve for the largest net whose buyer-facing total ≤ target.
  *
- * Currency-agnostic: every amount here is MINOR units of ONE currency (euro-cents,
- * whole yen, …) and Steam applies the same percentages with a 1-minor-unit floor in
- * each. Callers must never mix denominations across a single call.
+ * Every amount here is MINOR units of ONE currency (euro-cents, grosz, whole yen, …) and
+ * callers must never mix denominations across a single call. The PERCENTAGES are the same
+ * everywhere, but the FLOOR is not: it is Steam's per-currency `wallet_fee_minimum`
+ * (`CurrencyInfo.feeMinimum`), 1 in EUR/USD but 4 in PLN. On a cheap item the floor is the
+ * whole fee, so passing the wrong one mis-states the buyer price — which is precisely the
+ * v1.4.6 bug this parameter exists to close (a 0,38 zł net previewed as 0,42 gross, listed
+ * live at 0,46). `feeMinimum` defaults to 1 so a caller in a currency we have no proven
+ * value for behaves exactly as before.
  */
-export function feesForNet(net: number): number {
-  const steam = Math.max(1, Math.floor(net * 0.05));
-  const pub   = Math.max(1, Math.floor(net * 0.10));
+export function feesForNet(net: number, feeMinimum: number = DEFAULT_FEE_MINIMUM): number {
+  const min = normalizeFeeMinimum(feeMinimum);
+  const steam = Math.max(min, Math.floor(net * 0.05));
+  const pub   = Math.max(min, Math.floor(net * 0.10));
   return steam + pub;
 }
 
-export function sellerNetFromBuyer(buyerCents: number): number {
-  if (buyerCents <= 3) return 1; // below the minimum fee floor → seller gets 1 cent
+export function sellerNetFromBuyer(buyerCents: number, feeMinimum: number = DEFAULT_FEE_MINIMUM): number {
+  const min = normalizeFeeMinimum(feeMinimum);
+  // At or below "one minor unit of net + both fee floors" nothing bigger fits, so the seller
+  // gets the single minor unit. (EUR: 3 = 1+1+1, as before. PLN: 9 = 1+4+4.)
+  if (buyerCents <= 1 + 2 * min) return 1;
   let net = Math.floor(buyerCents / 1.15);
   // Walk down until the buyer-facing total fits, then up to the largest that fits.
-  while (net > 1 && net + feesForNet(net) > buyerCents) net--;
-  while (net + 1 + feesForNet(net + 1) <= buyerCents) net++;
+  while (net > 1 && net + feesForNet(net, min) > buyerCents) net--;
+  while (net + 1 + feesForNet(net + 1, min) <= buyerCents) net++;
   return Math.max(1, net);
+}
+
+/** A fee floor is at least one minor unit; a junk value must never widen a fee. */
+function normalizeFeeMinimum(feeMinimum: number): number {
+  const m = Math.floor(feeMinimum);
+  return Number.isFinite(m) && m >= 1 ? m : DEFAULT_FEE_MINIMUM;
 }
 
 /**

@@ -18,6 +18,30 @@ export interface CurrencyInfo {
   iso: string;
   /** Minor-unit digit count Steam uses for this currency. */
   decimals: number;
+  /**
+   * MINIMUM Steam fee per side (Steam's `wallet_fee_minimum`), in MINOR units of this
+   * currency. Steam charges `max(percent · net, feeMinimum)` for BOTH the Steam cut and
+   * the publisher cut, so on a CHEAP item the floor — not the percentage — decides what
+   * the buyer pays. It is 1 minor unit in the "expensive" currencies (EUR/USD/GBP…) but
+   * LARGER where a minor unit is worth far less, and assuming 1 everywhere is exactly the
+   * v1.4.6 mispricing: a PLN listing quoted at 0,42 gross went live at 0,46.
+   *
+   * Only values PROVEN against a real listing are recorded here. Everything else omits the
+   * field and falls back to `DEFAULT_FEE_MINIMUM` (1) — the pre-1.4.7 assumption, so no
+   * currency changes behaviour without evidence. `AccountTrader.getMarketOrders` compares
+   * this model against the fee Steam reports on the account's OWN live listings and warns
+   * when they disagree, so a wrong floor announces itself instead of silently mispricing.
+   */
+  feeMinimum?: number;
+}
+
+/** Fee floor assumed for a currency we have no proven value for (Steam's EUR/USD value). */
+export const DEFAULT_FEE_MINIMUM = 1;
+
+/** The per-side fee floor to use for `info`, in ITS minor units. */
+export function feeMinimumOf(info: CurrencyInfo | undefined | null): number {
+  const m = info?.feeMinimum;
+  return Number.isFinite(m) && (m as number) >= 1 ? Math.floor(m as number) : DEFAULT_FEE_MINIMUM;
 }
 
 /** Steam ECurrencyCode → ISO + minor-unit decimals. */
@@ -27,7 +51,13 @@ export const STEAM_CURRENCIES: Record<number, CurrencyInfo> = {
   3:  { code: 3,  iso: 'EUR', decimals: 2 },
   4:  { code: 4,  iso: 'CHF', decimals: 2 },
   5:  { code: 5,  iso: 'RUB', decimals: 2 },
-  6:  { code: 6,  iso: 'PLN', decimals: 2 },
+  // PLN's floor is 4 grosz per side — PROVEN by a live listing (owner report, 2026-08-04):
+  // a custom net of 0,38 zł went live as 0,46 zł buyer / 0,38 zł net, i.e. a total fee of
+  // 0,08 zł. Both percentage components are below that (5%·38 = 1,9 · 10%·38 = 3,8), so both
+  // sides were charged the floor: 4 + 4 = 8. With the old assumed floor of 1 the same listing
+  // was previewed at 0,42 gross, and every 'lowest'/'undercut' PLN listing landed ABOVE the
+  // price it was aiming at (so it did not undercut, and did not sell).
+  6:  { code: 6,  iso: 'PLN', decimals: 2, feeMinimum: 4 },
   7:  { code: 7,  iso: 'BRL', decimals: 2 },
   8:  { code: 8,  iso: 'JPY', decimals: 0 },
   9:  { code: 9,  iso: 'NOK', decimals: 2 },

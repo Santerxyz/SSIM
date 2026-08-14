@@ -15,6 +15,8 @@ import {
   listedAssetIdsForApp, unconfirmedListedAssetIdsForApp, type MarketListing,
 } from '../core/MarketModel';
 import { shapeConfirmations, type ConfirmationView } from './confirmations';
+import { feesForNet } from '../pricing/MarketPricing';
+import { knownCurrencyInfo, feeMinimumOf } from '../pricing/currencies';
 
 // Trade-offer state + filter enums (static members of the manager class).
 const ETradeOfferState = TradeOfferManager.ETradeOfferState;
@@ -448,6 +450,7 @@ export class AccountTrader {
         const key = l.listingId || `asset:${l.assetId}`;
         if (!seenSell.has(key)) seenSell.set(key, toSellOrder(l));
       }
+      checkFeeModel(parsed.listings);   // Steam's own fee on a live listing audits our fee model
       collectBuyOrders(data, seenBuy); // the first render page usually carries buy_orders too
 
       const total = Number(data.total_count);
@@ -1438,6 +1441,47 @@ function shapeOffers(offers: any[], historyLimit: number): TradeOfferView[] {
   active.sort(byNewest);
   history.sort(byNewest);
   return [...active, ...history.slice(0, historyLimit)];
+}
+
+/** Currencies whose fee floor has already been reported as wrong this process (one line per
+ *  currency, not one per listing). */
+const feeFloorWarned = new Set<number>();
+
+/**
+ * Audits our fee model against Steam's OWN arithmetic, for free, on listings we already fetched.
+ *
+ * Every live listing carries both halves of its price — `net` and the `fee` Steam actually
+ * charged — so `feesForNet(net, floor)` must reproduce that fee exactly. When it doesn't, OUR
+ * per-currency floor (`CurrencyInfo.feeMinimum`) is wrong for that wallet, and the consequences
+ * are silent: previews mis-state what the buyer pays, and an 'undercut' lists ABOVE the price it
+ * aimed at, so it never sells. That is exactly how the v1.4.6 PLN bug stayed invisible — the data
+ * that disproves the assumption was already on screen in Active Orders, just never compared.
+ *
+ * Pure instrumentation: it logs, never throws and never changes a price. On a cheap listing both
+ * fee sides sit ON the floor, so `fee / 2` is the floor Steam is really using — reported so the
+ * table can be corrected with evidence instead of a guess.
+ */
+function checkFeeModel(listings: MarketListing[]): void {
+  for (const l of listings) {
+    const cur = l.currency;
+    if (!cur || feeFloorWarned.has(cur)) continue;
+    const net = l.netPerItemMinor, fee = l.feePerItemMinor;
+    if (net <= 0 || fee <= 0) continue;                       // unpriced / shape-drifted row
+    const info = knownCurrencyInfo(cur);
+    const assumed = feeMinimumOf(info);
+    const expected = feesForNet(net, assumed);
+    if (expected === fee) continue;
+    feeFloorWarned.add(cur);
+    // Both sides are at the floor exactly when the percentage parts are below fee/2; only then
+    // does the observation pin the floor (otherwise we can only say the model disagrees).
+    const half = fee / 2;
+    const pinned = Number.isInteger(half) && Math.floor(net * 0.05) <= half && Math.floor(net * 0.10) <= half;
+    logger.warn(
+      `[fee-model] ${info?.iso ?? `currency ${cur}`}: Steam charged ${fee} on a net of ${net}, our model says ${expected} ` +
+      `(assumed per-side floor ${assumed})` +
+      (pinned ? ` → this currency's real floor is ${half}; set feeMinimum: ${half} in currencies.ts` : ' → fee model disagrees; capture more listings before changing the table') +
+      '. Until then this wallet\'s previews and undercut prices are off.');
+  }
 }
 
 /** Projects one canonical MarketListing into an Active-Orders sell row. The parse

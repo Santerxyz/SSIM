@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractHoldDate, MAX_YEARLESS_HOLD_DAYS } from '../src/core/InventoryManager';
+import { extractHoldDate, steamWallClock, MAX_YEARLESS_HOLD_DAYS } from '../src/core/InventoryManager';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  v1.4.3 issue 1 — the trade-protection hold note ("…cannot be transferred until
@@ -40,29 +40,35 @@ function relDate(days: number): { d: Date; day: number; mon: string } {
   return { d, day: d.getDate(), mon: MON[d.getMonth()] };
 }
 
+// The clock in a year-less note is STEAM'S (Pacific), never the host's — Steam formats it server-side
+// and states no zone. So these expect the INSTANT that wall clock names on Steam's calendar, which is
+// what `steamWallClock` resolves; asserting `getHours() === 14` instead would only re-assert the
+// host's zone and pass on any machine while the live fleet read hours off. (2026-08-12)
+function steamInstant(r: { d: Date; day: number }, hh: number, mi = 0): number {
+  return steamWallClock(r.d.getFullYear(), r.d.getMonth() + 1, r.day, hh, mi);
+}
+
 test('extractHoldDate: the REAL year-less trade-protection format ("D Mon @ h:mmpm") parses (v1.4.3/4 fix)', () => {
   // Shape captured live via the widened log — this is the note that showed "date unknown".
-  const { d: want, day, mon } = relDate(5);            // a genuine hold: a few days out
-  const d = extractHoldDate(`⇆ This item is trade-protected and cannot be consumed, modified, or transferred until ${day} ${mon} @ 2:00pm`);
+  const r = relDate(5);                                // a genuine hold: a few days out
+  const d = extractHoldDate(`⇆ This item is trade-protected and cannot be consumed, modified, or transferred until ${r.day} ${r.mon} @ 2:00pm`);
   assert.ok(d instanceof Date, 'the year-less "D Mon @ h:mm am/pm" form must parse');
-  assert.equal(d.getMonth(), want.getMonth());
-  assert.equal(d.getDate(), day);
-  assert.equal(d.getHours(), 14, '2:00pm → 14:00 local');
+  assert.equal(d.getTime(), steamInstant(r, 14), '2:00pm → 14:00 on STEAM\'s clock');
   assert.ok(d.getTime() > Date.now(), 'the hold is a FUTURE date (year inferred as the nearest future)');
 });
 
 test('extractHoldDate: year-less variants — month-first, am/pm, midnight rollover', () => {
   const a = relDate(6);
   const pm = extractHoldDate(`until ${a.mon} ${a.day} @ 2:00 PM`);   // month-first
-  assert.ok(pm && pm.getMonth() === a.d.getMonth() && pm.getDate() === a.day && pm.getHours() === 14, 'month-first pm');
+  assert.equal(pm?.getTime(), steamInstant(a, 14), 'month-first pm');
 
   const b = relDate(9);
   const am = extractHoldDate(`until ${b.day} ${b.mon} @ 11:30am`);
-  assert.ok(am && am.getMonth() === b.d.getMonth() && am.getDate() === b.day && am.getHours() === 11 && am.getMinutes() === 30, 'am');
+  assert.equal(am?.getTime(), steamInstant(b, 11, 30), 'am');
 
   const c = relDate(11);
   const mid = extractHoldDate(`transferred until ${c.day} ${c.mon} @ 12:00am`);
-  assert.ok(mid && mid.getMonth() === c.d.getMonth() && mid.getDate() === c.day && mid.getHours() === 0, '12:00am → 00:00');
+  assert.equal(mid?.getTime(), steamInstant(c, 0), '12:00am → 00:00');
 });
 
 test('extractHoldDate: an EXPIRED year-less note is NOT rolled into next year (owner bug: "Storage Unit locked 222 days")', () => {

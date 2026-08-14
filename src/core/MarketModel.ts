@@ -29,6 +29,11 @@ export interface MarketListing {
   iconUrl:           string;
   /** What a BUYER pays (seller-net + Steam fee), minor units. 0 when unknown. */
   pricePerItemMinor: number;
+  /** The seller-net half of `pricePerItemMinor` (Steam's `price`). 0 when unknown. */
+  netPerItemMinor:   number;
+  /** The fee half of `pricePerItemMinor` (Steam's `fee`) — Steam's OWN arithmetic on this
+   *  listing, so it is the ground truth our fee model is checked against. 0 when unknown. */
+  feePerItemMinor:   number;
   currency:          number;   // Steam ECurrencyCode (0 = unknown)
   quantity:          number;
   /** true ⇒ live sell (`listings`) or a server-side hold (`listings_on_hold`);
@@ -121,6 +126,11 @@ export function parseMyListings(d: any): ParsedMyListings {
       name:              str(desc.name) || str(desc.market_hash_name) || unknownName,
       iconUrl:           iconUrlOf(desc),
       pricePerItemMinor: price + fee,
+      /** Seller-net and the fee Steam ACTUALLY charged on it — the two halves of
+       *  `pricePerItemMinor`, kept so a consumer can check our fee model against Steam's own
+       *  arithmetic (see AccountTrader.getMarketOrders' fee-floor check). 0 when unknown. */
+      netPerItemMinor:   price,
+      feePerItemMinor:   fee,
       currency,
       quantity:          Number(asset.amount) || 1,
       confirmed,
