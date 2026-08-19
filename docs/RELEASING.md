@@ -25,9 +25,9 @@ Every one of those gates must pass. There is no server involved, the manifest is
 > ([`src/update/config.ts`](../src/update/config.ts)); the private half must never
 > leave your control and must never be committed.
 >
-> **If you regenerate it, every installed copy of SSIM stops accepting updates forever** 
-> they verify against the key baked into the binary they're already running, and there is
-> no channel left to push a replacement through. Losing the private key has the same
+> **If you regenerate it, every installed copy of SSIM stops accepting updates forever.**
+> They verify against the key baked into the binary they are already running, and there
+> is no channel left to push a replacement through. Losing the private key has the same
 > effect. Back it up somewhere you will still have in five years.
 
 ## Cutting a release
@@ -78,8 +78,9 @@ node build/sign-update.js \
   --out version.json
 ```
 
-Download the released `SSIM.exe` from the tag CI just published and sign **that exact file** 
-signing a locally rebuilt one risks a hash that does not match what users download.
+Download the released `SSIM.exe` from the tag CI just published and sign **that exact
+file**. Signing a locally rebuilt one risks a hash that does not match what users
+download.
 
 This writes `version.json` (and a `SHA256SUMS`, which CI has already attached, the release
 asset is the authoritative one). `--url` is the release asset URL for the tag.
@@ -87,8 +88,8 @@ asset is the authoritative one). `--url` is the release asset URL for the tag.
 The script **self-verifies before writing anything**: it resolves the public key from
 `dist/update/config.js` (the key actually baked into clients) and refuses to emit a
 manifest whose signature doesn't check out. That guard is the difference between catching a
-wrong key now and bricking the fleet's update path permanently. If it ever fails, stop 
-do not publish.
+wrong key now and bricking the fleet's update path permanently. If it ever fails, stop.
+Do not publish.
 
 **5. Publish the manifest.** Commit `version.json` to `main`. That is the file
 `UPDATE_MANIFEST_URL` points at, so **the release goes live to every client the moment this
