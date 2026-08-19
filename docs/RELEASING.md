@@ -129,5 +129,5 @@ within 72 hours, with no update channel left to rescue them.** The order is forc
    afford. A stale client that boots after the shutdown must find a working answer, not a
    connection refused.
 
-The Discord bot's release announcements also read `/version` from that server, repoint
-`announce.ts` at GitHub in the same wave, or announcements stop silently.
+The Discord bot now reads releases from the GitHub API, so it is unaffected by the
+licence server going away. The full procedure is in [MIGRATION.md](MIGRATION.md).
