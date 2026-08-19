@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="public/assets/logo.png" alt="SSIM" width="96">
+<img src="docs/img/logo.png" alt="SSIM" width="88">
 
 # SSIM
 
@@ -15,8 +15,6 @@ and 2FA secrets never leave it.
 [![Tests](https://img.shields.io/badge/tests-293%20files-green.svg)](test/)
 
 [Download](#install) · [How it works](#how-it-works) · [Security](#security) · [Contributing](CONTRIBUTING.md)
-
-<img src="docs/img/dashboard.png" alt="SSIM dashboard — fleet value, wallet, and portfolio history across every account" width="600">
 
 </div>
 
@@ -52,8 +50,6 @@ fixed properly.
 - One screen for every incoming and outgoing offer, each side priced out
 - Batch accept / decline / cancel
 - Trade-up contract support
-
-<img src="docs/img/trade-offers.png" alt="Every incoming and outgoing trade offer across all accounts on one screen, each side priced" width="560">
 
 **Market**
 - Buy orders placed and confirmed from the dashboard
