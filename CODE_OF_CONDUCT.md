@@ -20,7 +20,7 @@ Be decent to people. This is a small project; we can keep this simple.
 ## What isn't acceptable
 
 - Harassment, insults, or personal attacks
-- Discrimination or demeaning comments about who someone is — nationality, race,
+- Discrimination or demeaning comments about who someone is: nationality, race,
   gender, sexuality, religion, disability, or age
 - Sexual language or imagery
 - Publishing someone's private information without their permission
@@ -48,7 +48,7 @@ reporting without asking you first.
 
 Maintainers may remove comments, close issues or PRs, and ban accounts as needed.
 In rough order: a private word, a public warning, a temporary ban, a permanent one.
-Serious cases skip straight to the end — the malware clause above especially.
+Serious cases skip straight to the end. The malware clause above especially.
 
 We aim to be proportionate, and we'd rather resolve something with a quiet message
 than a ban. But this is a small project without the capacity for prolonged

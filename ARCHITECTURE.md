@@ -1,4 +1,4 @@
-# SSIM — Architecture
+# Architecture
 
 Read this before changing anything. It explains how the pieces fit and, more
 usefully, *why* several of them look the way they do. Most of the odd-looking
@@ -23,12 +23,12 @@ which file to replace). The backend binds an HTTP server on `127.0.0.1` and the
 shell displays it in a WebView.
 
 So the "web app" and the "desktop app" are the same program. There is no server
-of ours anywhere in the picture — the dashboard is served from localhost, and the
+of ours anywhere in the picture. The dashboard is served from localhost, and the
 only outbound traffic is to Steam, to CSFloat if enabled, and to GitHub for
 update checks.
 
 **Data lives next to the exe**, not in `%APPDATA%`: `data/`, `Vault/`, `logs/`,
-`mafiles/`. The install is portable — copy the folder, keep the fleet.
+`mafiles/`. The install is portable: copy the folder, keep the fleet.
 
 ## Boot sequence
 
@@ -66,7 +66,7 @@ wholesale.
 
 | Directory | Responsibility |
 |---|---|
-| `api/` | The Express app (`server.ts`, ~3.6k lines) — every HTTP route, capability tokens, the money-op breaker middleware |
+| `api/` | The Express app (`server.ts`, ~3.6k lines): every HTTP route, capability tokens, the money-op breaker middleware |
 | `core/` | Accounts, sessions, the encrypted vault, inventory stores, process health, single-instance lock |
 | `trading/` | Trades, market buy/sell, trade-up contracts, storage units (caskets), the CS2 game-coordinator layer |
 | `pricing/` | Price sources (Steam, CSFloat), the price cache, FX rates, per-wallet-currency pricing |
@@ -98,7 +98,7 @@ incomplete picture.
 kits collide under a naive rebuild and must be handled separately.
 
 **A market buy order takes three round-trips.** The first POST returns 406, which
-is not an error — it is Steam asking for a mobile confirmation. Confirm it
+is not an error: it is Steam asking for a mobile confirmation. Confirm it
 (type 12), then re-POST. Removing that re-POST breaks buying entirely.
 
 **Mobile confirmations run at roughly five operations per minute per account.**
@@ -124,7 +124,7 @@ one place SSIM will replace its own executable, so it is deliberately paranoid:
 
 1. Fetch a small signed JSON manifest
 2. Compare versions numerically (a pre-release tag reads as "not newer")
-3. Download resumably — a dropped connection resumes with a Range request rather
+3. Download resumably. A dropped connection resumes with a Range request rather
    than restarting a 145 MB transfer
 4. Verify SHA-256 **and** an Ed25519 signature against the public key compiled
    into the binary
@@ -138,13 +138,13 @@ substituted binary, and the source being readable does not help there.
 ## Testing
 
 293 test files under `test/`. They are the best documentation of intended
-behaviour in the repo — when a comment and a test disagree, trust the test.
+behaviour in the repo. When a comment and a test disagree, trust the test.
 
 Several are *source scans* rather than behavioural tests: they read `src/` as
 text and assert structural properties (for example, that timer owners route
 through `armInterval` instead of raw `setInterval`). If one fails after a
 refactor, it is usually telling you a real invariant moved, not that the test is
-stale — check before editing it.
+stale. Check before editing it.
 
 `stress/` holds load harnesses with the Steam libraries mocked, for exercising
 throughput paths without touching a live account.

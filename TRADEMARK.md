@@ -3,7 +3,7 @@
 **Short version:** the code is free. The name is not.
 
 You may do anything the [Apache License 2.0](LICENSE) permits with the SSIM source
-code — use it, modify it, redistribute it, sell services around it, fork it
+code: use it, modify it, redistribute it, sell services around it, fork it
 permanently. That freedom is real and irrevocable, and nothing here takes it back.
 
 What the Apache License explicitly does **not** grant (see §6, "Trademarks") is
@@ -30,7 +30,7 @@ It is here so a malicious build can be identified as *not us* and taken down.
 
 - **State what your work is based on**, accurately and in plain text:
   "based on SSIM", "a fork of SSIM", "compatible with SSIM", "SSIM plugin".
-- **Use the name to refer to this project** — in articles, reviews, tutorials,
+- **Use the name to refer to this project** in articles, reviews, tutorials,
   videos, comparisons, academic work, or conversation. Nominative use is fine and
   always will be.
 - **Redistribute official, unmodified builds** under the SSIM name, provided you
@@ -43,14 +43,14 @@ It is here so a malicious build can be identified as *not us* and taken down.
 - **Name your modified build "SSIM"**, or any name likely to be confused with it
   ("SSIM Pro", "SSIM+", "SSIM Unlocked", "SSIM Reloaded", "SS1M").
 - **Use the SSIM logo or icon** as the identity of a derivative work.
-- **Imply endorsement, affiliation, or official status** — "official SSIM build",
+- **Imply endorsement, affiliation, or official status**: "official SSIM build",
   "SSIM certified", "recommended by SSIM".
 - **Register** the name, logo, confusingly similar marks, or matching domains and
   social handles.
 - **Distribute a modified binary under the SSIM name.** This is the one that
   matters most, and the one we will always act on.
 
-## Forking is welcome — just rename
+## Forking is welcome, just rename
 
 If you fork SSIM and change it, give it your own name. You keep every right the
 Apache License grants; you simply don't inherit the reputation attached to ours,
@@ -58,7 +58,7 @@ because that reputation is the only thing protecting users from a poisoned build
 
 A good fork announcement looks like:
 
-> **FleetTool** — a Steam multi-account manager, based on SSIM.
+> **FleetTool**: a Steam multi-account manager, based on SSIM.
 > Not affiliated with or endorsed by the SSIM project.
 
 That is explicitly allowed and needs no permission.
@@ -67,8 +67,8 @@ That is explicitly allowed and needs no permission.
 
 Official SSIM releases come from **exactly one place**: the project's GitHub
 Releases page linked from the [README](README.md). Every release is published with
-a `SHA256SUMS` file and is signed. Anything distributed anywhere else — a forum
-attachment, a Discord DM, a mirror site, a "cracked" or "unlocked" build — is not
+a `SHA256SUMS` file and is signed. Anything distributed anywhere else (a forum
+attachment, a Discord DM, a mirror site, a "cracked" or "unlocked" build) is not
 an official release, regardless of what it calls itself.
 
 **If you did not get it from the canonical source, do not give it your Steam

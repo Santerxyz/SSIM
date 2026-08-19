@@ -1,6 +1,6 @@
 # Releasing SSIM
 
-For maintainers. Contributors don't need this — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+For maintainers. Contributors do not need this. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## How updates work
 
@@ -17,7 +17,7 @@ GET  UPDATE_MANIFEST_URL          → { latest, url, sha256, sig, sigKind }
      swap + relaunch
 ```
 
-Every one of those gates must pass. There is no server involved — the manifest is a file.
+Every one of those gates must pass. There is no server involved, the manifest is a file.
 
 > ### ⚠ The signing key is the single point of no return
 >
@@ -25,20 +25,20 @@ Every one of those gates must pass. There is no server involved — the manifest
 > ([`src/update/config.ts`](../src/update/config.ts)); the private half must never
 > leave your control and must never be committed.
 >
-> **If you regenerate it, every installed copy of SSIM stops accepting updates forever** —
+> **If you regenerate it, every installed copy of SSIM stops accepting updates forever** 
 > they verify against the key baked into the binary they're already running, and there is
 > no channel left to push a replacement through. Losing the private key has the same
 > effect. Back it up somewhere you will still have in five years.
 
 ## Cutting a release
 
-**1. Bump the version.** `package.json` is canonical — the Tauri shell and the dashboard
+**1. Bump the version.** `package.json` is canonical, the Tauri shell and the dashboard
 footer both derive from it. Use a plain 3-part semver: the updater compares numerically and
 silently treats `1.5.0-rc1` as "not newer".
 
 **2. Write the release notes** in `RELEASE_NOTES.md`.
 
-**3. Tag it — CI builds and publishes the release.**
+**3. Tag it, CI builds and publishes the release.**
 
 ```bash
 git tag v1.4.10 && git push origin v1.4.10
@@ -46,7 +46,7 @@ git tag v1.4.10 && git push origin v1.4.10
 
 The `Release` workflow typechecks, runs the full suite, builds `SSIM.exe`, writes
 `SHA256SUMS`, records a build-provenance attestation, and creates the GitHub release with
-both files attached. A failing test stops the release — a build that fails its own tests
+both files attached. A failing test stops the release, a build that fails its own tests
 must never reach a user, because the updater installs it automatically.
 
 The attestation lets anyone confirm the binary came from this commit of this repository:
@@ -78,21 +78,21 @@ node build/sign-update.js \
   --out version.json
 ```
 
-Download the released `SSIM.exe` from the tag CI just published and sign **that exact file** —
+Download the released `SSIM.exe` from the tag CI just published and sign **that exact file** 
 signing a locally rebuilt one risks a hash that does not match what users download.
 
-This writes `version.json` (and a `SHA256SUMS`, which CI has already attached — the release
+This writes `version.json` (and a `SHA256SUMS`, which CI has already attached, the release
 asset is the authoritative one). `--url` is the release asset URL for the tag.
 
 The script **self-verifies before writing anything**: it resolves the public key from
 `dist/update/config.js` (the key actually baked into clients) and refuses to emit a
 manifest whose signature doesn't check out. That guard is the difference between catching a
-wrong key now and bricking the fleet's update path permanently. If it ever fails, stop —
+wrong key now and bricking the fleet's update path permanently. If it ever fails, stop 
 do not publish.
 
 **5. Publish the manifest.** Commit `version.json` to `main`. That is the file
 `UPDATE_MANIFEST_URL` points at, so **the release goes live to every client the moment this
-lands** — do it last, after the exe is uploaded and reachable. A manifest whose `url` 404s
+lands**, do it last, after the exe is uploaded and reachable. A manifest whose `url` 404s
 means every client downloads nothing and logs a failure.
 
 **6. Verify like a user.** From a clean machine, download the exe from the release page,
@@ -102,7 +102,7 @@ check the hash against `SHA256SUMS`, and run it.
 
 Revert `version.json` on `main` to the previous release's contents. Clients only update
 *forward* (`isNewer`), so anyone who already took the bad version will not roll back
-automatically — you have to ship a higher version with the fix. Leave the bad release's
+automatically. You have to ship a higher version with the fix. Leave the bad release's
 assets up; deleting them breaks the in-flight downloads of anyone mid-update.
 
 ## The manifest must be publicly reachable
@@ -110,7 +110,7 @@ assets up; deleting them breaks the in-flight downloads of anyone mid-update.
 `UPDATE_MANIFEST_URL` and the release asset URL are fetched by clients with **no
 credentials**. While the repository is private, `raw.githubusercontent.com` and release
 assets both return 404 to everyone. Until the repo is public, the update channel does not
-work — that is expected, not a bug.
+work, that is expected, not a bug.
 
 ## Retiring the old licence server (one time)
 
@@ -120,13 +120,13 @@ Deployed clients from before the Apache-2.0 pivot still point their updater at
 **Killing that server before those clients have migrated hard-locks every one of them
 within 72 hours, with no update channel left to rescue them.** The order is forced:
 
-1. Publish the delicensed build **through the old server** — it is the rescue vehicle, and
-   the only thing that repoints clients at GitHub.
+1. Publish the delicensed build **through the old server**. It is the rescue vehicle,
+   and the only thing that repoints clients at GitHub.
 2. Watch which versions still call home; wait for the tail to shrink.
 3. **Freeze, don't kill.** Leave `/version` serving a static signed manifest that points at
    the GitHub asset, and `/validate` returning valid-with-no-expiry, for as long as you can
    afford. A stale client that boots after the shutdown must find a working answer, not a
    connection refused.
 
-The Discord bot's release announcements also read `/version` from that server — repoint
+The Discord bot's release announcements also read `/version` from that server, repoint
 `announce.ts` at GitHub in the same wave, or announcements stop silently.

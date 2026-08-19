@@ -2,7 +2,7 @@
 
 SSIM is 31,000 lines of TypeScript across 99 files. That sounds like a lot to walk
 into, and most projects that size are genuinely hard to contribute to. This one
-isn't, and the reason is that the map already exists — you don't have to reverse
+isn't, because the map already exists. You don't have to reverse
 engineer the architecture from scratch.
 
 Everything here is genuinely welcome: bug reports, docs fixes, typo corrections,
@@ -41,7 +41,7 @@ npm run build:tauri    # -> release-tauri/SSIM/SSIM.exe
 
 **No secrets, keys, or config files are required to build.** If you hit a build
 error asking for a licence key, pepper, or `secrets.local.bat`, that's a bug in
-our build — please open an issue, because it means we broke the contributor path.
+our build, please open an issue, because it means we broke the contributor path.
 
 If `rustup` reports "no toolchains", point `RUSTUP_HOME` / `CARGO_HOME` at your
 rustup install. The first Tauri build after a clean `src-tauri/target/` is a
@@ -53,13 +53,13 @@ More detail in [docs/BUILD.md](docs/BUILD.md).
 
 Issues labelled [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 are small, scoped, and described well enough to act on without asking. If one is
-unclaimed, it's yours — comment on it so nobody duplicates your work.
+unclaimed, it's yours. Comment on it so nobody duplicates your work.
 
 If something there is underspecified, say so. That's a docs bug and worth fixing.
 
 ## Working on it
 
-**Before you start something large, open an issue.** Not for permission — so you
+**Before you start something large, open an issue.** Not for permission, so you
 don't spend a weekend on something that conflicts with work already in flight.
 
 A few things specific to this codebase:
@@ -70,25 +70,25 @@ A few things specific to this codebase:
   comments, naming, and error handling. Fit in rather than importing your own.
 - **Comment the *why*, not the *what*.** Much of this code looks strange because
   Steam is strange. When you work out why something has to be done a particular
-  way, write it down — that comment is worth more than the code.
+  way, write it down. That comment is worth more than the code.
 - **Be careful in money paths.** Buy, sell, trade, craft, and casket-move code
   operates on real inventories and real balances. `INVARIANTS.md` exists because
   each of those rules was learned expensively.
 - **No band-aids.** Fix causes, not symptoms. A retry wrapper or an auto-restart
-  that hides a failure will be sent back — if something fails, we want to know why.
+  that hides a failure will be sent back. If something fails, we want to know why.
 
 ## Pull requests
 
 1. Branch from `main`.
-2. Keep it focused. One logical change per PR — a 40-line PR gets reviewed today,
+2. Keep it focused, one logical change per PR. A 40-line PR gets reviewed today;
    a 2,000-line PR gets reviewed eventually.
 3. `npm test` passes.
 4. Explain **why** in the description, not just what. Link the issue if there is one.
-5. Note anything you couldn't test — especially live-Steam behaviour. Nobody can
+5. Note anything you couldn't test, especially live-Steam behaviour. Nobody can
    test everything here, and saying so honestly is expected, not a weakness.
 
 Review is best-effort and may be slow. That's a bandwidth problem, not a judgement
-on your work — see [Project status](README.md#project-status). Ping the PR if it's
+on your work. See [Project status](README.md#project-status). Ping the PR if it's
 gone quiet for a couple of weeks.
 
 ## Testing against Steam
@@ -98,7 +98,7 @@ creates a real risk of losing items or getting rate-limited.
 
 - **Use throwaway accounts** with nothing valuable on them.
 - **Never commit credentials, `maFile`s, cookies, or tokens.** `Vault/`, `data/`,
-  `mafiles/`, and `logs/` are gitignored — keep it that way, and check your
+  `mafiles/`, and `logs/` are gitignored, keep it that way, and check your
   diffs before pushing.
 - **Scrub logs before attaching them** to an issue. They can contain account names,
   Steam IDs, and session identifiers.
@@ -108,10 +108,10 @@ creates a real risk of losing items or getting rate-limited.
 ## Reporting bugs
 
 Open an issue with: what you did, what you expected, what happened, your SSIM
-version, and the relevant bit of `logs/` — **scrubbed**. The crash-diagnostics
+version, and the relevant bit of `logs/`, **scrubbed**. The crash-diagnostics
 table in [docs/BUILD.md](docs/BUILD.md) explains what each log file tells you.
 
-For **security** issues, don't use the public tracker — see [SECURITY.md](SECURITY.md).
+For **security** issues, don't use the public tracker. See [SECURITY.md](SECURITY.md).
 
 ## Becoming a maintainer
 
@@ -119,7 +119,7 @@ This is a real, open offer, not boilerplate.
 
 SSIM is maintained best-effort by one person, and the project's long-term survival
 depends on that changing. If you've contributed a few times and want to help carry
-it, say so — commit rights and a path into the release-signing process are on the
+it, say so, commit rights and a path into the release-signing process are on the
 table. What matters is showing up consistently, not being the strongest programmer
 in the room.
 
@@ -129,5 +129,5 @@ Contributions are licensed under the [Apache License 2.0](LICENSE), same as the
 project. By opening a pull request you agree your contribution ships under it.
 There is no CLA.
 
-Note that the Apache licence covers the **code**, not the SSIM name and logo — see
+Note that the Apache licence covers the **code**, not the SSIM name and logo. See
 [TRADEMARK.md](TRADEMARK.md). Forking is welcome; forks just need their own name.

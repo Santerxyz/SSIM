@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Maintenance here is best-effort, so be aware that a good idea may sit for a
-        while — or forever — unless someone picks it up. If you'd be willing to
+        long time unless someone picks it up. If you'd be willing to
         build it yourself, say so; that changes the odds enormously.
 
   - type: textarea
