@@ -1,0 +1,107 @@
+name: Release
+
+# Cuts a release from a tag: builds the shippable SSIM.exe, publishes a
+# verifiable provenance attestation, and attaches the exe plus SHA256SUMS.
+#
+# WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO
+#   It does not sign the update manifest. The Ed25519 private key that signs
+#   version.json is the one secret whose loss or leak cannot be recovered from:
+#   every installed copy verifies against the matching public key baked into its
+#   own binary, so a compromised key means a forged update reaching the whole
+#   fleet. It is never placed in CI. Signing stays a local step performed by a
+#   maintainer with the offline key — see docs/RELEASING.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (e.g. v1.4.10)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write        # create the release and upload assets
+      id-token: write        # mint the provenance signing certificate
+      attestations: write    # record the attestation
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # The suite gates the release: a build that fails its own tests must never
+      # reach a user, because the updater will install it automatically.
+      - name: Test
+        run: npm test
+
+      - name: Build SSIM.exe
+        run: npm run build:tauri
+
+      # Fail loudly rather than publishing an empty or truncated asset.
+      - name: Verify the artifact exists
+        shell: bash
+        run: |
+          exe="release-tauri/SSIM/SSIM.exe"
+          test -f "$exe" || { echo "::error::$exe was not produced"; exit 1; }
+          size=$(stat -c%s "$exe")
+          echo "SSIM.exe is $((size / 1048576)) MB"
+          # A real build is ~145 MB; anything under 50 MB means the backend did
+          # not get embedded and the exe would fail on a user's machine.
+          test "$size" -gt 52428800 || { echo "::error::SSIM.exe is implausibly small ($size bytes)"; exit 1; }
+
+      # The hash the README tells users to check before running an executable
+      # that will ask for their Steam password.
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd release-tauri/SSIM
+          sha256sum SSIM.exe > SHA256SUMS
+          cat SHA256SUMS
+
+      # Cryptographic proof that this exact binary came from this exact commit
+      # of this repository, verifiable with: gh attestation verify SSIM.exe -R <owner>/<repo>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: release-tauri/SSIM/SSIM.exe
+
+      # Uses the preinstalled gh CLI rather than a third-party release action.
+      # For a project that ships credential-handling binaries, every extra
+      # action in the release path is another supply-chain dependency.
+      - name: Create the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            release-tauri/SSIM/SSIM.exe \
+            release-tauri/SSIM/SHA256SUMS \
+            --title "SSIM $TAG" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag
+
+      - name: Next step
+        shell: bash
+        run: |
+          echo "::notice::Release published. The update channel is NOT live yet."
+          echo "::notice::Sign version.json locally with the offline key and commit it to main - see docs/RELEASING.md."

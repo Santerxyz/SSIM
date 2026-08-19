@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # Windows: SSIM is a Windows application and several tests assert on
+    # Windows-specific behaviour (the swap script, path handling, the
+    # single-instance lock). Running them on Linux would prove nothing.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # No secrets are configured for this workflow on purpose. If the build
+      # ever starts needing one, that is a bug: it locks contributors out, who
+      # cannot have it. See CONTRIBUTING.md.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test

@@ -38,11 +38,32 @@ silently treats `1.5.0-rc1` as "not newer".
 
 **2. Write the release notes** in `RELEASE_NOTES.md`.
 
-**3. Build.**
+**3. Tag it — CI builds and publishes the release.**
+
+```bash
+git tag v1.4.10 && git push origin v1.4.10
+```
+
+The `Release` workflow typechecks, runs the full suite, builds `SSIM.exe`, writes
+`SHA256SUMS`, records a build-provenance attestation, and creates the GitHub release with
+both files attached. A failing test stops the release — a build that fails its own tests
+must never reach a user, because the updater installs it automatically.
+
+The attestation lets anyone confirm the binary came from this commit of this repository:
+
+```bash
+gh attestation verify SSIM.exe -R Santerxyz/SSIM
+```
+
+That matters more here than in most projects: an unsigned executable that asks for Steam
+credentials is exactly what a counterfeit build looks like, and this is how a user tells
+the two apart until code signing is in place.
+
+**Building locally instead** (for testing, or if CI is unavailable):
 
 ```bash
 npm run build          # typecheck + compile (also produces dist/, which step 4 needs)
-npm test               # 1354 tests; do not skip
+npm test
 npm run build:tauri    # → release-tauri/SSIM/SSIM.exe
 ```
 
@@ -57,28 +78,24 @@ node build/sign-update.js \
   --out version.json
 ```
 
-This writes `version.json` and `SHA256SUMS` beside it. The `--url` is where the exe *will*
-live once uploaded in step 5 — fill in the tag you're about to create.
+Download the released `SSIM.exe` from the tag CI just published and sign **that exact file** —
+signing a locally rebuilt one risks a hash that does not match what users download.
+
+This writes `version.json` (and a `SHA256SUMS`, which CI has already attached — the release
+asset is the authoritative one). `--url` is the release asset URL for the tag.
 
 The script **self-verifies before writing anything**: it resolves the public key from
-`dist/licensing/config.js` (the key actually baked into clients) and refuses to emit a
+`dist/update/config.js` (the key actually baked into clients) and refuses to emit a
 manifest whose signature doesn't check out. That guard is the difference between catching a
 wrong key now and bricking the fleet's update path permanently. If it ever fails, stop —
 do not publish.
 
-**5. Publish the GitHub release.** Tag `v<version>`, and attach:
-
-| Asset | Why |
-|---|---|
-| `SSIM.exe` | the build itself |
-| `SHA256SUMS` | the README tells users to verify against this |
-
-**6. Publish the manifest.** Commit `version.json` to `main`. That is the file
+**5. Publish the manifest.** Commit `version.json` to `main`. That is the file
 `UPDATE_MANIFEST_URL` points at, so **the release goes live to every client the moment this
 lands** — do it last, after the exe is uploaded and reachable. A manifest whose `url` 404s
 means every client downloads nothing and logs a failure.
 
-**7. Verify like a user.** From a clean machine, download the exe from the release page,
+**6. Verify like a user.** From a clean machine, download the exe from the release page,
 check the hash against `SHA256SUMS`, and run it.
 
 ## Rolling back
