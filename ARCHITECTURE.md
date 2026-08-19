@@ -80,43 +80,6 @@ The frontend is a single page: `public/index.html` + `public/app.js` (~11k
 lines), plain JS, no build step. It is bundled *inside* the backend exe at build
 time rather than shipped loose.
 
-## Things that will surprise you
-
-These cost real time to learn. They are not arbitrary.
-
-**Steam's 429 is a fingerprint check, not a rate budget.** Non-browser-shaped
-request headers get you blocked; adding proxies to "spread load" solves the wrong
-problem and can make it worse. Match the header shape.
-
-**Trade-lock state has to come from the web endpoints.** The game-coordinator
-path no longer carries it, so the inventory is assembled from context 2 plus
-context 16 plus the account's market listings. Any one of those alone is an
-incomplete picture.
-
-**Items inside storage units carry no name.** They arrive as `def_index` +
-`paint_index` + `paint_wear` and the display name is rebuilt from those. Music
-kits collide under a naive rebuild and must be handled separately.
-
-**A market buy order takes three round-trips.** The first POST returns 406, which
-is not an error: it is Steam asking for a mobile confirmation. Confirm it
-(type 12), then re-POST. Removing that re-POST breaks buying entirely.
-
-**Mobile confirmations run at roughly five operations per minute per account.**
-Going faster gets the account throttled, not the fleet.
-
-**Money paths gate on raw `tradable`.** Anything that moves real value re-checks
-the item's own flag rather than trusting a derived bucket.
-
-## Concurrency
-
-The defaults are deliberately low and were tuned against real breakage, not
-guessed: 25 concurrent logins, 150 resident sessions with a 30-minute idle
-reaper, 4 concurrent offer reads, 2 concurrent batch actions.
-
-Everything that moves value routes through a shared `isBusy()` predicate. The
-update swap and the graceful shutdown both wait on it, so an exit can never sever
-a buy, sell, trade, craft or casket move mid-commit.
-
 ## Updates and trust
 
 The updater ([`src/update/Updater.ts`](src/update/Updater.ts), ~1k lines) is the
