@@ -13,9 +13,9 @@ leave it.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](#requirements)
 [![Tests](https://img.shields.io/badge/tests-293%20files-green.svg)](test/)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/rnDWYtkbxN)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/SBCTVqKTVc)
 
-[Download](#install) · [How it works](#how-it-works) · [Security](#security) · [Discord](https://discord.gg/rnDWYtkbxN) · [Contributing](CONTRIBUTING.md)
+[Download](#install) · [How it works](#how-it-works) · [Security](#security) · [Discord](https://discord.gg/SBCTVqKTVc) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -160,7 +160,7 @@ Building takes two commands and needs no keys or configuration. See
 ## Community
 
 Questions, setup help, and release announcements are on
-[Discord](https://discord.gg/rnDWYtkbxN). Bug reports are better as
+[Discord](https://discord.gg/SBCTVqKTVc). Bug reports are better as
 [issues](https://github.com/Santerxyz/SSIM/issues), where they stay findable.
 
 ## Project status
