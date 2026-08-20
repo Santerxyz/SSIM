@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SSIM documentation</title>
+  <meta name="description" content="How to set up and use SSIM: adding your Steam accounts, organising a fleet, trading, the Steam Market, proxies and updates." />
+  <meta name="theme-color" content="#0a0a0f" />
+  <link rel="canonical" href="https://ssim.dev/docs.html" />
+  <link rel="icon" type="image/png" href="img/logo.png" />
+  <link rel="apple-touch-icon" href="img/logo.png" />
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="SSIM" />
+  <meta property="og:title" content="SSIM documentation" />
+  <meta property="og:description" content="How to set up and use SSIM, from your first account to running a whole fleet." />
+  <meta property="og:image" content="https://ssim.dev/img/logo.png" />
+  <meta property="og:url" content="https://ssim.dev/docs.html" />
+  <link rel="stylesheet" href="style.css" />
+  <script>document.documentElement.className += ' js';</script>
+</head>
+<body>
+
+  <a class="skip" href="#start">Skip to content</a>
+
+  <header id="hdr">
+    <div class="wrap nav">
+      <a href="index.html" class="brand">
+        <img src="img/logo.png" alt="SSIM logo" width="34" height="34" />
+        <span class="bt">SSIM</span>
+      </a>
+      <nav class="nav-links">
+        <a class="link" href="index.html#features">Features</a>
+        <a class="link" href="index.html#security">Security</a>
+        <a class="link" href="index.html#how">How it works</a>
+        <a class="link" href="docs.html">Docs</a>
+        <a class="link" href="index.html#faq">FAQ</a>
+      </nav>
+      <div class="nav-cta">
+        <a class="btn btn-ghost" href="https://github.com/Santerxyz/SSIM" target="_blank" rel="noopener">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.24 2.76.12 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.26 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+          GitHub
+        </a>
+        <a class="btn btn-primary" href="https://github.com/Santerxyz/SSIM/releases/latest" target="_blank" rel="noopener">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 19h16"/></svg>
+          Download
+        </a>
+        <button class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mobileMenu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="mobile-menu" id="mobileMenu">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#security">Security</a>
+      <a href="index.html#how">How it works</a>
+      <a href="docs.html">Docs</a>
+      <a href="index.html#faq">FAQ</a>
+      <div class="mm-cta">
+        <a class="btn btn-primary" href="https://github.com/Santerxyz/SSIM/releases/latest" target="_blank" rel="noopener">Download for Windows</a>
+      </div>
+    </div>
+  </header>
+
+  <section class="doc-hero wrap">
+    <span class="eyebrow">Documentation</span>
+    <h1>Getting the most out of SSIM</h1>
+    <p class="lead">Everything from your first account to running a few hundred. If something here is wrong or missing, say so on <a class="inline" href="https://discord.gg/SBCTVqKTVc" target="_blank" rel="noopener">Discord</a> and it gets fixed.</p>
+  </section>
+
+  <div class="wrap docs-shell">
+    <aside class="toc">
+      <h5>On this page</h5>
+      <div class="toc-list">
+        <a href="#start">Getting started</a>
+        <a href="#accounts">Adding your accounts</a>
+        <a href="#organise">Organising a fleet</a>
+        <a href="#inventory">Inventory and trade locks</a>
+        <a href="#storage">Storage units</a>
+        <a href="#trading">Trading</a>
+        <a href="#market">The Steam Market</a>
+        <a href="#tradeups">Trade-up contracts</a>
+        <a href="#pricing">Prices and value</a>
+        <a href="#proxies">Proxies</a>
+        <a href="#updates">Updates</a>
+        <a href="#verify">Verify your download</a>
+        <a href="#upgrading">Coming from the closed beta</a>
+        <a href="#trouble">Troubleshooting</a>
+      </div>
+    </aside>
+
+    <main class="doc">
+
+      <section id="start">
+        <h2>Getting started</h2>
+        <p class="intro">SSIM is one file. There is no installer, no account to create and no licence key.</p>
+        <h3>1. Download it</h3>
+        <p>Get <code>SSIM.exe</code> from the <a class="inline" href="https://github.com/Santerxyz/SSIM/releases/latest" target="_blank" rel="noopener">Releases page</a>. You need Windows 10 or 11, 64-bit, and about 500 MB of free space.</p>
+        <div class="callout warn">
+          <p><b>Only download from that page.</b> SSIM handles your Steam passwords and 2FA secrets. A copy from a forum, a Discord message or any site offering an "unlocked" build is not worth the risk. If you want to confirm the file is genuine, see <a class="inline" href="#verify">verify your download</a>.</p>
+        </div>
+        <h3>2. Give it its own folder</h3>
+        <p>SSIM creates four folders next to itself the first time it runs: <code>data</code>, <code>Vault</code>, <code>logs</code> and <code>mafiles</code>. Put the exe somewhere sensible first, such as <code>C:\SSIM\</code>. Do not run it straight out of your Downloads folder.</p>
+        <h3>3. Set a master password</h3>
+        <p>On first launch SSIM asks you to choose one. It encrypts everything sensitive that SSIM stores on disk, and you will be asked for it each time the app starts.</p>
+        <div class="callout warn">
+          <p><b>There is no recovery.</b> Nobody can reset this password for you, because nothing about it leaves your machine. If you lose it, your saved accounts are gone and you will have to add them again. Put it in a password manager now.</p>
+        </div>
+        <h3>4. Open the dashboard</h3>
+        <p>SSIM opens its own window with the dashboard inside. Everything runs on your computer; the dashboard is not reachable from the internet.</p>
+      </section>
+
+      <section id="accounts">
+        <h2>Adding your accounts</h2>
+        <p class="intro">There are three ways in. Which one you pick decides whether SSIM can confirm trades for you.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Method</th><th>What you provide</th><th>Can it confirm trades?</th></tr></thead>
+            <tbody>
+              <tr><td><b>maFile</b></td><td>A <code>.maFile</code> in Steam Desktop Authenticator format</td><td>Yes</td></tr>
+              <tr><td><b>QR sign-in</b></td><td>Scan a code with the Steam mobile app</td><td>No, not until you add a maFile</td></tr>
+              <tr><td><b>Username and password</b></td><td>Credentials plus your Steam Guard code</td><td>No, not until you add a maFile</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The difference matters. Confirming a trade or a market listing needs the account's 2FA secret, which only the maFile carries. QR and password sign-in give SSIM a session, so it can read inventories and place orders, but Steam will still ask you to approve each confirmation on your phone.</p>
+        <p>You can start with QR or a password and attach a maFile later. The account upgrades in place and keeps its history.</p>
+        <div class="callout">
+          <p>Passwords used for sign-in are <b>not stored</b>. SSIM exchanges them once for a session token and keeps the token, not the password.</p>
+        </div>
+        <h3>Adding a lot of accounts at once</h3>
+        <p>Drop all your <code>.maFile</code> files into the <code>mafiles</code> folder next to the app, then pick the ones you want from the import screen.</p>
+        <p>A maFile carries the 2FA secrets but <b>not the account password</b>. To import passwords at the same time, put a file called <code>accounts.txt</code> in that same <code>mafiles</code> folder, with one account per line:</p>
+        <div class="code">
+          <div class="ch"><b>mafiles/accounts.txt</b><span>one per line</span></div>
+          <pre># lines starting with a hash are ignored
+my_account_01:correcthorsebattery
+my_account_02:hunter2:with:colons</pre>
+        </div>
+        <ul>
+          <li>The username is matched against your maFiles and is <b>not</b> case sensitive.</li>
+          <li>Only the first colon separates the two, so a password containing <code>:</code> works fine.</li>
+          <li>Blank lines and lines starting with <code>#</code> are skipped.</li>
+          <li>An account with no matching line is skipped from the import and tells you why.</li>
+          <li>Close the file in your editor before importing. If something else is holding it open, SSIM stops the import and names the file rather than importing half your fleet.</li>
+        </ul>
+        <p>Two other routes exist for bulk work:</p>
+        <ul>
+          <li><b>CSV import.</b> One row per account, as <code>username,password,shared_secret,identity_secret</code>. Useful when you have the secrets but not the maFiles themselves.</li>
+          <li><b>Import another vault.</b> If you already run SSIM elsewhere, merge that vault into this one.</li>
+        </ul>
+        <div class="callout warn">
+          <p><b>These files are plaintext passwords sitting on your disk.</b> Once the import has finished, delete <code>accounts.txt</code> and your CSV. SSIM does not delete them for you, and it does not need them again: the credentials are in the encrypted vault from that point on.</p>
+        </div>
+      </section>
+
+      <section id="organise">
+        <h2>Organising a fleet</h2>
+        <p class="intro">Once you have more than a handful of accounts, structure is what keeps it usable.</p>
+        <h3>Environments</h3>
+        <p>An environment is a group of accounts that share settings, most usefully a proxy. Every account belongs to one. You can read totals for a single environment, or across all of them at once.</p>
+        <h3>Folders</h3>
+        <p>Folders nest inside environments and are purely for your own organisation. Drag accounts between them, reorder them, and nest them as deep as you find useful.</p>
+        <h3>Three levels of view</h3>
+        <ul>
+          <li><b>Account.</b> One account's inventory, wallet and orders.</li>
+          <li><b>Environment master.</b> Everything in one environment rolled into a single total.</li>
+          <li><b>Global master.</b> Every account you have, in one figure.</li>
+        </ul>
+      </section>
+
+      <section id="inventory">
+        <h2>Inventory and trade locks</h2>
+        <p class="intro">SSIM loads inventories from your local cache instantly, then refreshes from Steam in the background.</p>
+        <p>A CS2 refresh pulls the full picture: your normal inventory, the contents of your storage units, and anything you currently have listed on the Market. TF2 inventories are supported as a read-only view.</p>
+        <h3>Where your items sit</h3>
+        <ul>
+          <li><b>Owned.</b> In the account's inventory and available.</li>
+          <li><b>Listed on Market.</b> Currently on sale, so not tradable.</li>
+          <li><b>In a storage unit.</b> Inside a casket. See <a class="inline" href="#storage">storage units</a>.</li>
+        </ul>
+        <h3>Trade locks</h3>
+        <p>Every item shows whether it is locked and the exact date the lock lifts, read from Steam's own "Tradable After" note. Identical items stack together, but only when they share the same unlock date, so a stack is never hiding a locked item behind a tradable one.</p>
+        <p>You can also set a manual hold on an account, which makes SSIM treat its items as locked until a date you choose. Useful when you want to leave something alone without remembering why.</p>
+        <div class="callout">
+          <p>A refresh will never wipe a known-good inventory because Steam returned an empty or partial answer. If the read looks wrong, SSIM keeps what it already had.</p>
+        </div>
+      </section>
+
+      <section id="storage">
+        <h2>Storage units</h2>
+        <p class="intro">Caskets are read properly rather than shown as a single opaque item.</p>
+        <p>SSIM lists what is inside each storage unit and counts it towards the account's total, so nothing hides. You can move items in and out, and SSIM checks afterwards that the move actually happened rather than assuming it did.</p>
+      </section>
+
+      <section id="trading">
+        <h2>Trading</h2>
+        <h3>Sending items</h3>
+        <p>Send from one account to any trade URL, or select items across a whole folder and send them all to one destination in a single run. Balances and trade locks are checked before anything is sent, and each offer is confirmed by 2FA on your machine. A progress bar shows the run as it goes.</p>
+        <h3>Offers, both directions</h3>
+        <p>The offer manager pulls every incoming and outgoing offer from all your accounts into one list, with each side priced from your cache so you can see what an offer is actually worth. Accept, decline or cancel individually or in batches.</p>
+        <h3>Auto-accept between your own accounts</h3>
+        <p>Optionally, SSIM can automatically accept incoming offers that came from accounts you manage. Offers from anyone else always wait for you.</p>
+        <div class="callout warn">
+          <p><b>Trades are final.</b> SSIM checks what it can before sending, but an accepted offer cannot be undone. Use the preview.</p>
+        </div>
+      </section>
+
+      <section id="market">
+        <h2>The Steam Market</h2>
+        <h3>Buying</h3>
+        <p>Search for an item, pull its current lowest asking price with one click, set your price and quantity, and place the order. SSIM confirms it for you. The order then rests on the Market until it fills, exactly as it would if you had placed it yourself.</p>
+        <p>You can also run a buy across a folder, where each account buys as much of one item as its wallet allows. Balances are re-checked before the run starts.</p>
+        <h3>Selling</h3>
+        <p>List at the current lowest price, undercut it, or name the exact amount you want to end up with. SSIM shows you what will actually land in the wallet after Steam's cut, before anything goes live. Select items across accounts and list them in one run.</p>
+        <div class="callout warn">
+          <p><b>Selling a lot at once needs proxies.</b> To price a sale, SSIM has to ask Steam what each item is currently going for. A big listing run means a lot of those lookups in a short window, and Steam will rate limit your IP address well before the run finishes.</p>
+          <p>Selling a handful of items is fine on a normal connection. If you are listing in bulk, set up <a class="inline" href="#proxies">proxies</a> first, so the price lookups are spread across several addresses instead of hammering one.</p>
+        </div>
+        <h3>Open orders</h3>
+        <p>One screen shows every live sell listing and every resting buy order across the fleet. Cancel any of them from there, individually or in bulk.</p>
+        <div class="callout">
+          <p>Every price is shown in that account's own Steam wallet currency, formatted correctly. There is no hidden conversion.</p>
+        </div>
+      </section>
+
+      <section id="tradeups">
+        <h2>Trade-up contracts</h2>
+        <p>SSIM can look through what you already own and work out which ten-item contracts are worth running, then build them for you.</p>
+        <div class="callout warn">
+          <p><b>Trade-ups cannot be reversed.</b> Ten items go in and one comes out. SSIM asks you to confirm before it runs one.</p>
+        </div>
+      </section>
+
+      <section id="pricing">
+        <h2>Prices and value</h2>
+        <h3>Where prices come from</h3>
+        <p>By default SSIM prices items from the Steam Market. If you have a CSFloat API key you can switch to CSFloat instead, per your preference. Prices fill in the background so browsing stays fast, and SSIM falls back to Steam if a CSFloat key is missing.</p>
+        <h3>Display currency</h3>
+        <p>Item values can be shown in USD or EUR whichever you prefer, using a live exchange rate. This is only how totals are displayed to you. Buying and selling always happens in the account's real wallet currency.</p>
+        <h3>Value history</h3>
+        <p>Every time an account refreshes, SSIM records what its items are worth and what is in its wallet. That builds a curve of your real holdings over time, per environment and across everything.</p>
+      </section>
+
+      <section id="proxies">
+        <h2>Proxies</h2>
+        <p class="intro">Optional for a few accounts. Effectively required once you are working in bulk.</p>
+        <p>Everything SSIM does goes through Steam's web endpoints, and Steam rate limits by IP address. A handful of accounts on one connection is fine. Refreshing a large fleet, or pricing a big list of items to sell, is not: you will be throttled partway through. Spreading that work across proxies is what keeps a bulk run from stalling.</p>
+        <p>Assign an HTTP or SOCKS proxy to a single account, or to a whole environment so every account in it uses the same one. A per-account proxy always wins over the environment's. With neither set, the account uses your normal connection.</p>
+        <p>A built-in checker shows each proxy's exit IP, country and response time, so you can see which ones are actually working before you rely on them.</p>
+        <div class="callout">
+          <p>Changing an account's proxy signs it out and back in, so the new connection is used from the next request onwards rather than halfway through a session.</p>
+        </div>
+      </section>
+
+      <section id="updates">
+        <h2>Updates</h2>
+        <p>SSIM checks GitHub for a newer release when it starts, and can install it before the app opens. The download is checked against a signature before anything is replaced, and a file that does not match is rejected rather than installed.</p>
+      </section>
+
+      <section id="verify">
+        <h2>Verify your download</h2>
+        <p class="intro">Optional. Skip this if you downloaded from the Releases page and are not worried.</p>
+        <p>Every release publishes a <code>SHA256SUMS</code> file alongside the exe. To check your copy matches, open PowerShell in the folder containing <code>SSIM.exe</code>:</p>
+        <div class="code">
+          <div class="ch"><b>Check the file's fingerprint</b><span>PowerShell</span></div>
+          <pre><span class="p">Get-FileHash</span> .\SSIM.exe -Algorithm SHA256</pre>
+        </div>
+        <p>Compare what it prints with the line in <code>SHA256SUMS</code> from the same release. If they differ, do not run the file, and please report it.</p>
+        <p>Releases are built automatically from the public source by GitHub, which also records where each file came from. If you have the GitHub CLI, you can confirm that too:</p>
+        <div class="code">
+          <div class="ch"><b>Confirm it was built from this repository</b><span>GitHub CLI</span></div>
+          <pre><span class="p">gh</span> attestation verify SSIM.exe -R Santerxyz/SSIM</pre>
+        </div>
+      </section>
+
+      <section id="upgrading">
+        <h2>Coming from a closed-beta build</h2>
+        <p class="intro">SSIM was never sold. During the closed beta it was gated by a licence server, which is how access was limited to invited testers. The beta is over, and from v1.5.0 that gate is gone. There is nothing to migrate.</p>
+        <ul>
+          <li>The licence check is gone. SSIM no longer contacts any server of ours, and no longer fingerprints your machine or holds a seat.</li>
+          <li>Any licence files you still have are simply ignored. You do not need to remove them.</li>
+          <li>Updates now come from GitHub instead of the old server.</li>
+          <li>Your accounts, vault and history carry over. Point the new exe at the same folder.</li>
+        </ul>
+      </section>
+
+      <section id="trouble">
+        <h2>Troubleshooting</h2>
+        <h3>I forgot my master password</h3>
+        <p>There is no way back. The password is what encrypts your saved accounts, and it is never sent anywhere, so there is no reset. Delete the <code>Vault</code> folder to start fresh and add your accounts again.</p>
+        <h3>SSIM will not start, or nothing happens</h3>
+        <p>Only one copy can run at a time. Check whether it is already running before starting another. If it still will not open, the <code>logs</code> folder next to the exe records what happened, and that file is the useful thing to attach when asking for help.</p>
+        <h3>An account will not sign in</h3>
+        <p>Usually the saved session has expired and needs the account signing in again. If the account uses a proxy, check the proxy is alive with the built-in checker first, since a dead proxy looks a lot like a login failure.</p>
+        <h3>Steam is rejecting requests or rate limiting me</h3>
+        <p>Slow down and spread the work out. Refreshing every account at once, repeatedly, is the usual cause. Per-account proxies help considerably at scale.</p>
+        <h3>My inventory looks wrong or incomplete</h3>
+        <p>Refresh the account again. SSIM deliberately keeps the last good inventory rather than replacing it with a partial answer from Steam, so a stale view usually means the last read did not complete.</p>
+        <h3>Something else</h3>
+        <p>Ask on <a class="inline" href="https://discord.gg/SBCTVqKTVc" target="_blank" rel="noopener">Discord</a>, or open an <a class="inline" href="https://github.com/Santerxyz/SSIM/issues" target="_blank" rel="noopener">issue on GitHub</a> where it stays findable for the next person.</p>
+      </section>
+
+    </main>
+  </div>
+
+  <footer>
+    <div class="wrap">
+      <div class="foot-grid">
+        <div class="foot-brand">
+          <a href="index.html" class="brand"><img src="img/logo.png" alt="SSIM" width="34" height="34" /><span class="bt">SSIM</span></a>
+          <p>Run your Steam accounts from one dashboard on your own machine: inventories, trade locks, trading and the Steam Market.</p>
+        </div>
+        <div class="foot-col">
+          <h5>Product</h5>
+          <a href="index.html#features">Features</a>
+          <a href="index.html#security">Security</a>
+          <a href="index.html#how">How it works</a>
+          <a href="index.html#faq">FAQ</a>
+        </div>
+        <div class="foot-col">
+          <h5>Docs</h5>
+          <a href="docs.html#start">Getting started</a>
+          <a href="docs.html#accounts">Adding accounts</a>
+          <a href="docs.html#trading">Trading</a>
+          <a href="docs.html#trouble">Troubleshooting</a>
+        </div>
+        <div class="foot-col">
+          <h5>Project</h5>
+          <a href="https://github.com/Santerxyz/SSIM" target="_blank" rel="noopener">Source on GitHub</a>
+          <a href="https://github.com/Santerxyz/SSIM/releases/latest" target="_blank" rel="noopener">Releases</a>
+          <a href="https://github.com/Santerxyz/SSIM/issues" target="_blank" rel="noopener">Issues</a>
+          <a href="https://discord.gg/SBCTVqKTVc" target="_blank" rel="noopener">Discord</a>
+          <a href="https://discord.gg/SBCTVqKTVc" target="_blank" rel="noopener">Donate</a>
+        </div>
+      </div>
+      <div class="foot-bottom">
+        <span>&copy; <span id="yr">2026</span> SSIM. Free software under the Apache License 2.0. Not affiliated with Valve Corporation or Steam.</span>
+        <span class="ver">apache-2.0</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
