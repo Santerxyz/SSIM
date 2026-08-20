@@ -258,14 +258,20 @@ export class TradeService {
   async getTrader(username: string): Promise<AccountTrader> {
     const key = username.toLowerCase();
     this.sessions.markUsed(username); // genuine use → keep out of the idle reaper (B40)
+    // EGRESS FRESHNESS comes before the cached-trader shortcut: the trader wraps a session whose
+    // agent is pinned to the exit it logged in over, so a proxy-rule edit (proxy⇄local, or a new
+    // pool) must force a re-login here — otherwise the next trade/market op silently rides the
+    // retired IP until someone restarts SSIM, which is exactly the reported bug.
+    const staleEgress = this.sessions.isEgressStale(username);
     const existing = this.traders.get(key);
-    if (existing?.ready) return existing;
+    if (existing?.ready && !staleEgress) return existing;
 
     const account = this.accounts.get(username);
     if (!account) throw new Error(`Account "${username}" not found`);
 
     let session = this.sessions.getSession(username);
-    if (!session || session.state !== SessionState.LOGGED_IN || !session.webSession) {
+    if (staleEgress || !session || session.state !== SessionState.LOGGED_IN || !session.webSession) {
+      if (staleEgress) logger.info(`[${username}] egress changed since login – re-logging in before use (proxy rules)`);
       session = await this.sessions.loginAccount(account);
     }
     await this.attach(username);
@@ -287,9 +293,13 @@ export class TradeService {
     if (!account) throw new Error(`Account "${username}" not found`);
     this.sessions.markUsed(username); // genuine money-op use → keep out of the idle reaper (B40)
 
+    // A session whose egress the rules have since retired counts as "no live login": a money op must
+    // never be placed from an exit the operator has already moved this account off (see isEgressStale).
+    const staleEgress = this.sessions.isEgressStale(username);
+    if (staleEgress) logger.info(`[${username}] pre-flight: egress changed since login – re-logging in (proxy rules)`);
     let session = this.sessions.getSession(username);
-    // No live login at all → full login (also establishes a fresh web session).
-    if (!session || session.state !== SessionState.LOGGED_IN) {
+    // No live login at all (or a retired egress) → full login, which also establishes a fresh web session.
+    if (staleEgress || !session || session.state !== SessionState.LOGGED_IN) {
       session = await this.sessions.loginAccount(account);
     }
     // Logged in but the sessionid cookie is missing / empty / stale → refresh cookies without a

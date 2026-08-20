@@ -35,6 +35,7 @@ test('H-TRD-009: getTrader rejects with the cookie-set error instead of returnin
   svc.traders = new Map<string, any>([['bota', trader]]);
   svc.sessions = {
     markUsed: () => undefined,
+    isEgressStale: () => false,   // 1.5.1 reuse guard: this stub session logged in over the CURRENT egress
     getSession: () => readySession(),
     loginAccount: async () => readySession(),
   };

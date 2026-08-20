@@ -12,6 +12,11 @@
 //  MoneyOpJournal, arms auto-accept, and classifies sent/confirmed/unconfirmed) — the
 //  engine adds NO new money path and NO retry/restart (no-band-aid). Locked/listed/
 //  unpriced/untradable items are skipped; a source is never sent items to itself.
+//
+//  1.5.1 — the operator can also narrow the pool BY ITEM NAME (includeNames / excludeNames). A run
+//  used to hand out whatever the packer reached for, so a knife or a rare case could leave the fleet
+//  simply because it was the line item that fit the ask. The filters are applied while the pool is
+//  built, not while it is packed, so an excluded item is ineligible for every offer in the plan.
 // ════════════════════════════════════════════════════════════════════════════
 import type { CS2Item } from '../types/inventory';
 import { sellerNetFromBuyer } from '../pricing/MarketPricing';
@@ -24,8 +29,11 @@ export interface DistributePlan {
   targets: DistributeTargetPlan[];
   trades: PlannedTrade[];
   totalNetCents: number; totalBuyerCents: number; tradeCount: number;
-  skipped: { unpriced: number; locked: number; listed: number; untradable: number };
+  skipped: { unpriced: number; locked: number; listed: number; untradable: number; filtered: number };
   poolExhausted: boolean;
+  /** Distinct item names the filters LEFT in the pool, richest unit value first — so the operator
+   *  can see exactly what a run is allowed to hand out (and copy an exact name into a filter). */
+  poolNames: Array<{ name: string; count: number; netCents: number }>;
 }
 export interface DistributeJob {
   running: boolean; cancelling: boolean; cancelled: boolean; stopReason?: string;
@@ -34,7 +42,40 @@ export interface DistributeJob {
   results: Array<{ source: string; target: string; offerId: string; status: string; escrowEndsAt?: string }>;
   startedAt: number | null; finishedAt: number | null;
 }
-export interface DistributeRequest { sources: string[]; targets: string[]; amountNetCents: number; game: 'cs2' | 'tf2'; minItemNetCents?: number; policy?: 'single' | 'multi' | 'underfill'; message?: string }
+export interface DistributeRequest {
+  sources: string[]; targets: string[]; amountNetCents: number; game: 'cs2' | 'tf2';
+  minItemNetCents?: number; policy?: 'single' | 'multi' | 'underfill'; message?: string;
+  /** Item-name allow-list. EMPTY MEANS EVERYTHING (an empty list is "no restriction", never "nothing"),
+   *  so an operator who types no filter gets the pre-1.5.1 behaviour byte for byte. */
+  includeNames?: string[];
+  /** Item-name deny-list. Beats includeNames on a conflict: a name the operator wrote under "never
+   *  send" is never sent, whatever else it also matches. */
+  excludeNames?: string[];
+}
+
+/** Case-insensitive SUBSTRING matching on marketHashName. Substring, not exact, because that is how
+ *  the operator thinks about a fleet: "Karambit" means every Karambit, "Souvenir" means every souvenir
+ *  package. Blank lines are dropped so a stray newline in a pasted list can't match everything. */
+export function normalizeNameFilter(raw: string[] | undefined): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of raw) {
+    const s = typeof r === 'string' ? r.trim().toLowerCase() : '';
+    if (!s || seen.has(s)) continue;
+    seen.add(s); out.push(s);
+  }
+  return out;
+}
+
+/** The one filter decision, shared by the plan and its tests. `include` empty ⇒ everything passes. */
+export function passesNameFilter(marketHashName: string, include: string[], exclude: string[]): boolean {
+  const name = (marketHashName ?? '').toLowerCase();
+  for (const e of exclude) if (name.includes(e)) return false;      // deny wins, always
+  if (!include.length) return true;
+  for (const i of include) if (name.includes(i)) return true;
+  return false;
+}
 
 /** Duck-typed collaborators — keeps DistributeService decoupled; the real InventoryService /
  *  TradeService satisfy these structurally at the wiring site. */
@@ -88,7 +129,14 @@ export function planDistribute(req: DistributeRequest, deps: DistributeDeps, now
   // Default MULTI (owner 2026-07-09): a target may be filled from SEVERAL source accounts —
   // one offer per source→target pair — instead of underfilling from a single source.
   const policy = req.policy ?? 'multi';
-  const skipped = { unpriced: 0, locked: 0, listed: 0, untradable: 0 };
+  const skipped = { unpriced: 0, locked: 0, listed: 0, untradable: 0, filtered: 0 };
+  // Item include/exclude (1.5.1, owner): a distribute run hands out whatever the pool holds, which
+  // means a knife or a rare case can leave the fleet just because the packer needed a big line item.
+  // The filters run at POOL-BUILD time, before any packing decision, so an excluded item is not merely
+  // deprioritised — it is not eligible for any offer in this plan, and preview and run share the code.
+  const include = normalizeNameFilter(req.includeNames);
+  const exclude = normalizeNameFilter(req.excludeNames);
+  const names = new Map<string, { name: string; count: number; netCents: number }>();
 
   const pool = new Map<string, PoolItem[]>();
   for (const u of req.sources) {
@@ -100,12 +148,19 @@ export function planDistribute(req: DistributeRequest, deps: DistributeDeps, now
       if (it.category === 'listed') { skipped.listed++; continue; }
       if (isLocked(it, now)) { skipped.locked++; continue; }
       if (it.price == null) { skipped.unpriced++; continue; }   // unpriced → fail-closed exclude
+      // Counted in ITEMS (assetIds), not stacks like the counters above it: "3 filtered" when the
+      // operator just excluded 300 cases held in 3 stacks would badly understate what the filter did.
+      // The surface that renders it says "item(s)" so the two units are never read as one.
+      if (!passesNameFilter(it.marketHashName, include, exclude)) { skipped.filtered += it.assetIds.length; continue; }
       // `it.price` is the cached USD-cent valuation (not a wallet amount), and USD's per-side
       // fee floor IS one minor unit — so the default floor is the right one here. Only the
       // per-wallet listing math (preview / mass-sell) passes a currency-specific floor.
       const netEach = sellerNetFromBuyer(it.price);
       if (netEach < minNet) continue;
       for (const assetId of it.assetIds) items.push({ assetId, netCents: netEach, buyerCents: it.price });
+      const seen = names.get(it.marketHashName);
+      if (seen) seen.count += it.assetIds.length;
+      else names.set(it.marketHashName, { name: it.marketHashName, count: it.assetIds.length, netCents: netEach });
     }
     items.sort((a, b) => b.netCents - a.netCents);
     if (items.length) pool.set(u, items);
@@ -155,6 +210,7 @@ export function planDistribute(req: DistributeRequest, deps: DistributeDeps, now
     totalNetCents: trades.reduce((s, t) => s + t.netCents, 0),
     totalBuyerCents: trades.reduce((s, t) => s + t.buyerCents, 0),
     tradeCount: trades.length, skipped, poolExhausted,
+    poolNames: [...names.values()].sort((a, b) => b.netCents - a.netCents || a.name.localeCompare(b.name)),
   };
 }
 

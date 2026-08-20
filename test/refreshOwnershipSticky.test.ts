@@ -25,6 +25,7 @@ function makeSvc(): { svc: any; store: { createdByCall?: boolean }; run: (fn: ()
   svc.sessions = {
     getSession: () => live,
     markUsed: () => undefined,
+    isEgressStale: () => false,   // 1.5.1 reuse guard: this stub session logged in over the CURRENT egress
     loginAccountOwned: async () => {
       live = { state: SessionState.LOGGED_IN, webSession: {} };
       return { session: live, createdByCall: true }; // this login created the session
@@ -53,6 +54,7 @@ test('reusing a PRE-EXISTING session (another op owns it) stays FALSE', async ()
   svc.sessions = {
     getSession: () => preExisting,   // always already live (owned elsewhere)
     markUsed: () => undefined,
+    isEgressStale: () => false,   // 1.5.1 reuse guard: this stub session logged in over the CURRENT egress
     loginAccountOwned: async () => { throw new Error('should not log in — session already live'); },
   };
   const store: { createdByCall?: boolean } = {};

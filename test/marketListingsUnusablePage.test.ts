@@ -118,6 +118,7 @@ test('H-TRD-121: refresh carries the cached Listed stack forward (no wipe) on a 
       loginAccountOwned: async () => ({ session, createdByCall: false }),
       logoutAccount: async () => undefined,
       markUsed: () => undefined,
+      isEgressStale: () => false,   // 1.5.1 reuse guard: this stub session logged in over the CURRENT egress
     };
     const mockAccounts: any = { get: (u: string) => ({ username: u, network: { type: 'localip' } }) };
     const inv = new InventoryService(mockSessions, mockAccounts);

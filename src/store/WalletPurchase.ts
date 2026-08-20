@@ -194,6 +194,52 @@ export async function readStoreOwnedPackages(ctx: StoreContext): Promise<{ apps:
  */
 export const CS2_PRIME_SUB_ID = 54029;
 
+/** 'unreadable' is NOT 'missing'. Steam answers an unreadable account exactly the way it answers one
+ *  that owns nothing, so collapsing the two is the mistake that buys a second copy — and, on the
+ *  read-only fleet report, the mistake that tells an operator to go and buy 40 licences they already
+ *  have. Every surface keeps the three states apart. */
+export type PrimeOwnership = 'owned' | 'missing' | 'unreadable';
+
+/**
+ * The ONE CS2-Prime ownership verdict.
+ *
+ * 1.5.1 added a read-only fleet check ("which of these accounts already has Prime?") next to the
+ * purchase. Two implementations of "does this account have Prime" that can disagree would be a
+ * liability: the report would say one thing and the money path do another. This function IS the
+ * report's implementation, and it reproduces step 2 of performWalletPurchase exactly, in the order
+ * that gate has always used:
+ *
+ *   1. licences unreadable            → 'unreadable'  (refuse to guess; the buy path refuses to buy)
+ *   2. store sees the Prime APP        → 'owned'
+ *   3. CM licence list holds the sub   → 'owned'
+ *   4. store sees the Prime PACKAGE    → 'owned'
+ *   5. otherwise                       → 'missing'
+ *
+ * `licensed` is the CM licence list (authoritative — it comes off the logged-in connection, not a
+ * cookie that may have gone stale); `storeOwned` only corroborates and may be null.
+ *
+ * performWalletPurchase deliberately still holds its own copy of these checks rather than calling in
+ * here: rewriting a money gate to add a read-only report is not a trade worth making, and its early
+ * return also skips the store fetch entirely when the licences are unreadable. The two are held in
+ * step by test/primeOwnershipParity.test.ts, which drives the REAL purchase choreography across
+ * every ownership input and asserts it reaches the same verdict this function does. If anyone
+ * changes one of them, that test fails.
+ */
+export function primeOwnership(
+  licensed: number[] | null,
+  storeOwned: { apps: number[]; packages: number[] } | null,
+): { state: PrimeOwnership; detail: string } {
+  if (licensed == null)
+    return { state: 'unreadable', detail: "could not read this account's licences, so SSIM cannot tell whether it already has Prime" };
+  if (storeOwned?.apps.includes(CS2_PRIME_APP_ID))
+    return { state: 'owned', detail: 'already has CS2 Prime (the Steam store reports it in the library)' };
+  if (licensed.includes(CS2_PRIME_SUB_ID))
+    return { state: 'owned', detail: 'already has CS2 Prime' };
+  if (storeOwned?.packages.includes(CS2_PRIME_SUB_ID))
+    return { state: 'owned', detail: 'already has CS2 Prime (the Steam store reports the package on the account)' };
+  return { state: 'missing', detail: 'does not have CS2 Prime' };
+}
+
 export interface CartLineItem {
   lineItemId: string;
   packageId: number;
@@ -384,22 +430,40 @@ export async function emptyCart(ctx: StoreContext, warnings: string[]): Promise<
 
   if (cart.webapiToken) {
     try {
-      await ctx.webapi('IAccountCartService/DeleteCart/v1', cart.webapiToken);
+      const res = await ctx.webapi('IAccountCartService/DeleteCart/v1', cart.webapiToken);
       const after = await readAccountCart(ctx);
       if (after && !after.items.length) { logger.info(`[prime] ${ctx.username}: emptied ${held} cart line(s) via DeleteCart`); return after; }
+      // The read-back is still the only thing that DECIDES — but the status is why it did not work,
+      // and it used to be thrown away. webapiPost sets validateStatus:()=>true, so an expired
+      // `webapi_token` comes back as a plain 401 and this whole branch failed in total silence: the
+      // operator saw "SSIM could not remove" with nothing to act on and no way to tell a dead token
+      // from a cart Steam refuses to release.
+      if (res.status !== 200) logger.warn(`[prime] ${ctx.username}: DeleteCart → HTTP ${res.status} — falling back to per-line removal`);
+      else logger.warn(`[prime] ${ctx.username}: DeleteCart returned 200 but the cart still holds ${after?.items.length ?? '?'} line(s) — falling back to per-line removal`);
       if (after) cart = after;
     } catch (e) { logger.warn(`[prime] ${ctx.username}: DeleteCart failed (${(e as Error).message}) — falling back to per-line removal`); }
+  } else {
+    logger.warn(`[prime] ${ctx.username}: no webapi_token on the cart page — DeleteCart unavailable, using per-line removal`);
   }
 
+  let posted = 0, postFailed = 0;
   for (const it of cart.items) {
     if (!it.lineItemId) continue;
-    try { await ctx.post('/cart/', { action: 'remove_line_item', cart: '-1', lineitem_gid: it.lineItemId, sessionid: ctx.sessionid }, { referer: `${STORE_ORIGIN}/cart/` }); }
-    catch { /* the re-read below is the only thing that decides */ }
+    try {
+      const rm = await ctx.post('/cart/', { action: 'remove_line_item', cart: '-1', lineitem_gid: it.lineItemId, sessionid: ctx.sessionid }, { referer: `${STORE_ORIGIN}/cart/` });
+      if (rm.status >= 400) { postFailed++; logger.warn(`[prime] ${ctx.username}: remove_line_item(${it.lineItemId}) → HTTP ${rm.status}`); }
+      else posted++;
+    }
+    catch (e) { postFailed++; logger.warn(`[prime] ${ctx.username}: remove_line_item(${it.lineItemId}) failed: ${(e as Error).message}`); }
   }
   const after = await readAccountCart(ctx);
   if (after && !after.items.length) { logger.info(`[prime] ${ctx.username}: emptied ${held} cart line(s) via remove_line_item`); return after; }
 
-  warnings.push(`this account's Steam cart still holds ${after?.items.length ?? held} item(s) that SSIM could not remove.`);
+  // Name what was actually tried. "Could not remove" on its own tells whoever reads the run nothing
+  // about whether Steam rejected the calls or accepted them and kept the cart anyway.
+  const stuck = after?.items.length ?? held;
+  logger.error(`[prime] ${ctx.username}: cart NOT emptied — ${stuck} line(s) remain after ${posted} accepted + ${postFailed} failed remove_line_item call(s)${after ? '' : ' (and the cart could not be re-read)'}`);
+  warnings.push(`this account's Steam cart still holds ${stuck} item(s) that SSIM could not remove.`);
   return null;
 }
 
@@ -426,6 +490,35 @@ export async function performWalletPurchase(
    *  exactly the op that is about to fire and nothing it merely considered. Returning a string REFUSES
    *  the commit with that reason (that is how a lingering entry from an earlier crash stops a re-fire).
    *  Absent ⇒ nothing is journalled, which is only ever acceptable in tests. */
+  beginCommit?: (about: { subId: number; totalMinor: number; currencyIso: string }) => string | null,
+): Promise<WalletPurchaseResult> {
+  // The choreography's own exits take the Prime line back out of the cart (see `abandon`). This
+  // wrapper covers the other way out: a THROW between the add and the charge — a 5xx from the
+  // checkout host, a shape error, a dropped connection. Those left the line behind too.
+  //
+  // `holdsPrime` is set the moment the line lands in the cart and cleared the instant the charge is
+  // authorised, so this can never fire after money has moved — past that point Steam owns the cart
+  // and SSIM must not touch it.
+  const cartState: CartState = { holdsPrime: false };
+  try {
+    return await purchaseChoreography(ctx, env, cartState, beginCommit);
+  } catch (e) {
+    if (cartState.holdsPrime) {
+      cartState.holdsPrime = false;
+      try { await emptyCart(ctx, []); }
+      catch { /* best-effort: the original failure is what the caller must see, not this one */ }
+    }
+    throw e;
+  }
+}
+
+/** Whether the account's cart currently holds the Prime line THIS call put there. See the wrapper. */
+interface CartState { holdsPrime: boolean }
+
+async function purchaseChoreography(
+  ctx: StoreContext,
+  env: WalletPurchaseEnv,
+  cartState: CartState,
   beginCommit?: (about: { subId: number; totalMinor: number; currencyIso: string }) => string | null,
 ): Promise<WalletPurchaseResult> {
   const username = ctx.username;
@@ -480,6 +573,29 @@ export async function performWalletPurchase(
 
   const add = await ctx.post('/cart/', { action: 'add_to_cart', subid: String(CS2_PRIME_SUB_ID), sessionid: ctx.sessionid, originating_snr: '' }, { referer: `${STORE_ORIGIN}/app/${CS2_APP_ID}/` });
   if (add.status >= 400) throw new StoreHttpError(add.status, `add-to-cart(${CS2_PRIME_SUB_ID}) → ${add.status}`);
+  cartState.holdsPrime = true;   // from here the cart holds our line — every exit below takes it back out
+
+  // ── ABANDONING, after the add and before the charge ───────────────────────────────────────────
+  // Take the Prime line out again, THEN report. Nothing has been charged on any path that reaches
+  // here, so removing what we just added is always the right move.
+  //
+  // Until 1.5.1 only the "cart price exceeds the wallet" branch did this, and the other fifteen exits
+  // — a failed cart read-back, a foreign package, an invalid cart, an inittransaction rejection, a
+  // card rail echoed instead of the wallet, wallet-too-low at the FINAL price, a journal refusal —
+  // all left Prime sitting in the account cart. That is not untidiness. The NEXT run reads a cart
+  // holding two Prime lines, is quoted double, and skips the account as "not enough": exactly the
+  // 26,58-against-13,34-EUR failure emptyCart() exists to prevent, arriving from the other
+  // direction. At fleet scale one batch of refusals poisoned every cart it touched.
+  const abandon = async (b: Partial<WalletPurchaseResult>, status: PurchaseStatus, detail: string): Promise<WalletPurchaseResult> => {
+    if (cartState.holdsPrime) {
+      cartState.holdsPrime = false;
+      // emptyCart pushes its own warning when it cannot clear, so a cart SSIM could not tidy is
+      // reported on the row rather than discovered by the next run.
+      try { await emptyCart(ctx, warnings); }
+      catch { warnings.push(`SSIM could not empty the Steam cart for this account after abandoning the purchase — clear it at ${STORE_ORIGIN}/cart/.`); }
+    }
+    return done(b, username, status, detail, warnings);
+  };
 
   // the VERIFICATION. Steam publishes the live cart, so we do not hope the cart holds what we put in
   // it — we read it back and require exactly one line, exactly the Prime package, valid, priced, in
@@ -489,28 +605,26 @@ export async function performWalletPurchase(
   if (!cart) {
     const body = typeof add.data === 'string' ? add.data : '';
     const dump = body ? dumpPage(body, username, 'cart') : null;
-    return done(base, username, 'refused', `SSIM could not read this account's Steam cart back after adding Prime, so it could not confirm what would be paid for. Nothing was charged.${dump ? ` Page saved to ${dump}.` : ''}`, warnings);
+    return await abandon(base, 'refused', `SSIM could not read this account's Steam cart back after adding Prime, so it could not confirm what would be paid for. Nothing was charged.${dump ? ` Page saved to ${dump}.` : ''}`);
   }
   if (cart.items.length !== 1)
-    return done(base, username, 'refused', `this account's Steam cart holds ${cart.items.length} item(s) (package ${cart.items.map((i) => i.packageId).join(', ') || 'none'}) instead of just CS2 Prime, so the order would not be for one Prime. Empty it at store.steampowered.com/cart/ and re-run. Nothing was charged.`, warnings);
+    return await abandon(base, 'refused', `this account's Steam cart holds ${cart.items.length} item(s) (package ${cart.items.map((i) => i.packageId).join(', ') || 'none'}) instead of just CS2 Prime, so the order would not be for one Prime. Empty it at store.steampowered.com/cart/ and re-run. Nothing was charged.`);
   const primeLine = cart.items[0];
   if (primeLine.packageId !== CS2_PRIME_SUB_ID)
-    return done(base, username, 'refused', `Steam put package ${primeLine.packageId} in the cart instead of CS2 Prime (${CS2_PRIME_SUB_ID}) — the package id may have changed. Nothing was charged.`, warnings);
+    return await abandon(base, 'refused', `Steam put package ${primeLine.packageId} in the cart instead of CS2 Prime (${CS2_PRIME_SUB_ID}) — the package id may have changed. Nothing was charged.`);
   if (!primeLine.isValid || !cart.isValid)
-    return done(base, username, 'refused', 'Steam marked this account\'s cart as not valid for checkout (usually a region or ownership restriction on the account). Nothing was charged.', warnings);
+    return await abandon(base, 'refused', 'Steam marked this account\'s cart as not valid for checkout (usually a region or ownership restriction on the account). Nothing was charged.');
   if (cart.currencyCode != null && wallet && cart.currencyCode !== wallet.currency)
-    return done(base, username, 'refused', `this account's Steam cart is priced in currency ${cart.currencyCode} but its wallet is currency ${wallet.currency} — a wallet cannot pay a differently-denominated cart. Nothing was charged.`, warnings);
+    return await abandon(base, 'refused', `this account's Steam cart is priced in currency ${cart.currencyCode} but its wallet is currency ${wallet.currency} — a wallet cannot pay a differently-denominated cart. Nothing was charged.`);
 
   const cartMinor = cart.subtotalMinor ?? primeLine.priceMinor;
   if (cartMinor == null || cartMinor <= 0)
-    return done(base, username, 'refused', 'Steam reported no cart price for CS2 Prime, so the charge could not be verified in advance. Nothing was charged.', warnings);
+    return await abandon(base, 'refused', 'Steam reported no cart price for CS2 Prime, so the charge could not be verified in advance. Nothing was charged.');
   Object.assign(base, { priceMinor: cartMinor });
   // The cart price is region-correct and authoritative, so an account that cannot afford Prime stops
   // here — and its cart is emptied again so nothing is left sitting in it.
-  if (cartMinor > walletBefore) {
-    await emptyCart(ctx, []);        // take it back out — never leave an unaffordable item behind
-    return done(base, username, 'skipped', `not bought — CS2 Prime costs ${money(cartMinor, iso)} for this account and its wallet holds ${money(walletBefore, iso)}. Top it up and re-run. Nothing was charged.`, warnings);
-  }
+  if (cartMinor > walletBefore)
+    return await abandon(base, 'skipped', `not bought — CS2 Prime costs ${money(cartMinor, iso)} for this account and its wallet holds ${money(walletBefore, iso)}. Top it up and re-run. Nothing was charged.`);
 
   // The account cart IS the cart now (Steam moved carts onto the account), so the checkout is opened
   // against it rather than a per-submit gid.
@@ -544,18 +658,18 @@ export async function performWalletPurchase(
     const detail = Number(initObj.purchaseresultdetail);
     logger.warn(`[prime] ${username}: inittransaction EResult=${initResult} detail=${initObj.purchaseresultdetail ?? '?'} (cart=${gidShoppingCart}/${bUseAccountCart})`);
     const hint = Number.isInteger(detail) ? purchaseDetailHint(detail) : '';
-    return done(base, username, 'refused', `Steam refused to open the purchase (EResult ${initResult}, detail ${initObj.purchaseresultdetail ?? '?'}). ${hint} Nothing was charged.`.replace(/\s+/g, ' ').trim(), warnings);
+    return await abandon(base, 'refused', `Steam refused to open the purchase (EResult ${initResult}, detail ${initObj.purchaseresultdetail ?? '?'}). ${hint} Nothing was charged.`.replace(/\s+/g, ' ').trim());
   }
   const transid = String(initObj.transid ?? '');
   if (!transid || transid === 'undefined' || transid === 'null')
-    return done(base, username, 'refused', 'Steam opened no transaction id — nothing was charged.', warnings);
+    return await abandon(base, 'refused', 'Steam opened no transaction id — nothing was charged.');
 
   // WALLET-ONLY GATE: Steam echoing a card/PayPal rail here means our PaymentMethod did not take.
   // Bailing now is free — the transaction is open but unpaid, and Steam expires it on its own.
   const echoed = Number(initObj.paymentmethod);
   if (isExternalPaymentMethod(echoed)) {
     logger.error(`[prime] ${username}: REFUSED — Steam selected payment method ${echoed} (external), not the wallet`);
-    return done({ ...base, transid }, username, 'refused', `Steam selected payment method ${echoed} instead of the Steam wallet. SSIM aborted before paying — nothing was charged, and no card was used.`, warnings);
+    return await abandon({ ...base, transid }, 'refused', `Steam selected payment method ${echoed} instead of the Steam wallet. SSIM aborted before paying — nothing was charged, and no card was used.`);
   }
 
   // ── 6) getfinalprice — Steam quotes the price, in this account's currency. This is the only
@@ -565,30 +679,36 @@ export async function performWalletPurchase(
   const fo = requireJsonObject(fp.data, 'getfinalprice');
   const fpResult = requireEResult(fo);
   if (fpResult !== 1)
-    return done({ ...base, transid }, username, 'refused', `Steam did not price the order (EResult ${fpResult}) — nothing was charged.`, warnings);
+    return await abandon({ ...base, transid }, 'refused', `Steam did not price the order (EResult ${fpResult}) — nothing was charged.`);
 
   const total = parseMinorUnits(fo.total);
   if (total == null)
-    return done({ ...base, transid }, username, 'refused', 'Steam did not report an order total, so the charge could not be verified in advance. Nothing was bought.', warnings);
+    return await abandon({ ...base, transid }, 'refused', 'Steam did not report an order total, so the charge could not be verified in advance. Nothing was bought.');
   const priced = { ...base, transid, priceMinor: total };
   if (total <= 0) {
     logger.warn(`[prime] ${username}: REFUSED — Steam priced the order at ${total}`);
-    return done(priced, username, 'refused', `Steam priced this order at ${money(total, iso)}, which cannot be right for CS2 Prime. Nothing was charged.`, warnings);
+    return await abandon(priced, 'refused', `Steam priced this order at ${money(total, iso)}, which cannot be right for CS2 Prime. Nothing was charged.`);
   }
   // Now that the store page told us what Prime actually costs here, a total ABOVE it means the cart
   // holds something else. Steam charging less is a sale and fine; charging more is not.
   // The cart said what this costs; the checkout must not exceed it. Less is a sale and fine.
   if (total > cartMinor || total > MAX_PURCHASE_MINOR) {
     logger.error(`[prime] ${username}: REFUSED — order total ${total} exceeds the cart price ${cartMinor} / ceiling ${MAX_PURCHASE_MINOR}`);
-    return done(priced, username, 'refused', `Steam's order total (${money(total, iso)}) is more than the ${money(cartMinor, iso)} its own cart quoted for CS2 Prime. Nothing was charged.`, warnings);
+    return await abandon(priced, 'refused', `Steam's order total (${money(total, iso)}) is more than the ${money(cartMinor, iso)} its own cart quoted for CS2 Prime. Nothing was charged.`);
   }
   // the coverage check the owner asked for: Steam's real price against this account's real balance.
   if (total > walletBefore)
-    return done(priced, username, 'skipped', `not bought — CS2 Prime costs ${money(total, iso)} for this account and its wallet holds ${money(walletBefore, iso)}. Top it up and re-run. Nothing was charged.`, warnings);
+    return await abandon(priced, 'skipped', `not bought — CS2 Prime costs ${money(total, iso)} for this account and its wallet holds ${money(walletBefore, iso)}. Top it up and re-run. Nothing was charged.`);
 
   // ── 7) the CHARGE. Journalled first, never retried. ──
   const refusal = beginCommit?.({ subId: CS2_PRIME_SUB_ID, totalMinor: total, currencyIso: iso });
-  if (refusal) return done(priced, username, 'refused', refusal, warnings);
+  if (refusal) return await abandon(priced, 'refused', refusal);
+
+  // THE BOUNDARY. Past this line the charge is authorised, so SSIM stops treating the cart as its own
+  // to tidy: Steam clears it on a completed order, and after a lost/ambiguous reply the cart is
+  // EVIDENCE of what was submitted — emptying it would destroy the one thing an operator reconciling
+  // that account can look at. Both `abandon` and the wrapper's catch are no-ops from here.
+  cartState.holdsPrime = false;
 
   let fin: StoreResponse;
   try {

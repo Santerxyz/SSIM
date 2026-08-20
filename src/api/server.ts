@@ -13,7 +13,7 @@ import { BatchJobService, JobRegistry } from '../core/BatchJobService';   // W3_
 import { DistributeService } from '../trading/DistributeService';   // W3_33: item distribution
 import { PaysafeService, PAYSAFE_AUTO_POLL_MS, PAYSAFE_MIN_MINOR, PAYSAFE_MAX_MINOR } from '../store/PaysafeService';   // W4_40: paysafecard top-up (Track B, flag-gated)
 import { walletEurMinor, assertSteamHttpsUrl } from '../store/StoreService';      // W4_40: EUR-native wallet + URL guard
-import { performWalletPurchase, ownedPackageIdsFrom, CS2_APP_ID, type WalletPurchaseResult } from '../store/WalletPurchase';   // W4_41: wallet-only CS2 Prime purchase
+import { performWalletPurchase, ownedPackageIdsFrom, readStoreOwnedPackages, primeOwnership, CS2_APP_ID, type WalletPurchaseResult, type PrimeOwnership } from '../store/WalletPurchase';   // W4_41: wallet-only CS2 Prime purchase (+ 1.5.1 read-only ownership check)
 import { GamePurchaseJournal, purchaseOpKey } from '../core/GamePurchaseJournal';   // W4_41: purchase double-spend dedup
 import { generateBilling } from '../trading/AccountTrader';                       // W4_40: random billing (shared with market buy)
 import { AccountImportService } from '../core/AccountImportService';
@@ -198,6 +198,10 @@ export function createDeps(): ApiDeps {
   // the rotation cursor) and fail-closes if the winning rule's pool is lost. When proxy rules aren't
   // authoritative this returns the same legacy value as before — fully backward compatible.
   sessions.setLoginNetworkResolver((a) => accounts.networkForLogin(a));
+  // …and the PEEK twin (no cursor advance) so every session-reuse site can tell whether a resident
+  // session's egress is still the one the rules resolve today. Without it a proxy⇄local switch only
+  // took effect after a restart, because the running jobs kept reusing the pre-change sessions.
+  sessions.setEgressPeekResolver((u) => accounts.get(u)?.network);
   const inventory = new InventoryService(sessions, accounts);
   const store     = new StoreService(sessions, accounts);   // W3_30: store-domain client (no routes here; W3_31 adds them)
   // One shared money-op journal: a crash mid buy/send can't be double-fired by a user retry after
@@ -710,6 +714,14 @@ export function createApp(deps: ApiDeps): Express {
   // non-secret host:port, so the UI can still dedupe / warn). Raw values are exposed ONLY by the
   // narrow per-rule /reveal pre-fill. Mutations eagerly rebuild the CSFloat client for any account
   // whose egress changed. Auto capability+CSRF-guarded like every /api/* mutation.
+  //
+  // Steam SESSIONS are deliberately NOT torn down here. A resident session pins its egress at login,
+  // so it must not be reused after a rule change — but destroying it from under a trade or a refresh
+  // that is mid-flight would break that operation to fix a config edit. Instead every session-reuse
+  // site (InventoryService.ensureSession, TradeService.getTrader / ensureWebSession) asks
+  // SessionManager.isEgressStale first and re-logs-in when the answer is yes, so the change is live
+  // on the NEXT operation with nothing interrupted — and the idle reaper retires whatever is left.
+  // This is what removed the "switching between proxy and local needs a restart" behaviour (1.5.1).
 
   const sanitizeProxyRule = (rule: ProxyRule): Record<string, unknown> => ({
     ...rule,
@@ -1344,10 +1356,76 @@ export function createApp(deps: ApiDeps): Express {
 
   app.post('/api/steam/:username/buy-prime', asyncHandler(async (req, res) => {
     try {
-      res.json(await buyPrimeOne(req.params.username, { force: req.body?.force === true }));
+      const result = await buyPrimeOne(req.params.username, { force: req.body?.force === true });
+      notePrimeFromPurchase(result);
+      res.json(result);
     } catch (e) {
       res.status((e as { status?: number }).status ?? 502).json({ error: `Prime purchase failed: ${(e as Error).message}` });
     }
+  }));
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  1.5.1 — CS2 Prime ownership, READ ONLY.
+  //
+  //  Owner: "would be great to see which accs already has prime in batch jobs". The purchase has
+  //  always refused to buy a second copy — performWalletPurchase reads the licences and returns
+  //  'owned' — but that answer only existed AFTER firing a money job at 500 accounts. This is the
+  //  same question asked without the purchase attached: log in, read the licences, report.
+  //
+  //  It spends nothing and changes nothing, but it is NOT free: each account costs one CM login, so
+  //  it runs serially through the batch engine exactly like the purchase does, and the answers are
+  //  cached so the buy-prime panel can show fleet coverage without re-checking anything.
+  //
+  //  Three states, never two: 'unreadable' is not 'missing'. Steam answers an account whose licences
+  //  we could not read exactly the way it answers one that owns nothing — reporting that as "needs
+  //  Prime" is how an operator ends up buying licences the fleet already holds.
+  // ════════════════════════════════════════════════════════════════════════
+  interface PrimeRow { username: string; status: PrimeOwnership; detail: string; checkedAt: string }
+  const primeCache = new Map<string, PrimeRow>();
+
+  /** A purchase outcome is a FRESH ownership reading — record it so the coverage view reflects a run
+   *  the moment it finishes, instead of showing pre-purchase state until someone re-checks. Only the
+   *  two outcomes that PROVE ownership update the cache; 'refused'/'skipped'/'unconfirmed' say nothing
+   *  about whether the account has Prime, so they leave the previous (or absent) answer alone. */
+  const notePrimeFromPurchase = (r: WalletPurchaseResult): void => {
+    if (r.status !== 'owned' && r.status !== 'purchased') return;
+    primeCache.set(r.username.toLowerCase(), {
+      username: r.username, status: 'owned', checkedAt: new Date().toISOString(),
+      detail: r.status === 'purchased' ? 'Prime bought by SSIM just now' : 'already has CS2 Prime',
+    });
+  };
+
+  /** SHARED helper (route + batch job). Reuses the store session so BOTH ownership sources the
+   *  purchase gate consults are read here too — the CM licence list and the store's userdata. */
+  const primeStatusOne = async (username: string, o: { refresh?: boolean } = {}): Promise<PrimeRow> => {
+    const account = accounts.get(username);
+    if (!account) throw Object.assign(new Error(`Account "${username}" not found`), { status: 404 });
+    const key = account.username.toLowerCase();
+    if (!o.refresh) {
+      const hit = primeCache.get(key);
+      // A cached 'unreadable' is not an answer, it is a failed read — never serve it as one.
+      if (hit && hit.status !== 'unreadable') return hit;
+    }
+    const row = await store.withStoreSession(account.username, async (ctx, session) => {
+      const licensed = ownedPackageIdsFrom((session.client as unknown as { licenses?: unknown }).licenses);
+      const storeOwned = licensed == null ? null : await readStoreOwnedPackages(ctx);
+      const { state, detail } = primeOwnership(licensed, storeOwned);
+      return { username: account.username, status: state, detail, checkedAt: new Date().toISOString() };
+    });
+    primeCache.set(key, row);
+    logger.info(`[prime-check] ${account.username}: ${row.status}`);
+    return row;
+  };
+
+  // Cached snapshot for the whole fleet — NO network, NO login. Drives the coverage strip in the
+  // Batch panel, which must be free to render on every repaint.
+  app.get('/api/steam/prime-status', (_req: Request, res: Response) => {
+    res.json({ rows: [...primeCache.values()] });
+  });
+
+  app.get('/api/steam/:username/prime-status', asyncHandler(async (req, res) => {
+    try { res.json(await primeStatusOne(req.params.username, { refresh: req.query.refresh === '1' || req.query.refresh === 'true' })); }
+    catch (e) { res.status((e as { status?: number }).status ?? 502).json({ error: `Prime check failed: ${(e as Error).message}` }); }
   }));
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1356,8 +1434,8 @@ export function createApp(deps: ApiDeps): Express {
   //  money-safety. Refresh + bans ship enabled; money/per-account jobs greyed until wired.
   // ════════════════════════════════════════════════════════════════════════
   // Batch registry — pruned to LEAN 2026-07-09 (owner). Batch = redeem-codes (bulk wallet codes),
-  // buy-prime (W4_41, wallet-funded CS2 Prime) + the dedicated Distribute button (in the scope panel,
-  // not a registry tile). REMOVED: refresh-inventory,
+  // buy-prime (W4_41, wallet-funded CS2 Prime), check-prime (1.5.1, its read-only twin) + the
+  // dedicated Distribute button (in the scope panel, not a registry tile). REMOVED: refresh-inventory,
   // check-bans, scan-games, add-free-game, edit-profile, promo-license, mass-buy (covered by Inventories →
   // Mass Buy), and the disabled distribute/mass-sell/offers-batch placeholder tiles. Shared backend helpers
   // are intentionally KEPT — their single-account routes and other UIs still call them.
@@ -1370,7 +1448,23 @@ export function createApp(deps: ApiDeps): Express {
     .add({ jobType: 'buy-prime', label: 'Buy CS2 Prime (Steam balance)', group: 'money', moneySafe: true, enabled: true, experimental: true,
       paramSchema: [],
       adapter: async ({ runInternal }) => {
-        runInternal(async (u) => buyPrimeOne(u));
+        runInternal(async (u) => {
+          const r = await buyPrimeOne(u);
+          notePrimeFromPurchase(r);   // a purchase outcome IS a fresh ownership reading — keep the coverage view honest
+          return r;
+        });
+        return { source: { kind: 'internal' } };
+      } })
+    // 1.5.1 — the read-only twin of buy-prime (owner: "see which accs already has prime"). Same scope,
+    // same serial shape, no cart and no charge: log in, read the licences, report per account. Run it
+    // before a purchase and the buy-prime panel shows exactly who still needs Prime.
+    // moneySafe:false is the literal truth here — the job has no money path at all, so it must not
+    // wear the '$' badge or trigger the spend-toned confirm. It stays `experimental` because a
+    // fleet-wide check is still a fleet-wide LOGIN, and that deserves a deliberate click.
+    .add({ jobType: 'check-prime', label: 'Check CS2 Prime ownership', group: 'read', moneySafe: false, enabled: true, experimental: true,
+      paramSchema: [],
+      adapter: async ({ runInternal }) => {
+        runInternal(async (u) => primeStatusOne(u, { refresh: true }));   // an explicit check always re-reads
         return { source: { kind: 'internal' } };
       } });
   // NOTE: paysafecard is not a BatchJobService fan-out job — it is human-in-the-loop (a browser handoff
@@ -1410,8 +1504,15 @@ export function createApp(deps: ApiDeps): Express {
     if (!sources.length) throw Object.assign(new Error('no known source accounts'), { status: 400 });
     if (!targets.length) throw Object.assign(new Error('no known target accounts'), { status: 400 });
     if (!Number.isFinite(amountNetCents) || amountNetCents <= 0) throw Object.assign(new Error('amountNetCents must be > 0'), { status: 400 });
+    // Item name filters (1.5.1). Capped so a pasted list can't turn one preview into a quadratic scan
+    // of the whole fleet cache; each entry is capped too (a marketHashName is never this long).
+    const nameList = (v: unknown): string[] | undefined => {
+      if (!Array.isArray(v)) return undefined;
+      const out = v.filter((s: unknown): s is string => typeof s === 'string').map((s) => s.trim().slice(0, 200)).filter(Boolean).slice(0, 500);
+      return out.length ? out : undefined;
+    };
     // Default MULTI (owner 2026-07-09): targets fill from several sources; 'underfill' is the opt-out.
-    return { sources, targets, amountNetCents, game: (body?.game === 'tf2' ? 'tf2' : 'cs2') as 'cs2' | 'tf2', minItemNetCents: Number(body?.minItemNetCents) || 0, policy: (body?.policy === 'underfill' ? 'underfill' : 'multi') as 'multi' | 'underfill', message: typeof body?.message === 'string' ? body.message : undefined };
+    return { sources, targets, amountNetCents, game: (body?.game === 'tf2' ? 'tf2' : 'cs2') as 'cs2' | 'tf2', minItemNetCents: Number(body?.minItemNetCents) || 0, policy: (body?.policy === 'underfill' ? 'underfill' : 'multi') as 'multi' | 'underfill', message: typeof body?.message === 'string' ? body.message : undefined, includeNames: nameList(body?.includeNames), excludeNames: nameList(body?.excludeNames) };
   };
   const distErr = (res: Response, e: unknown) => res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
   app.post('/api/inventory/distribute/preview', (req: Request, res: Response) => { try { res.json(distribute.preview(distReq(req.body ?? {}))); } catch (e) { distErr(res, e); } });

@@ -2,7 +2,7 @@ import EventEmitter from 'events';
 import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
 import { SessionState, type ManagedSession, type WebSession, type SessionManagerEvents } from '../types/session';
-import { AgentFactory, redactProxyCredentials } from '../network/AgentFactory';
+import { AgentFactory, redactProxyCredentials, normalizeProxy } from '../network/AgentFactory';
 import { proxyHealth, proxyKey, isResetClass } from '../network/ProxyHealth';
 import { chooseCmProtocol, noteCmOutcome, CmProtocolLabel, TCP_FAILURES_TO_DEMOTE } from '../network/CmProtocol';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
@@ -192,6 +192,11 @@ export class SessionManager extends EventEmitter {
    *  behaviour, fully backward compatible). */
   private loginNetworkResolver?: (account: AccountConfig) => AccountConfig['network'];
 
+  /** Optional PEEK resolver (wired to `u => accounts.get(u)?.network` in createDeps). Reports the
+   *  egress an account WOULD use right now WITHOUT advancing the rotation cursor. Only isEgressStale
+   *  reads it. Absent ⇒ staleness is unknowable ⇒ isEgressStale answers false (today's behaviour). */
+  private egressPeek?: (username: string) => AccountConfig['network'];
+
   /** Idle-session reaper handle. Unref'd so it never keeps the process alive. */
   private readonly reaperTimer?: NodeJS.Timeout;
 
@@ -207,6 +212,45 @@ export class SessionManager extends EventEmitter {
    *  createDeps. See loginNetworkResolver. */
   setLoginNetworkResolver(fn: (account: AccountConfig) => AccountConfig['network']): void {
     this.loginNetworkResolver = fn;
+  }
+
+  /** Wire the peek resolver (AccountManager.get → computed `network`). See egressPeek / isEgressStale. */
+  setEgressPeekResolver(fn: (username: string) => AccountConfig['network']): void {
+    this.egressPeek = fn;
+  }
+
+  /**
+   * Has this account's egress changed since its resident session logged in?
+   *
+   * A ManagedSession pins its egress at login: the SteamUser client and `httpsAgent` are built from
+   * the network resolved at that moment and CANNOT be re-pointed afterwards. Proxy-rule edits are
+   * applied lazily (AccountManager.activateProxyRules: "changes take effect on each account's NEXT
+   * login"), which is correct for an idle fleet — but every session-REUSING path (inventory refresh,
+   * getTrader, ensureWebSession) kept handing back the session logged in over the RETIRED exit. That
+   * is the "switching a job between proxy and local IP needs a restart" report: restarting SSIM was
+   * simply the only way to drop those sessions. Now the reuse sites ask this first and re-login
+   * instead, so a rule change is live on the very next operation.
+   *
+   * Answers false whenever it cannot be sure — no peek resolver, no resident session, a session
+   * with no pinned network, or a peek that returns undefined (pool-lost: performLogin fail-closes
+   * that on its own; forcing a re-login here would only convert it into a hard error mid-job).
+   */
+  isEgressStale(username: string): boolean {
+    if (!this.egressPeek) return false;
+    const session = this.sessions.get(username.toLowerCase());
+    const pinned = session?.account?.network;
+    if (!pinned) return false;
+    let current: AccountConfig['network'];
+    try { current = this.egressPeek(username); }
+    catch { return false; }                       // a resolver that throws must never break an op
+    if (!current) return false;                   // pool-lost / unknown → leave the decision to login
+    if (current.type !== pinned.type) return true;
+    // Same comparison AccountManager.sameEgress uses, credentials INCLUDED: a rotated user:pass on the
+    // same host:port is a different identity to Steam and needs a rebuilt agent just as much as a
+    // different host would. normalizeProxy is total (it falls back to prefixing a scheme), never throws.
+    const norm = (n: NonNullable<AccountConfig['network']>): string =>
+      n.type === 'proxy' ? normalizeProxy(n.value) : n.value;
+    return norm(current) !== norm(pinned);
   }
 
   /** Marks a session as actively USED right now (called at every genuine op entry) so the idle

@@ -23,6 +23,7 @@ test('S25: concurrent same-account refresh flows keep ISOLATED ownership (no clo
     getSession: () => { getCalls++; return getCalls === 1 ? undefined : { state: SessionState.LOGGED_IN, webSession: {} }; },
     loginAccountOwned: async () => { await new Promise((r) => setImmediate(r)); return { session: {}, createdByCall: true }; },
     markUsed: () => {},
+    isEgressStale: () => false,   // 1.5.1 reuse guard: this stub session logged in over the CURRENT egress
   };
 
   const storeA: { createdByCall?: boolean } = {};
@@ -45,6 +46,7 @@ test('S25: outside a refresh worker (no run context) ensureSession records nothi
     getSession: () => ({ state: SessionState.LOGGED_IN, webSession: {} }),
     loginAccountOwned: async () => ({ session: {}, createdByCall: true }),
     markUsed: () => {},
+    isEgressStale: () => false,   // 1.5.1 reuse guard: this stub session logged in over the CURRENT egress
   };
   // No ownershipCtx.run → getStore() is undefined → ensureSession must not throw (it just skips recording).
   await assert.doesNotReject(svc.ensureSession('bob'));

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { InventoryStore } from './InventoryStore';
-import { InventoryManager } from './InventoryManager';
+import { InventoryManager, GAMES } from './InventoryManager';
 import { fetchListedItems } from './MarketListings';
 import { bucketOf } from './MarketModel';
 import type { SessionManager } from './SessionManager';
@@ -204,7 +204,12 @@ export class InventoryService {
     const key = `${game}:${username.toLowerCase()}`;
     const running = this.inFlight.get(key);
     if (running) return running;
-    const p = this.doRefreshOne(username, game).finally(() => {
+    // withListings: a USER-FACING refresh must read the market too, or an item sold on the market
+    // stays in the inventory as Owned forever (owner report 2026-08-20 — TF2 items "still show in
+    // inventory" after selling). forceRefresh deliberately does NOT ask for it: that path is the
+    // buy-verification before/after diff, where an extra market round-trip per account would cost
+    // real time at mass-buy scale and cannot change the answer (a just-bought item is not listed).
+    const p = this.doRefreshOne(username, game, { withListings: true }).finally(() => {
       if (this.inFlight.get(key) === p) this.inFlight.delete(key);
     });
     this.inFlight.set(key, p);
@@ -543,6 +548,57 @@ export class InventoryService {
   }
 
   /**
+   * Reads this app's market listings and folds them into a freshly-fetched inventory, IN PLACE:
+   * every listed asset is subtracted from what the inventory fetch returned (one asset = one bucket)
+   * and the listing rows are appended as the 'listed' bucket. The narrow twin of steps 1/3/4 of the
+   * CS2 path, for the single-context games.
+   *
+   * Best-effort by construction, and the failure mode is the one that matters: when the fetch throws
+   * (429, proxy blip, market subsystem hiccup) the PREVIOUS listed bucket is carried forward rather
+   * than an empty one written. A transient miss must never silently un-list items — that is the same
+   * rule the CS2 path's `listingsOk` guard enforces, and the reason a failed read is not "no listings".
+   */
+  private async applyListedBucket(username: string, game: GameId, session: ManagedSession, inv: AccountInventory): Promise<void> {
+    const appId = GAMES[game].appId;
+    let listed: CS2Item[] = [];
+    let listedAssetIds = new Set<string>();
+    let listingsOk = true;
+    try {
+      const fetched = await this.retrying(() => fetchListedItems(session, appId), 'mylistings', username);
+      listed = InventoryManager.stack(fetched.items);
+      listedAssetIds = fetched.assetIds;
+      if (fetched.truncated) inv.partial = true;   // page-capped → the record is INCOMPLETE (C12 parity)
+    } catch (err) {
+      listingsOk = false;
+      logger.warn(`[${username}] ${game} market-listings fetch failed (listed bucket unread this pass): ${(err as Error).message}`);
+    }
+
+    if (listingsOk) {
+      // Subtract FIRST: a listed asset that is still in context 2 (a listing awaiting its mobile
+      // confirmation) would otherwise be counted twice — once Owned, once Listed.
+      let removed = 0;
+      const kept: CS2Item[] = [];
+      for (const stack of inv.items) {
+        if (stack.category === 'listed') continue;                 // rebuilt from the live read below
+        const ids = stack.assetIds.filter((id) => !listedAssetIds.has(String(id)));
+        removed += stack.assetIds.length - ids.length;
+        if (!ids.length) continue;
+        kept.push({ ...stack, assetIds: ids, quantity: ids.length });
+      }
+      inv.items = kept;
+      if (removed) logger.info(`[${username}] ${game}: ${removed} asset(s) are on the market — moved Owned→Listed`);
+    } else {
+      // Unread: keep whatever the cache already believed is listed, and leave the owned side alone.
+      const prevListed = this.storeFor(game).get(username)?.items.filter((i) => i.category === 'listed') ?? [];
+      listed = prevListed;
+      if (prevListed.length) logger.warn(`[${username}] ${game} market listings unread this pass – kept ${prevListed.length} cached listed stack(s) (no wipe)`);
+    }
+
+    if (listed.length) inv.items.push(...listed);
+    inv.totalItems = inv.items.reduce((n, i) => n + (i.quantity || 0), 0);
+  }
+
+  /**
    * Optimistic post-mass-sell cache update: moves the given assets Owned→Listed in the CS2
    * cache IMMEDIATELY after their listings are created/confirmed, so the panel reflects the
    * sale at once instead of waiting for (and depending on) a clean follow-up refresh. The
@@ -599,7 +655,7 @@ export class InventoryService {
     }
   }
 
-  private async doRefreshOne(username: string, game: GameId): Promise<AccountInventory> {
+  private async doRefreshOne(username: string, game: GameId, opts: { withListings?: boolean } = {}): Promise<AccountInventory> {
     const session = await this.ensureSession(username);
 
     // Fetch + parse + stack, with a retry layer for TRANSIENT failures (429 /
@@ -624,6 +680,12 @@ export class InventoryService {
       }
     }
     if (!inv) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+
+    // The MARKET leg. Without it this path only ever knew what context 2 holds, so an item on the
+    // market was either invisible or — while its listing awaits mobile confirmation, when the asset
+    // is still sitting in context 2 — reported as plain Owned. Either way it never became 'listed',
+    // which is why a sold TF2 item kept showing up in the inventory (owner 2026-08-20).
+    if (opts.withListings) await this.applyListedBucket(username, game, session, inv);
 
     // Persist the Steam wallet balance (needs a live session, so capture it here).
     // Attach the wallet whenever the 'wallet' event fired — INCLUDING accounts with NO Steam
@@ -690,7 +752,10 @@ export class InventoryService {
     // e.g. a single-account API refresh that never releases) — never a shared per-account map.
     const store = this.ownershipCtx.getStore();
     const existing = this.sessions.getSession(username);
-    if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession) {
+    // A session logged in over an exit the proxy rules have since retired is NOT reusable — its client
+    // and agent are pinned to the old egress. Fall through to a fresh login instead (which resolves
+    // the CURRENT network) so a proxy⇄local change is live on the next refresh, not after a restart.
+    if (existing && existing.state === SessionState.LOGGED_IN && existing.webSession && !this.sessions.isEgressStale(username)) {
       // Reused a live session — not ours to release. STICKY: never downgrade a `true` a PRIOR
       // ensureSession call in this same refresh already set. The both-games refresh calls ensureSession
       // twice per account (CS2 creates the session → true; the TF2 leg then reuses it): a plain

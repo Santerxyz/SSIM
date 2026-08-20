@@ -100,7 +100,7 @@ substituted binary, and the source being readable does not help there.
 
 ## Testing
 
-293 test files under `test/`. They are the best documentation of intended
+298 test files under `test/`. They are the best documentation of intended
 behaviour in the repo. When a comment and a test disagree, trust the test.
 
 Several are *source scans* rather than behavioural tests: they read `src/` as

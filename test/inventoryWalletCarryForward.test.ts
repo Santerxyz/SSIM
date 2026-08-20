@@ -122,6 +122,7 @@ function svcForCs2(sessionWallet: { hasWallet: boolean; currency: number; balanc
     getSession: () => session, isLive: () => true,
     loginAccount: async () => session, loginAccountOwned: async () => ({ session, createdByCall: false }),
     logoutAccount: async () => undefined, markUsed: () => undefined,
+    isEgressStale: () => false,   // 1.5.1 reuse guard: this stub session logged in over the CURRENT egress
   };
   const accounts: any = { get: (u: string) => ({ username: u, network: { type: 'localip' } }) };
   const svc = new InventoryService(sessions, accounts);

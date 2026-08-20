@@ -69,8 +69,9 @@ const state = {
   accountsPaysafe: null,        // W4_40: username whose single-account paysafecard form is open
   accPaysafeSession: null,      // W4_40: the single-account paysafecard session (open→verify)
   accTree: { targets: null, expanded: new Set(), search: '', _loading: false }, // Accounts sidebar folder tree data/state
-  batch: { registry: [], scopeEnvs: new Set(), scopeFolders: new Set(), scopeAccounts: new Set(), expanded: new Set(), search: '', targets: null, jobType: null, params: {}, status: null, timer: null, history: [], dist: { sel: { envs: new Set(), folders: new Set(), accounts: new Set(), expanded: new Set(), search: '' }, amount: '', minItem: '', plan: null, status: null, timer: null }, paysafe: { session: null, busy: false, timer: null, tierMinor: 0, freeAmount: '', _attached: false }, _loading: false, _targetsLoading: false, _histLoaded: false }, // W3_32 (micro-selection) + inline Distribute + sequential paysafecard jobs
+  batch: { registry: [], scopeEnvs: new Set(), scopeFolders: new Set(), scopeAccounts: new Set(), expanded: new Set(), search: '', targets: null, jobType: null, params: {}, status: null, timer: null, history: [], dist: { sel: { envs: new Set(), folders: new Set(), accounts: new Set(), expanded: new Set(), search: '' }, amount: '', minItem: '', game: null, include: [], exclude: [], picker: null, pickerSearch: '', showPool: false, plan: null, status: null, timer: null }, paysafe: { session: null, busy: false, timer: null, tierMinor: 0, freeAmount: '', _attached: false }, _loading: false, _targetsLoading: false, _targetsGen: 0, _histLoaded: false }, // W3_32 (micro-selection) + inline Distribute + sequential paysafecard jobs
   paysafeTiers: {},             // K3: username → { currency, tiers[] } | 'loading' | { error } — Steam's real top-up amount options
+  prime: { rows: {}, loaded: false, _loading: false },   // 1.5.1: lowercased username → CS2 Prime ownership row (server cache, read-only)
   proxies: { rules: [], authoritative: false, loaded: false, _loading: false, modal: null, targets: null, preview: null, previewSearch: '', previewFilter: 'all' }, // Proxies module (v5)
   usdToEur: 0.92,               // live rate from /api/exchange-rate (fallback 0.92)
 };
@@ -551,9 +552,14 @@ if (typeof window !== 'undefined') {
 
 // Inventories are cached server-side keyed by lowercase username – normalise lookup.
 /** Inventory of the ACTIVE game for a user – all views read through this. */
-function invFor(u) {
+function invFor(u) { return invForGame(u, state.game); }
+
+/** invFor for an EXPLICIT game rather than the active Inventories tab. Batch Jobs hides the CS2/TF2
+ *  toggle (setNav: it is an Inventories-only control), so anything reachable from there has to name
+ *  the game it means instead of inheriting an invisible one. */
+function invForGame(u, game) {
   if (!u) return undefined;
-  const src = state.game === 'tf2' ? state.tf2Inventories : state.inventories;
+  const src = game === 'tf2' ? state.tf2Inventories : state.inventories;
   return src[u] || src[u.toLowerCase()];
 }
 
@@ -632,7 +638,23 @@ async function reloadAll() {
     const inv = invMap[k];
     storeCs2Inv(inv);
   }
-  state.accTree.targets = null;   // structure may have changed → the Accounts tree refetches on next paint
+  invalidateStructureCaches();
+}
+
+/** Every cached copy of the env → folder → account tree, dropped in one place.
+ *
+ *  Both consumers are listed here ON PURPOSE. The Batch scope tree used to be missed, so a freshly
+ *  imported account stayed invisible in Batch Jobs (and in the Distribute source picker, which
+ *  shares the same data) until the whole app was restarted — the account existed everywhere else,
+ *  the batch simply could never see it. Any structural change (import, add, move, delete) must land
+ *  here, not on one tree at a time. */
+function invalidateStructureCaches() {
+  state.accTree.targets = null;                 // Accounts tree
+  state.batch.targets = null;                   // Batch scope tree + Distribute source picker
+  state.batch._targetsGen = (state.batch._targetsGen || 0) + 1;   // a fetch in flight is now stale — its answer is dropped
+  // Already looking at Batch when the import landed? Re-mount it so the new accounts appear now
+  // rather than on the next visit (the fetch is lazy, driven by renderBatchModule).
+  if (state.nav === 'batch') renderBatchModule();
 }
 
 // ── Inventory ingestion (single funnel so the GLOBAL wallet store stays current) ──
@@ -1228,6 +1250,7 @@ async function refreshEnv() {
   ]);
   state.tree = tree;
   state.allAccounts = normalizeAccounts(allAccounts);
+  invalidateStructureCaches();   // folders/accounts may have moved → the Batch + Accounts trees must refetch
   renderSidebar();
   renderMain();
 }
@@ -2407,8 +2430,9 @@ function renderAccountsEnv() {
 }
 
 /** Lazy structural data for the Accounts tree (same /api/batch/targets shape the Batch scope
- *  tree uses: environments + folders(parentId) + accounts(folderId)). reloadAll() nulls it so
- *  any structural change (add/move/delete) refetches on the next paint. */
+ *  tree uses: environments + folders(parentId) + accounts(folderId)). invalidateStructureCaches()
+ *  nulls it — alongside the Batch scope tree's copy — so any structural change (import/add/move/
+ *  delete) refetches on the next paint. */
 function accTreeData() {
   const t = state.accTree;
   if (!t.targets && !t._loading) {
@@ -3386,9 +3410,19 @@ function renderBatchModule() {
   }
   if (!state.batch.targets && !state.batch._targetsLoading) {
     state.batch._targetsLoading = true;
-    api('/api/batch/targets').then((r) => { state.batch.targets = r && r.environments ? r : { environments: [], folders: [], accounts: [] }; state.batch._targetsLoading = false; paintBatch(); }).catch(() => { state.batch._targetsLoading = false; });
+    // The generation is captured BEFORE the request and re-checked on arrival: an invalidation that
+    // lands mid-flight (an import finishing while this very screen is open) must not have its fresh
+    // tree overwritten by the older answer still on the wire.
+    const gen = state.batch._targetsGen || 0;
+    api('/api/batch/targets').then((r) => {
+      state.batch._targetsLoading = false;
+      if ((state.batch._targetsGen || 0) !== gen) { renderBatchModule(); return; }   // superseded → refetch
+      state.batch.targets = r && r.environments ? r : { environments: [], folders: [], accounts: [] };
+      paintBatch();
+    }).catch(() => { state.batch._targetsLoading = false; });
   }
   if (!state.batch._histLoaded) { state.batch._histLoaded = true; loadBatchHistory(); }
+  if (!state.prime.loaded && !state.prime._loading) loadPrimeStatus();
   if (state.batch.status && state.batch.status.running && !state.batch.timer) pollBatch();
   // The paysafecard sub-run needs the SAME re-arm as the headless job poll above. pollPaysafeStatus()
   // self-clears the moment the operator navigates away (and a human-in-the-loop run gives them plenty of
@@ -3532,7 +3566,8 @@ function paintBatch() {
   const b = state.batch;
   if (el.batchHeader) el.batchHeader.innerHTML = `<div><h2 class="t28 font-bold text-white tracking-tight">Batch Jobs</h2><p class="t14 text-slate-500 mt-1">Pick a scope, pick a job, run it across many accounts with one progress view.</p></div>`;
   if (!el.batchBody) return;
-  const scopeCount = batchScopeUsernames().length;
+  const scopeUsernames = batchScopeUsernames();   // resolved ONCE per paint — it walks every account × folder
+  const scopeCount = scopeUsernames.length;
   const running = !!(b.status && b.status.running);
 
   const anySel = b.scopeEnvs.size || b.scopeFolders.size || b.scopeAccounts.size;
@@ -3587,8 +3622,12 @@ function paintBatch() {
       }).join('');
     } else if (def) paramInner = `<p class="t12 text-slate-500">No parameters — runs on the ${fmtCount(scopeCount)}-account scope.</p>`;
     else paramInner = `<p class="t12 text-slate-600">Select a job above.</p>`;
+    // The two Prime jobs lead with fleet coverage: "which of these already has Prime?" is the question
+    // the operator has before running either one, and it must be answerable without spending anything.
+    const primeStrip = (b.jobType === 'buy-prime' || b.jobType === 'check-prime')
+      ? primeCoverageHtml(scopeUsernames, b.jobType) : '';
     const canRun = !!(def && def.enabled && scopeCount > 0 && !running);
-    runSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4"><h3 class="t14 font-bold text-white mb-3">3 · Run</h3>${paramInner}
+    runSection = `<section class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 mb-4"><h3 class="t14 font-bold text-white mb-3">3 · Run</h3>${primeStrip}${paramInner}
       <div class="mt-3 flex gap-2">
         <button ${canRun ? 'data-batch-run' : 'disabled'} class="btn ${canRun ? (def && def.moneySafe ? 'bg-brand text-white' : 'btn-secondary') : 'btn-secondary opacity-50 cursor-not-allowed'} btn-sm"><i class="fa-solid fa-play"></i><span>Run</span></button>
         ${running ? '<button data-batch-cancel class="btn btn-secondary btn-sm"><i class="fa-solid fa-stop"></i><span>Cancel</span></button>' : ''}
@@ -3626,18 +3665,27 @@ const BATCH_ROW_TONE = {
   refused:     ['text-amber-400',   'not bought'],
   unconfirmed: ['text-red-400',     'UNCONFIRMED'],
 };
+// The read-only Prime check reports OWNERSHIP, not a purchase outcome, so it gets its own wording.
+// 'unreadable' is deliberately its own row and never folded into "no Prime" — an account SSIM could
+// not read is not an account that needs buying.
+const BATCH_ROW_TONE_PRIME = {
+  owned:      ['text-sky-400',     'has Prime'],
+  missing:    ['text-emerald-400', 'no Prime'],
+  unreadable: ['text-amber-400',   'could not read'],
+};
 function batchResultRows(st) {
   const rows = st && st.result && Array.isArray(st.result.rows) ? st.result.rows : null;
   if (!rows || !rows.length) return '';
+  const tones = st.jobType === 'check-prime' ? BATCH_ROW_TONE_PRIME : BATCH_ROW_TONE;
   // Summary first: on a 500-account run nobody scrolls a list to find the one that needs attention.
   const counts = {};
   for (const r of rows) counts[r && r.status] = (counts[r && r.status] || 0) + 1;
-  const summary = Object.keys(BATCH_ROW_TONE).filter((k) => counts[k]).map((k) => {
-    const [tone, label] = BATCH_ROW_TONE[k];
+  const summary = Object.keys(tones).filter((k) => counts[k]).map((k) => {
+    const [tone, label] = tones[k];
     return `<span class="${tone}">${fmtCount(counts[k])} ${escapeHtml(label)}</span>`;
   }).join('<span class="text-slate-700 mx-1.5">·</span>');
   const list = rows.slice(-200).reverse().map((r) => {
-    const [tone, label] = BATCH_ROW_TONE[r && r.status] || ['text-slate-400', String((r && r.status) || '?')];
+    const [tone, label] = tones[r && r.status] || ['text-slate-400', String((r && r.status) || '?')];
     return `<div class="flex gap-2 items-baseline py-0.5 border-b border-slate-800/40">
       <span class="font-mono text-slate-300 shrink-0" style="min-width:9rem">${escapeHtml(String((r && r.username) || ''))}</span>
       <span class="${tone} shrink-0" style="min-width:6.5rem">${escapeHtml(label)}</span>
@@ -3684,6 +3732,21 @@ function onBatchClick(e) {
   if ((n = t.closest('[data-dist-folder]')))  { toggleInSet(state.batch.dist.sel.folders, n.dataset.distFolder); return paintBatchKeepScroll(); }
   if ((n = t.closest('[data-dist-acct]')))    { toggleInSet(state.batch.dist.sel.accounts, n.dataset.distAcct); return paintBatchKeepScroll(); }
   if (t.closest('[data-dist-clear]'))         { const s = state.batch.dist.sel; s.envs.clear(); s.folders.clear(); s.accounts.clear(); return paintBatchKeepScroll(); }
+  if ((n = t.closest('[data-dist-game]')))     { return distSetGame(n.dataset.distGame); }
+  if (t.closest('[data-dist-pool-toggle]'))   { state.batch.dist.showPool = !state.batch.dist.showPool; return paintBatchKeepScroll(); }
+  // Item-filter picker: add a pick, drop a chip, close the list.
+  if ((n = t.closest('[data-dist-pick]')))    { return distPickerAdd(n.dataset.distPickKind, n.dataset.distPick); }
+  if ((n = t.closest('[data-dist-chip]')))    { return distPickerRemove(n.dataset.distChipKind, n.dataset.distChip); }
+  if (t.closest('[data-dist-pick-close]'))    { const d = state.batch.dist; d.picker = null; d.pickerSearch = ''; return paintBatchKeepScroll(); }
+  // CLICKING the box opens the full list. Without this the only way in was to type a character,
+  // which is exactly wrong for the operator who does not know what the items are called.
+  if ((n = t.closest('[data-dist-pick-search]'))) {
+    const kind = n.dataset.distPickSearch;
+    if (state.batch.dist.picker === kind) return;      // already open — let the click place the caret
+    state.batch.dist.picker = kind;
+    state.batch.dist.pickerSearch = '';
+    return repaintBatchKeepingPickerFocus(kind);
+  }
   if (t.closest('[data-batch-dist-preview]')) return batchDistPreview();
   if (t.closest('[data-batch-dist-run]'))     return batchDistRun();
   if (t.closest('[data-batch-dist-cancel]'))  return batchDistCancel();
@@ -3713,6 +3776,15 @@ function onBatchInput(e) {
   }
   const d = e.target.closest && e.target.closest('[data-batch-dist]');
   if (d) { state.batch.dist[d.dataset.batchDist] = e.target.value; return; }   // no repaint → no focus loss
+  // The item-filter search DOES repaint (the candidate list has to re-filter as you type), so it
+  // restores focus + caret afterwards — the same trick the scope search uses.
+  const pk = e.target.closest && e.target.closest('[data-dist-pick-search]');
+  if (pk) {
+    const kind = pk.dataset.distPickSearch;
+    state.batch.dist.picker = kind;
+    state.batch.dist.pickerSearch = e.target.value;
+    return repaintBatchKeepingPickerFocus(kind);
+  }
   const ps = e.target.closest && e.target.closest('[data-paysafe-tier]');
   if (ps) { state.batch.paysafe.tierMinor = Number(e.target.value); return; }   // <select> — no repaint needed
   const pf = e.target.closest && e.target.closest('[data-paysafe-free]');
@@ -3759,6 +3831,9 @@ function pollBatch() {
       if (!s.running) {
         clearInterval(state.batch.timer); state.batch.timer = null;
         loadBatchHistory();
+        // A Prime job (either one) just re-read ownership on the server — pull the refreshed coverage
+        // in so the panel is not still showing what was true before the run.
+        if (s.jobType === 'check-prime' || s.jobType === 'buy-prime') loadPrimeStatus();
         toast(`Job finished: ${fmtCount(s.done)}/${fmtCount(s.total)}${(s.failed || []).length ? ` · ${s.failed.length} failed` : ''}`, (s.failed || []).length ? 'warn' : 'success');
       }
       paintBatch();
@@ -3773,6 +3848,55 @@ async function cancelBatch() {
 
 async function loadBatchHistory() {
   try { const h = await api('/api/batch/history'); state.batch.history = Array.isArray(h) ? h : []; paintBatch(); } catch { /* ignore */ }
+}
+
+/** The server's CACHED Prime answers — a plain read, no logins, safe to call on every visit.
+ *  Accounts nobody has checked yet are simply absent from the map, which is what "not checked" means
+ *  everywhere downstream: never confused with "no Prime". */
+async function loadPrimeStatus() {
+  state.prime._loading = true;
+  try {
+    const r = await api('/api/steam/prime-status');
+    const rows = {};
+    for (const row of (r && Array.isArray(r.rows) ? r.rows : [])) if (row && row.username) rows[row.username.toLowerCase()] = row;
+    state.prime.rows = rows;
+    state.prime.loaded = true;
+    if (state.nav === 'batch') paintBatch();
+  } catch { /* the coverage strip just stays "not checked" — never a blocker */ }
+  state.prime._loading = false;
+}
+
+/** Prime coverage over a username list, as the three states the backend reports plus "never checked".
+ *  Kept strictly separate: an account SSIM could not read is not an account without Prime. */
+function primeCoverage(usernames) {
+  const c = { owned: 0, missing: 0, unreadable: 0, unchecked: 0, missingNames: [] };
+  for (const u of usernames) {
+    const row = state.prime.rows[String(u).toLowerCase()];
+    if (!row) { c.unchecked++; continue; }
+    if (row.status === 'owned') c.owned++;
+    else if (row.status === 'missing') { c.missing++; c.missingNames.push(u); }
+    else c.unreadable++;
+  }
+  return c;
+}
+
+/** The coverage strip shown on the two Prime jobs' Run panel. Answers the owner's question —
+ *  "which of these already has Prime?" — before a single euro moves. */
+function primeCoverageHtml(usernames, jobType) {
+  if (!usernames.length) return '';
+  const c = primeCoverage(usernames);
+  const pill = (n, cls, label, title) => (n ? `<span class="${cls}" title="${escapeAttr(title)}">${fmtCount(n)} ${escapeHtml(label)}</span>` : '');
+  const parts = [
+    pill(c.owned, 'text-sky-400', 'already have Prime', 'Confirmed from the account’s own Steam licences — a purchase would be refused as "already owned".'),
+    pill(c.missing, 'text-emerald-400', 'need Prime', 'Checked, and Prime is not on the account.'),
+    pill(c.unreadable, 'text-amber-400', 'unreadable', 'SSIM could not read these accounts’ licences, so it will not guess either way.'),
+    pill(c.unchecked, 'text-slate-500', 'not checked yet', 'No ownership reading for these accounts yet — run "Check CS2 Prime ownership".'),
+  ].filter(Boolean).join('<span class="text-slate-700 mx-1.5">·</span>');
+  const needCheck = c.unchecked > 0 && jobType !== 'check-prime';
+  return `<div class="rounded-xl border border-slate-800 bg-slate-950/40 p-3 mb-3">
+    <p class="t11">${parts}</p>
+    ${needCheck ? `<p class="t10 text-slate-500 mt-1.5">Ownership is re-verified per account during the run either way — nothing is ever charged twice. <button data-batch-job="check-prime" class="text-brand hover:underline">Check ${fmtCount(c.unchecked)} account(s) first</button> to see the split before you start.</p>` : ''}
+  </div>`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3979,14 +4103,16 @@ async function batchPaysafeStop() {
 function batchDistributeSection(scopeCount) {
   const d = state.batch.dist;
   const st = d.status, running = !!(st && st.running);
-  const srcCount = batchScopeUsernames(d.sel).length;
+  const distSources = batchScopeUsernames(d.sel);   // resolved once — the picker reads it too
+  const srcCount = distSources.length;
   const anySrc = d.sel.envs.size || d.sel.folders.size || d.sel.accounts.size;
   let planHtml = '';
   if (d.plan) {
     const pl = d.plan;
     planHtml = `<div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4 t12">
       <p class="text-slate-300">Sends <b>${fmtCentsCompact(pl.totalBuyerCents)}</b> of market value so targets net <b>${fmtCentsCompact(pl.totalNetCents)}</b>, across <b>${pl.tradeCount}</b> offer(s).</p>
-      <p class="t10 text-slate-500 mt-1">Amount = what each target receives net of Steam fees (~13%). A target may be filled from SEVERAL source accounts (one offer per source). Skipped: ${pl.skipped.unpriced} unpriced · ${pl.skipped.locked} locked · ${pl.skipped.untradable} untradable.</p>
+      <p class="t10 text-slate-500 mt-1">Amount = what each target receives net of Steam fees (~13%). A target may be filled from SEVERAL source accounts (one offer per source). Skipped: ${pl.skipped.unpriced} unpriced · ${pl.skipped.locked} locked · ${pl.skipped.untradable} untradable${pl.skipped.filtered ? ` · <span class="text-brand-light">${fmtCount(pl.skipped.filtered)} item(s) filtered out by name</span>` : ''}.</p>
+      ${distPoolNamesHtml(pl)}
       ${pl.poolExhausted ? '<p class="t10 text-amber-400/80 mt-1">⚠ The pool can\'t fully cover every target — some are under-filled (shortfall shown).</p>' : ''}
       <div class="mt-2 space-y-0.5 max-h-48 overflow-y-auto">${pl.targets.map((t) => `
         <div class="flex justify-between gap-3 py-0.5 border-b border-slate-800/50">
@@ -4010,6 +4136,7 @@ function batchDistributeSection(scopeCount) {
     <h3 class="t14 font-bold text-white mb-1">3 · Run — Distribute items</h3>
     <p class="t11 text-slate-500 mb-3">Your scope is the <b>${fmtCount(scopeCount)} receiving</b> account(s). Choose the source pool below — environments, folders or individual accounts — preview the plan, then run.</p>
     <p class="t10 text-amber-400/70 mb-3">⚠ If a source or target lacks mobile authentication, Steam may hold items in escrow up to 15 days — this can't be detected before sending.</p>
+    ${distGameToggle()}
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div>
         <div class="flex items-center justify-between mb-1.5">
@@ -4023,6 +4150,9 @@ function batchDistributeSection(scopeCount) {
       <div class="space-y-3">
         <label class="block t11 text-slate-400">Net amount per target (${state.currency})<input data-batch-dist="amount" class="${ACC_IN} mt-1" type="number" min="0.01" step="0.01" value="${escapeAttr(String(d.amount ?? ''))}"></label>
         <label class="block t11 text-slate-400">Min item value (${state.currency}, optional)<input data-batch-dist="minItem" class="${ACC_IN} mt-1" type="number" min="0" step="0.01" value="${escapeAttr(String(d.minItem ?? ''))}"></label>
+        ${distFilterPicker('include', 'Only these items', 'leave empty to allow every item', distSources, distGame())}
+        ${distFilterPicker('exclude', 'Never these items', 'held back no matter what', distSources, distGame())}
+        <p class="t10 text-slate-600">The list is built from the source pool you picked, so it only offers items those accounts actually hold. A pick matches anywhere in the item name and ignores case, so <span class="font-mono">Case</span> covers every case. <b>Never</b> wins over <b>Only</b>.</p>
         <p class="t10 text-slate-600">A target can be filled from SEVERAL source accounts — one trade offer per source→target pair. Accounts that are both source and target never send to themselves.</p>
       </div>
     </div>
@@ -4034,8 +4164,206 @@ function batchDistributeSection(scopeCount) {
   </section>`;
 }
 
+// ── Distribute item filters: a SEARCHABLE PICKER, not a name to remember ─────────────────────────
+//  Owner 2026-08-20: "nobody will remember names". The filters used to be free-text boxes, which
+//  meant the operator had to know that a Fracture Case is spelled "Fracture Case" and that a
+//  Katowice sticker carries its year. The names now come out of the SOURCE POOL itself — the same
+//  cached inventories the plan packs from — so the list can only ever offer things that are really
+//  there. Typing still works, and a typed value matching nothing can still be added on purpose: the
+//  backend matches SUBSTRINGS, so one "Karambit" entry covers every Karambit in the fleet.
+
+/** Distinct item names in the given accounts that a distribute run could actually hand out.
+ *  Mirrors planDistribute's pool gate (tradable, unlocked, not listed, priced) so the picker never
+ *  offers something the plan would skip anyway. Cache-only, exactly like the plan. */
+function distItemCandidates(usernames, game) {
+  const byName = new Map();
+  for (const u of usernames) {
+    const inv = invForGame(u, game);
+    if (!inv) continue;
+    for (const it of inv.items) {
+      if (!it.tradable || it.tradeLockExpiry || it.category === 'listed' || it.price == null) continue;
+      const ex = byName.get(it.marketHashName);
+      if (ex) { ex.count += it.quantity; ex.bots.add(u); }
+      else byName.set(it.marketHashName, { name: it.marketHashName, count: it.quantity, price: it.price, bots: new Set([u]) });
+    }
+  }
+  return [...byName.values()].sort((a, b) => b.price - a.price || a.name.localeCompare(b.name));
+}
+
+/** PURE: what the open dropdown shows for `query`.
+ *
+ *  A candidate drops out once an existing pick ALREADY COVERS it. Picks are substring matchers, not
+ *  exact names, so after adding "Karambit" every individual Karambit is already handled — offering
+ *  them again would invite redundant picks and, worse, suggest they were somehow not covered.
+ *  Removing a chip brings them straight back, which is what makes the effect of a filter visible.
+ *
+ *  A query matching no remaining candidate is offered as a CUSTOM entry rather than dead-ending —
+ *  that is the substring reach the free-text boxes had, and losing it would make the picker weaker
+ *  than what it replaced. */
+function distPickerRows(candidates, query, chosen) {
+  const q = String(query || '').trim().toLowerCase();
+  const picks = (chosen || []).map((c) => String(c).trim().toLowerCase()).filter(Boolean);
+  const covered = (name) => picks.some((p) => name.includes(p));
+  const rows = (candidates || [])
+    .filter((c) => !covered(c.name.toLowerCase()))
+    .filter((c) => !q || c.name.toLowerCase().includes(q));
+  // Offered whenever the typed text is not already an exact candidate or an existing pick, so an
+  // operator can filter on a FAMILY ("Karambit", "Souvenir") that no single item is named after.
+  const exact = (candidates || []).some((c) => c.name.toLowerCase() === q);
+  const custom = q && !exact && !picks.includes(q) ? String(query).trim() : null;
+  return { rows, custom };
+}
+
+/** The distinct item names the filters LEFT eligible, straight off the plan. Collapsed by default:
+ *  on a real fleet this is hundreds of names, and the operator only opens it to check that a filter
+ *  did what they meant — or to copy an exact name back into one. */
+function distPoolNamesHtml(pl) {
+  const names = Array.isArray(pl.poolNames) ? pl.poolNames : [];
+  if (!names.length) return '';
+  const d = state.batch.dist;
+  const total = names.reduce((s, n) => s + n.count, 0);
+  const head = `<button data-dist-pool-toggle class="t10 text-slate-500 hover:text-slate-300 mt-1"><i class="fa-solid fa-chevron-${d.showPool ? 'down' : 'right'} mr-1"></i>${fmtCount(total)} item(s) across ${fmtCount(names.length)} distinct name(s) are eligible</button>`;
+  if (!d.showPool) return head;
+  const rows = names.slice(0, 300).map((n) => `<div class="flex justify-between gap-3 py-0.5">
+      <span class="truncate text-slate-400" title="${escapeAttr(n.name)}">${escapeHtml(n.name)}</span>
+      <span class="font-mono text-slate-500 shrink-0">×${fmtCount(n.count)} · ${fmtCentsCompact(n.netCents)}</span>
+    </div>`).join('');
+  const more = names.length > 300 ? `<div class="t10 text-slate-600 pt-1">…and ${fmtCount(names.length - 300)} more name(s).</div>` : '';
+  return `${head}<div class="mt-1 max-h-40 overflow-y-auto t10 rounded-lg border border-slate-800 bg-slate-950/60 p-2">${rows}${more}</div>`;
+}
+
+
+
+/** Which game a Distribute run moves items from.
+ *
+ *  Distribute is single-game by construction: one plan carries one appId, because one trade offer
+ *  is built for one app/context. It used to read `state.game` — the Inventories tab's toggle, which
+ *  setNav HIDES on the Batch screen. So a fleet whose operator was last looking at CS2 could only
+ *  ever distribute CS2, with no control anywhere on the page to say otherwise, and the item picker
+ *  offered nothing but CS2 names (owner 2026-08-20).
+ *
+ *  `null` means "whatever the Inventories tab was last on", so nothing changes for someone who never
+ *  touches the control; picking either chip pins it for this panel. */
+function distGame() { return state.batch.dist.game || state.game; }
+
+/** The CS2/TF2 choice, as the two chips the global filter already uses. */
+function distGameToggle() {
+  const cur = distGame();
+  const chip = (g, label) => `<button data-dist-game="${g}" class="chip" aria-pressed="${cur === g}"><i class="fa-solid ${cur === g ? 'fa-circle-dot' : 'fa-circle'} t10"></i>${label}</button>`;
+  return `<div class="flex items-center gap-2 flex-wrap mb-3">
+    <span class="t11 text-slate-500">Move items from:</span>${chip('cs2', 'CS2')}${chip('tf2', 'TF2')}
+    <span class="t10 text-slate-600">— the source pool, the item filters and the offers all follow this.</span>
+  </div>`;
+}
+
+/** Switching game resets everything downstream of it: a previewed plan belongs to the old game, and
+ *  the picked filters are names out of the OLD game's catalogue — "Fracture Case" against a TF2 pool
+ *  matches nothing and would silently plan an empty run. Better to clear them than to carry over
+ *  filters that quietly exclude everything. */
+function distSetGame(game) {
+  const d = state.batch.dist;
+  if (distGame() === game) return;
+  d.game = game;
+  d.plan = null;
+  d.include = []; d.exclude = [];
+  d.picker = null; d.pickerSearch = '';
+  paintBatchKeepScroll();
+}
+
+/** One filter field: the picked names as removable chips, a search box, and — while this field is the
+ *  open one — the candidate list under it. Two of these are rendered (include + exclude) and only one
+ *  can be open at a time, so the dropdown never has to float over the other. */
+function distFilterPicker(kind, label, hint, sources, game) {
+  const d = state.batch.dist;
+  const chosen = d[kind] || [];
+  const open = d.picker === kind;
+  const chips = chosen.length
+    ? `<div class="flex flex-wrap gap-1 mb-1.5">${chosen.map((n) => `
+        <span class="chip" style="cursor:default" title="${escapeAttr(n)}">
+          <span class="truncate" style="max-width:14rem">${escapeHtml(n)}</span>
+          <button data-dist-chip-kind="${kind}" data-dist-chip="${escapeAttr(n)}" title="Remove this filter" class="ml-1 text-slate-500 hover:text-red-400"><i class="fa-solid fa-xmark"></i></button>
+        </span>`).join('')}</div>`
+    : '';
+
+  let list = '';
+  if (open) {
+    const { rows, custom } = distPickerRows(distItemCandidates(sources, game), d.pickerSearch, chosen);
+    // The free-text escape hatch sits BELOW the real items, never above them: with it on top, typing
+    // "karam" and clicking the first row gave you the fuzzy family filter when you meant the knife.
+    const customRow = custom
+      ? `<button data-dist-pick-kind="${kind}" data-dist-pick="${escapeAttr(custom)}" class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-slate-800/60 border-t border-slate-800">
+           <i class="fa-solid fa-plus t10 text-brand"></i>
+           <span class="t11 text-slate-300 truncate">Use “<b>${escapeHtml(custom)}</b>” — matches any item whose name contains it</span></button>`
+      : '';
+    // The count and value are what make a name meaningful at a glance: "Fracture Case ×412 · €0.28"
+    // tells the operator both what they are about to hold back and how much of it there is.
+    const itemRows = rows.slice(0, 200).map((c) => `
+      <button data-dist-pick-kind="${kind}" data-dist-pick="${escapeAttr(c.name)}" class="w-full flex items-center justify-between gap-3 px-2 py-1.5 text-left hover:bg-slate-800/60">
+        <span class="t11 text-slate-300 truncate" title="${escapeAttr(c.name)}">${escapeHtml(c.name)}</span>
+        <span class="t10 font-mono text-slate-500 shrink-0">×${fmtCount(c.count)} · ${fmtCentsCompact(c.price)}</span>
+      </button>`).join('');
+    const more = rows.length > 200 ? `<div class="t10 text-slate-600 px-2 py-1">…and ${fmtCount(rows.length - 200)} more — keep typing to narrow it down.</div>` : '';
+    // Name the GAME in the empty state. "No sendable items match" is misleading when the real cause
+    // is that this game's inventories were never refreshed — which is the normal state for TF2 on a
+    // fleet that mostly trades CS2, and looks identical to "you own nothing".
+    const g = game === 'tf2' ? 'TF2' : 'CS2';
+    const cached = sources.some((u) => invForGame(u, game));
+    const why = !sources.length ? 'Pick a source pool first — the list comes from those accounts’ inventories.'
+      : !cached ? `No ${g} inventories cached for these accounts. Refresh them on the ${g} tab in Inventories first.`
+        : `No sendable ${g} items match.`;
+    const empty = !itemRows && !customRow
+      ? `<div class="t11 text-slate-600 px-2 py-3 text-center">${escapeHtml(why)}</div>`
+      : '';
+    list = `<div data-scope-scroll="pick-${kind}" class="mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">${itemRows}${more}${customRow}${empty}</div>`;
+  }
+
+  return `<div class="block t11 text-slate-400">
+    <div class="mb-1">${escapeHtml(label)} <span class="text-slate-600">— ${escapeHtml(hint)}</span></div>
+    ${chips}
+    <div class="relative">
+      <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 t11 text-slate-600"></i>
+      <input data-dist-pick-search="${kind}" type="text" autocomplete="off" spellcheck="false"
+        placeholder="${chosen.length ? 'Add another item…' : 'Search items, or type any word…'}"
+        value="${escapeAttr(open ? (d.pickerSearch || '') : '')}" class="${ACC_IN}" style="padding-left:2rem">
+      ${open ? '<button data-dist-pick-close class="absolute right-2 top-1/2 -translate-y-1/2 t11 text-slate-500 hover:text-slate-300 px-1" title="Close the list"><i class="fa-solid fa-xmark"></i></button>' : ''}
+    </div>
+    ${list}
+  </div>`;
+}
+
+
+/** Adds one name to a filter. The search box CLEARS but the list stays open — picking several items
+ *  in a row is the normal case, and re-opening the dropdown each time would be miserable. */
+function distPickerAdd(kind, name) {
+  const d = state.batch.dist;
+  const list = d[kind] || (d[kind] = []);
+  const clean = String(name || '').trim();
+  if (clean && !list.some((n) => n.toLowerCase() === clean.toLowerCase())) list.push(clean);
+  d.picker = kind;
+  d.pickerSearch = '';
+  d.plan = null;                 // the previewed plan was built under the OLD filters — never leave it on screen
+  repaintBatchKeepingPickerFocus(kind);
+}
+
+/** Removes one name from a filter. */
+function distPickerRemove(kind, name) {
+  const d = state.batch.dist;
+  d[kind] = (d[kind] || []).filter((n) => n !== name);
+  d.plan = null;                 // same reason as above: the plan no longer reflects the filters
+  paintBatchKeepScroll();
+}
+
+/** Repaint, then put the caret back in the picker's search box. paintBatch() replaces the whole
+ *  body, so without this every keystroke would drop focus after one character. */
+function repaintBatchKeepingPickerFocus(kind) {
+  paintBatchKeepScroll();
+  const box = el.batchBody && el.batchBody.querySelector(`[data-dist-pick-search="${kind}"]`);
+  if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+}
+
 async function batchDistPreview() {
   const d = state.batch.dist;
+  d.picker = null; d.pickerSearch = '';    // the filters are settled — get the dropdown out of the way
   const targets = batchScopeUsernames();
   if (!targets.length) { toast('Pick a scope first — the accounts that RECEIVE items', 'warn'); return; }
   const sources = batchScopeUsernames(d.sel);
@@ -4045,7 +4373,8 @@ async function batchDistPreview() {
   try {
     d.plan = await api('/api/inventory/distribute/preview', { method: 'POST', body: JSON.stringify({
       sources, targets, amountNetCents: cents,
-      minItemNetCents: distToCents(d.minItem) || 0, game: state.game,
+      minItemNetCents: distToCents(d.minItem) || 0, game: distGame(),
+      includeNames: d.include, excludeNames: d.exclude,
     }) });
     paintBatch();
   } catch (e) { toast(e.message || 'Preview failed', 'error'); }
@@ -4057,11 +4386,14 @@ async function batchDistRun() {
   const sources = batchScopeUsernames(d.sel);
   const gateThreshold = state.currency === 'EUR' ? 20000 * state.usdToEur : 20000;   // ~$200 buyer value
   const gate = d.plan.totalBuyerCents >= gateThreshold;
-  if (!(await ssimConfirm({ title: 'Distribute items', body: `Send <b>${fmtCentsCompact(d.plan.totalBuyerCents)}</b> of market value as <b>${d.plan.tradeCount}</b> trade offer(s) to <b>${targets.length}</b> account(s)?<br><br>This moves <b>real items</b>. Trades run serially (~1–2s each).`, confirmLabel: 'Distribute', confirmIcon: 'fa-paper-plane', tone: 'spend', typedWord: gate ? 'DISTRIBUTE' : null }))) return;
+  if (!(await ssimConfirm({ title: 'Distribute items', body: `Send <b>${fmtCentsCompact(d.plan.totalBuyerCents)}</b> of <b>${distGame() === 'tf2' ? 'TF2' : 'CS2'}</b> market value as <b>${d.plan.tradeCount}</b> trade offer(s) to <b>${targets.length}</b> account(s)?<br><br>This moves <b>real items</b>. Trades run serially (~1–2s each).`, confirmLabel: 'Distribute', confirmIcon: 'fa-paper-plane', tone: 'spend', typedWord: gate ? 'DISTRIBUTE' : null }))) return;
   try {
+    // The SAME filters the previewed plan was built from — the run re-plans server-side, so sending
+    // anything less here would quietly hand out items the operator had just excluded.
     d.status = await api('/api/inventory/distribute', { method: 'POST', body: JSON.stringify({
       sources, targets, amountNetCents: distToCents(d.amount),
-      minItemNetCents: distToCents(d.minItem) || 0, game: state.game,
+      minItemNetCents: distToCents(d.minItem) || 0, game: distGame(),
+      includeNames: d.include, excludeNames: d.exclude,
     }) });
     toast('Distribution started', 'success'); pollBatchDist();
   } catch (e) { toast(e.message || 'Could not start', 'error'); }
@@ -5627,7 +5959,7 @@ function renderAggregate(usernames, headerHtml, opts = {}) {
   }
   el.toolbar.classList.remove('hidden');
   if (opts.selectable) {
-    // Selectable master (Global): re-aggregate WITH per-owner assetIds so mass sell / send
+    // Selectable master (env + Global): re-aggregate WITH per-owner assetIds so mass sell / send
     // selected can fan out across every owning account — same machinery as the folder master.
     const own = aggregateWithOwners(usernames);
     state.aggItems = own;
@@ -5641,17 +5973,20 @@ function renderAggregate(usernames, headerHtml, opts = {}) {
 function renderEnvMaster() {
   const env = state.environments.find((e) => e.id === state.activeEnv);
   const usernames = envAccounts().map((a) => a.username);
+  // SELECTABLE since 1.5.1 (owner): the environment master is the natural place to move stock out
+  // of a whole environment, so it aggregates WITH per-owner assetIds and shares the folder master's
+  // selection bar — Send selected / Sell selected fan out across every owning account.
   renderAggregate(usernames, `
     <div class="min-w-0">
       <div class="flex items-center gap-2 flex-wrap">
         <h2 class="text-2xl font-bold text-white truncate">${escapeHtml(env?.name || 'Environment')}</h2>
         <span class="pill pill--brand">Portfolio</span>
       </div>
-      <p class="text-sm text-slate-500 mt-1">${usernames.length} account(s) in this environment</p>
+      <p class="text-sm text-slate-500 mt-1">${usernames.length} account(s) in this environment · select items to send or mass-sell</p>
     </div>
     <div class="flex items-center gap-2 flex-wrap justify-end">
       <button id="btn-env-bans" title="Check every account in this environment for Steam bans" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shield-halved"></i><span>Check Bans</span></button>
-    </div>`);
+    </div>`, { selectable: true });
   const eb = $('btn-env-bans');
   if (eb) eb.addEventListener('click', () => openBanChecker(usernames, env?.name || 'Environment'));
 }
@@ -6197,9 +6532,14 @@ function currentItems() { const inv = invFor(state.activeUsername); return inv ?
 function findStack(assetId) { return currentItems().find((i) => i.assetId === assetId); }
 function clearSelection() { state.selection = {}; }
 /** True in the aggregated multi-owner views — the folder master, the sidebar multi-select
- *  scope AND the Global Master — where the item table keys by marketHashName and Mass
- *  Sell/Trade fan out across many owner accounts (global: across ALL environments). */
-function aggMode() { return state.invMode === 'folder' || state.invMode === 'selection' || state.invMode === 'global'; }
+ *  scope, the ENVIRONMENT master AND the Global Master — where the item table keys by
+ *  marketHashName and Mass Sell/Trade fan out across many owner accounts (env-master: the
+ *  environment's accounts; global: across ALL environments).
+ *
+ *  'env-master' joined this set in 1.5.1 (owner: "send items from Environment Master"). It was
+ *  the one master view that aggregated READ-ONLY, so sending from a whole environment meant
+ *  first putting its accounts in a folder — or hand-picking them one by one in the sidebar. */
+function aggMode() { return state.invMode === 'folder' || state.invMode === 'selection' || state.invMode === 'global' || state.invMode === 'env-master'; }
 /** TBL-02: O(1) aggregated-item lookup by marketHashName (was a linear aggItems.find per
  *  selected key → O(rows²) at scale). Returns the same item object as before. */
 function aggItemByName(mhn) { return state._aggIndex ? state._aggIndex.get(mhn) : (state.aggItems || []).find((i) => i.marketHashName === mhn); }
@@ -6324,8 +6664,8 @@ function hideSelectionBar() { el.selectionBar.classList.add('hidden'); el.select
 /**
  * Phase 2 (A): bulk-select every selectable item whose UNIT value is below the typed
  * threshold (interpreted in the currently-displayed currency). Works in the account
- * view (assetId keys) and the folder master (marketHashName keys); the control is
- * hidden in the non-selectable env/global masters. Items without a known price are
+ * view (assetId keys) and in every aggregated master (marketHashName keys); the control
+ * is hidden wherever rows are not selectable. Items without a known price are
  * skipped — we never auto-select something we can't value.
  */
 function selectUnderValue() {
@@ -8275,7 +8615,8 @@ async function submitFolder(ev) {
       toast('Folder renamed', 'success');
     }
     closeFolderModal();
-    if (state.nav === 'accounts') { state.accTree.targets = null; renderAccountsModule(); }
+    invalidateStructureCaches();
+    if (state.nav === 'accounts') renderAccountsModule();
     else if (state.activeEnv) await refreshEnv();
   } catch (err) { toast(err.message, 'error'); }
 }

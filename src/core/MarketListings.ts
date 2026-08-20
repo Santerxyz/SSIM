@@ -26,14 +26,16 @@ import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS } from '../network/steamHeaders';
 //  never simultaneously appear as Owned.
 // ════════════════════════════════════════════════════════════════════════════
 
+// `mylistings` is ACCOUNT-WIDE — one call returns every app's listings, and parseMyListings keeps
+// them all. Which app's rows come back out is purely a filter, so the same fetch serves CS2 and TF2.
 const CS2_APPID = 730;
 const MARKET_UA = STEAM_BROWSER_UA;
 
 export interface ListedItems {
-  /** CS2 listed items as dashboard rows (category: 'listed'). */
+  /** Listed items for the requested app, as dashboard rows (category: 'listed'). */
   items:    CS2Item[];
   /**
-   * Canonical CS2 dedup superset: every asset id the market holds for this account.
+   * Canonical dedup superset for the requested app: every asset id the market holds for it.
    * The inventory refresh subtracts this set from ctx2+ctx16 so a listed asset is
    * never also counted as Owned/locked (one asset = one bucket).
    */
@@ -47,12 +49,16 @@ export interface ListedItems {
 }
 
 /**
- * Returns the account's active CS2 market listings (rows + dedup superset).
+ * Returns the account's active market listings for ONE app (rows + dedup superset).
  * Paginated. Throws on any page failure (status, unusable body, or network error);
  * the caller treats a thrown fetch as "listings unread this pass" and carries the
  * cached listed bucket forward — a partial page set is never committed.
+ *
+ * `appId` defaults to CS2 (730) so every pre-existing caller is unchanged. It became a parameter in
+ * 1.5.1: the appid was hardcoded, so a TF2 item put on the market was never recognised as listed —
+ * it stayed in the TF2 inventory as Owned, refresh after refresh (owner report 2026-08-20).
  */
-export async function fetchListedItems(session: ManagedSession): Promise<ListedItems> {
+export async function fetchListedItems(session: ManagedSession, appId: number = CS2_APPID): Promise<ListedItems> {
   const cookies = session.webSession?.cookies ?? [];
   const acc = emptyParsed();
   const PAGE = 100;
@@ -98,9 +104,9 @@ export async function fetchListedItems(session: ManagedSession): Promise<ListedI
     }
   }
 
-  const items = listingsForApp(acc, CS2_APPID).map(toListedItem);
-  logger.info(`[${session.account.username}] market: ${items.length} listed item(s)`);
-  return { items, assetIds: listedAssetIdsForApp(acc, CS2_APPID), truncated };
+  const items = listingsForApp(acc, appId).map(toListedItem);
+  logger.info(`[${session.account.username}] market: ${items.length} listed item(s) for app ${appId}`);
+  return { items, assetIds: listedAssetIdsForApp(acc, appId), truncated };
 }
 
 function toListedItem(l: MarketListing): CS2Item {

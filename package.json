@@ -1,6 +1,6 @@
 {
   "name": "ssim",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "SSIM – Santer Steam Inventory Manager (multi-tenant CS2 inventory, trading & market tool)",
   "main": "dist/index.js",
   "engines": {
