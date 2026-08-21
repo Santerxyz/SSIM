@@ -53,7 +53,15 @@ const DEFAULT_BOT_DELAY    = 3_000; // pause between bots per worker
  * this buy nothing once the pacing gate is the bottleneck, and each one is another concurrent
  * money-op on a single account.
  */
-const DEFAULT_ITEM_CONCURRENCY = 3;
+// SERIAL BY DEFAULT (owner 2026-08-21): "complete the last thing before starting a new one".
+// Overlapping lanes hide Steam's round-trip, but they also mean a bot has several money-ops in
+// flight against one account at once — and in the field that produced sells that failed for no
+// reason the log could explain. One listing now finishes completely (dispatch, response and its
+// bookkeeping) before the next is dispatched. The cost is honest and known: a run pays the full
+// round-trip per listing again, roughly 0.5-1s each, instead of overlapping it.
+// Raising it is still possible per run (opts.itemConcurrency, capped at MAX) for anyone who wants
+// the old behaviour back — the default is what changed, not the ceiling.
+const DEFAULT_ITEM_CONCURRENCY = 1;
 const MAX_ITEM_CONCURRENCY     = 5;
 /**
  * Confirm a bot's listings every this many, instead of once at the end. Steam caps how many
@@ -65,8 +73,14 @@ const MAX_ITEM_CONCURRENCY     = 5;
 const CONFIRM_BATCH = 50;
 
 // ── Stability tuning (Rules 1-3) ──────────────────────────────────────────────
-const MAX_SELL_RETRIES   = 3;                       // retries per item on transient errors
-const SELL_BACKOFF_MS    = [15_000, 25_000, 35_000]; // backoff before each retry
+// 4 retries (owner 2026-08-21: "it fails too quick"). A transient Steam error on the sell path is
+// usually a window that has to elapse, not a condition that clears instantly, so the extra attempt
+// buys a real listing rather than a faster failure. Worst case per stubborn item is now the sum of
+// the backoffs below (~2 min) before it is reported failed.
+const MAX_SELL_RETRIES   = 4;                       // retries per item on transient errors
+// One entry per retry. The loop indexes with Math.min(attempt, len-1), so a short array would
+// silently reuse its last value — keep this the same length as MAX_SELL_RETRIES.
+const SELL_BACKOFF_MS    = [15_000, 25_000, 35_000, 45_000]; // backoff before each retry
 const PREFLIGHT_RETRIES  = 2;                       // connectivity-probe retries before deferring a bot
 const PREFLIGHT_BACKOFF_MS = 8_000;
 const CONFIRM_RETRIES    = 3;                       // 2FA-confirmation retries (Steam's confirm servers 500 a lot)
@@ -229,6 +243,8 @@ export interface AccountOrders {
   buyOrders:  ActiveBuyOrder[];
   /** This account's snapshot was truncated mid-fetch (see MarketOrders.partial). */
   partial?:   boolean;
+  /** False ⇒ no payload carried a `buy_orders` key, so this account's buy orders are UNKNOWN. */
+  buyOrdersRead?: boolean;
   error?:     string;
 }
 
@@ -363,6 +379,14 @@ export class MarketService {
     return this.pricing.getLowestAsk(name, appid, currency, ctx);
   }
 
+  /** lowestAsk, but it reports whether the number is a live ASK or a historical MEDIAN. The buy
+   *  modal shows the difference, because bidding a median places an order that rests instead of
+   *  filling — and the operator has no way to tell from the number alone. */
+  async lowestAskDetailed(name: string, appid: number, currency: number, username?: string): Promise<{ minor: number; source: 'lowest' | 'median' } | null> {
+    const ctx = await this.priceCtxFor(username);
+    return this.pricing.getLowestAskDetailed(name, appid, currency, ctx);
+  }
+
   // ── Active Orders: fetch + cancel (sell listings & buy orders) ──────────────
 
   /** All open market orders (both sides, all games) for one account – the data
@@ -460,7 +484,7 @@ export class MarketService {
           const buyOrders  = orders.buyOrders.filter((o) => o.appId === appId);
           job.progress.sell += sellOrders.length;
           job.progress.buy  += buyOrders.length;
-          job.accounts.push({ username, sellOrders, buyOrders, partial: orders.partial });
+          job.accounts.push({ username, sellOrders, buyOrders, partial: orders.partial, buyOrdersRead: orders.buyOrdersRead !== false });
         } catch (err) {
           const error = (err as Error).message;
           logger.warn(`[orders] ${username}: ${error}`);
@@ -851,7 +875,7 @@ export class MarketService {
    *      the bot has no working connection, NONE of its items are attempted –
    *      they are DEFERRED (retryable), not blasted as failures.
    *   2) RETRY: each listing is retried up to MAX_SELL_RETRIES on transient
-   *      errors (timeout / 5xx / 429 / NoConnection) with a 15-35s backoff.
+   *      errors (timeout / 5xx / 429 / NoConnection) with a 15-45s backoff.
    *   3) PHANTOM: before counting a failure, we check whether Steam actually
    *      created the listing anyway (its asset id appears in the listings set),
    *      and after confirmation we reconcile once more.

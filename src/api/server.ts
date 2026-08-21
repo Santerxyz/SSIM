@@ -218,7 +218,10 @@ export function createDeps(): ApiDeps {
   // pricer-identity pool so a sell-preview whose acting bot isn't web-ready still prices through a live
   // authenticated identity instead of an anonymous host-IP read that 429s → "no price" (2026-07-10 fix).
   const market    = new MarketService(trades, inventory, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES));
-  const buy       = new BuyService(trades, inventory, moneyJournal);
+  // The ask reader is passed as a callback, not as a service handle: MarketService already depends
+  // on TradeService, so handing BuyService the whole object would close a dependency cycle.
+  const buy       = new BuyService(trades, inventory, moneyJournal,
+    (name, appId, currency, username) => market.lowestAskDetailed(name, appId, currency, username));
   const bans      = new BanService(accounts, sessions, trades);
   // Feature 2 "CSFloat": per-account marketplace control. Built before pricing so the
   // CSFloat price source (Feature 3) can reuse it.
@@ -2830,8 +2833,10 @@ export function createApp(deps: ApiDeps): Express {
     const game = appid === 440 ? 'tf2' : 'cs2';
     const currency = inventory.getCached(username, game)?.wallet?.currency ?? 3;
     const info = currencyInfo(currency);
-    const lowestMinor = await market.lowestAsk(name, appid, currency, username);
-    res.json({ lowestMinor, currency, currencyIso: info.iso, decimals: info.decimals });
+    // `source` travels with the number: 'median' means Steam reported no live ask, so this is a
+    // historical average and an order placed at it will REST, not fill. The modal says so.
+    const detail = await market.lowestAskDetailed(name, appid, currency, username);
+    res.json({ lowestMinor: detail ? detail.minor : null, source: detail ? detail.source : null, currency, currencyIso: info.iso, decimals: info.decimals });
   }));
 
   // ── v1.0.2: live Steam Market item search for the buy modal's autocomplete ──
@@ -2953,7 +2958,25 @@ export function createApp(deps: ApiDeps): Express {
         appId,
         sellOrders: orders.sellOrders.filter((o) => o.appId === appId),
         buyOrders:  orders.buyOrders.filter((o) => o.appId === appId),
+        // Both flags were computed and then dropped here, so the view could not tell an empty
+        // section from a failed read. An empty list that might be wrong must say which it is.
+        partial:       !!orders.partial,
+        buyOrdersRead: orders.buyOrdersRead !== false,
       });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  }));
+
+  // ── GET /api/market/access/:username — Steam's OWN verdict on market access ──
+  // Read-only, one request through the account's session. Exists because an accepted, above-ask buy
+  // order that never matches cannot be explained from SSIM's side; this asks Steam directly.
+  app.get('/api/market/access/:username', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+    try {
+      const trader = await trades.ensureWebSession(account.username);
+      res.json({ username: account.username, ...(await trader.probeMarketAccess()) });
     } catch (err) {
       res.status(502).json({ error: (err as Error).message });
     }

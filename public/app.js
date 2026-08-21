@@ -42,7 +42,11 @@ const state = {
   //   autoStart – set ONLY by an explicit tab click / Refresh, so an incidental re-render
   //               (ticking another sidebar checkbox) can never launch a fleet-wide live scan
   //   cursor    – how many scanned accounts the client has already received (server-side slice)
-  orders: { run: 0, timer: null, key: '', rows: null, autoStart: false, cursor: 0 },
+  // `game` pins Active Orders to a game independently of the Inventories tab. null ⇒ follow
+  // state.game, so nothing changes for someone who never touches the control. It exists because
+  // the BUY modal has its own game selector: buying a TF2 item while the tab reads CS2 filed a
+  // 440 order that this view then hid, making a real order look like it was never placed.
+  orders: { run: 0, timer: null, key: '', rows: null, autoStart: false, cursor: 0, game: null },
   editUsername: null,
   editProxyInitial: '',         // raw saved proxy the edit field was pre-filled with (change-detection)
   editUseEnvInitial: true,      // was "Use environment proxy" on when the edit modal opened (change-detection)
@@ -3733,6 +3737,8 @@ function onBatchClick(e) {
   if ((n = t.closest('[data-dist-acct]')))    { toggleInSet(state.batch.dist.sel.accounts, n.dataset.distAcct); return paintBatchKeepScroll(); }
   if (t.closest('[data-dist-clear]'))         { const s = state.batch.dist.sel; s.envs.clear(); s.folders.clear(); s.accounts.clear(); return paintBatchKeepScroll(); }
   if ((n = t.closest('[data-dist-game]')))     { return distSetGame(n.dataset.distGame); }
+  // Active Orders' own CS2/TF2 pin (independent of the Inventories tab — see ordersGame).
+  if ((n = t.closest('[data-orders-game]')))   { return ordersSetGame(n.dataset.ordersGame); }
   if (t.closest('[data-dist-pool-toggle]'))   { state.batch.dist.showPool = !state.batch.dist.showPool; return paintBatchKeepScroll(); }
   // Item-filter picker: add a pick, drop a chip, close the list.
   if ((n = t.closest('[data-dist-pick]')))    { return distPickerAdd(n.dataset.distPickKind, n.dataset.distPick); }
@@ -5053,9 +5059,32 @@ function renderAccountView() {
 //  Refresh only, and a re-render of the SAME scope repaints the rows already in hand.
 // ════════════════════════════════════════════════════════════════════════════
 
+/** Which game Active Orders is showing. Defaults to the Inventories tab's game, but can be pinned
+ *  here — the buy modal has its OWN game selector, so the order you just placed is not necessarily
+ *  in the game this tab happens to be on. */
+function ordersGame() { return state.orders.game || state.game; }
+
+/** The CS2/TF2 choice, as the two chips the Distribute panel already uses. */
+function ordersGameToggle() {
+  const cur = ordersGame();
+  const chip = (g, label) => `<button data-orders-game="${g}" class="chip" aria-pressed="${cur === g}"><i class="fa-solid ${cur === g ? 'fa-circle-dot' : 'fa-circle'} t10"></i>${label}</button>`;
+  return `<span class="flex items-center gap-1.5">${chip('cs2', 'CS2')}${chip('tf2', 'TF2')}</span>`;
+}
+
+/** Switching game asks Steam a DIFFERENT question, so the rows in hand are about the other game and
+ *  cannot be re-used: drop them and re-run the scope's fetch/scan. */
+function ordersSetGame(game) {
+  if (ordersGame() === game) return;
+  state.orders.game = game;
+  state.orders.key  = '';
+  state.orders.rows = null;
+  stopOrdersPoll();
+  renderOrdersView();
+}
+
 /** The account(s) whose orders the tab shows, derived from the CURRENT view. */
 function ordersScope() {
-  const appId = state.game === 'tf2' ? 440 : 730;
+  const appId = ordersGame() === 'tf2' ? 440 : 730;
   if (state.invMode === 'folder') {
     const node = findFolderNode(state.tree.folders, state.activeFolder);
     const usernames = node ? collectFolderAccounts(node).map((a) => a.username) : [];
@@ -5082,7 +5111,10 @@ function ordersOwnerName(username) {
 
 /** Empty row-set: the shape every paint/append works against. */
 function emptyOrdersData() {
-  return { buy: [], sell: [], errors: [], partial: false, scanned: 0, total: 0, running: false, cancelled: false };
+  // buyUnread: accounts whose buy orders Steam did not report this pass. Kept separate from `errors`
+  // because the fetch SUCCEEDED — the answer just did not include buy orders, and an empty list that
+  // might be wrong has to say so rather than read as an authoritative zero.
+  return { buy: [], sell: [], errors: [], buyUnread: [], partial: false, scanned: 0, total: 0, running: false, cancelled: false };
 }
 
 function stopOrdersPoll() { clearTimeout(state.orders.timer); state.orders.timer = null; }
@@ -5145,6 +5177,9 @@ async function loadOrdersSingle(sc, token) {
   if (token !== state.orders.run) return;
   const data = emptyOrdersData();
   data.buy  = (res.buyOrders  || []).map((o) => ({ ...o, username }));
+  // An empty Buy Orders list means nothing on its own — the backend tells us whether Steam actually
+  // ANSWERED the question this pass. Without this an unread account looks identical to an empty one.
+  data.buyUnread = res.buyOrdersRead === false ? [username] : [];
   data.sell = (res.sellOrders || []).map((o) => ({ ...o, username }));
   data.partial = !!res.partial;
   data.total = 1; data.scanned = 1;
@@ -5238,6 +5273,7 @@ function appendScanBatch(sc, data, accounts) {
     if (acc.error) { data.errors.push({ username: acc.username, error: acc.error }); continue; }
     if (acc.partial) data.partial = true;
     for (const o of (acc.buyOrders  || [])) newBuy.push({ ...o, username: acc.username });
+    if (acc.buyOrdersRead === false && !data.buyUnread.includes(acc.username)) data.buyUnread.push(acc.username);
     for (const o of (acc.sellOrders || [])) newSell.push({ ...o, username: acc.username });
   }
   data.buy.push(...newBuy);
@@ -5302,6 +5338,7 @@ function ordersShellHtml(sc, data, phase = '') {
       <div class="flex items-center gap-2 flex-wrap">
         <i class="fa-solid fa-receipt text-brand"></i>
         <span class="panel-title" style="font-size:var(--fs-13)">Active market orders</span>
+        ${ordersGameToggle()}
         ${scopePill}
       </div>
       <div class="flex items-center gap-2 flex-wrap">
@@ -5313,9 +5350,9 @@ function ordersShellHtml(sc, data, phase = '') {
     </div>
     ${multi ? `<div id="orders-progress" class="px-4 py-2 border-t border-slate-800/60 t12 text-slate-400">${ordersProgressHtml(sc, data, phase)}</div>` : ''}
     </div>
-    <div id="orders-errors">${ordersErrorsHtml(data)}</div>
+    <div id="orders-errors">${ordersUnreadHtml(data)}${ordersErrorsHtml(data)}</div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      ${section('Active Buy Orders', 'fa-cart-arrow-down', 'rgb(var(--success-rgb))', 'orders-buy-list', 'orders-buy-count', data.buy, phase === 'idle' ? 'Not loaded yet.' : 'No active buy orders.')}
+      ${section('Active Buy Orders', 'fa-cart-arrow-down', 'rgb(var(--success-rgb))', 'orders-buy-list', 'orders-buy-count', data.buy, phase === 'idle' ? 'Not loaded yet.' : ((data.buyUnread || []).length ? 'Steam did not report this account’s buy orders this pass — this list is UNKNOWN, not empty. Try again in a moment.' : 'No active buy orders.'))}
       ${section('Active Sell Orders', 'fa-tag', 'rgb(var(--listed-rgb))', 'orders-sell-list', 'orders-sell-count', data.sell, phase === 'idle' ? 'Not loaded yet.' : 'No active sell orders.')}
     </div>`;
 }
@@ -5339,6 +5376,18 @@ function ordersProgressHtml(sc, data, phase = '') {
 
 /** Failures are never swallowed: an account we could not read has UNKNOWN orders, which is not
  *  the same as "no orders", so it is named here instead of quietly missing from the columns. */
+/** Accounts whose fetch SUCCEEDED but whose buy orders Steam never reported. Amber, not red: this is
+ *  not a failure, it is an unanswered question — and it must not read as "no buy orders", which is
+ *  what an empty section silently claimed before. */
+function ordersUnreadHtml(data) {
+  const who = data.buyUnread || [];
+  if (!who.length) return '';
+  const names = who.slice(0, 8).map((u) => escapeHtml(u)).join(', ') + (who.length > 8 ? ` +${who.length - 8} more` : '');
+  return `<div class="mb-4 px-4 py-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10">
+    <div class="flex items-center gap-2 text-amber-200 text-xs font-semibold mb-1"><i class="fa-solid fa-circle-question"></i>Buy orders UNKNOWN for ${fmtCount(who.length)} account(s)</div>
+    <div class="t11 text-amber-300/80">Steam answered without reporting buy orders for ${names}. Any buy orders they hold are missing from the list below — this is not the same as having none.</div></div>`;
+}
+
 function ordersErrorsHtml(data) {
   if (!data.errors.length) return '';
   const accts = data.errors.filter((e) => e.username).length;

@@ -38,6 +38,11 @@ export interface ManagedSession {
   webSession?:   WebSession;
   /** Steam wallet, from steam-user's 'wallet' event. UNIT: steam-user divides the CM protobuf minor-unit balance by 100 unconditionally (components/account.js), so 'balance' is a float in MAJOR units for 2-decimal currencies (12.34 = €12.34). For 0-decimal wallet currencies the effective unit is unverified. Convert to minor units ONLY via knownCurrencyInfo (S64 — unknown codes fail closed on money paths). 'currency' is the numeric ECurrencyCode. */
   wallet?:       { hasWallet: boolean; currency: number; balance: number };
+  /** The account's own wallet COUNTRY, as STEAM states it (`g_rgWalletInfo.wallet_country`), learned
+   *  lazily on first need and cached for the session (it does not change while logged in). A market
+   *  buy order carries a billing address, and SSIM sent a hardcoded 'DE' for every account in a fleet
+   *  that is not all German — see AccountTrader.resolveWalletCountry. */
+  walletCountry?: string;
   loggedInAt?:   Date;
   /** Last time a GENUINE operation used this session (markUsed). Drives the idle-session
    * reaper: a session untouched for the TTL is logged out to free the resident slot.

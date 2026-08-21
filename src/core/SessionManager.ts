@@ -717,6 +717,18 @@ export class SessionManager extends EventEmitter {
         this.emit('wallet', account.username, session.wallet);
       });
 
+      // ── accountLimitations – Steam's own verdict on what this account may do ──
+      // Pushed at login (ClientIsLimitedAccount). A LIMITED account cannot use the Community
+      // Market, and Steam does not say so on the endpoint itself — createbuyorder answers
+      // success:1 and quietly creates nothing. Logging it here makes the one fact that explains
+      // a whole class of "placed but never fills" visible for every account, at login, for free.
+      client.on('accountLimitations', (...a: unknown[]) => {
+        const [limited, communityBanned, locked] = a as [boolean, boolean, boolean];
+        if (limited || communityBanned || locked) {
+          logger.warn(`[${account.username}] Steam account limitations: ${[limited && 'LIMITED (no Community Market)', communityBanned && 'COMMUNITY BANNED', locked && 'LOCKED'].filter(Boolean).join(', ')}`);
+        }
+      });
+
       // ── steamGuard – handle 2FA challenge (credential path only) ───────
       client.on('steamGuard', (domain: string | null, callback: (code: string) => void, lastCodeWrong: boolean) => {
         // A VALID refresh token never triggers Steam Guard. If it does, the token

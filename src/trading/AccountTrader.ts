@@ -105,6 +105,38 @@ export interface ActiveBuyOrder {
 }
 
 /** The account's full set of open market orders, both sides, all games. */
+/** What Steam itself says about this account's Community Market access. */
+export interface MarketAccessProbe {
+  httpStatus: number;
+  /** Steam's own `g_bMarketAllowed` flag. null ⇒ the page did not carry it. */
+  marketAllowed: boolean | null;
+  /** The `webTradeEligibility` cookie Steam sets while browsing, parsed. It carries the concrete
+   *  reason a market/trade action is blocked — `allowed`, `allowed_at_time`,
+   *  `steamguard_required_days`, `new_device_cooldown_days`. Machine-readable and language-proof. */
+  tradeEligibility: Record<string, unknown> | null;
+  /** A short, bounded excerpt of any notice Steam rendered, for a human to read. Diagnostic only —
+   *  nothing branches on this text (Steam localises it). */
+  notice: string | null;
+  /** Steam's OWN wallet statement (`g_rgWalletInfo`) in MINOR units, read from the same page.
+   *  SSIM's `session.wallet` comes solely from the CM 'wallet' event and is only as fresh as that
+   *  event; this is an independent read of the number a buy order actually draws on. */
+  walletBalanceMinor: number | null;
+  /** Funds Steam is HOLDING (recent top-ups). A buy order cannot draw on these, so a balance that
+   *  looks sufficient can still be unspendable. */
+  walletDelayedBalanceMinor: number | null;
+  /** ECurrencyCode of the wallet Steam thinks this account has. A buy order priced in another
+   *  currency than the wallet cannot be funded. */
+  walletCurrency: number | null;
+  /** The wallet's country, which decides which order book the bid lands on. */
+  walletCountry: string | null;
+  /** The redirect chain actually walked, in order. A bounce through
+   *  `/market/eligibilitycheck/` is Steam saying the account is being re-checked. */
+  redirects: string[];
+  /** False ⇒ the chain never reached a non-redirect response within the hop budget, so every field
+   *  above is from a redirect page and means nothing. Never read a probe with `settled: false`. */
+  settled: boolean;
+}
+
 export interface MarketOrders {
   sellOrders: ActiveSellOrder[];
   buyOrders:  ActiveBuyOrder[];
@@ -112,6 +144,11 @@ export interface MarketOrders {
    *  returned rows are a partial (not authoritative) snapshot — the UI labels it as such
    *  instead of presenting a truncated list as complete. */
   partial?:   boolean;
+  /** False when NO payload this pass carried a `buy_orders` key at all. `buyOrders: []` then means
+   *  "could not be read", not "this account has none", and the UI must say so — an empty Buy Orders
+   *  section is otherwise indistinguishable from a failed read, which is precisely how a placed and
+   *  confirmed order looked like it had vanished (owner 2026-08-20). */
+  buyOrdersRead?: boolean;
 }
 
 // ── Trade Offers (sent + received) ────────────────────────────────────────────
@@ -294,6 +331,11 @@ export class AccountTrader {
 
   get ready():   boolean            { return this.cookiesReady; }
   get steamId(): string | undefined { return this.session.steamId; }
+  /** Steam's own account-limitation flags, pushed on the CM connection at login
+   *  (`ClientIsLimitedAccount`). Null until that message arrives — "not known yet", never "fine". */
+  get limitations(): { limited?: boolean; communityBanned?: boolean; locked?: boolean } | null {
+    return (this.session.client as unknown as { limitations?: { limited?: boolean; communityBanned?: boolean; locked?: boolean } | null }).limitations ?? null;
+  }
   /**
    * True when this trader is bound to exactly this live session instance.
    * A re-login creates a new ManagedSession object; a trader still pointing at
@@ -327,6 +369,180 @@ export class AccountTrader {
    * is dead — and (b) to detect "phantom" listings Steam silently created after
    * a timeout. Throws on any network/HTTP failure so callers can react.
    */
+  /**
+   * Ask STEAM why this account cannot buy, instead of inferring it.
+   *
+   * A buy order that Steam accepts (real `buy_orderid`), prices ABOVE the lowest ask, and still
+   * never matches is not explained by anything SSIM controls — not the payload, not the price, not
+   * the confirmation flow (owner 2026-08-21: bid 2.00 against a 1.98 ask, order 8624798659, no
+   * fill). That leaves an account-side restriction, and Steam states those on the market page.
+   *
+   * Read-only: one GET through the account's own session and proxy. Two machine-readable signals
+   * are preferred over any text, because Steam localises its notices and this fleet is not English:
+   *   · `g_bMarketAllowed` — Steam's own boolean.
+   *   · the `webTradeEligibility` cookie — JSON carrying `allowed`, `allowed_at_time`,
+   *     `steamguard_required_days`, `new_device_cooldown_days`. This is where a 15-day Mobile
+   *     Authenticator hold or a new-device cooldown actually shows up.
+   * The notice excerpt is for a human to read and nothing branches on it.
+   */
+  async probeMarketAccess(): Promise<MarketAccessProbe> {
+    // Steam gates /market/ behind a redirect to /market/eligibilitycheck/, which SETS the
+    // webTradeEligibility cookie and bounces back. axios keeps no cookie jar, so an auto-followed
+    // redirect never returns that cookie, Steam bounces again, and the read dies as "Maximum number
+    // of redirects exceeded" — which is what this probe did on a HEALTHY account. Following the
+    // chain by hand with an accumulating jar is what makes the read work at all, and it is also the
+    // only way to SEE the cookie: Steam sets it on an INTERMEDIATE hop, so reading set-cookie off
+    // the final response (as the first cut did) misses the one signal the probe exists to capture.
+    const jar = new Map<string, string>();
+    for (const c of this.session.webSession?.cookies ?? []) {
+      const eq = String(c).indexOf('=');
+      if (eq > 0) jar.set(String(c).slice(0, eq).trim(), String(c).slice(eq + 1).split(';')[0]);
+    }
+    const absorb = (setCookie: unknown): void => {
+      const list = Array.isArray(setCookie) ? setCookie
+        : (typeof setCookie === 'string' ? [setCookie] : []);
+      for (const c of list) {
+        const m = /^\s*([^=;\s]+)=([^;]*)/.exec(String(c));
+        if (m) jar.set(m[1], m[2]);
+      }
+    };
+
+    const MAX_HOPS = 6;
+    const redirects: string[] = [];
+    let url = 'https://steamcommunity.com/market/';
+    let status = 0;
+    let html = '';
+    let settled = false;
+
+    for (let hop = 0; hop < MAX_HOPS && !settled; hop++) {
+      const res = await axios.get(url, {
+        httpsAgent:     this.session.httpsAgent,
+        proxy:          false,     // per-account isolation: never an env-var proxy
+        timeout:        30_000,    // the market home page is heavy and rides the bot's own proxy
+        maxRedirects:   0,         // hand-followed, so the jar above survives each hop
+        validateStatus: () => true,
+        headers: {
+          ...STEAM_XHR_HEADERS,
+          Cookie:            [...jar].map(([k, v]) => `${k}=${v}`).join('; '),
+          'User-Agent':      MARKET_UA,
+          Accept:            'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',   // ask for English so the excerpt is readable
+          Referer:           'https://steamcommunity.com/',
+          Connection:        'close',
+        },
+      });
+      absorb((res.headers as Record<string, unknown> | undefined)?.['set-cookie']);
+      status = res.status;
+      html   = typeof res.data === 'string' ? res.data : '';
+      const headers  = (res.headers ?? {}) as Record<string, unknown>;
+      const location = status >= 300 && status < 400 ? String(headers.location ?? '') : '';
+      if (!location) { settled = true; break; }
+      url = new URL(location, url).toString();
+      redirects.push(url);
+    }
+
+    const allowedM = /g_bMarketAllowed\s*=\s*(true|false)/i.exec(html);
+    const marketAllowed = allowedM ? allowedM[1].toLowerCase() === 'true' : null;
+
+    // webTradeEligibility is a URL-encoded JSON cookie. Read it from the JAR, not from the final
+    // response: Steam sets it on the eligibilitycheck hop, several requests before the page lands.
+    let tradeEligibility: Record<string, unknown> | null = null;
+    const rawEligibility = jar.get('webTradeEligibility');
+    if (rawEligibility) {
+      try { tradeEligibility = JSON.parse(decodeURIComponent(rawEligibility)) as Record<string, unknown>; }
+      catch { /* not JSON → leave null */ }
+    }
+
+    // g_rgWalletInfo is Steam's OWN wallet statement, rendered into the market page in MINOR units.
+    // SSIM's balance comes solely from the CM 'wallet' event captured at login, so it can only ever
+    // be as fresh as that event; this is an independent read of the number the buy actually spends,
+    // taken from the same request. `wallet_delayed_balance` is funds Steam is holding and will NOT
+    // let a buy order draw on — a balance that looks sufficient can still be unspendable.
+    let wallet: Record<string, unknown> | null = null;
+    const walletM = /g_rgWalletInfo\s*=\s*(\{[\s\S]*?\})\s*;/.exec(html);
+    if (walletM) {
+      try { wallet = JSON.parse(walletM[1]) as Record<string, unknown>; }
+      catch { /* not JSON → leave null */ }
+    }
+    const num = (v: unknown): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const walletBalanceMinor        = wallet ? num(wallet.wallet_balance) : null;
+    const walletDelayedBalanceMinor = wallet ? num(wallet.wallet_delayed_balance) : null;
+    const walletCurrency            = wallet ? num(wallet.wallet_currency) : null;
+    const walletCountry             = wallet && wallet.wallet_country != null ? String(wallet.wallet_country) : null;
+
+    // Bounded, tag-stripped excerpt of whatever Steam rendered near a market notice. Diagnostic only.
+    let notice: string | null = null;
+    const nm = /class="[^"]*market_headertip[^"]*"[\s\S]{0,1200}?<\/div>/i.exec(html)
+      ?? /market_notice[\s\S]{0,600}?<\/div>/i.exec(html);
+    if (nm) {
+      const text = nm[0].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (text) notice = text.slice(0, 400);
+    }
+
+    logger.info(`[${this.username}] market access probe: HTTP ${status} · g_bMarketAllowed=${marketAllowed ?? 'absent'}`
+      + (tradeEligibility ? ` · webTradeEligibility=${JSON.stringify(tradeEligibility)}` : ' · webTradeEligibility=absent')
+      + ` · wallet=${walletBalanceMinor ?? 'absent'}`
+      + (walletDelayedBalanceMinor ? ` (delayed ${walletDelayedBalanceMinor})` : '')
+      + ` cur=${walletCurrency ?? '?'} country=${walletCountry ?? '?'}`
+      + (redirects.length ? ` · redirects=${redirects.length}${settled ? '' : ' UNSETTLED'}: ${redirects.join(' → ')}` : '')
+      + (notice ? ` · notice="${notice.slice(0, 160)}"` : ''));
+
+    return {
+      httpStatus: status, marketAllowed, tradeEligibility, notice,
+      walletBalanceMinor, walletDelayedBalanceMinor, walletCurrency, walletCountry,
+      redirects, settled,
+    };
+  }
+
+  /**
+   * The account's OWN country, as Steam states it (`g_rgWalletInfo.wallet_country`).
+   *
+   * A market buy order carries a billing address, and `generateBilling()` defaults its country to
+   * 'DE' — so every account in this fleet posted a GERMAN billing address no matter where the
+   * account actually is. Measured 2026-08-21: donaldjohnston02 is a CZ account, and it is the only
+   * account of the four probed whose country differs from that hardcoded 'DE'. It is also the only
+   * one showing the pathology — six orders for which Steam answered success=1 with a real
+   * buy_orderid, held no funds, rested nothing and filled nothing. lilycepeda93, zalthorvexin24 and
+   * xblacksanterx are all DE and all move money normally.
+   *
+   * Guessing a country is what produced six silent no-op orders reported as placed AND confirmed, so
+   * an unresolvable country REFUSES the buy rather than falling back to a guess. Nothing has been
+   * POSTed at that point, so no money is in flight and the refusal is unambiguous. Cached for the
+   * session: one read, not one per order.
+   */
+  async resolveWalletCountry(): Promise<string> {
+    const cached = this.session.walletCountry;
+    if (cached) return cached;
+    let probe: MarketAccessProbe;
+    try {
+      probe = await this.probeMarketAccess();
+    } catch (e) {
+      // The transport detail goes to the LOG, never into the thrown message. isAmbiguousCommitFailure
+      // falls back to matching transport words ("timeout", "proxy", "network"…) in the message, and
+      // this failure is emphatically NOT ambiguous: nothing has been POSTed, so there is no order
+      // that might already exist. Leaking the cause into the message would make a definite
+      // no-order-sent refusal look like a possible double-spend.
+      logger.warn(`[${this.username}] wallet-country read failed: ${(e as Error).message}`);
+      throw new Error(
+        `[${this.username}] could not read this account's own country from Steam – refusing to guess `
+        + 'a billing country on a money path. No order was sent.',
+      );
+    }
+    if (!probe.settled || !probe.walletCountry) {
+      throw new Error(
+        `[${this.username}] could not read this account's own country from Steam `
+        + `(settled=${probe.settled}, country=${probe.walletCountry ?? 'absent'}) – refusing to guess `
+        + 'a billing country on a money path. No order was sent.',
+      );
+    }
+    this.session.walletCountry = probe.walletCountry;
+    logger.info(`[${this.username}] wallet country resolved: ${probe.walletCountry} (billing address will use it)`);
+    return probe.walletCountry;
+  }
+
   async getListedAssetIds(appId: number): Promise<Set<string>> {
     return (await this.getListedAssets(appId)).listed;
   }
@@ -405,6 +621,7 @@ export class AccountTrader {
     const seenSell = new Map<string, ActiveSellOrder>();
     const seenBuy = new Map<string, ActiveBuyOrder>();
     let partial = false; // a page ≥ 1 or the buy-order fallback failed → snapshot is incomplete
+    let buyOrdersRead = false; // did ANY payload actually carry a `buy_orders` key? (absent ≠ empty)
     const PAGE = 100;
     const MAX_PAGES = 30; // up to 3000 listings
     let truncationWarned = false;
@@ -451,7 +668,11 @@ export class AccountTrader {
         if (!seenSell.has(key)) seenSell.set(key, toSellOrder(l));
       }
       checkFeeModel(parsed.listings);   // Steam's own fee on a live listing audits our fee model
-      collectBuyOrders(data, seenBuy); // the first render page usually carries buy_orders too
+      // The render pages usually carry buy_orders too — but only some payloads do, so track whether
+      // ANY source actually spoke about them (see the fallback + the `buyOrdersRead` gate below).
+      const fromPage = collectBuyOrders(data, seenBuy);
+      if (fromPage.present) buyOrdersRead = true;
+      reportBuyOrderDrops(this.username, 'render page', fromPage);
 
       const total = Number(data.total_count);
       if (!truncationWarned && Number.isFinite(total) && total > MAX_PAGES * PAGE) {
@@ -468,13 +689,27 @@ export class AccountTrader {
     if (seenBuy.size === 0) {
       try {
         const { status, data } = await get('https://steamcommunity.com/market/mylistings/?norender=1');
-        if (status === 200 && data && typeof data === 'object') collectBuyOrders(data, seenBuy);
+        if (status === 200 && data && typeof data === 'object') {
+          const fromLanding = collectBuyOrders(data, seenBuy);
+          if (fromLanding.present) buyOrdersRead = true;
+          else {
+            // The diagnostic that names the cause instead of leaving a bare zero. An account whose
+            // order really was placed reaching this line means Steam answered 200 with a body that
+            // never mentions buy_orders — the keys tell us what it sent instead.
+            logger.warn(`[${this.username}] mylistings landing page carried NO buy_orders key – buy orders UNKNOWN, not "none" (status ${status}, keys: ${Object.keys(data as object).join(', ') || 'none'})`);
+          }
+          reportBuyOrderDrops(this.username, 'landing page', fromLanding);
+        }
         else partial = true; // fetched but non-200 / malformed → buy orders unknown, not "none"
-      } catch { partial = true; /* fallback threw → buy orders unknown; the fetch itself never fails over it */ }
+      } catch (e) { partial = true; logger.warn(`[${this.username}] buy-order landing fetch failed: ${(e as Error).message}`); }
     }
 
-    logger.info(`[${this.username}] market orders: ${seenSell.size} sell / ${seenBuy.size} buy${partial ? ' (partial)' : ''}`);
-    return { sellOrders: [...seenSell.values()], buyOrders: [...seenBuy.values()], partial };
+    // NOTHING ever carried the key ⇒ we do not know whether this account has buy orders, and must
+    // not report a confident zero. `partial` is the existing "this snapshot is incomplete" signal.
+    if (!buyOrdersRead) partial = true;
+
+    logger.info(`[${this.username}] market orders: ${seenSell.size} sell / ${seenBuy.size} buy${buyOrdersRead ? '' : ' (buy orders UNREAD)'}${partial ? ' (partial)' : ''}`);
+    return { sellOrders: [...seenSell.values()], buyOrders: [...seenBuy.values()], partial, buyOrdersRead };
   }
 
   /**
@@ -859,9 +1094,11 @@ export class AccountTrader {
     const perItem = Math.round(p.pricePerItemMinor);
     if (!Number.isFinite(perItem) || perItem < 1) throw new Error('invalid buy price (minor units must be ≥ 1)');
     const priceTotal = perItem * qty; // Steam wants the TOTAL order value, not per item
-    // Billing: use what the caller passed, else generate a format-valid RANDOM
-    // profile per request (anti-fingerprinting; empty fields trip the gate).
-    const billing = p.billing ?? generateBilling();
+    // Billing: use what the caller passed, else generate a format-valid RANDOM profile per request
+    // (anti-fingerprinting; empty fields trip the gate). The COUNTRY is not random and must not be
+    // guessed — it is the account's own, read from Steam (see resolveWalletCountry). This runs
+    // BEFORE the POST, so a refusal here means nothing was ordered.
+    const billing = p.billing ?? generateBilling(await this.resolveWalletCountry());
 
     const post = (confirmation: string): Promise<{ status: number; data: any }> => {
       const { body, contentType } = buildMultipart({
@@ -1519,13 +1756,54 @@ export function matchRestingBuyOrder(
 }
 
 /** Parses resting BUY orders out of a market/mylistings payload into `out` (deduped by id). */
-function collectBuyOrders(d: any, out: Map<string, ActiveBuyOrder>): void {
-  const orders: any[] = Array.isArray(d?.buy_orders) ? d.buy_orders : [];
+/**
+ * Reads `buy_orders` out of a market payload into `out`.
+ *
+ * Returns whether the payload actually CARRIED the key, which the caller needs to tell two very
+ * different things apart: "Steam says this account has no buy orders" (`buy_orders: []`) and "this
+ * response never mentioned buy orders" (key absent). Coercing the second into the first is a
+ * fail-open — it reports a confident zero on evidence that cannot support one, and it is why an
+ * account whose order WAS placed and confirmed showed 0 buy orders with no hint anything was
+ * missing (owner report 2026-08-20, donaldjohnston02). The sell side has always refused the same
+ * coercion: parseMyListings throws on a non-listings body rather than call it "no listings".
+ *
+ * `unnamed` counts rows dropped for want of a usable id, and `noAppId` rows whose app could not be
+ * determined — those are filtered out of a game-scoped view downstream, so they must not vanish
+ * silently.
+ */
+/**
+ * Says out loud which buy-order rows Steam sent that did NOT survive into the view.
+ *
+ * `collectBuyOrders` counts both drop kinds precisely so they cannot vanish silently, but only
+ * `noAppId` was ever wired up — `unnamed` was computed and thrown away. That gap matters most in
+ * exactly the case the counters exist for: rows dropped for want of a `buy_orderid` leave
+ * `present: true` with an empty list, which is indistinguishable from Steam saying "this account
+ * has no buy orders". An investigation resting on that zero (donaldjohnston02, 2026-08-21) needs to
+ * know which of the two it is looking at.
+ */
+function reportBuyOrderDrops(
+  username: string, source: string, r: { rows: number; unnamed: number; noAppId: number },
+): void {
+  if (r.unnamed) {
+    logger.warn(`[${username}] ${source}: ${r.unnamed} of ${r.rows} buy order(s) carry NO buy_orderid and were dropped – `
+      + 'the empty/short list below is NOT Steam saying "no buy orders"');
+  }
+  if (r.noAppId) {
+    logger.warn(`[${username}] ${source}: ${r.noAppId} buy order(s) carry no appid – a game-scoped view will not show them`);
+  }
+}
+
+function collectBuyOrders(d: any, out: Map<string, ActiveBuyOrder>): { present: boolean; rows: number; unnamed: number; noAppId: number } {
+  const orders: any[] | null = Array.isArray(d?.buy_orders) ? d.buy_orders : null;
+  if (!orders) return { present: false, rows: 0, unnamed: 0, noAppId: 0 };
+  let unnamed = 0, noAppId = 0;
   for (const b of orders) {
     const buyOrderId = b?.buy_orderid != null ? String(b.buy_orderid) : '';
-    if (!buyOrderId || out.has(buyOrderId)) continue;
+    if (!buyOrderId) { unnamed++; continue; }
+    if (out.has(buyOrderId)) continue;
     const desc = b?.description ?? {};
     const appId = Number(b?.appid ?? desc.appid) || 0;
+    if (!appId) noAppId++;   // a game-scoped view filters these out — never let that happen unseen
     const icon = desc.icon_url_large ?? desc.icon_url ?? '';
     out.set(buyOrderId, {
       buyOrderId, appId,
@@ -1538,4 +1816,5 @@ function collectBuyOrders(d: any, out: Map<string, ActiveBuyOrder>): void {
       quantityRemaining: Number(b?.quantity_remaining ?? b?.quantity) || 0,
     });
   }
+  return { present: true, rows: orders.length, unnamed, noAppId };
 }

@@ -131,6 +131,37 @@ function ownedCount(inv: AccountInventory | undefined, marketHashName: string): 
  *  - After the order is placed we NEVER throw — a thrown post-order error would
  *    surface as a 5xx and invite a retry that double-spends.
  */
+/**
+ * Can this account use the Steam Community Market at all?
+ *
+ * Steam pushes `ClientIsLimitedAccount` on the CM connection at login, so steam-user already holds
+ * the answer on every session — SSIM simply never read it. That omission is expensive: a LIMITED
+ * account (one that has never spent the ~$5 Steam requires to lift the restriction) cannot use the
+ * Market, and `createbuyorder` does not say so. It answers `success:1`, names no order, holds no
+ * funds and fills nothing — so SSIM reported `placed=true confirmed=true` for an order that was
+ * never created (owner report 2026-08-20: donaldjohnston02, wallet EUR 3.02, two orders accepted,
+ * wallet never moved, nothing ever resting).
+ *
+ * The arithmetic is what makes that conclusive rather than suspected: Steam HOLDS the funds behind a
+ * resting buy order. Two accepted orders of 1.99 + 2.00 against a 3.02 wallet cannot both rest — the
+ * second would have been refused for insufficient funds. Both were accepted and the balance never
+ * changed, so neither order existed.
+ *
+ * `null` limitations mean the CM has not sent the message yet — genuinely unknown, so it must NOT
+ * block a legitimate buy. Only an explicit flag refuses.
+ */
+export function marketEligibility(
+  lim: { limited?: boolean; communityBanned?: boolean; locked?: boolean } | null | undefined,
+): { ok: true } | { ok: false; reason: string } {
+  if (!lim) return { ok: true };   // not known yet — never guess a refusal onto a real buy
+  if (lim.locked) return { ok: false, reason: 'this Steam account is LOCKED, so it cannot use the Community Market' };
+  if (lim.communityBanned) return { ok: false, reason: 'this Steam account is COMMUNITY BANNED, so it cannot use the Community Market' };
+  if (lim.limited) {
+    return { ok: false, reason: 'this is a LIMITED Steam account. Steam does not let limited accounts use the Community Market, and it does not say so — createbuyorder answers success:1, then holds no funds and never fills. Spend the ~$5 Steam requires (a game or wallet top-up SPENT, not just added) to lift the limitation, then re-run' };
+  }
+  return { ok: true };
+}
+
 export class BuyService {
   /** Per (account|appid|item) in-flight guard against duplicate real orders. */
   private readonly inFlight = new Set<string>();
@@ -149,6 +180,11 @@ export class BuyService {
     /** Cross-restart money-op journal, shared with TradeService — see MoneyOpJournal. Defaults to a
      *  no-op so direct construction in tests doesn't touch the shared journal file; createDeps wires the real one. */
     private readonly journal: MoneyOpJournal = MoneyOpJournal.disabled(),
+    /** Reads the item's current lowest ask. Injected rather than taking MarketService directly:
+     *  MarketService already depends on TradeService, so a hard reference here would close a cycle.
+     *  Optional — absent (tests, direct construction) simply means no ask hint. */
+    private readonly readAsk?: (name: string, appId: number, currency: number, username: string)
+      => Promise<{ minor: number; source: 'lowest' | 'median' } | null>,
   ) {}
 
   async buy(p: BuyParams, opts?: { releaseSession?: boolean }): Promise<BuyResult> {
@@ -199,6 +235,19 @@ export class BuyService {
       // (or re-logs-in) the account if its cached cookies are missing/stale.
       const trader = await this.trades.ensureWebSession(p.username);
 
+      // MARKET ELIGIBILITY. Checked here, after the session is live (the flags ride the CM login) and
+      // BEFORE the journal commits anything or a single euro is risked. A limited account silently
+      // swallows buy orders, so without this SSIM reports a placed, confirmed order that does not
+      // exist — the worst kind of wrong, because it looks like success.
+      const eligible = marketEligibility(trader.limitations);
+      if (!eligible.ok) {
+        refused = true;
+        const e = new Error(`Cannot buy on ${p.username}: ${eligible.reason}. Nothing was ordered.`) as Error & { moneyOpRefused?: true };
+        e.moneyOpRefused = true;   // a precondition, not a retryable fault — the route answers 409
+        logger.warn(`[${p.username}] buy REFUSED before ordering — ${eligible.reason}`);
+        throw e;
+      }
+
       // Baseline: a FRESH (non-coalesced) inventory + wallet before buying.
       const before = await this.inventory.forceRefresh(p.username, game);
       const ownedBefore = ownedCount(before, p.marketHashName);
@@ -240,6 +289,23 @@ export class BuyService {
       if (walletMinorBefore != null && priceTotalMinor > walletMinorBefore) {
         throw new Error(`order total ${priceTotalMinor} exceeds wallet balance ${walletMinorBefore} (${iso} minor units)`);
       }
+
+      // WHAT IS THIS ACTUALLY GOING FOR? Read here, where the wallet currency is finally known, and
+      // NEVER as a gate — an operator may deliberately want a resting order under the market. Its
+      // only job is to make the difference visible between "my bid is under the ask" and "the buy
+      // path is broken", which from the outside look identical: both end at placed=true, filled=0.
+      // Best-effort by construction; a throttled price read must never block a real buy.
+      let askHint = '';
+      try {
+        const ask = this.readAsk ? await this.readAsk(p.marketHashName, p.appId, currency, p.username) : null;
+        if (ask && ask.source === 'lowest' && perItem < ask.minor) {
+          askHint = `Your bid of ${perItem} is BELOW the lowest ask of ${ask.minor} (${iso} minor units), so it rests until a seller comes down to it.`;
+          logger.warn(`[${p.username}] bid ${perItem} is BELOW the lowest ask ${ask.minor} ${iso}(minor) — this order will REST, not fill`);
+        } else if (ask && ask.source === 'median') {
+          askHint = 'Steam reported no live lowest ask for this item, only a historical median, so a bid taken from it may never fill.';
+          logger.warn(`[${p.username}] no live ask for ${p.marketHashName} — only a median`);
+        }
+      } catch (e) { logger.info(`[${p.username}] pre-buy ask check unavailable (${(e as Error).message}) – continuing`); }
 
       const order = await trader.createBuyOrder({
         marketHashName: p.marketHashName,
@@ -296,13 +362,58 @@ export class BuyService {
       } else if (order.needsConfirmation) {
         message = 'Buy order created – mobile confirmation still pending; please check';
       } else {
-        message = 'Buy order placed & confirmed – resting until a seller matches the price (not yet filled)';
+        // An order that rests is USUALLY a bid under the ask, and `askHint` says so when it is. When
+        // it is NOT — the bid is at or above the ask and Steam still will not match it — nothing SSIM
+        // controls explains it, so ask STEAM. The probe runs exactly here, at the only moment the
+        // answer matters, and never on a healthy buy. Read-only, one request, best-effort.
+        let why = askHint;
+        if (!why) {
+          try {
+            const probe = await trader.probeMarketAccess();
+            const eligibility = probe.tradeEligibility;
+            if (!probe.settled) {
+              // Steam bounced the read instead of answering it. That is a finding, not a blank —
+              // reporting "no notice" here would read as an all-clear the probe never established.
+              why = `Steam would not serve this account's own market page (bounced ${probe.redirects.length}× without landing), so its market standing could NOT be read.`;
+            } else if (probe.marketAllowed === false) {
+              why = 'Steam reports this account may NOT use the Community Market (g_bMarketAllowed=false), which is why the order rests and never matches.';
+            } else if (eligibility && eligibility.allowed === 0) {
+              const days = eligibility.steamguard_required_days;
+              const cooldown = eligibility.new_device_cooldown_days;
+              why = `Steam reports this account is not yet eligible to trade/market${days ? ` (Steam Guard required for ${String(days)} more day(s))` : ''}${cooldown ? ` (new-device cooldown: ${String(cooldown)} day(s))` : ''} — the order rests and cannot match until that clears.`;
+            } else if (probe.walletCurrency != null && probe.walletCurrency !== currency) {
+              // A bid priced in a currency the wallet is not in cannot be funded, and Steam does not
+              // say so on the create — it just never matches.
+              why = `Steam reports this account's wallet is currency ${probe.walletCurrency}, but the order was priced in ${currency} (${iso}). A bid Steam cannot fund from the wallet never matches.`;
+            } else if (probe.walletBalanceMinor != null && probe.walletBalanceMinor < priceTotalMinor) {
+              // Steam HOLDS the funds behind a resting buy order, so a wallet that cannot cover the
+              // total cannot hold one. SSIM's own balance comes from the CM 'wallet' event and can be
+              // older than this read, which is exactly why the number is re-read here rather than reused.
+              why = `Steam reports this account's spendable wallet is ${probe.walletBalanceMinor} ${iso}(minor) — less than the ${priceTotalMinor} this order needs`
+                + (probe.walletDelayedBalanceMinor ? `, with a further ${probe.walletDelayedBalanceMinor} still on hold` : '')
+                + '. Steam cannot hold the funds for the order, so it never rests and never matches.';
+            } else if (probe.notice) {
+              why = `Steam's market page says: "${probe.notice.slice(0, 200)}"`;
+            }
+          } catch (e) { logger.info(`[${p.username}] market access probe unavailable (${(e as Error).message})`); }
+        }
+        message = `Buy order placed & confirmed${order.buyOrderId ? ` (#${order.buyOrderId})` : ''} – resting until a seller matches the price (not yet filled)`
+          + (why ? ` ${why}` : '');
       }
 
+      // buyOrderId is the one handle that ties this run to a row on Steam's own market page. It was
+      // captured and then dropped, so a resting order could not be checked against Steam without
+      // guessing which one it was — exactly what an unfilled buy leaves you needing (owner 2026-08-20).
       logger.info(
         `[${p.username}] BUY ${p.marketHashName} x${qty} @ ${perItem} ${iso}(minor) → ` +
-        `placed=${order.placed} confirmed=${order.confirmed} filled=${filled} verifyFailed=${verifyFailed}`,
+        `placed=${order.placed} confirmed=${order.confirmed} filled=${filled} verifyFailed=${verifyFailed} ` +
+        `buyOrderId=${order.buyOrderId ?? 'NONE-RETURNED'}`,
       );
+      // success=1 with no buy_orderid means Steam accepted the POST without naming an order. That is
+      // not a normal create, and it is indistinguishable downstream from a healthy one — say so.
+      if (order.placed && !order.buyOrderId) {
+        logger.warn(`[${p.username}] Steam reported the buy order placed but returned NO buy_orderid – there may be no resting order to find`);
+      }
 
       return {
         username:          p.username,

@@ -16,7 +16,10 @@ function fakeTrader(overrides: Partial<Record<string, unknown>> = {}): AccountTr
   const t = Object.create(AccountTrader.prototype) as AccountTrader;
   Object.assign(t, {
     username: 'moneybot',
-    session: { webSession: { cookies: ['sessionid=abc', 'steamLoginSecure=xyz'] }, httpsAgent: {} },
+    // walletCountry is pre-cached exactly as a live session carries it after the first read, so
+    // createBuyOrder does not go to Steam for it here — these tests are about commit ambiguity, not
+    // country resolution (which marketAccessProbe.test.ts covers).
+    session: { webSession: { cookies: ['sessionid=abc', 'steamLoginSecure=xyz'] }, httpsAgent: {}, walletCountry: 'DE' },
     ...overrides,
   });
   return t;

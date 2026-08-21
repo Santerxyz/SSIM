@@ -268,6 +268,18 @@ export class MarketPricing {
     // which guesses 2 for an unknown code and would mis-scale a real 0-decimal ask 100×.
     const cInfo = knownCurrencyInfo(currency);
     if (!cInfo) return null;
+    const raw = await this.fetchPriceOverviewRaw(name, appid, currency, opts);
+    if (!raw) return null;
+    return parseSteamMoney(raw.lowest_price, cInfo.decimals) ?? parseSteamMoney(raw.median_price, cInfo.decimals);
+  }
+
+  /** The ONE priceoverview request + its guards, shared by both readers above so they can never
+   *  diverge on transport handling, the throttle classification or the wrong-currency witness. */
+  private async fetchPriceOverviewRaw(
+    name: string, appid: number, currency: number, opts?: PriceFetchOpts,
+  ): Promise<{ lowest_price?: unknown; median_price?: unknown } | null> {
+    const cInfo = knownCurrencyInfo(currency);
+    if (!cInfo) return null;
     const url = `https://steamcommunity.com/market/priceoverview/` +
       `?country=${COUNTRY}&currency=${currency}&appid=${appid}&market_hash_name=${encodeURIComponent(name)}`;
     const headers: Record<string, string> = { ...STEAM_XHR_HEADERS, 'User-Agent': UA_CHROME, Accept: 'application/json', 'Accept-Language': 'de-DE,de;q=0.9', Connection: 'close' };
@@ -292,7 +304,32 @@ export class MarketPricing {
       const foreign = priceTextForeignCurrency(text, cInfo.iso);
       if (foreign) throw new Error(`CURRENCY_MISMATCH: asked for ${cInfo.iso} (code ${cInfo.code}) but Steam answered in ${foreign}`);
     }
-    return parseSteamMoney(r.data.lowest_price, cInfo.decimals) ?? parseSteamMoney(r.data.median_price, cInfo.decimals);
+    return r.data as { lowest_price?: unknown; median_price?: unknown };
+  }
+
+  /**
+   * getLowestAsk, but it says WHICH number it found.
+   *
+   * The plain version silently falls back to `median_price` when Steam reports no `lowest_price`,
+   * and every surface then labels the result "Lowest offer". A median is a historical average, not a
+   * live ask — bidding it places a buy order that rests below the market and never fills, while the
+   * operator has been told they are bidding the lowest offer. That is how an account can sit at
+   * "placed=true filled=0" and look like a bug in the buy path (owner 2026-08-21: a real, resting
+   * order that simply never matched).
+   *
+   * `source` lets the caller say what it actually has. Same request, same parsing, no extra budget.
+   */
+  async getLowestAskDetailed(
+    name: string, appid: number, currency: number, opts?: PriceFetchOpts,
+  ): Promise<{ minor: number; source: 'lowest' | 'median' } | null> {
+    const cInfo = knownCurrencyInfo(currency);
+    if (!cInfo) return null;
+    const raw = await this.fetchPriceOverviewRaw(name, appid, currency, opts);
+    if (!raw) return null;
+    const lowest = parseSteamMoney(raw.lowest_price, cInfo.decimals);
+    if (lowest != null) return { minor: lowest, source: 'lowest' };
+    const median = parseSteamMoney(raw.median_price, cInfo.decimals);
+    return median != null ? { minor: median, source: 'median' } : null;
   }
 }
 
