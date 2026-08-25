@@ -356,17 +356,17 @@ export class StoreService {
       } catch (e) {
         // A transport failure mid-POST cannot be distinguished from a completed one: the request may
         // well have landed. Say so rather than inviting a retry that would fail for the wrong reason.
-        if (e instanceof StoreAmbiguousError) return { status: 'ambiguous' as const, detail: 'transport error — outcome unknown, check Steam' };
+        if (e instanceof StoreAmbiguousError) return { status: 'ambiguous' as const, detail: 'the connection dropped mid request, so the outcome is unknown' };
         throw e;
       }
-      if (res.status >= 300 && res.status < 400) return { status: 'done' as const, detail: 'Steam accepted the deauthorization' };
+      if (res.status >= 300 && res.status < 400) return { status: 'done' as const, detail: 'Steam accepted it' };
       if (res.status !== 200) return { status: 'failed' as const, detail: `HTTP ${res.status}` };
       if (res.data && typeof res.data === 'object') {
         const ok = (res.data as Record<string, unknown>).success;
-        if (ok === true || ok === 1) return { status: 'done' as const, detail: 'Steam accepted the deauthorization' };
-        if (ok === false || ok === 0) return { status: 'failed' as const, detail: 'Steam rejected the deauthorization' };
+        if (ok === true || ok === 1) return { status: 'done' as const, detail: 'Steam accepted it' };
+        if (ok === false || ok === 0) return { status: 'failed' as const, detail: 'Steam rejected it' };
       }
-      return { status: 'ambiguous' as const, detail: 'Steam returned the page instead of confirming — outcome unknown, check Steam' };
+      return { status: 'ambiguous' as const, detail: 'Steam sent back the page instead of confirming, so the outcome is unknown' };
     });
   }
 

@@ -2672,13 +2672,13 @@ function renderAccountCard(u) {
         <i class="fa-solid fa-globe text-brand"></i><span>Open in Browser</span></button>
       ${acc.canConfirm === false ? `<button data-acc-fn-attach="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Attach maFile → upgrade to Full"><i class="fa-solid fa-shield-halved" style="color:rgb(var(--success-rgb))"></i><span>Attach maFile</span></button>` : ''}
       ${acc.canConfirm === false
-        ? `<button disabled class="btn btn-secondary btn-sm opacity-50 cursor-not-allowed" title="Needs a maFile and a password — signing out all devices revokes the refresh token that is this account's only way in">
-             <i class="fa-solid fa-right-from-bracket"></i><span>Sign out all devices</span></button>`
+        ? `<button disabled class="btn btn-secondary btn-sm opacity-50 cursor-not-allowed" title="Needs a maFile and password first. Without them this would lock SSIM out of the account for good.">
+             <i class="fa-solid fa-right-from-bracket"></i><span>Sign out everywhere</span></button>`
         : acctBusy(u, 'signout')
         ? `<button disabled class="btn btn-secondary btn-sm opacity-70 cursor-not-allowed">
              <i class="fa-solid fa-spinner cs2-spin"></i><span>Signing out…</span></button>`
-        : `<button data-acc-fn-signout="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Steam's &quot;sign out of all devices&quot; — ends every session on this account everywhere">
-             <i class="fa-solid fa-right-from-bracket" style="color:rgb(var(--danger-rgb))"></i><span>Sign out all devices</span></button>`}
+        : `<button data-acc-fn-signout="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Ends every Steam session on this account">
+             <i class="fa-solid fa-right-from-bracket" style="color:rgb(var(--danger-rgb))"></i><span>Sign out everywhere</span></button>`}
       <button data-acc-fn-logs="${escapeAttr(u)}" class="btn btn-ghost btn-sm"><i class="fa-solid fa-clock-rotate-left"></i><span>Activity log</span></button>
     </div>`;
 
@@ -2795,30 +2795,28 @@ async function saveAccountProfile(u) {
 }
 
 /**
- * Steam's "sign out of all devices" for one account: revokes every refresh token on the account,
- * so every session everywhere ends — the Steam client, the mobile app, browsers, and SSIM itself.
+ * Steam's "sign out of all devices" for one account: revokes every refresh token, so every session
+ * everywhere ends, including SSIM's own.
  *
- * The button is disabled for accounts that cannot confirm (no maFile), and the server refuses them
- * outright: for a token-only account the refresh token IS the only credential, and revoking it
- * would lock SSIM out of the account permanently. For a full account this is recoverable — SSIM
- * logs back in with the password + TOTP on the next use — but it does mean re-authenticating,
- * so it is confirm-gated.
+ * The button is disabled for accounts that cannot confirm (no maFile) and the server refuses them
+ * outright: for a token-only account the refresh token IS the only credential, so revoking it would
+ * lock SSIM out of the account for good. For a full account it is recoverable (SSIM logs back in
+ * with the password + TOTP), but it still means re-authenticating, so it is confirm-gated.
  */
 async function signOutAllDevices(u) {
   if (!(await ssimConfirm({
-    title: 'Sign out of all devices', tone: 'danger', confirmLabel: 'Sign out everywhere', confirmIcon: 'fa-right-from-bracket',
-    body: `End <b>every</b> Steam session on <span class="font-mono">@${escapeHtml(u)}</span>?<br><br>
-      <span class="text-slate-500">This is Steam's own "sign out of all devices". It revokes every login on the account — the Steam client, the mobile app, every browser, and SSIM's own session.</span><br><br>
-      <span class="text-slate-500">SSIM signs this account back in automatically the next time it is used, with its stored password and 2FA code. Anyone else signed in will have to log in again.</span>`,
+    title: 'Sign out everywhere', tone: 'danger', confirmLabel: 'Sign out', confirmIcon: 'fa-right-from-bracket',
+    body: `Sign <span class="font-mono">@${escapeHtml(u)}</span> out of every device?<br><br>
+      <span class="text-slate-500">Ends every Steam session on the account, including the mobile app and any browser. SSIM logs itself back in when it next needs it.</span>`,
   }))) return;
   setAcctBusy(u, 'signout'); renderAccountsModule();
   try {
     const r = await api(`/api/steam/${encodeURIComponent(u)}/signout-all-devices`, { method: 'POST' });
     // 'ambiguous' is a real outcome, not a success: Steam answered without confirming. Say so
     // plainly instead of reporting a clean sign-out that may not have happened.
-    if (r.status === 'ambiguous') toast(`Outcome unknown — ${r.detail || 'check the account on Steam'}`, 'warn');
-    else toast('Signed out of all devices', 'success');
-  } catch (e) { toast(e.message || 'Sign-out failed', 'error'); }
+    if (r.status === 'ambiguous') toast('Steam did not confirm it. Check the account.', 'warn');
+    else toast('Signed out everywhere', 'success');
+  } catch (e) { toast(e.message || 'Sign out failed', 'error'); }
   setAcctBusy(u, null); renderAccountsModule();
 }
 
@@ -8685,14 +8683,13 @@ async function submitEnv(ev) {
   } catch (err) { toast(err.message, 'error'); }
 }
 /**
- * Delete an environment. Lives in the Accounts module (owner 2026-08-25) — the same place
+ * Delete an environment. Lives in the Accounts module (owner 2026-08-25), the same place
  * environments are created.
  *
  * An EMPTY environment deletes on a plain confirm, as before. A NON-EMPTY one now deletes too
- * (it used to be refused outright), taking its accounts with it — so it gets the heavier gate:
- * the exact account count, an explicit list of what is destroyed, and a typed "DELETE". The
- * accounts are removed from SSIM and their secrets purged from the vault; nothing happens to the
- * Steam accounts themselves.
+ * (it used to be refused outright), taking its accounts with it, so it gets the heavier gate: the
+ * exact account count, the accounts named, and a typed "DELETE". The accounts are removed from
+ * SSIM and their secrets purged from the vault; nothing happens to the Steam accounts themselves.
  */
 async function deleteEnvironment(id) {
   const env = state.environments.find((e) => e.id === id);
@@ -8701,27 +8698,28 @@ async function deleteEnvironment(id) {
   const accs = state.allAccounts.filter((a) => a.environmentId === id);
   const cascade = accs.length > 0;
 
-  // Name a few of the accounts outright — "12 accounts" is abstract, seeing @bot_04 in the list is not.
+  // Name a few of the accounts outright. "12 accounts" is abstract; seeing @bot_04 is not.
   const sample = accs.slice(0, 6).map((a) => `<span class="font-mono">@${escapeHtml(a.username)}</span>`).join(', ');
   const more = accs.length > 6 ? ` <span class="text-slate-500">and ${fmtCount(accs.length - 6)} more</span>` : '';
+  const n = accs.length;
+  const plural = n === 1 ? 'account' : 'accounts';
 
   const body = cascade
-    ? `Delete environment <b class="text-slate-100">${escapeHtml(name)}</b> <b class="text-danger">and all ${fmtCount(accs.length)} account(s) in it</b>?<br><br>
+    ? `Delete <b class="text-slate-100">${escapeHtml(name)}</b> and the <b class="text-danger">${fmtCount(n)} ${plural}</b> in it?<br><br>
        <span class="t12 text-slate-400">${sample}${more}</span><br><br>
-       <span class="text-slate-500">For each account this removes it from SSIM, logs out its session, drops its cached inventories, and purges its password, refresh token, CSFloat key and proxy from the vault. Its folders and proxy rules go too.</span><br><br>
-       <b class="text-danger">This cannot be undone.</b> <span class="text-slate-500">The Steam accounts themselves are not touched — but SSIM will no longer have their credentials.</span>`
-    : `Delete environment <b class="text-slate-100">${escapeHtml(name)}</b>?<br><span class="text-slate-500">It holds no accounts.</span>`;
+       <span class="text-slate-500">This wipes their logins from SSIM for good. The Steam ${plural} stay, you just lose the saved passwords.</span>`
+    : `Delete <b class="text-slate-100">${escapeHtml(name)}</b>? <span class="text-slate-500">It has no accounts in it.</span>`;
 
   if (!(await ssimConfirm({
-    title: cascade ? 'Delete environment and its accounts' : 'Delete environment',
-    tone: 'danger', confirmLabel: cascade ? `Delete ${fmtCount(accs.length)} account(s)` : 'Delete', confirmIcon: 'fa-trash',
+    title: cascade ? 'Delete environment and accounts' : 'Delete environment',
+    tone: 'danger', confirmLabel: cascade ? `Delete ${fmtCount(n)} ${plural}` : 'Delete', confirmIcon: 'fa-trash',
     body,
     typedWord: cascade ? 'DELETE' : null,
   }))) return;
 
   try {
     await api(`/api/environments/${encodeURIComponent(id)}${cascade ? '?cascade=1' : ''}`, { method: 'DELETE' });
-    toast(cascade ? `Environment "${name}" and ${accs.length} account(s) deleted` : `Environment "${name}" deleted`, 'success');
+    toast(cascade ? `Deleted ${name} and ${fmtCount(n)} ${plural}` : `Deleted ${name}`, 'success');
     // Drop every local reference to the environment before repainting, so no view is left pointing
     // at something the server no longer has. Deleting the environment you are standing in is the
     // normal case (the header's Delete button), not an edge case.

@@ -137,9 +137,9 @@ test('the confirm names the accounts and the exact count', async () => {
   await h.deleteEnvironment('env-1');
 
   const { body, confirmLabel } = h.confirms[0];
-  assert.match(body, /all 3 account\(s\)/, 'the count is stated');
+  assert.match(body, /3 accounts/, 'the count is stated');
   for (const u of ['bot_a', 'bot_b', 'bot_c']) assert.ok(body.includes(u), `${u} is named in the dialog`);
-  assert.match(body, /cannot be undone/i, 'irreversibility is stated');
+  assert.match(body, /for good/i, 'irreversibility is stated');
   assert.match(String(confirmLabel), /3/, 'the confirm button carries the count too');
 });
 
@@ -150,7 +150,7 @@ test('a long account list is truncated with an explicit remainder (no silent omi
 
   const body = h.confirms[0].body;
   assert.match(body, /and 14 more/, '6 shown + 14 more = the full 20 is accounted for');
-  assert.match(body, /all 20 account\(s\)/);
+  assert.match(body, /20 accounts/);
 });
 
 test('DECLINING the confirm issues NO request', async () => {
@@ -255,7 +255,7 @@ test('sign-out: an AMBIGUOUS outcome is reported as unknown, never as success', 
 
   const last = h.toasts.at(-1)!;
   assert.equal(last.kind, 'warn', 'not a success toast');
-  assert.match(last.msg, /unknown/i);
+  assert.match(last.msg, /did not confirm/i, 'and says Steam never confirmed it');
 });
 
 test('sign-out: the busy flag is always released, success or failure', async () => {
@@ -273,10 +273,10 @@ test('sign-out: the busy flag is always released, success or failure', async () 
 
 test('sign-out: a server refusal (token-only account) surfaces its reason verbatim', async () => {
   const h = loadFrontend();
-  h.setApiError(new Error('Refused: this account has no credential fallback (it needs both a maFile and a password).'));
+  h.setApiError(new Error('No maFile or password saved for this account, so its refresh token is the only way SSIM can log in. Signing out would kill it and lock SSIM out for good. Add them first.'));
   await h.signOutAllDevices('bot_limited');
 
   assert.equal(h.toasts.at(-1)?.kind, 'error');
-  assert.match(h.toasts.at(-1)!.msg, /credential fallback/,
+  assert.match(h.toasts.at(-1)!.msg, /lock SSIM out/,
     'the operator must see WHY it was refused, not a generic failure');
 });

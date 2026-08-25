@@ -1267,15 +1267,16 @@ export function createApp(deps: ApiDeps): Express {
     const hasPassword = !!resolvePassword(account);
     if (!maFile || !hasPassword) {
       return res.status(409).json({
-        error: 'Refused: this account has no credential fallback (it needs both a maFile and a password). '
-             + 'Signing out all devices revokes the refresh token that is its only way in, which cannot be undone. '
-             + 'Attach a maFile and password first.',
+        error: 'No maFile or password saved for this account, so its refresh token is the only way SSIM can log in. '
+             + 'Signing out would kill it and lock SSIM out for good. Add them first.',
       });
     }
 
     const result = await store.deauthorizeAllDevices(account.username);
     if (result.status === 'failed') {
-      return res.status(502).json({ status: 'failed', detail: result.detail });
+      // `error` is what the frontend's api() wrapper reads for its toast; without it the operator
+      // just gets "HTTP 502" and no reason.
+      return res.status(502).json({ status: 'failed', detail: result.detail, error: `Steam refused the sign out (${result.detail})` });
     }
 
     // done OR ambiguous → treat our own credentials as revoked (see above).

@@ -102,8 +102,8 @@ test('a TOKEN-ONLY account (no maFile) is refused 409 and never reaches Steam', 
   await withServer(deps, async (port, cap) => {
     const r = await post(port, cap, ROUTE);
     assert.equal(r.status, 409, 'a missing maFile must be a refusal, NOT a 500 from loadMaFile throwing');
-    assert.match(String(r.json.error), /credential fallback/i, 'the reason is stated');
-    assert.match(String(r.json.error), /cannot be undone/i, 'and its irreversibility');
+    assert.match(String(r.json.error), /maFile or password/i, 'the reason is stated');
+    assert.match(String(r.json.error), /lock SSIM out for good/i, 'and its irreversibility');
   });
   assert.deepEqual(rec.deauthorized, [], 'Steam was never called');
   assert.deepEqual(rec.tokensCleared, [], 'and the sole credential was never touched');
