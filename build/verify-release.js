@@ -90,7 +90,31 @@ const hashStream = (res) => new Promise((resolve, reject) => {
   res.stream.on('data', (c) => { bytes += c.length; h.update(c); });
   res.stream.on('end', () => resolve({ sha256: h.digest('hex'), bytes }));
   res.stream.on('error', reject);
+  // A truncated response that ENDS cleanly would otherwise hash short and be reported as a
+  // content mismatch, which would send someone hunting a signing bug that does not exist.
+  res.stream.on('aborted', () => reject(new Error('connection aborted mid-download')));
 });
+
+/**
+ * Hash the asset, retrying a dropped connection. A 145 MB download over a flaky link fails often
+ * enough that a single attempt makes this gate unreliable — and an unreliable gate gets skipped,
+ * which is exactly how the 1.5.1/1.5.2 manifests shipped unchecked. Distinguishes "could not
+ * finish downloading" (inconclusive, retry) from "hash differs" (a real, reportable failure).
+ */
+async function hashAssetWithRetry(url, attempts = 3) {
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await get(url);
+      if (res.status !== 200) return { error: `HTTP ${res.status}` };
+      return await hashStream(res);
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts) info(`download attempt ${i} failed (${e.message}) — retrying`);
+    }
+  }
+  return { error: lastErr ? lastErr.message : 'download failed' };
+}
 
 (async () => {
   console.error(`\nSSIM release check — expecting v${expected}`);
@@ -160,18 +184,39 @@ const hashStream = (res) => new Promise((resolve, reject) => {
   }
 
   // ── 5. Does the artifact match the hash the manifest swears to? ──────────
+  if (assetRes) { assetRes.stream.resume(); }   // the reachability probe's body is not the one we hash
   if (!assetRes) {
     info('skipping the sha256 check — no asset to hash');
   } else if (has('quick')) {
-    assetRes.stream.resume();
     info('skipped the sha256 check (--quick) — the fleet does NOT skip it');
+  } else if (arg('asset')) {
+    // Hash a local copy instead of re-downloading. Legitimate when that copy IS the published
+    // asset and you have already proved it (e.g. `sha256sum -c` against the release's own
+    // SHA256SUMS): re-pulling 145 MB over a flaky link proves nothing extra and, as seen on
+    // 1.5.3, can fail three times in a row. It does NOT prove the bytes are what GitHub serves —
+    // only that this file matches the manifest — so verify the copy's provenance first.
+    const p = arg('asset');
+    if (!fs.existsSync(p)) { fail(`--asset not found: ${p}`); }
+    else {
+      const h = crypto.createHash('sha256');
+      h.update(fs.readFileSync(p));
+      const local = h.digest('hex');
+      if (local !== parsed.sha256.toLowerCase()) {
+        fail('the local --asset does NOT match the manifest sha256',
+          `manifest ${parsed.sha256}\n    actual   ${local}`);
+      } else {
+        ok(`--asset sha256 matches the manifest (${path.basename(p)}, provenance is YOUR responsibility)`);
+      }
+    }
   } else {
-    const { sha256, bytes } = await hashStream(assetRes);
-    if (sha256 !== parsed.sha256.toLowerCase()) {
+    const r = await hashAssetWithRetry(parsed.url);
+    if (r.error) {
+      fail('could not download the asset to verify its sha256', `${r.error}. This is inconclusive, not a pass — re-run before publishing.`);
+    } else if (r.sha256 !== parsed.sha256.toLowerCase()) {
       fail('the published asset does NOT match the manifest sha256',
-        `manifest ${parsed.sha256}\n    actual   ${sha256}\n    Every client downloads it, fails the integrity gate and discards it.`);
+        `manifest ${parsed.sha256}\n    actual   ${r.sha256}\n    Every client downloads it, fails the integrity gate and discards it.`);
     } else {
-      ok(`asset sha256 matches (${(bytes / 1048576).toFixed(1)} MB verified)`);
+      ok(`asset sha256 matches (${(r.bytes / 1048576).toFixed(1)} MB verified)`);
     }
   }
 
