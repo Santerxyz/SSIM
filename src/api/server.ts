@@ -30,7 +30,7 @@ import { AccountVault, VAULT_NEWER_VERSION_ERROR } from '../core/AccountVault';
 import { importDropZoneIntoVault, importCsvIntoVault, importExternalVault } from '../core/vaultBoot';
 import { loadMaFileFromDisk, readCredentialsFile } from '../core/maFiles';
 import { canConfirm } from '../core/accountCapability';
-import { loadMaFile, generateTotpCode, msUntilNextTotp, identitySecretPresence } from '../core/LoginFlow';
+import { loadMaFile, generateTotpCode, msUntilNextTotp, identitySecretPresence, resolvePassword } from '../core/LoginFlow';
 import { buildIsolatedSession, launchIsolatedBrowser } from '../trading/cleanBrowser';
 import { getAvailableUpdate, getBlockedUpdate, getPriorCrash, getUpdateOutcome } from '../update/updateStatus';
 import { checkOnly, canInstallNow, installNow, isUpdateOpInFlight } from '../update/updateScheduler';
@@ -210,14 +210,31 @@ export function createDeps(): ApiDeps {
   // Trades gets the inventory cache so the send path can refuse trade-locked / non-tradable
   // assets before an offer is created.
   const trades    = new TradeService(sessions, accounts, inventory, moneyJournal);
-  // How many authenticated pricer identities the background fill and the sell-preview / buy-autofill
-  // borrow (see below + MarketService.priceCtxsFor). Declared here so both consumers share it.
-  const PRICE_IDENTITY_LANES = 3;
+  // How many authenticated pricer identities the background fill borrows, and — the load-bearing
+  // half — how many of them may sit on ONE exit IP.
+  //
+  // Raised from 3 (2026-08-25): at 3 lanes × one request per 3.5s the fill was capped near 51
+  // names/min no matter how much egress existed, which is why it crawled next to the sell preview
+  // (3 workers, NO inter-request delay). But the cap that keeps this SAFE is the per-exit one, not
+  // the total: Steam meters per exit IP, so a single-exit setup (proxyless, one static proxy, or one
+  // ROTATING proxy — all one egressKey) must never be driven harder than the 3-lane pace that
+  // already shipped. PRICE_LANES_PER_EXIT pins that; PRICE_IDENTITY_LANES only decides how many
+  // EXITS the fill may spread over (36 ≈ 12 exits × 3).
+  const PRICE_IDENTITY_LANES  = 36;
+  const PRICE_LANES_PER_EXIT  = 3;
+  // The sell-preview / buy-autofill borrow far fewer: those are INTERACTIVE reads of a handful of names
+  // behind a 90s budget, and they must not evict the background fill's spread or fan a modal across the
+  // whole proxy pool. MarketService caps itself at 3 workers anyway, and spreads them one per exit.
+  const PREVIEW_IDENTITY_LANES = 3;
   // Market gets the inventory cache so a completed mass-sell moves the just-listed assets
   // Owned→Listed immediately (optimistic), rather than waiting on a follow-up refresh. It also gets the
   // pricer-identity pool so a sell-preview whose acting bot isn't web-ready still prices through a live
   // authenticated identity instead of an anonymous host-IP read that 429s → "no price" (2026-07-10 fix).
-  const market    = new MarketService(trades, inventory, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES));
+  // maxPerExit = the full lane count here, deliberately: the preview must still be able to borrow 3
+  // DISTINCT accounts when they all share one exit (that is what it did before, and MarketService
+  // otherwise collapses to one borrowed cookie driven at 3× concurrency). Spreading across exits is
+  // preferred when they exist; it just isn't a cap on this path.
+  const market    = new MarketService(trades, inventory, () => sessions.pricerIdentities(PREVIEW_IDENTITY_LANES, PREVIEW_IDENTITY_LANES));
   // The ask reader is passed as a callback, not as a service handle: MarketService already depends
   // on TradeService, so handing BuyService the whole object would close a dependency cycle.
   const buy       = new BuyService(trades, inventory, moneyJournal,
@@ -234,7 +251,7 @@ export function createDeps(): ApiDeps {
   // per-session budget. With no session web-ready yet it DEFERS (never anonymous) and `kick()` restarts it
   // once a session logs in. (The old proxy-string provider, its 60-80s per-name retry and the
   // foreground gate are gone — they were treating the symptom.)
-  const pricing   = new PricingService(csfloat, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES));
+  const pricing   = new PricingService(csfloat, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES, PRICE_LANES_PER_EXIT));
   // Restart a deferred Steam fill the moment an authenticated session becomes web-ready.
   sessions.on('webSession', () => pricing.kick());
   const exchange  = new ExchangeRateService();
@@ -661,17 +678,56 @@ export function createApp(deps: ApiDeps): Express {
     }
   });
 
-  app.delete('/api/environments/:id', (req: Request, res: Response) => {
-    if (!accounts.getEnvironment(req.params.id)) {
-      return res.status(404).json({ error: `Environment "${req.params.id}" not found` });
+  // ── DELETE /api/environments/:id[?cascade=1] ───────────────────────────────
+  // Without `cascade` this is unchanged: an environment that still holds accounts is refused (409),
+  // and the operator moves them out first.
+  //
+  // With `cascade=1` the environment is deleted TOGETHER WITH every account in it. That is
+  // irreversible, so the UI gates it behind a typed "DELETE"; this route does not trust that gate
+  // and re-reads the membership itself. Each account is torn down through EXACTLY the steps
+  // DELETE /api/accounts/:username performs — session logout, all three inventory caches, the
+  // accounts DB row, the vault secrets — so the two paths can never drift apart. The difference is
+  // batching: removals and vault purges collapse into one write each instead of one per account.
+  //
+  // Ordering is deliberate. Sessions go FIRST, while the account rows still exist (logoutAccount
+  // resolves the account), and the environment row goes LAST, so a crash mid-cascade leaves
+  // already-purged accounts gone and the environment still present — recoverable by re-running the
+  // delete — rather than an environment-less set of orphan accounts.
+  app.delete('/api/environments/:id', asyncHandler(async (req, res) => {
+    const env = accounts.getEnvironment(req.params.id);
+    if (!env) return res.status(404).json({ error: `Environment "${req.params.id}" not found` });
+    const cascade = req.query.cascade === '1' || req.query.cascade === 'true';
+    const held = accounts.getByEnvironment(req.params.id).map(a => a.username);
+
+    if (held.length > 0 && !cascade) {
+      return res.status(409).json({ error: `Environment still holds ${held.length} account(s) – move them out first` });
     }
+
+    if (cascade && held.length > 0) {
+      logger.warn(`[env-delete] CASCADE "${env.name}" (${env.id}) – deleting ${held.length} account(s): ${held.join(', ')}`);
+      // Sessions first (best-effort per account: one stuck logout must not strand the whole delete).
+      for (const username of held) {
+        await sessions.logoutAccount(username).catch((e) => {
+          logger.warn(`[env-delete] ${username}: session logout failed (${(e as Error).message}) – continuing`);
+        });
+        inventory.store.delete(username);
+        inventory.tf2Store.delete(username);
+        inventory.gcStore.delete(username);
+        csfloat.invalidateClient(username);   // drop the cached client still holding this account's raw API key
+      }
+      accounts.removeMany(held);
+      AccountVault.removeAccounts(held); // password + refresh token + CSFloat key + per-account proxy
+    }
+
     try {
-      accounts.deleteEnvironment(req.params.id);
-      res.json({ ok: true });
+      // `held` is passed through so the rule-target prune can drop the account-scoped proxy rules of
+      // the accounts removed just above — by now they are off the books, so it cannot rediscover them.
+      accounts.deleteEnvironment(req.params.id, { cascade, removedUsernames: cascade ? held : [] });
+      res.json({ ok: true, deletedAccounts: cascade ? held.length : 0, usernames: cascade ? held : [] });
     } catch (err) {
       res.status(409).json({ error: (err as Error).message });
     }
-  });
+  }));
 
   // ── GET /api/environments/:id/proxy ────────────────────────────────────────
   // Returns the environment's proxy UN-redacted so the edit dialog can pre-fill
@@ -1181,6 +1237,54 @@ export function createApp(deps: ApiDeps): Express {
   app.post('/api/steam/:username/profile', asyncHandler(async (req, res) => {
     try { res.json(await editProfileOne(req.params.username, (req.body ?? {}) as ProfileEditBody)); }
     catch (e) { res.status((e as { status?: number }).status ?? 502).json({ error: `profile update failed: ${(e as Error).message}` }); }
+  }));
+
+  // ── POST /api/steam/:username/signout-all-devices ──────────────────────────
+  // Steam's own "sign out of all devices": revokes every refresh token on the account, ending every
+  // session everywhere — the Steam client, the mobile app, browsers, and SSIM.
+  //
+  // REFUSED for token-only accounts (INV-A2). A LIMITED account imported by QR/token has its refresh
+  // token as its SOLE credential; deauthorizing revokes it and there would be no way back into the
+  // account from SSIM at all. That is unrecoverable, so it is fail-closed here rather than warned
+  // about in the UI. A full account (maFile + password) can simply log in again with TOTP.
+  //
+  // AFTERMATH is part of the operation, not a follow-up the operator has to remember: on a confirmed
+  // success SSIM drops the account's live session and its now-revoked stored token, so the next use
+  // does a clean credential login instead of failing on a dead token. On an AMBIGUOUS outcome the same
+  // cleanup runs — if the deauthorize did land, the token is dead either way, and re-deriving it via
+  // credentials is safe; keeping a possibly-revoked token is what would break silently later.
+  app.post('/api/steam/:username/signout-all-devices', asyncHandler(async (req, res) => {
+    const account = accounts.get(req.params.username);
+    if (!account) return res.status(404).json({ error: `Account "${req.params.username}" not found` });
+
+    // Resolve the credential fallback the way the LOGIN path does (vault then disk), and note that
+    // loadMaFile THROWS for a missing/unreadable maFile rather than returning null — which is the
+    // token-only case this guard exists for. Catching it is the check, not an error path: an
+    // unreadable maFile is treated as absent, i.e. no fallback, i.e. refuse. Fail-closed either way.
+    let maFile: unknown;
+    try { maFile = loadMaFile(account); }
+    catch { maFile = null; }
+    const hasPassword = !!resolvePassword(account);
+    if (!maFile || !hasPassword) {
+      return res.status(409).json({
+        error: 'Refused: this account has no credential fallback (it needs both a maFile and a password). '
+             + 'Signing out all devices revokes the refresh token that is its only way in, which cannot be undone. '
+             + 'Attach a maFile and password first.',
+      });
+    }
+
+    const result = await store.deauthorizeAllDevices(account.username);
+    if (result.status === 'failed') {
+      return res.status(502).json({ status: 'failed', detail: result.detail });
+    }
+
+    // done OR ambiguous → treat our own credentials as revoked (see above).
+    await sessions.logoutAccount(account.username).catch((e) => {
+      logger.warn(`[${account.username}] post-deauthorize logout failed (${(e as Error).message}) – token still cleared`);
+    });
+    sessions.clearStoredRefreshToken(account.username);
+    logger.info(`[${account.username}] signed out of all devices (${result.status}) – local session dropped, stored refresh token cleared`);
+    res.json({ status: result.status, detail: result.detail });
   }));
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1949,6 +2053,7 @@ export function createApp(deps: ApiDeps): Express {
     inventory.store.delete(account.username);
     inventory.tf2Store.delete(account.username);
     inventory.gcStore.delete(account.username);
+    csfloat.invalidateClient(account.username); // the cached client still holds this account's raw API key
     accounts.remove(account.username);
     AccountVault.removeAccount(account.username); // drop its secrets + refresh token from the vault
     res.json({ ok: true });

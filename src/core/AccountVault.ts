@@ -420,15 +420,30 @@ export class AccountVaultImpl {
   }
 
   removeAccount(username: string): void {
-    if (!this.payload) return;
+    if (this.forgetAccount(username)) this.save();
+  }
+
+  /** Bulk twin of removeAccount for a cascade delete (an environment taken down with its accounts).
+   *  Purges every named account's secrets, then writes the vault ONCE — a per-account save() would
+   *  re-encrypt and rewrite the whole file N times for a single operator action. */
+  removeAccounts(usernames: string[]): void {
+    let dirty = false;
+    for (const u of usernames) if (this.forgetAccount(u)) dirty = true;
+    if (dirty) this.save();
+  }
+
+  /** Drops one account's four secret slots IN MEMORY. Returns whether anything was actually
+   *  removed, so the callers above can skip a pointless re-encrypt. Never saves — that is the
+   *  caller's decision, which is what lets the bulk path collapse to one write. */
+  private forgetAccount(username: string): boolean {
+    if (!this.payload) return false;
     const k = username.toLowerCase();
-    if (this.payload.accounts[k] || this.payload.tokens[k] || this.payload.csfloatKeys[k] || this.payload.accountProxies[k]) {
-      delete this.payload.accounts[k];
-      delete this.payload.tokens[k];
-      delete this.payload.csfloatKeys[k];
-      delete this.payload.accountProxies[k];
-      this.save();
-    }
+    if (!(this.payload.accounts[k] || this.payload.tokens[k] || this.payload.csfloatKeys[k] || this.payload.accountProxies[k])) return false;
+    delete this.payload.accounts[k];
+    delete this.payload.tokens[k];
+    delete this.payload.csfloatKeys[k];
+    delete this.payload.accountProxies[k];
+    return true;
   }
 
   // ── Refresh tokens (consolidated into the same portable file) ────────────────

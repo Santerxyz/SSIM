@@ -2,14 +2,15 @@ import EventEmitter from 'events';
 import SteamUser from 'steam-user';
 import type { AccountConfig, MaFile } from '../types/account';
 import { SessionState, type ManagedSession, type WebSession, type SessionManagerEvents } from '../types/session';
-import { AgentFactory, redactProxyCredentials, normalizeProxy } from '../network/AgentFactory';
+import { AgentFactory, redactProxyCredentials, normalizeProxy, type HttpAgent } from '../network/AgentFactory';
+import { egressRotation } from '../network/EgressRotation';
 import { proxyHealth, proxyKey, isResetClass } from '../network/ProxyHealth';
 import { chooseCmProtocol, noteCmOutcome, CmProtocolLabel, TCP_FAILURES_TO_DEMOTE } from '../network/CmProtocol';
 import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
 import { webCookiesFresh, ownsCreatedSession, WEB_COOKIE_REFRESH_MS } from './sessionHealth';
-import { pickPricerIdentities, type PricerIdentity, type PricerCandidate } from '../pricing/PricerIdentityPool';
+import { pickPricerIdentities, LOCAL_EGRESS, type PricerIdentity, type PricerCandidate } from '../pricing/PricerIdentityPool';
 import { logger } from '../utils/logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -306,6 +307,20 @@ export class SessionManager extends EventEmitter {
   /** The stored Auth-v2 refresh token for an account (vault-aware), or undefined. Read-only accessor so
    * BanService decodes a SteamID from the JWT off the single production store — no second instance. */
   getStoredRefreshToken(username: string): string | undefined { return this.tokenStore.get(username); }
+
+  /**
+   * Drops the stored refresh token for an account because it is KNOWN-DEAD, not merely suspect.
+   *
+   * The login path deliberately never deletes a token on weak evidence (see onTokenAuthFailure /
+   * INV-A2): a misclassified 'auth' verdict must not strand an account. This accessor exists for the
+   * one case where the evidence is certain because SSIM itself caused it — "sign out of all devices"
+   * revokes every refresh token on the account, so keeping ours would guarantee a failed token login
+   * on the next use and, worse, could burn that failure as the "strong evidence" that deletes it later.
+   *
+   * The caller MUST have verified the account has a credential fallback (maFile + password) first —
+   * for a token-only account the refresh token is the sole credential, and clearing it is unrecoverable.
+   */
+  clearStoredRefreshToken(username: string): void { this.tokenStore.delete(username); }
 
   /** Acquire one login slot, awaiting (FIFO) if all are in use. */
   private acquireLoginSlot(): Promise<void> {
@@ -976,16 +991,47 @@ export class SessionManager extends EventEmitter {
    * cookies over each account's own egress agent so priceoverview draws that account's per-session budget
    * instead of the anonymous per-IP budget the shared pool leaves exhausted. Read fresh on every fill, so
    * the identity set naturally tracks which sessions are currently live.
+   *
+   * `maxPerExit` bounds how many of the returned identities may share ONE exit IP — the load-bearing
+   * safety cap, since Steam meters per exit (see PricingService's pacing note). A proxy MEASURED to
+   * rotate its exit per connection is exempt: its sessions do not share an IP, so each is bucketed as
+   * its own exit. That verdict comes from `egressRotation`, which is probed in the background here and
+   * defaults to "static" (the safe pace) until proven otherwise — so the first fill after boot, an
+   * unmeasured proxy, and a failed probe all behave exactly as an ordinary static proxy.
    */
-  pricerIdentities(limit: number): PricerIdentity[] {
+  pricerIdentities(limit: number, maxPerExit = 1): PricerIdentity[] {
     const candidates: PricerCandidate[] = [];
+    const agentsByExit = new Map<string, HttpAgent[]>();
     for (const s of this.sessions.values()) {
-      if (candidates.length >= limit * 2) break; // gather a little extra; the pool de-dups + drops cookieless
       if (s.state === SessionState.LOGGED_IN && s.webSession && webCookiesFresh(s.webSession.obtainedAt)) {
-        candidates.push({ username: s.account.username, cookies: s.webSession.cookies, agent: s.httpsAgent });
+        // The exit this session actually leaves through, pinned at login (see isEgressStale) — the
+        // same value for two accounts on one proxy, so the pool can spread its picks across IPs.
+        const net = s.account.network;
+        const proxied = net?.type === 'proxy';
+        const egressKey = proxied ? `proxy:${proxyKey(net!.value) ?? net!.value}` : LOCAL_EGRESS;
+        candidates.push({
+          username: s.account.username, cookies: s.webSession.cookies, agent: s.httpsAgent, egressKey,
+          // Only a MEASURED rotating proxy earns per-session exits. Unmeasured, mid-probe, failed
+          // probe, and the host IP (which never rotates) all fall through to the safe shared-exit
+          // treatment — see network/EgressRotation.
+          rotatingExit: proxied && egressRotation.isRotating(egressKey),
+        });
+        // Collect live agents per proxy so the rotation probe can use two DIFFERENT connections.
+        if (proxied) {
+          const list = agentsByExit.get(egressKey);
+          if (list) { if (list.length < 2) list.push(s.httpsAgent); } else agentsByExit.set(egressKey, [s.httpsAgent]);
+        }
       }
     }
-    return pickPricerIdentities(candidates, limit);
+    // Fire-and-forget measurement for any proxy whose verdict is stale. Never awaited: selection
+    // stays synchronous and this fill uses the CURRENT verdict; a new one applies from the next.
+    for (const [key, agents] of agentsByExit) egressRotation.observe(key, agents);
+    // NOTE: every web-ready session is offered, not the first `limit * 2`. The old cap was a
+    // micro-optimisation that silently defeated the pool's whole job: it truncated the candidate list
+    // in map (insertion) order, so on a fleet where the first sessions share a proxy the pool could
+    // not find the other exits even though they were live. Selection is O(candidates) and runs once
+    // per fill, so scanning them all costs nothing worth having.
+    return pickPricerIdentities(candidates, limit, maxPerExit);
   }
 
   /**

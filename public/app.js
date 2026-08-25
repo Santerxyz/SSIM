@@ -76,7 +76,7 @@ const state = {
   batch: { registry: [], scopeEnvs: new Set(), scopeFolders: new Set(), scopeAccounts: new Set(), expanded: new Set(), search: '', targets: null, jobType: null, params: {}, status: null, timer: null, history: [], dist: { sel: { envs: new Set(), folders: new Set(), accounts: new Set(), expanded: new Set(), search: '' }, amount: '', minItem: '', game: null, include: [], exclude: [], picker: null, pickerSearch: '', showPool: false, plan: null, status: null, timer: null }, paysafe: { session: null, busy: false, timer: null, tierMinor: 0, freeAmount: '', _attached: false }, _loading: false, _targetsLoading: false, _targetsGen: 0, _histLoaded: false }, // W3_32 (micro-selection) + inline Distribute + sequential paysafecard jobs
   paysafeTiers: {},             // K3: username → { currency, tiers[] } | 'loading' | { error } — Steam's real top-up amount options
   prime: { rows: {}, loaded: false, _loading: false },   // 1.5.1: lowercased username → CS2 Prime ownership row (server cache, read-only)
-  proxies: { rules: [], authoritative: false, loaded: false, _loading: false, modal: null, targets: null, preview: null, previewSearch: '', previewFilter: 'all' }, // Proxies module (v5)
+  proxies: { rules: [], authoritative: false, loaded: false, _loading: false, _gen: 0, modal: null, targets: null, preview: null, previewSearch: '', previewFilter: 'all' }, // Proxies module (v5)
   usdToEur: 0.92,               // live rate from /api/exchange-rate (fallback 0.92)
 };
 
@@ -656,9 +656,20 @@ function invalidateStructureCaches() {
   state.accTree.targets = null;                 // Accounts tree
   state.batch.targets = null;                   // Batch scope tree + Distribute source picker
   state.batch._targetsGen = (state.batch._targetsGen || 0) + 1;   // a fetch in flight is now stale — its answer is dropped
-  // Already looking at Batch when the import landed? Re-mount it so the new accounts appear now
-  // rather than on the next visit (the fetch is lazy, driven by renderBatchModule).
+  // Proxies module (v5) — it caches BOTH the scope targets (environment/folder/account names shown
+  // in the rule editor and the resolution preview) AND the rule list itself, behind a one-shot
+  // `loaded` flag. A structural change can invalidate both: deleting an environment with its
+  // accounts also PRUNES every proxy rule that targeted them (AccountManager.pruneRuleTargets), so
+  // without this the module keeps rendering rules the server has already deleted — and editing one
+  // 404s. Clearing `loaded` makes renderProxiesModule refetch on its next paint.
+  state.proxies.loaded = false;
+  state.proxies.targets = null;
+  state.proxies.preview = null;
+  state.proxies._gen = (state.proxies._gen || 0) + 1;   // same reason as _targetsGen — drop an answer already on the wire
+  // Already looking at Batch / Proxies when the change landed? Re-mount so it reflects reality now
+  // rather than on the next visit (both fetches are lazy, driven by their render entry).
   if (state.nav === 'batch') renderBatchModule();
+  if (state.nav === 'proxies') renderProxiesModule();
 }
 
 // ── Inventory ingestion (single funnel so the GLOBAL wallet store stays current) ──
@@ -1431,10 +1442,8 @@ function renderDashboard() {
   el.envTiles.innerHTML = envs.map((e, i) => envTile(e, i, animate)).join('');
   el.envTiles.querySelectorAll('[data-env]').forEach((c) =>
     c.addEventListener('click', () => enterEnvironment(c.dataset.env)));
-  el.envTiles.querySelectorAll('[data-env-edit]').forEach((b) =>
-    b.addEventListener('click', (e) => { e.stopPropagation(); openEnvModal('edit', b.dataset.envEdit); }));
-  el.envTiles.querySelectorAll('[data-env-del]').forEach((b) =>
-    b.addEventListener('click', (e) => { e.stopPropagation(); deleteEnvironment(b.dataset.envDel, b.dataset.name); }));
+  // Rename/delete are NOT wired here any more (owner 2026-08-25): environments are CREATED in the
+  // Accounts module, so they are renamed and deleted there too. Inventories only navigates into them.
   el.envTiles.querySelectorAll('[data-proxy-test]').forEach((b) =>
     b.addEventListener('click', (e) => { e.stopPropagation(); checkProxy(b.dataset.proxyTest, b); }));
 }
@@ -1526,12 +1535,6 @@ function envTile(env, idx = 0, animate = false) {
     <div data-env="${escapeAttr(env.id)}" role="button" tabindex="0"
       class="env-tile group cursor-pointer${animate ? ' tile-in' : ''}" style="--i:${idx}">
       <div class="env-tile__glow"></div>
-      <div class="env-tile__actions">
-        <button data-env-edit="${escapeAttr(env.id)}" title="Edit environment" class="btn btn-icon-sm btn-secondary">
-          <i class="fa-solid fa-pen t11"></i></button>
-        <button data-env-del="${escapeAttr(env.id)}" data-name="${escapeAttr(env.name)}" title="Delete environment" class="btn btn-icon-sm btn-secondary">
-          <i class="fa-solid fa-trash-can t11" style="color:rgb(var(--danger-rgb))"></i></button>
-      </div>
       <div class="flex items-center gap-3 mb-3">
         <span class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style="background:rgb(var(--brand-rgb)/.15);color:rgb(var(--brand-l-rgb))">
           <i class="fa-solid fa-layer-group"></i></span>
@@ -2366,6 +2369,12 @@ function accEnvTile(env, idx = 0) {
     <div data-accenv="${escapeAttr(env.id)}" role="button" tabindex="0"
       class="env-tile group cursor-pointer" style="--i:${idx}">
       <div class="env-tile__glow"></div>
+      <div class="env-tile__actions">
+        <button data-accenv-edit="${escapeAttr(env.id)}" title="Rename environment" class="btn btn-icon-sm btn-secondary">
+          <i class="fa-solid fa-pen t11"></i></button>
+        <button data-accenv-del="${escapeAttr(env.id)}" title="Delete environment" class="btn btn-icon-sm btn-secondary">
+          <i class="fa-solid fa-trash-can t11" style="color:rgb(var(--danger-rgb))"></i></button>
+      </div>
       <div class="flex items-center gap-3 mb-3">
         <span class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style="background:rgb(var(--brand-rgb)/.15);color:rgb(var(--brand-l-rgb))">
           <i class="fa-solid fa-user-gear"></i></span>
@@ -2393,6 +2402,12 @@ function renderAccountsEnv() {
           <h2 class="t28 font-bold text-white tracking-tight">${escapeHtml(env.name)}</h2>
           <span class="pill pill--brand">Accounts</span></div>
           <p class="t12 text-slate-500 mt-0.5">${fmtCount(accs.length)} account(s) · click one to manage it</p></div>
+        <div class="flex items-center gap-2 ml-auto">
+          <button data-accenv-edit="${escapeAttr(env.id)}" class="btn btn-secondary btn-sm" title="Rename this environment">
+            <i class="fa-solid fa-pen"></i><span>Rename</span></button>
+          <button data-accenv-del="${escapeAttr(env.id)}" class="btn btn-secondary btn-sm" title="Delete this environment">
+            <i class="fa-solid fa-trash-can" style="color:rgb(var(--danger-rgb))"></i><span>Delete</span></button>
+        </div>
       </div>`;
   }
   if (!el.accountsBody) return;
@@ -2656,6 +2671,14 @@ function renderAccountCard(u) {
       <button data-acc-fn-browser="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Open this account in an isolated, proxied browser session">
         <i class="fa-solid fa-globe text-brand"></i><span>Open in Browser</span></button>
       ${acc.canConfirm === false ? `<button data-acc-fn-attach="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Attach maFile → upgrade to Full"><i class="fa-solid fa-shield-halved" style="color:rgb(var(--success-rgb))"></i><span>Attach maFile</span></button>` : ''}
+      ${acc.canConfirm === false
+        ? `<button disabled class="btn btn-secondary btn-sm opacity-50 cursor-not-allowed" title="Needs a maFile and a password — signing out all devices revokes the refresh token that is this account's only way in">
+             <i class="fa-solid fa-right-from-bracket"></i><span>Sign out all devices</span></button>`
+        : acctBusy(u, 'signout')
+        ? `<button disabled class="btn btn-secondary btn-sm opacity-70 cursor-not-allowed">
+             <i class="fa-solid fa-spinner cs2-spin"></i><span>Signing out…</span></button>`
+        : `<button data-acc-fn-signout="${escapeAttr(u)}" class="btn btn-secondary btn-sm" title="Steam's &quot;sign out of all devices&quot; — ends every session on this account everywhere">
+             <i class="fa-solid fa-right-from-bracket" style="color:rgb(var(--danger-rgb))"></i><span>Sign out all devices</span></button>`}
       <button data-acc-fn-logs="${escapeAttr(u)}" class="btn btn-ghost btn-sm"><i class="fa-solid fa-clock-rotate-left"></i><span>Activity log</span></button>
     </div>`;
 
@@ -2671,6 +2694,11 @@ function onAccountsClick(e) {
   if (t.closest('[data-acc-login]'))                return openLogin();
   if (t.closest('[data-acc-import]'))               return openBulkImport();
   if (t.closest('[data-acc-newenv]'))               return openEnvModal('create');
+  // Rename/delete live on the env TILE (and in the env header) and must be tested BEFORE the
+  // [data-accenv] tile-open below — the buttons sit inside the tile, so the tile would otherwise
+  // swallow the click and just navigate into the environment.
+  if ((n = t.closest('[data-accenv-edit]')))        return openEnvModal('edit', n.dataset.accenvEdit);
+  if ((n = t.closest('[data-accenv-del]')))         return deleteEnvironment(n.dataset.accenvDel);
   if ((n = t.closest('[data-accenv]')))             { state.accEnv = n.dataset.accenv; state.accountsUser = null; state.accTree.search = ''; state.accSel.clear(); return renderAccountsModule(); }
   if (t.closest('[data-accenv-back]'))              { state.accEnv = null; state.accountsUser = null; state.accTree.search = ''; state.accSel.clear(); return renderAccountsModule(); }
   if ((n = t.closest('[data-accsel]')))             { toggleInSet(state.accSel, n.dataset.accsel); return renderAccountsEnv(); }
@@ -2690,6 +2718,7 @@ function onAccountsClick(e) {
   if ((n = t.closest('[data-acc-fn-otp]')))         return copyAccountOtp(n.dataset.accFnOtp);
   if ((n = t.closest('[data-acc-fn-attach]')))      return openAttachMaFile(n.dataset.accFnAttach);
   if ((n = t.closest('[data-acc-fn-logs]')))        return openAccountLogs(n.dataset.accFnLogs);
+  if ((n = t.closest('[data-acc-fn-signout]')))     return signOutAllDevices(n.dataset.accFnSignout);
   if ((n = t.closest('[data-acc-refresh-wallet]'))) return loadWalletCard(n.dataset.accRefreshWallet);
   if ((n = t.closest('[data-acc-addfunds]')))       { state.accountsAddFunds = n.dataset.accAddfunds; state.accountsPaysafe = null; return renderAccountsModule(); }
   if (t.closest('[data-acc-cancel-funds]'))         { state.accountsAddFunds = null; return renderAccountsModule(); }
@@ -2762,6 +2791,34 @@ async function saveAccountProfile(u) {
     toast('Profile updated', 'success');
     delete state.profileCache[u];
   } catch (e) { toast(e.message || 'Profile update failed', 'error'); }
+  setAcctBusy(u, null); renderAccountsModule();
+}
+
+/**
+ * Steam's "sign out of all devices" for one account: revokes every refresh token on the account,
+ * so every session everywhere ends — the Steam client, the mobile app, browsers, and SSIM itself.
+ *
+ * The button is disabled for accounts that cannot confirm (no maFile), and the server refuses them
+ * outright: for a token-only account the refresh token IS the only credential, and revoking it
+ * would lock SSIM out of the account permanently. For a full account this is recoverable — SSIM
+ * logs back in with the password + TOTP on the next use — but it does mean re-authenticating,
+ * so it is confirm-gated.
+ */
+async function signOutAllDevices(u) {
+  if (!(await ssimConfirm({
+    title: 'Sign out of all devices', tone: 'danger', confirmLabel: 'Sign out everywhere', confirmIcon: 'fa-right-from-bracket',
+    body: `End <b>every</b> Steam session on <span class="font-mono">@${escapeHtml(u)}</span>?<br><br>
+      <span class="text-slate-500">This is Steam's own "sign out of all devices". It revokes every login on the account — the Steam client, the mobile app, every browser, and SSIM's own session.</span><br><br>
+      <span class="text-slate-500">SSIM signs this account back in automatically the next time it is used, with its stored password and 2FA code. Anyone else signed in will have to log in again.</span>`,
+  }))) return;
+  setAcctBusy(u, 'signout'); renderAccountsModule();
+  try {
+    const r = await api(`/api/steam/${encodeURIComponent(u)}/signout-all-devices`, { method: 'POST' });
+    // 'ambiguous' is a real outcome, not a success: Steam answered without confirming. Say so
+    // plainly instead of reporting a clean sign-out that may not have happened.
+    if (r.status === 'ambiguous') toast(`Outcome unknown — ${r.detail || 'check the account on Steam'}`, 'warn');
+    else toast('Signed out of all devices', 'success');
+  } catch (e) { toast(e.message || 'Sign-out failed', 'error'); }
   setAcctBusy(u, null); renderAccountsModule();
 }
 
@@ -2990,12 +3047,19 @@ function renderProxiesModule() {
   const p = state.proxies;
   if (!p.loaded && !p._loading) {
     p._loading = true;
+    // Generation captured BEFORE the request and re-checked on arrival (the Batch tree's idiom): a
+    // structural change landing mid-flight — an environment deleted with its accounts, which also
+    // prunes proxy rules — must not have its invalidation undone by the older answer still on the
+    // wire. Superseded → drop the answer and re-enter, which refetches.
+    const gen = p._gen || 0;
     Promise.all([api('/api/proxies/rules'), api('/api/proxies/targets')])
       .then(([rulesResp, targets]) => {
+        p._loading = false;
+        if ((p._gen || 0) !== gen) { renderProxiesModule(); return; }
         p.rules = (rulesResp && rulesResp.rules) || [];
         p.authoritative = !!(rulesResp && rulesResp.authoritative);
         p.targets = targets || { environments: [], folders: [], accounts: [] };
-        p.loaded = true; p._loading = false; paintProxies();
+        p.loaded = true; paintProxies();
       })
       .catch((e) => { p._loading = false; toast(e.message || 'Could not load proxy rules', 'error'); });
   }
@@ -8620,17 +8684,60 @@ async function submitEnv(ev) {
     else renderDashboard();
   } catch (err) { toast(err.message, 'error'); }
 }
-async function deleteEnvironment(id, name) {
+/**
+ * Delete an environment. Lives in the Accounts module (owner 2026-08-25) — the same place
+ * environments are created.
+ *
+ * An EMPTY environment deletes on a plain confirm, as before. A NON-EMPTY one now deletes too
+ * (it used to be refused outright), taking its accounts with it — so it gets the heavier gate:
+ * the exact account count, an explicit list of what is destroyed, and a typed "DELETE". The
+ * accounts are removed from SSIM and their secrets purged from the vault; nothing happens to the
+ * Steam accounts themselves.
+ */
+async function deleteEnvironment(id) {
+  const env = state.environments.find((e) => e.id === id);
+  if (!env) return toast('Environment not found', 'error');
+  const name = env.name;
+  const accs = state.allAccounts.filter((a) => a.environmentId === id);
+  const cascade = accs.length > 0;
+
+  // Name a few of the accounts outright — "12 accounts" is abstract, seeing @bot_04 in the list is not.
+  const sample = accs.slice(0, 6).map((a) => `<span class="font-mono">@${escapeHtml(a.username)}</span>`).join(', ');
+  const more = accs.length > 6 ? ` <span class="text-slate-500">and ${fmtCount(accs.length - 6)} more</span>` : '';
+
+  const body = cascade
+    ? `Delete environment <b class="text-slate-100">${escapeHtml(name)}</b> <b class="text-danger">and all ${fmtCount(accs.length)} account(s) in it</b>?<br><br>
+       <span class="t12 text-slate-400">${sample}${more}</span><br><br>
+       <span class="text-slate-500">For each account this removes it from SSIM, logs out its session, drops its cached inventories, and purges its password, refresh token, CSFloat key and proxy from the vault. Its folders and proxy rules go too.</span><br><br>
+       <b class="text-danger">This cannot be undone.</b> <span class="text-slate-500">The Steam accounts themselves are not touched — but SSIM will no longer have their credentials.</span>`
+    : `Delete environment <b class="text-slate-100">${escapeHtml(name)}</b>?<br><span class="text-slate-500">It holds no accounts.</span>`;
+
   if (!(await ssimConfirm({
-    title: 'Delete environment', tone: 'danger', confirmLabel: 'Delete', confirmIcon: 'fa-trash',
-    body: `Delete environment <b class="text-slate-100">${escapeHtml(name)}</b>?<br><span class="text-slate-500">Only possible when it no longer contains any accounts.</span>`,
+    title: cascade ? 'Delete environment and its accounts' : 'Delete environment',
+    tone: 'danger', confirmLabel: cascade ? `Delete ${fmtCount(accs.length)} account(s)` : 'Delete', confirmIcon: 'fa-trash',
+    body,
+    typedWord: cascade ? 'DELETE' : null,
   }))) return;
+
   try {
-    await api(`/api/environments/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    toast(`Environment "${name}" deleted`, 'success');
+    await api(`/api/environments/${encodeURIComponent(id)}${cascade ? '?cascade=1' : ''}`, { method: 'DELETE' });
+    toast(cascade ? `Environment "${name}" and ${accs.length} account(s) deleted` : `Environment "${name}" deleted`, 'success');
+    // Drop every local reference to the environment before repainting, so no view is left pointing
+    // at something the server no longer has. Deleting the environment you are standing in is the
+    // normal case (the header's Delete button), not an edge case.
     state.globalEnvs.delete(id);
+    if (state.accEnv === id) { state.accEnv = null; state.accountsUser = null; state.accSel.clear(); }
+    // The Inventories module keeps its own drill-down state. Reset it the same way its own
+    // "back to all inventories" path does, rather than hand-poking state.screen — otherwise
+    // returning to Inventories re-enters a deleted environment.
+    // state.tree is dereferenced unguarded (renderNodes, findFolderNode) — reset it to its EMPTY
+    // shape, never null.
+    if (state.activeEnv === id) { state.invMode = 'account'; state.activeEnv = null; state.activeUsername = null; state.tree = { folders: [], accounts: [] }; }
+    invalidateStructureCaches();
     await reloadAll();
-    renderDashboard();
+    if (state.nav === 'accounts') renderAccountsModule();
+    else if (state.nav === 'inventories') enterInventories();
+    else renderDashboard();
   } catch (err) { toast(err.message, 'error'); }
 }
 

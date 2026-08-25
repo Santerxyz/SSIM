@@ -11,8 +11,44 @@ import type { PricerIdentity } from './PricerIdentityPool';
 const PRICE_TTL_MS         = 24 * 60 * 60 * 1000; // re-price a name at most once / 24h
 const PRICE_TTL_JITTER_MS  = 4  * 60 * 60 * 1000; // spread a cohort's 24h expiry over 4h (no boot thundering-fill)
 const ERROR_MISS_TTL_MS    = 10 * 60 * 1000;      // a transient error-miss expires in minutes, not 24h (S2)
-const FETCH_DELAY_MS       = 3_500;               // ~17 req/min PER lane — gentle, well inside a logged-in budget
-const MAX_PRICE_LANES      = 8;                   // hard cap on parallel identity lanes
+// ── Lane pacing: the budget is PER EXIT IP (2026-08-25) ─────────────────────────────────────────
+// Steam meters this endpoint per EXIT IP, so the only quantity that must stay bounded is how fast a
+// single IP is driven. The fill's speed then scales with how many DISTINCT exits the live sessions
+// actually expose — never by leaning harder on the exits it already has.
+//
+// The pre-2026-08-25 fill ran 3 lanes at one request per 3.5s. Whether those 3 lanes landed on 1 IP
+// or 3 was accidental, so the worst case it ever shipped — and the pace known to be safe — is all 3
+// on ONE IP: 3 / 3.5s ≈ 0.86 req/s per exit. That is the budget preserved here, exactly.
+//
+//   LANES_PER_EXIT        how many lanes may point at one IP (the safety bound)
+//   EXIT_BUDGET_MS        one exit's request budget: LANES_PER_EXIT requests per this window
+//   per-lane delay        EXIT_BUDGET_MS × (lanes on THIS exit ÷ LANES_PER_EXIT)
+//
+// so an exit always issues ~LANES_PER_EXIT requests per EXIT_BUDGET_MS regardless of how many lanes
+// it got. One exit with 3 lanes → 3.5s each; one exit with a single available account → ~1.17s, the
+// same 0.86 req/s. Throughput is therefore (distinct exits × ~51 names/min): a single-exit setup —
+// proxyless, one static proxy, or ONE ROTATING PROXY, all of which present as one egressKey — is
+// bit-for-bit the old behaviour, and a 12-exit fleet reaches ~600 names/min.
+//
+// An earlier draft of this change got it wrong in a way worth naming: it raised the lane cap to 16
+// and paced per LANE rather than per EXIT, so a single-exit fleet quietly went from 0.86 to 4.57
+// req/s on one IP — 5.3× the pressure, on the exact endpoint behind the July 2026 rolling lockout.
+// LANES_PER_EXIT is what makes raising MAX_PRICE_LANES safe; the two must move together.
+//
+// The 429 → soft-miss → retire-the-lane valve below is untouched and remains the backstop: an
+// over-driven exit retires after two consecutive 429s and its names return as 10-minute soft misses.
+const FETCH_DELAY_MS    = 3_500;   // the proven single-lane pace; also the per-lane ceiling
+const EXIT_BUDGET_MS    = 3_500;   // window in which one exit may issue LANES_PER_EXIT requests
+const LANES_PER_EXIT    = 3;       // max lanes on ONE exit IP — the per-IP safety bound
+const MIN_FETCH_DELAY_MS = 1_000;  // floor, so an arithmetic edge can never produce a hot loop
+const MAX_PRICE_LANES   = 36;      // global cap ≈ 12 exits × LANES_PER_EXIT (the ~600 names/min target)
+
+/** Per-lane pace for an identity, derived from how many lanes share its exit. Keeps every exit at
+ *  ~LANES_PER_EXIT requests per EXIT_BUDGET_MS however the lanes fell. */
+function laneDelayFor(exitLanes: number): number {
+  const share = Math.max(1, Math.min(exitLanes, LANES_PER_EXIT));
+  return Math.max(MIN_FETCH_DELAY_MS, Math.round(EXIT_BUDGET_MS * (share / LANES_PER_EXIT)));
+}
 const CSFLOAT_LANES        = 1;                   // CsFloatClient's per-key limiter is single-flight → 1 lane suffices
 // The 2026-07-10 failure model: a 429 is "this identity's budget is spent", not "sleep and retry the same
 // request" (the old 6×60-80s per-name stall turned a degraded endpoint into a ~day-long zombie grind that
@@ -44,7 +80,7 @@ export interface PricingStatus {
 /** One background fill job, pinned to its ENQUEUE-time cache key + source. */
 interface Job { name: string; appid: number; key: string; sourceId: PriceSourceId; }
 /** Per-lane instrumentation — printed once per lane so a fill's egress + status mix is greppable. */
-interface LaneStat { label: string; requests: number; ok: number; rl: number; err: number; consecutive429: number; }
+interface LaneStat { label: string; requests: number; ok: number; rl: number; err: number; consecutive429: number; delayMs: number; }
 
 /**
  * Prices CS2/TF2 items through a PLUGGABLE price source (Steam priceoverview or
@@ -301,7 +337,14 @@ export class PricingService {
       // Authenticated identity lanes when we have them (preferred — spreads volume across the accounts'
       // proxies); otherwise one anonymous lane when this is the fallback run.
       const steamLaneCount = identities.length > 0 ? identities.length : (anonymous ? 1 : 0);
-      const steamLaneDesc = identities.length > 0 ? `${identities.length} steam identity lane(s)`
+      // Report the EGRESS SPREAD, not just the lane count: "6 lanes" over one proxy and "6 lanes" over
+      // six proxies are wildly different fills, and the difference is the single most useful number when
+      // the operator asks why a fill is slow.
+      const exits = new Set(identities.map((i) => i.egressKey)).size;
+      const perMin = exits > 0 ? Math.round(exits * LANES_PER_EXIT * 60_000 / EXIT_BUDGET_MS) : 0;
+      const steamLaneDesc = identities.length > 0
+        ? `${identities.length} steam identity lane(s) over ${exits} distinct exit(s) → ~${perMin} names/min ` +
+          `(each exit capped at ${LANES_PER_EXIT} lane(s))`
         : anonymous ? '1 anonymous steam lane (fallback)' : '0 steam lanes';
       logger.info(`[pricing] background fill started (${this.queue.length} queued, source=${this.getSource()}, ` +
         `${steamLaneDesc}${csfloatPending ? ` + ${CSFLOAT_LANES} csfloat lane` : ''})`);
@@ -309,7 +352,11 @@ export class PricingService {
       const steamStats: LaneStat[] = [];
       if (identities.length > 0) {
         for (const id of identities) {
-          const stat: LaneStat = { label: `steam:${id.username}`, requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0 };
+          // Pace against the EXIT, not the lane: this lane gets its exit's budget divided by however
+          // many lanes share that exit (see the pacing note at the top). The pool stamps exitLanes
+          // from the final per-exit counts for THIS selection.
+          const delayMs = laneDelayFor(id.exitLanes);
+          const stat: LaneStat = { label: `steam:${id.username}${id.exitLanes > 1 ? `(1/${id.exitLanes} on its exit)` : ''}`, requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0, delayMs };
           steamStats.push(stat);
           const route: PriceRoute = { agent: id.agent, cookieHeader: id.cookieHeader };
           lanes.push(this.laneWorker('steam', (name, appid) => this.steamSource.fetchPriceCents(name, appid, route), stat));
@@ -317,14 +364,16 @@ export class PricingService {
       } else if (anonymous) {
         // Fallback: NO route → egresses the host IP with the browser fingerprint (header fix). one lane only
         // (single IP — don't fan a large fill across the host IP). Same 429 → retire → soft-miss semantics.
-        const stat: LaneStat = { label: 'steam:anonymous', requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0 };
+        const stat: LaneStat = { label: 'steam:anonymous', requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0, delayMs: FETCH_DELAY_MS };
         steamStats.push(stat);
         lanes.push(this.laneWorker('steam', (name, appid) => this.steamSource.fetchPriceCents(name, appid), stat));
       }
 
       let csfloatStat: LaneStat | undefined;
       if (csfloatPending && this.csfloatSource) {
-        csfloatStat = { label: 'csfloat', requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0 };
+        // CSFloat is metered by CsFloatClient's own per-key RateLimiter, not by us — this lane must
+        // not add a second, redundant 3.5s pause on top of it.
+        csfloatStat = { label: 'csfloat', requests: 0, ok: 0, rl: 0, err: 0, consecutive429: 0, delayMs: 0 };
         for (let i = 0; i < CSFLOAT_LANES; i++) {
           lanes.push(this.laneWorker('csfloat', (name, appid) => this.csfloatSource!.fetchPriceCents(name, appid), csfloatStat));
         }
@@ -462,7 +511,9 @@ export class PricingService {
           this.cache.set(job.key, null, { soft: true });
         }
       }
-      if (!this.stopped) await sleep(FETCH_DELAY_MS);
+      // Per-lane pace (see the pacing note at the top): a dedicated proxy exit runs faster than a
+      // shared one, and CSFloat runs at 0 because CsFloatClient's own per-key limiter already paces it.
+      if (!this.stopped && stat.delayMs > 0) await sleep(stat.delayMs);
     }
   }
 }

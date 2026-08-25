@@ -937,18 +937,97 @@ export class AccountManager {
     return env;
   }
 
-  /** Deletes an environment. Refused (throws) while it still holds any account. */
-  deleteEnvironment(id: string): void {
+  /**
+   * Deletes an environment.
+   *
+   * Refused (throws) while it still holds any account — UNLESS the caller has already torn those
+   * accounts down and passes `cascade`. The cascade contract is deliberately narrow: this method
+   * never logs a session out, never touches the inventory caches and never purges vault secrets,
+   * because doing that here would duplicate the per-account delete path and let the two drift.
+   * The route owns that teardown (identically to DELETE /api/accounts/:username) and calls this
+   * last, so by the time we get here the environment is genuinely empty.
+   *
+   * Either way the environment's folders go with it, and every proxy rule that targeted the
+   * environment, one of its folders or one of its accounts is pruned — see pruneRuleTargets.
+   */
+  deleteEnvironment(id: string, opts: { cascade?: boolean; removedUsernames?: string[] } = {}): void {
     this.getEnvironmentOrThrow(id);
     const held = this.db.accounts.filter(a => a.environmentId === id);
-    if (held.length > 0) {
+    if (held.length > 0 && !opts.cascade) {
       throw new Error(`Environment still holds ${held.length} account(s) – move them out first`);
     }
+    // A cascade caller is expected to have removed the accounts already. If any survived (a
+    // partial teardown), take them off the books here rather than leaving rows pointing at an
+    // environment that no longer exists — an orphan account is unreachable in every UI and
+    // resolves its egress against a missing parent.
+    if (held.length > 0) {
+      const stragglers = held.map(a => a.username);
+      this.db.accounts = this.db.accounts.filter(a => a.environmentId !== id);
+      logger.warn(`Environment ${id} cascade: ${stragglers.length} account(s) still on the books at env-delete time – removed (${stragglers.join(', ')})`);
+    }
+    const deadFolderIds = this.db.folders.filter(f => f.environmentId === id).map(f => f.id);
+    // The accounts whose rule targets must go. `held` is normally EMPTY on the cascade path — the
+    // route removes the accounts before calling us — so the usernames it removed have to be passed
+    // in explicitly. Union the two so both orders work and neither leaves account-scoped rules
+    // pointing at accounts that no longer exist.
+    const deadUsernames = [...held.map(a => a.username), ...(opts.removedUsernames ?? [])].map(u => u.toLowerCase());
     this.db.folders      = this.db.folders.filter(f => f.environmentId !== id);
     this.db.environments = this.db.environments.filter(e => e.id !== id);
+    this.pruneRuleTargets([id, ...deadFolderIds, ...deadUsernames]);
     if (AccountVault.isEnabled()) AccountVault.deleteEnvProxy(id); // drop its vaulted proxy too (B20)
     this.save();
     logger.info(`Environment deleted: ${id}`);
+  }
+
+  /**
+   * Removes ids that no longer exist (a deleted environment, its folders, its accounts) from every
+   * proxy rule's target list, and drops any non-global rule left targeting nothing.
+   *
+   * A dangling target is harmless at RESOLVE time — rankedCandidates simply never matches it — but
+   * leaving it behind means deleting one 200-account environment silently accumulates 200 dead
+   * account-scoped rules that still render in the Proxies module and in the resolution preview.
+   * Global rules are never dropped: their target list is empty BY DEFINITION (they match everything),
+   * so an empty pool there is not a dangling rule.
+   */
+  private pruneRuleTargets(deadIds: string[]): void {
+    if (!this.db.proxyRules?.length) return;
+    const dead = new Set(deadIds);
+    const kept: ProxyRule[] = [];
+    let prunedRules = 0;
+    let prunedTargets = 0;
+    for (const rule of this.db.proxyRules) {
+      if (rule.scope === 'global') { kept.push(rule); continue; }
+      const before = rule.targets.length;
+      const targets = rule.targets.filter(t => !dead.has(t));
+      prunedTargets += before - targets.length;
+      // A scoped rule that has lost every target can never match again — drop it rather than keep
+      // an un-editable ghost in the rules list.
+      if (targets.length === 0) { prunedRules++; continue; }
+      kept.push({ ...rule, targets });
+    }
+    if (prunedTargets === 0 && prunedRules === 0) return;
+    this.db.proxyRules = kept.map((r, i) => ({ ...r, priority: i })); // priority is a dense rank — reseat it
+    logger.info(`Proxy rules pruned after delete: ${prunedTargets} dangling target(s), ${prunedRules} rule(s) left targeting nothing`);
+  }
+
+  /**
+   * Bulk twin of remove() for a cascade delete: takes every named account off the books and saves
+   * ONCE. remove() saves per call, so a 200-account environment delete would otherwise mean 200
+   * atomic rewrites of accounts.json (and, in vault mode, 200 re-encrypts). Returns the usernames
+   * actually removed, in their stored casing, so the caller can report and log precisely.
+   */
+  removeMany(usernames: string[]): string[] {
+    const wanted = new Set(usernames.map(u => u.toLowerCase()));
+    const removed: string[] = [];
+    this.db.accounts = this.db.accounts.filter(a => {
+      if (!wanted.has(a.username.toLowerCase())) return true;
+      removed.push(a.username);
+      return false;
+    });
+    if (removed.length === 0) return removed;
+    this.save();
+    logger.info(`Accounts removed (bulk): ${removed.length} – ${removed.join(', ')}`);
+    return removed;
   }
 
   /** Account count per environment id. */

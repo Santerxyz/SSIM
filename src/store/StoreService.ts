@@ -329,6 +329,47 @@ export class StoreService {
     });
   }
 
+  /**
+   * "Sign out of all devices" — Steam's own account-wide session revocation.
+   *
+   * This is the action behind the Deauthorize-all-devices button on store.steampowered.com/twofactor/manage:
+   * `POST /twofactor/manage_action` with `action=deauthorize` + the CSRF `sessionid`. It revokes EVERY
+   * refresh token on the account, so it invalidates SSIM's stored token for this account too. The caller
+   * is responsible for that fallout (see the route: local logout + stored-token clear); this method does
+   * one thing and reports honestly what Steam said.
+   *
+   * OUTCOME CLASSIFICATION. Steam answers the real action with a 302 back to the manage page; a 200 means
+   * the page re-rendered, which on this endpoint is how a rejected/stale CSRF surfaces. So:
+   *   • 3xx            → done. The redirect IS the success signal (POSTs are never auto-followed).
+   *   • 200 + JSON     → trust an explicit `success` field when Steam sends one.
+   *   • 200 + HTML     → AMBIGUOUS, not success. Returning "ok" here would tell the operator every device
+   *                      was signed out when nothing may have happened, and this is not re-runnable
+   *                      blindly (a real deauthorize kills the very session a retry would need).
+   *   • anything else  → failure with the status.
+   */
+  async deauthorizeAllDevices(username: string): Promise<{ status: 'done' | 'ambiguous' | 'failed'; detail: string }> {
+    return this.withStoreSession(username, async (ctx) => {
+      let res: StoreResponse;
+      try {
+        res = await ctx.post('/twofactor/manage_action', { action: 'deauthorize', sessionid: ctx.sessionid },
+          { referer: `${STORE_ORIGIN}/twofactor/manage`, accept: 'text/html,application/json;q=0.9,*/*;q=0.1' });
+      } catch (e) {
+        // A transport failure mid-POST cannot be distinguished from a completed one: the request may
+        // well have landed. Say so rather than inviting a retry that would fail for the wrong reason.
+        if (e instanceof StoreAmbiguousError) return { status: 'ambiguous' as const, detail: 'transport error — outcome unknown, check Steam' };
+        throw e;
+      }
+      if (res.status >= 300 && res.status < 400) return { status: 'done' as const, detail: 'Steam accepted the deauthorization' };
+      if (res.status !== 200) return { status: 'failed' as const, detail: `HTTP ${res.status}` };
+      if (res.data && typeof res.data === 'object') {
+        const ok = (res.data as Record<string, unknown>).success;
+        if (ok === true || ok === 1) return { status: 'done' as const, detail: 'Steam accepted the deauthorization' };
+        if (ok === false || ok === 0) return { status: 'failed' as const, detail: 'Steam rejected the deauthorization' };
+      }
+      return { status: 'ambiguous' as const, detail: 'Steam returned the page instead of confirming — outcome unknown, check Steam' };
+    });
+  }
+
   // ── W4_40 headless paysafecard checkout (reverse-engineered from Steam's public checkout.js) ──
 
   /** The wallet-recharge amount tiers Steam offers this account. The modern addfunds page renders each

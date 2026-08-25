@@ -32,13 +32,14 @@ test('buildCookieHeader: requires a real steamLoginSecure, else null', () => {
 test('pickPricerIdentities: caps, de-dups by username, drops cookieless candidates', () => {
   const agent = {} as any;
   const ids = pickPricerIdentities([
-    { username: 'A', cookies: ['steamLoginSecure=1'], agent },
-    { username: 'a', cookies: ['steamLoginSecure=2'], agent },   // dup of A (case-insensitive)
-    { username: 'B', cookies: ['sessionid=only'], agent },        // no auth cookie → dropped
-    { username: 'C', cookies: ['steamLoginSecure=3'], agent },
-    { username: 'D', cookies: ['steamLoginSecure=4'], agent },
-  ], 2);
+    { username: 'A', cookies: ['steamLoginSecure=1'], agent, egressKey: 'local' },
+    { username: 'a', cookies: ['steamLoginSecure=2'], agent, egressKey: 'local' },   // dup of A (case-insensitive)
+    { username: 'B', cookies: ['sessionid=only'], agent, egressKey: 'local' },       // no auth cookie → dropped
+    { username: 'C', cookies: ['steamLoginSecure=3'], agent, egressKey: 'local' },
+    { username: 'D', cookies: ['steamLoginSecure=4'], agent, egressKey: 'local' },
+  ], 2, 2);
   assert.deepEqual(ids.map((i) => i.username), ['A', 'C'], 'de-duped, cookieless dropped, capped at 2');
+  assert.equal(ids.every((i) => i.exitLanes === 2), true, 'both are on the host IP → they share its budget');
 });
 
 test('SteamPriceSource: attaches the identity Cookie header when routed', async () => {
