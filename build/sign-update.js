@@ -67,6 +67,29 @@ if (!exe || !version || !url) {
 if (!fs.existsSync(exe)) die('exe not found: ' + exe);
 if (!/^\d+\.\d+\.\d+$/.test(version)) die('version must be a 3-part numeric semver (e.g. 1.1.6) — the client compares numerically, so pre-release/build tags are silently treated as "not newer"');
 
+// ── Cross-checks against reality (2026-08-25) ───────────────────────────────
+// `--version` and `--url` used to be free text nobody validated, so a manifest could be signed for a
+// version that was never built and a tag that was never published. That is exactly how v1.5.2 shipped
+// while the live manifest still advertised a v1.5.1 whose download 404s: the whole fleet sat stranded
+// for four days and the only symptom was customers updating by hand. These two guards make the
+// mismatch impossible to sign by accident; `npm run verify-release` catches the rest after publishing.
+{
+  const pkgVersion = require(path.resolve(__dirname, '..', 'package.json')).version;
+  if (version !== pkgVersion && !has('allow-version-mismatch')) {
+    die(`--version ${version} does not match package.json (${pkgVersion}).\n`
+      + '  package.json is canonical — the shell, the dashboard footer and the built exe all derive from it,\n'
+      + '  so signing a different number publishes a manifest for a build that does not exist.\n'
+      + '  Bump package.json first, or pass --allow-version-mismatch if you really mean it.');
+  }
+  // The URL must at least NAME this version. A tag typo silently publishes a 404 to the whole fleet,
+  // and clients that see the update then fail on every boot with no way forward.
+  if (!url.includes(version) && !has('allow-url-mismatch')) {
+    die(`--url does not contain the version "${version}":\n  ${url}\n`
+      + '  A release-asset URL normally embeds the tag (…/releases/download/v' + version + '/SSIM.exe).\n'
+      + '  If this URL really is right, pass --allow-url-mismatch.');
+  }
+}
+
 const keyFile = arg('key');
 const privPem = keyFile
   ? fs.readFileSync(keyFile, 'utf8')

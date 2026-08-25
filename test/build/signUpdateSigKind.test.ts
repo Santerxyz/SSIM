@@ -24,7 +24,11 @@ test('H-SHL-019: sign-update emits sig + sigKind, and sigKind verifies over the 
 
     const out = execFileSync(
       'node',
-      ['build/sign-update.js', '--exe', exe, '--version', '1.3.6', '--url', 'http://cdn/x.exe', '--key', privPem],
+      // The release-time guards (version must match package.json, url must name the version) are
+      // deliberately overridden here: this test pins the SIGNING maths on a fixed fixture version,
+      // not the release process. Without the overrides it would fail on every version bump.
+      ['build/sign-update.js', '--exe', exe, '--version', '1.3.6', '--url', 'http://cdn/x.exe', '--key', privPem,
+       '--allow-version-mismatch', '--allow-url-mismatch'],
       { encoding: 'utf8', env: { ...process.env, LICENSE_PUBLIC_KEY: pubPem } },
     );
     const manifest = JSON.parse(out);
