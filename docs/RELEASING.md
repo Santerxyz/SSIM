@@ -102,21 +102,19 @@ means every client downloads nothing and logs a failure.
 npm run verify-release
 ```
 
-This fetches the live manifest and runs the **client's own** `parseManifest` and `isNewer`
-against it, checks the asset URL resolves, streams it to confirm the sha256 matches, verifies
-`sigKind` under the public key baked into this build, and then prints, per prior version,
-whether a customer on it would actually update. Non-zero exit means they would not.
+Fetches the live manifest and runs the client's own `parseManifest` and `isNewer` against it,
+checks the asset URL resolves, streams it to confirm the sha256 matches, verifies `sigKind`
+under the public key baked into this build, and prints, per prior version, whether a customer
+on it would update. Non-zero exit means they would not.
 
 Do not skip this. v1.5.2 was published as a GitHub release while `version.json` on `main` still
 advertised `1.5.1` and pointed at a `v1.5.1` tag that never existed. Clients on 1.5.1 were told
 they were up to date; clients on 1.5.0 downloaded a 404 on every boot. It went unnoticed for four
-days because a stranded client looks exactly like a happy one — nothing is broken on screen, the
-version is just old. This command is what turns that silence into a red line.
+days: nothing looks broken on a stranded client, the version is just old.
 
 `sign-update.js` now also refuses, at signing time, a `--version` that disagrees with
 `package.json` or a `--url` that does not contain the version (override with
-`--allow-version-mismatch` / `--allow-url-mismatch`). Either guard alone would have caught the
-above.
+`--allow-version-mismatch` / `--allow-url-mismatch`). Either guard alone would have caught this.
 
 **7. Verify like a user.** From a clean machine, download the exe from the release page,
 check the hash against `SHA256SUMS`, and run it.
