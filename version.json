@@ -1,7 +1,7 @@
 {
-  "latest": "1.5.1",
-  "url": "https://github.com/Santerxyz/SSIM/releases/download/v1.5.1/SSIM.exe",
-  "sha256": "c61d6cb46a9581b2f46e6a02e0d539e56b27d34a6d902217f497af76fd737af1",
-  "sig": "RAJ8ewjgFhpiVMvhGckxhhQbRv0KjNtqk_B3qRE9ofTE4D3CeWHcPEA2nEm55xpl_UoDcYS7qc423-GtPUGICA",
-  "sigKind": "To1AKaBCIhp1Ua9UXVjdCdbZVp47d8joTN2JOseY8UCiYlRDSs4bfElsYWVX0lUzsrLMQl1VXl7hZW6BA4WpDQ"
+  "latest": "1.5.3",
+  "url": "https://github.com/Santerxyz/SSIM/releases/download/v1.5.3/SSIM.exe",
+  "sha256": "a244c0a6b6d5ebb7eb429d5fefac91a5ac4f5937b6e7bb400a245f08055b794c",
+  "sig": "QgvyKesO0CdZbp-jgjQji9ZgHWCEGdzUn7EgZHVdSKBHlORBR9LsTnQTs3ViW_PwP5jaANhCAPbEQ9fixNclAw",
+  "sigKind": "3ybiDecDC157_y7Iaknsqj97iNPrbKy28lEHEKP5wLNhTngZuSKo5OcnxY-3wuyLVInziH8VO45-H1E6SE8DBg"
 }
