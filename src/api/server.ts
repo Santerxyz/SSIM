@@ -15,7 +15,7 @@ import { PaysafeService, PAYSAFE_AUTO_POLL_MS, PAYSAFE_MIN_MINOR, PAYSAFE_MAX_MI
 import { walletEurMinor, assertSteamHttpsUrl } from '../store/StoreService';      // W4_40: EUR-native wallet + URL guard
 import { performWalletPurchase, ownedPackageIdsFrom, readStoreOwnedPackages, primeOwnership, CS2_APP_ID, type WalletPurchaseResult, type PrimeOwnership } from '../store/WalletPurchase';   // W4_41: wallet-only CS2 Prime purchase (+ 1.5.1 read-only ownership check)
 import { GamePurchaseJournal, purchaseOpKey } from '../core/GamePurchaseJournal';   // W4_41: purchase double-spend dedup
-import { generateBilling } from '../trading/AccountTrader';                       // W4_40: random billing (shared with market buy)
+import { generateBilling, generateBillingEmail } from '../trading/AccountTrader';  // W4_40: per-account billing (shared with market buy)
 import { AccountImportService } from '../core/AccountImportService';
 import { CsFloatService } from '../csfloat/CsFloatService';
 import { CsFloatAutoAcceptWorker } from '../csfloat/CsFloatAutoAcceptWorker';
@@ -299,7 +299,6 @@ export function createDeps(): ApiDeps {
   // cannot walk the fleet into the resident-session ceiling. A session another operation already owned is
   // never added here, and therefore never torn down under it.
   const paysafeOwned = new Set<string>();
-  const randomEmailLocal = (): string => { let s = ''; while (s.length < 12) s += Math.random().toString(36).slice(2); return s.slice(0, 12); };
 
   /** The account's wallet in EURO-CENTS. NO FX anywhere on this path: baseline and read-back are the same
    *  native unit, so a moving exchange rate cannot manufacture a phantom credit. A non-EUR wallet reads as
@@ -332,8 +331,8 @@ export function createDeps(): ApiDeps {
 
   const paysafe = new PaysafeService({
     enabled: paysafeEnabled,
-    // HEADLESS-INIT (owner 2026-07-10): SSIM does the Steam side over HTTP (amount + paysafecard + random
-    // billing → the externallink URL), then opens the clean browser DIRECTLY on the paysafecard page. No
+    // HEADLESS-INIT (owner 2026-07-10): SSIM does the Steam side over HTTP (amount + paysafecard + the per-account
+    // synthetic billing → the externallink URL), then opens the clean browser DIRECTLY on the paysafecard page. No
     // Steam window, no DOM driving. The init NEVER moves money (the charge happens only when the operator
     // finishes on paysafecard) and fails closed — a throw means 'error', no browser, and so no charge.
     openCheckout: async (username, checkout) => {
@@ -341,7 +340,7 @@ export function createDeps(): ApiDeps {
       if (!account) throw Object.assign(new Error(`Account "${username}" not found`), { status: 404 });
       const init = await store.initPaysafeCheckout(username, {
         amountMinor: checkout.amountMinor,
-        billing: { ...generateBilling(), email: `${randomEmailLocal()}@gmail.com` },
+        billing: { ...generateBilling(username), email: generateBillingEmail(username) },
       });
       // initPaysafeCheckout keeps the session alive for the credit poll; note the ownership so we release it.
       if (init.sessionOwned) paysafeOwned.add(username.toLowerCase());

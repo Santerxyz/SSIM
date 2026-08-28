@@ -4,6 +4,7 @@ import { buildCookieHeader } from '../pricing/PricerIdentityPool';
 import { MobileConfGate, type ConfFreshness } from './MobileConfGate';
 import { classifyNetworkError } from '../utils/errorClass';
 import { STEAM_BROWSER_UA, STEAM_XHR_HEADERS, STEAM_LIBRARY_HEADERS } from '../network/steamHeaders';
+import { seededBytes } from '../network/accountIdentity';
 import SteamCommunity from 'steamcommunity';
 import TradeOfferManager from 'steam-tradeoffer-manager';
 import * as SteamTotp from 'steam-totp';
@@ -1094,11 +1095,11 @@ export class AccountTrader {
     const perItem = Math.round(p.pricePerItemMinor);
     if (!Number.isFinite(perItem) || perItem < 1) throw new Error('invalid buy price (minor units must be ≥ 1)');
     const priceTotal = perItem * qty; // Steam wants the TOTAL order value, not per item
-    // Billing: use what the caller passed, else generate a format-valid RANDOM profile per request
-    // (anti-fingerprinting; empty fields trip the gate). The COUNTRY is not random and must not be
-    // guessed — it is the account's own, read from Steam (see resolveWalletCountry). This runs
-    // BEFORE the POST, so a refusal here means nothing was ordered.
-    const billing = p.billing ?? generateBilling(await this.resolveWalletCountry());
+    // Billing: use what the caller passed, else the account's own format-valid synthetic profile —
+    // distinct between bots, identical between this bot's orders (empty fields trip the gate). The
+    // COUNTRY is not synthesised and must not be guessed — it is the account's own, read from Steam
+    // (see resolveWalletCountry). This runs BEFORE the POST, so a refusal here means nothing was ordered.
+    const billing = p.billing ?? generateBilling(this.username, await this.resolveWalletCountry());
 
     const post = (confirmation: string): Promise<{ status: number; data: any }> => {
       const { body, contentType } = buildMultipart({
@@ -1553,32 +1554,49 @@ export class AccountTrader {
   }
 }
 
-/** Random capitalized letter string of length min..max. */
-function randLetters(min: number, max: number): string {
-  const n = min + Math.floor(Math.random() * (max - min + 1));
+/** Capitalized letter string of length min..max, drawn from a deterministic byte source. */
+function letters(next: () => number, min: number, max: number): string {
+  const n = min + (next() % (max - min + 1));
   let s = '';
-  for (let i = 0; i < n; i++) s += String.fromCharCode(97 + Math.floor(Math.random() * 26));
+  for (let i = 0; i < n; i++) s += String.fromCharCode(97 + (next() % 26));
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/** Format-valid RANDOM billing for a market buy order (and, exported, the paysafecard addfunds
+/** Format-valid synthetic billing for a market buy order (and, exported, the paysafecard addfunds
  *  auto-fill — W4_40). Steam only needs non-empty, format-correct fields (a digital order – the
- *  address isn't validated against reality); randomizing per request avoids fingerprinting many
- *  bots with one static address. Postal code = exactly 5 digits. */
-export function generateBilling(country = 'DE'): BuyBilling {
+ *  address isn't validated against reality). Postal code = exactly 5 digits.
+ *
+ *  SEEDED PER ACCOUNT, not per request (2026-08-27). Two bots must not share one static address —
+ *  that was the original point — but the earlier version re-rolled the name and address on EVERY
+ *  order, so one account posted a different identity every time it bought, and `save_my_address=1`
+ *  then overwrote Steam's stored address with each new one. A real buyer's billing details do not
+ *  change between purchases. Deriving them from the username keeps every account distinct AND keeps
+ *  each account consistent with itself and with what Steam already has on file. */
+export function generateBilling(seed: string, country = 'DE'): BuyBilling {
+  const next = seededBytes(seed, 'billing');
   let zip = '';
-  for (let i = 0; i < 5; i++) zip += Math.floor(Math.random() * 10);
+  for (let i = 0; i < 5; i++) zip += next() % 10;
   return {
-    firstName:  randLetters(5, 8),
-    lastName:   randLetters(5, 8),
-    address:    `${randLetters(5, 8)} ${1 + Math.floor(Math.random() * 98)}`,
+    firstName:  letters(next, 5, 8),
+    lastName:   letters(next, 5, 8),
+    address:    `${letters(next, 5, 8)} ${1 + (next() % 98)}`,
     addressTwo: '',
-    city:       randLetters(6, 10),
+    city:       letters(next, 6, 10),
     state:      '',
     country,
     postalCode: zip,
     save:       true,
   };
+}
+
+/** The billing email for the paysafecard addfunds form, stable per account for the same reason
+ *  {@link generateBilling} is. 12 lowercase alphanumerics @gmail.com — the shape the form accepts. */
+export function generateBillingEmail(seed: string): string {
+  const next = seededBytes(seed, 'billing-email');
+  const ALPHANUM = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let local = '';
+  for (let i = 0; i < 12; i++) local += ALPHANUM[next() % ALPHANUM.length];
+  return `${local}@gmail.com`;
 }
 
 /** Builds a browser-style multipart/form-data body for a flat field map. Steam's
