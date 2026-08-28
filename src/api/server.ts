@@ -16,6 +16,7 @@ import { walletEurMinor, assertSteamHttpsUrl } from '../store/StoreService';    
 import { performWalletPurchase, ownedPackageIdsFrom, readStoreOwnedPackages, primeOwnership, CS2_APP_ID, type WalletPurchaseResult, type PrimeOwnership } from '../store/WalletPurchase';   // W4_41: wallet-only CS2 Prime purchase (+ 1.5.1 read-only ownership check)
 import { GamePurchaseJournal, purchaseOpKey } from '../core/GamePurchaseJournal';   // W4_41: purchase double-spend dedup
 import { generateBilling, generateBillingEmail } from '../trading/AccountTrader';  // W4_40: per-account billing (shared with market buy)
+import { PricerWarmup, DEFAULT_WARMUP_ACCOUNTS } from '../pricing/PricerWarmup';
 import { AccountImportService } from '../core/AccountImportService';
 import { CsFloatService } from '../csfloat/CsFloatService';
 import { CsFloatAutoAcceptWorker } from '../csfloat/CsFloatAutoAcceptWorker';
@@ -251,7 +252,28 @@ export function createDeps(): ApiDeps {
   // per-session budget. With no session web-ready yet it DEFERS (never anonymous) and `kick()` restarts it
   // once a session logs in. (The old proxy-string provider, its 60-80s per-name retry and the
   // foreground gate are gone — they were treating the symptom.)
-  const pricing   = new PricingService(csfloat, () => sessions.pricerIdentities(PRICE_IDENTITY_LANES, PRICE_LANES_PER_EXIT));
+  // …and if NOTHING is web-ready, bring a few accounts up rather than sitting on the slow path. The
+  // identity provider can only offer sessions that already exist, so an idle fleet (boot, or after the
+  // 30-min reaper) produced an empty list on every fill and the anonymous fallback fired every time —
+  // the multi-lane fill could only engage if the operator happened to be logged in for other reasons
+  // (owner report 2026-08-27). PricerWarmup picks one account per EXIT (throughput is set by distinct
+  // exit IPs, not account count), randomly within each exit, and logs them in behind a cooldown. It is
+  // best-effort by construction: the anonymous fallback is armed first, so a fleet whose proxies are all
+  // down behaves exactly as it does today. Kill switch: SSIM_PRICER_WARMUP=0.
+  const warmupAccounts = Math.max(0, Number(process.env.SSIM_PRICER_WARMUP_ACCOUNTS ?? DEFAULT_WARMUP_ACCOUNTS) || 0);
+  const warmupEnabled  = process.env.SSIM_PRICER_WARMUP !== '0' && warmupAccounts > 0;
+  const pricerWarmup   = new PricerWarmup({
+    accounts: () => accounts.getAll(),
+    isLive:   (u) => sessions.isLive(u),
+    login:    (a) => sessions.loginAccount(a),
+  });
+  const pricing   = new PricingService(
+    csfloat,
+    () => sessions.pricerIdentities(PRICE_IDENTITY_LANES, PRICE_LANES_PER_EXIT),
+    // `want` is the fill's lane cap; the warm-up caps itself at the operator's account budget, so the
+    // fill asking for 36 never means 36 logins.
+    { warmup: warmupEnabled ? () => pricerWarmup.request(warmupAccounts) : undefined },
+  );
   // Restart a deferred Steam fill the moment an authenticated session becomes web-ready.
   sessions.on('webSession', () => pricing.kick());
   const exchange  = new ExchangeRateService();

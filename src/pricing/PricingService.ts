@@ -122,6 +122,10 @@ export class PricingService {
    *  reads the CURRENT set of web-ready sessions (see PricerIdentityPool). Undefined in dev/tests
    *  with no fleet → the Steam fill defers, then falls back to one anonymous lane after the grace. */
   private readonly identityProvider?: () => PricerIdentity[];
+  /** Asked to bring accounts up when the fill has NO identity, so the multi-lane path can engage
+   *  instead of the fill dropping to one anonymous lane every time (see PricerWarmup). Returns the
+   *  number of logins started and does them in the background — never awaited, never blocks a fill. */
+  private readonly warmup?: (want: number) => number;
   /** Grace before the anonymous fallback fires (injectable for tests). */
   private readonly anonFallbackGraceMs: number;
   /** Pending one-shot for the anonymous fallback; armed on deferral, cancelled by kick()/shutdown(). */
@@ -130,12 +134,13 @@ export class PricingService {
   constructor(
     csfloat?: CsFloatService,
     identityProvider?: () => PricerIdentity[],
-    opts?: { anonFallbackGraceMs?: number },
+    opts?: { anonFallbackGraceMs?: number; warmup?: (want: number) => number },
   ) {
     this.csfloat = csfloat;
     this.csfloatSource = csfloat ? new CsFloatPriceSource(csfloat) : undefined;
     this.identityProvider = identityProvider;
     this.anonFallbackGraceMs = opts?.anonFallbackGraceMs ?? ANON_FALLBACK_GRACE_MS;
+    this.warmup = opts?.warmup;
   }
 
   /** The EFFECTIVE source: CSFloat only when selected and a key exists; else Steam (fallback). */
@@ -324,10 +329,19 @@ export class PricingService {
       // timer. kick() (a login) cancels the timer and prefers the authenticated fill. When there is NOTHING
       // else to do this run (no csfloat lane), DEFER — the timer is the only thing that will run.
       if (steamPending && identities.length === 0 && !anonymous) {
+        // ORDER MATTERS: arm the fallback FIRST, then ask for a warm-up. The warm-up is best-effort —
+        // if every login fails the fill must still happen on the slow path, exactly as it did before
+        // this existed. A login that DOES succeed fires kick(), which cancels this timer and starts
+        // the authenticated fill, so the two never both run.
         this.armAnonymousFallback();
+        let warming = 0;
+        try { warming = this.warmup?.(MAX_PRICE_LANES) ?? 0; }
+        catch (e) { logger.warn(`[pricing] warm-up request failed (${(e as Error).message})`); }
         if (!csfloatPending) {
           logger.info(`[pricing] fill deferred — no authenticated pricer identity web-ready yet (${this.queue.length} queued); ` +
-            `starts on login, else an anonymous fallback fill in ~${Math.round(this.anonFallbackGraceMs / 1000)}s`);
+            (warming > 0
+              ? `warming ${warming} account(s) now — the fast multi-lane fill starts as they log in`
+              : `starts on login, else an anonymous fallback fill in ~${Math.round(this.anonFallbackGraceMs / 1000)}s`));
           return;
         }
         // else: fall through to run the csfloat lane now; the steam names wait for the armed fallback.
