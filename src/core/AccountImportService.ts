@@ -4,6 +4,7 @@ import { LoginSession, EAuthTokenPlatformType, EAuthSessionGuardType } from 'ste
 import type { AccountManager } from './AccountManager';
 import type { SessionManager } from './SessionManager';
 import { normalizeProxy } from '../network/AgentFactory';
+import { deviceNameFor, randomDeviceName } from '../network/accountIdentity';
 import { logger } from '../utils/logger';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -90,7 +91,14 @@ export class AccountImportService {
     this.prune();
     this.assertCapacity();
 
-    const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
+    // A QR login does not know WHICH account it is until the phone approves, but device_friendly_name
+    // has to be in the very first request — so this one gets a fresh random PC name. That still satisfies
+    // the goal (no two accounts share a device name); the account's later logins use the username-derived
+    // name, so a QR-imported bot shows two devices, exactly like a real user with a laptop and a desktop.
+    const session = new LoginSession(EAuthTokenPlatformType.SteamClient, {
+      ...this.networkOptions(envId),
+      machineFriendlyName: randomDeviceName(),
+    });
     // loginTimeout must be set before polling begins (i.e. before startWithQR resolves).
     session.loginTimeout = LOGIN_TIMEOUT_MS;
 
@@ -135,7 +143,12 @@ export class AccountImportService {
     this.assertCapacity();
     if (this.accounts.get(accountName)) throw new Error(`Account "${accountName}" already exists`);
 
-    const session = new LoginSession(EAuthTokenPlatformType.SteamClient, this.networkOptions(envId));
+    // The account name is known up front here, so the imported device matches the one every later
+    // login of this account reports (network/accountIdentity) — one PC per bot, not one per fleet.
+    const session = new LoginSession(EAuthTokenPlatformType.SteamClient, {
+      ...this.networkOptions(envId),
+      machineFriendlyName: deviceNameFor(accountName),
+    });
     // loginTimeout must be set before polling begins — confirmation-only guards start
     // polling via setImmediate as soon as startWithCredentials resolves, and the setter
     // throws once polling has started. Without this the credentials path silently used

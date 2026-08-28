@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { AccountVault } from './AccountVault';
 import { loadMaFileFromDisk, resolveMaFilePath } from './maFiles';
 import { getSteamTotpOffsetSeconds } from '../trading/steamTotpTimeout';
+import { deviceLogOnFields } from '../network/accountIdentity';
 
 // ─── maFile loading ────────────────────────────────────────────────────────────
 
@@ -101,6 +102,13 @@ export interface LogOnOptions {
   password:         string;
   twoFactorCode:    string;
   rememberPassword: boolean;
+  /** The PC this account claims to be — see network/accountIdentity. Without it steam-user
+   *  sends an empty machine_name and steam-session falls back to a hostname shared by the
+   *  whole fleet. */
+  machineName:      string;
+  /** The account's claimed LAN address, obfuscated by steam-user into obfuscated_private_ip.
+   *  Without it every account reports 0, which no real Steam client does. */
+  logonID:          string;
   [key: string]:    unknown; // satisfies steam-user's index-signature requirement
 }
 
@@ -127,7 +135,28 @@ export function buildLogOnOptions(account: AccountConfig, maFile: MaFile): LogOn
     password:         resolvePassword(account),
     twoFactorCode:    generateTotpCode(maFile.shared_secret),
     rememberPassword: false,
+    ...deviceLogOnFields(account.username),
   };
+}
+
+export interface TokenLogOnOptions {
+  refreshToken:  string;
+  machineName:   string;
+  logonID:       string;
+  [key: string]: unknown;
+}
+
+/**
+ * Builds the TOKEN logOn payload — the everyday login for the whole fleet.
+ *
+ * It exists as its own builder purely so the device fields cannot be forgotten here. They were
+ * (2026-08-27 audit): the token path is the one that runs all day, steam-user keeps `machine_name`
+ * for a refreshToken logon, and `webLogOn()` rebuilds its LoginSession from these same details — so
+ * an omission here would put the installation-wide hostname back on every account while the
+ * credential path, which almost never runs, looked correct.
+ */
+export function buildTokenLogOnOptions(username: string, refreshToken: string): TokenLogOnOptions {
+  return { refreshToken, ...deviceLogOnFields(username) };
 }
 
 /** Refreshes the twoFactorCode on an existing logOn payload to the current 30s window. */

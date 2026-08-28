@@ -6,7 +6,7 @@ import { AgentFactory, redactProxyCredentials, normalizeProxy, type HttpAgent } 
 import { egressRotation } from '../network/EgressRotation';
 import { proxyHealth, proxyKey, isResetClass } from '../network/ProxyHealth';
 import { chooseCmProtocol, noteCmOutcome, CmProtocolLabel, TCP_FAILURES_TO_DEMOTE } from '../network/CmProtocol';
-import { loadMaFile, buildLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
+import { loadMaFile, buildLogOnOptions, buildTokenLogOnOptions, resolvePassword, restampTotp, generateTotpCode, msUntilNextTotp } from './LoginFlow';
 import { TokenStore } from './TokenStore';
 import { onTokenAuthFailure } from './accountCapability';
 import { webCookiesFresh, ownsCreatedSession, WEB_COOKIE_REFRESH_MS } from './sessionHealth';
@@ -463,7 +463,7 @@ export class SessionManager extends EventEmitter {
     if (storedToken) {
       try {
         logger.info(`[${account.username}] logging in with stored refresh token (no password/2FA)…`);
-        return await this.attemptLogin(account, { refreshToken: storedToken }, maFile, 'token');
+        return await this.attemptLogin(account, buildTokenLogOnOptions(account.username, storedToken), maFile, 'token');
       } catch (err) {
         const kind = (err as LoginError).loginErrorKind ?? 'connection';
         if (kind === 'auth' && onTokenAuthFailure({ hasMaFile: !!maFile, hasPassword: !!resolvePassword(account) }) === 'delete-and-retry') {
