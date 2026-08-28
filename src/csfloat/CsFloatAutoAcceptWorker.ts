@@ -71,6 +71,8 @@ export class CsFloatAutoAcceptWorker {
   private timer?: NodeJS.Timeout;
   private bootTimer?: NodeJS.Timeout; // S46: the 5s first-pass tick, tracked so stop() can cancel it
   private running = false;
+  /** username → the last fetch summary the POLLER logged, so an unchanged 45s pass stays quiet. */
+  private readonly lastPollSummary = new Map<string, string>();
   private stopped = false;            // S46: set by stop() → an in-flight pass stops launching deliveries
   /** DURABLE dedup of delivered CSFloat trade ids — survives restarts so a sale is
    * never delivered twice across a process bounce. */
@@ -186,10 +188,20 @@ export class CsFloatAutoAcceptWorker {
    * account with no sales — auto-accept would look healthy while delivering nothing, forever.
    * `terminalState` decides what is deliverable, from the state each trade reports about itself.
    */
-  private async fetchTrades(username: string, why: string): Promise<Dict[]> {
+  private async fetchTrades(username: string, why: string, poll = false): Promise<Dict[]> {
     const all = extractTrades(await this.csfloat.trades(username, { limit: 50 }));
     const states = [...new Set(all.map((t) => String(t.state ?? t.status ?? '(none)')))];
-    logger.info(`[csfloat-auto-accept] ${username}: ${why} — CSFloat returned ${all.length} trade(s); states: ${states.join(', ') || '(none)'}`);
+    const line = `[csfloat-auto-accept] ${username}: ${why} — CSFloat returned ${all.length} trade(s); states: ${states.join(', ') || '(none)'}`;
+    // The 45s poller repeated this line forever for an account whose sales had all reached a terminal
+    // state — ~1 900 identical INFO lines per account per day, which buries every other event in the
+    // live log (owner report 2026-08-27). It is NOT demoted wholesale: the line is the only record of
+    // what a pass acted on, and it matters the moment the picture changes. So an unchanged POLL pass
+    // drops to debug and the first pass that differs comes back at info. A manual delivery — which the
+    // operator asked for and is watching — always logs at info.
+    const summary = `${all.length}|${[...states].sort().join(',')}`;
+    const repeat = poll && this.lastPollSummary.get(username) === summary;
+    if (poll) this.lastPollSummary.set(username, summary);
+    if (repeat) logger.debug(line); else logger.info(line);
     return all;
   }
 
@@ -283,7 +295,7 @@ export class CsFloatAutoAcceptWorker {
     const block = await this.preflight(username);
     if (block) { logger.warn(`[csfloat-auto-accept] skipping — ${block}`); return; }
 
-    const trades = await this.fetchTrades(username, 'auto-accept pass');
+    const trades = await this.fetchTrades(username, 'auto-accept pass', true);
     if (trades.length === 0) return;
 
     for (const t of trades) {
