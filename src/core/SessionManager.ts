@@ -645,6 +645,13 @@ export class SessionManager extends EventEmitter {
       autoRelogin:      false,  // we handle reconnection ourselves
       singleSentryfile: false,
       enablePicsCache:  false,
+      // A WebSocket CM is NOT implicitly wss:443: most entries in Steam's websockets CM list listen on
+      // 27018-27036 (11 of 71 on :443 when checked), and steam-user picks one of the five least-loaded
+      // at random. Through a provider that only allows CONNECT to :443 — the very case CmProtocol
+      // demotes to WebSocket for — most picks were refused ("Proxy CONNECT 590 UPSTREAM501") and the
+      // login only worked when the pick happened to land on a :443 CM. webCompatibilityMode restricts
+      // the pick to :443 CMs (it only filters the list and forces WebSocket, which cmProto already is).
+      ...(network.type === 'proxy' && cmProto === 'ws' ? { webCompatibilityMode: true } : {}),
     });
 
     const session: ManagedSession = {
@@ -876,7 +883,18 @@ export class SessionManager extends EventEmitter {
       // ── Kick off login ─────────────────────────────────────────────────
       session.state = SessionState.LOGGING_IN;
 
+      // Keep steam-user's own connect/logon trace for this attempt so a timeout says WHERE it hung
+      // (CM list fetch, proxy CONNECT, CM socket, logon reply) instead of just "timeout".
+      const loginStartedAt = Date.now();
+      const trace: string[] = [];
+      client.on('debug', (msg: unknown) => {
+        if (settled) return;
+        trace.push(`+${Date.now() - loginStartedAt}ms ${String(msg).slice(0, 200)}`);
+        if (trace.length > 30) trace.shift();
+      });
+
       loginTimeoutHandle = setTimeout(() => {
+        logger.warn(`[${account.username}] login timeout trace (${network.type === 'proxy' ? redactProxyCredentials(network.value) : 'local ip'}, cm=${cmProto}):\n  ${trace.join('\n  ') || '(steam-user emitted nothing)'}`);
         fail(new Error(`Login timeout after ${LOGIN_TIMEOUT_MS / 1000}s (${account.username})`));
         try { client.logOff(); } catch { /* half-built connection – attemptLogin's destroySession completes teardown */ }
       }, LOGIN_TIMEOUT_MS);
